@@ -27,3 +27,26 @@ jobs:
         run: nvim --version | head -1
       - name: Run tests
         run: make test
+
+  snacks:
+    name: Latest Snacks / Fedora
+    runs-on: ubuntu-latest
+    container: registry.fedoraproject.org/fedora:latest
+    env:
+      MD_RENDER_SNACKS_PATH: /tmp/snacks.nvim
+    steps:
+      - name: Install runtime
+        run: dnf install -y git neovim ImageMagick
+      - uses: actions/checkout@v4
+      - name: Install latest Snacks
+        run: git clone --depth=1 https://github.com/folke/snacks.nvim.git "$MD_RENDER_SNACKS_PATH"
+      - name: Verify runtime
+        run: |
+          nvim --version
+          magick --version
+          git -C "$MD_RENDER_SNACKS_PATH" rev-parse HEAD
+      - name: Run Snacks integration tests
+        run: |
+          for test in tests/snacks_*_test.lua tests/image_view_lifecycle_test.lua; do
+            nvim --headless -u NONE --noplugin -l "$test"
+          done

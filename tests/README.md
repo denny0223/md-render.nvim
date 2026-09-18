@@ -30,6 +30,8 @@ MD_RENDER_SNACKS_PATH=/path/to/snacks.nvim make test
 
 Without this optional dependency, those integration tests report a skip. They check placement rebuilding, inactive-tab completion, and rapid zoom cleanup; they do not establish terminal visual correctness.
 
+The Fedora CI job installs the latest Snacks default branch and ImageMagick, then runs these tests with the dependency enabled. Its log records the Neovim, ImageMagick, and Snacks versions.
+
 ## Layer 1: Unit tests
 
 Mock-based tests that verify Kitty Graphics Protocol escape sequences without requiring a real terminal.

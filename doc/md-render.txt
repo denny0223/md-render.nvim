@@ -81,8 +81,8 @@ INSTALLATION						*md-render-installation*
 Using lazy.nvim: >lua
 
   {
-    "delphinus/md-render.nvim",
-    version = "*",
+    "denny0223/md-render.nvim",
+    version = false,
     dependencies = {
       { "nvim-tree/nvim-web-devicons", version = "*" },
       { "delphinus/budoux.lua", version = "*" },

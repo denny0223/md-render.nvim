@@ -37,7 +37,7 @@ Neovim 用の Markdown レンダリングエンジンです。生の Markdown �
 リポジトリには全機能を一望できるショーケース Markdown が同梱されています。クローン後、ページャーで開いてみてください：
 
 ```bash
-git clone https://github.com/delphinus/md-render.nvim
+git clone https://github.com/denny0223/md-render.nvim
 cd md-render.nvim
 nvim +"MdRender pager" assets/showcase.md
 ```
@@ -80,8 +80,8 @@ nvim +"MdRender pager" assets/showcase.md
 
 ```lua
 {
-  "delphinus/md-render.nvim",
-  version = "*",
+  "denny0223/md-render.nvim",
+  version = false,
   dependencies = {
     { "nvim-tree/nvim-web-devicons", version = "*" }, -- optional: file type icons in code blocks
     { "delphinus/budoux.lua", version = "*" }, -- optional: CJK phrase-level line breaking
@@ -98,7 +98,7 @@ nvim +"MdRender pager" assets/showcase.md
 
 ```lua
 vim.pack.add({
-  "https://github.com/delphinus/md-render.nvim",
+  "https://github.com/denny0223/md-render.nvim",
   -- optional:
   "https://github.com/nvim-tree/nvim-web-devicons",
   "https://github.com/delphinus/budoux.lua",
@@ -110,7 +110,7 @@ vim.pack.add({
 ```lua
 local add = MiniDeps.add
 add({
-  source = "delphinus/md-render.nvim",
+  source = "denny0223/md-render.nvim",
   depends = {
     "nvim-tree/nvim-web-devicons", -- optional
     "delphinus/budoux.lua",        -- optional

@@ -1,5 +1,7 @@
 # md-render.nvim
 
+This fork of [delphinus/md-render.nvim](https://github.com/delphinus/md-render.nvim) adds an optional Snacks backend for static images and diagrams in Kitty/tmux, viewport fitting, and an image tab with zoom and pan. See the [Neovim configuration](https://github.com/denny0223/.nvim) for a complete setup.
+
 [日本語版はこちら / Japanese version](README.ja.md) — Full Japanese/CJK support with kinsoku shori and BudouX phrase segmentation.
 
 A Markdown rendering engine for Neovim. Transforms raw Markdown into richly highlighted, interactive content — right inside your editor. Supports floating windows, tab views, and a pager mode for `less`-like usage from the command line.
@@ -37,7 +39,7 @@ A Markdown rendering engine for Neovim. Transforms raw Markdown into richly high
 The repo bundles a showcase Markdown file demonstrating every feature. After cloning, view it with the pager:
 
 ```bash
-git clone https://github.com/delphinus/md-render.nvim
+git clone https://github.com/denny0223/md-render.nvim
 cd md-render.nvim
 nvim +"MdRender pager" assets/showcase.md
 ```
@@ -80,8 +82,8 @@ For image/video format conversion and animation support, the plugin tries tools 
 
 ```lua
 {
-  "delphinus/md-render.nvim",
-  version = "*",
+  "denny0223/md-render.nvim",
+  version = false,
   dependencies = {
     { "nvim-tree/nvim-web-devicons", version = "*" }, -- optional: file type icons in code blocks
     { "delphinus/budoux.lua", version = "*" }, -- optional: CJK phrase-level line breaking
@@ -98,7 +100,7 @@ For image/video format conversion and animation support, the plugin tries tools 
 
 ```lua
 vim.pack.add({
-  "https://github.com/delphinus/md-render.nvim",
+  "https://github.com/denny0223/md-render.nvim",
   -- optional:
   "https://github.com/nvim-tree/nvim-web-devicons",
   "https://github.com/delphinus/budoux.lua",
@@ -110,7 +112,7 @@ vim.pack.add({
 ```lua
 local add = MiniDeps.add
 add({
-  source = "delphinus/md-render.nvim",
+  source = "denny0223/md-render.nvim",
   depends = {
     "nvim-tree/nvim-web-devicons", -- optional
     "delphinus/budoux.lua",        -- optional

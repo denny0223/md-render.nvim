@@ -19,16 +19,19 @@ local async = require "md-render.async"
 local tty_mod = require "md-render.tty"
 
 local IS_WINDOWS = ffi.os == "Windows"
+local _kitty_supported = nil
 
 -- ============================================================================
 -- Configuration
 -- ============================================================================
 
 ---@class MdRender.Image.Config
+---@field backend? "kitty"|"snacks"
 ---@field plantuml_server string? base URL of a PlantUML server, e.g. `"https://www.plantuml.com/plantuml"`
 
 ---@type MdRender.Image.Config
 local config = {
+  backend = "kitty",
   -- Unset on purpose. A PlantUML fence is rendered by a local `plantuml` or
   -- `java -jar $PLANTUML_JAR` if there is one; naming a server here is what
   -- allows the source of a diagram to leave the machine, and nothing else
@@ -40,6 +43,11 @@ local config = {
 ---@param opts? MdRender.Image.Config
 function M.setup(opts)
   opts = opts or {}
+  if opts.backend then
+    assert(opts.backend == "kitty" or opts.backend == "snacks", "unknown image backend")
+    config.backend = opts.backend
+    _kitty_supported = nil
+  end
   if opts.plantuml_server ~= nil then
     config.plantuml_server = opts.plantuml_server ~= "" and opts.plantuml_server or nil
   end
@@ -731,7 +739,6 @@ end
 -- Kitty Graphics Protocol support detection
 -- ============================================================================
 
-local _kitty_supported = nil
 local _is_ghostty = nil
 
 -- Mutable module state hoisted here so M.reset_cache() (defined below, before the
@@ -787,6 +794,11 @@ function M.supports_kitty()
   if IS_WINDOWS then
     _kitty_supported = false
     return false
+  end
+  -- The selected transport owns capability detection.
+  if config.backend == "snacks" then
+    _kitty_supported = require("md-render.snacks_image").supported()
+    return _kitty_supported
   end
   -- Prefer a real APC probe when Neovim provides one (0.13+). A silent
   -- terminal returns nil and we fall through to env var heuristics — only

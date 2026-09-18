@@ -20,6 +20,16 @@ for f in tests/*_test.lua; do
 done
 ```
 
+### Optional Snacks integration tests
+
+The Snacks backend lifecycle tests use a real Snacks checkout while intercepting terminal output and controlling conversion timing. Set its path to include them in `make test`:
+
+```bash
+MD_RENDER_SNACKS_PATH=/path/to/snacks.nvim make test
+```
+
+Without this optional dependency, those integration tests report a skip. They check placement rebuilding and inactive-tab completion; they do not establish terminal visual correctness.
+
 ## Layer 1: Unit tests
 
 Mock-based tests that verify Kitty Graphics Protocol escape sequences without requiring a real terminal.

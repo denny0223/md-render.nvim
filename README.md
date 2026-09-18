@@ -161,6 +161,19 @@ Inside a rendered preview (floating, tab, or in-place toggle), these buffer-loca
 | `<LeftMouse>` | Toggle folds, expand regions, and open links by clicking |
 | `q` / `<Esc>` / `<C-c>` | Close the window (floating / tab mode only) |
 
+### Optional Snacks image backend
+
+Install [snacks.nvim](https://github.com/folke/snacks.nvim) and select its image backend for static images and diagrams in Kitty:
+
+```lua
+require("snacks").setup({ image = { enabled = true, doc = { enabled = false }, math = { enabled = false } } })
+require("md-render.image").setup({ backend = "snacks" })
+```
+
+Mermaid still requires the Mermaid CLI and its headless browser; no browser window is opened. The default backend remains `kitty`.
+
+The Snacks backend prepares images throughout the document, including those outside the viewport. Diagram rendering and downloads share a two-job limit across previews; work already running may finish into the cache after a preview closes. Image-heavy documents therefore do more work up front than the native backend. Animation and video playback are not covered by this backend; use the native backend for those features.
+
 ## Commands
 
 The plugin exposes a single `:MdRender` command with subcommands:

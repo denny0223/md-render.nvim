@@ -639,6 +639,7 @@ function M.setup_images(win, content, ns, opts)
   if not content.image_placements or #content.image_placements == 0 then return nil end
 
   local image = require "md-render.image"
+  if image.config().backend == "snacks" then return require("md-render.snacks_image").setup(win, content, ns, opts) end
   if not image.supports_kitty() then return nil end
 
   -- Clear all stale images from terminal on first use per Neovim session.
@@ -1236,6 +1237,7 @@ end
 ---@param content MdRender.Content
 ---@return MdRender.ImageState?
 function M.update_images(state, win, content)
+  if state and state.snacks then return require("md-render.snacks_image").update(state, content) end
   -- No previous state: full setup from scratch
   if not state then return M.setup_images(win, content, nil) end
 
@@ -1318,6 +1320,7 @@ end
 --- Clean up all images and autocmds
 ---@param state MdRender.ImageState?
 function M.cleanup_images(state)
+  if state and state.snacks then return require("md-render.snacks_image").cleanup(state) end
   if not state then return end
   local image = require "md-render.image"
 

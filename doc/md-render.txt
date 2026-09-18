@@ -1016,6 +1016,23 @@ display_utils.setup_images({win}, {content}, {ns}, {opts}) ~
 ------------------------------------------------------------------------------
 IMAGE							       *md-render-image*
 
+                                                        *md-render-snacks-image*
+Optional Snacks image backend ~
+
+Install snacks.nvim, then configure: >lua
+
+  require("snacks").setup({
+    image = { enabled = true, doc = { enabled = false }, math = { enabled = false } },
+  })
+  require("md-render.image").setup { backend = "snacks" }
+<
+Requires Kitty. Mermaid uses its usual CLI and headless browser.
+The default backend remains "kitty".
+This backend prepares all document images, including off-screen images.
+Diagram rendering and downloads share two concurrent jobs across previews;
+already running conversions may finish into the cache after closing.
+Use the native backend for animation and video playback.
+
 						       *image.set_download_fn()*
 image.set_download_fn({fn}) ~
 	Set a custom download function for web images.  By default, curl is

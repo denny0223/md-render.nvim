@@ -28,7 +28,7 @@ The Snacks backend lifecycle tests use a real Snacks checkout while intercepting
 MD_RENDER_SNACKS_PATH=/path/to/snacks.nvim make test
 ```
 
-Without this optional dependency, those integration tests report a skip. They check placement rebuilding and inactive-tab completion; they do not establish terminal visual correctness.
+Without this optional dependency, those integration tests report a skip. They check placement rebuilding, inactive-tab completion, and rapid zoom cleanup; they do not establish terminal visual correctness.
 
 ## Layer 1: Unit tests
 

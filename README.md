@@ -157,7 +157,7 @@ Inside a rendered preview (floating, tab, or in-place toggle), these buffer-loca
 | Key | Action |
 |---|---|
 | `za` | Toggle the fold / expandable region under the cursor (no-op elsewhere) |
-| `<CR>` | Toggle the fold / expandable region under the cursor (no-op elsewhere) |
+| `<CR>` | Open the image under the cursor (Snacks backend), or toggle a fold / expandable region |
 | `<LeftMouse>` | Toggle folds, expand regions, and open links by clicking |
 | `q` / `<Esc>` / `<C-c>` | Close the window (floating / tab mode only) |
 
@@ -177,6 +177,17 @@ Mermaid still requires the Mermaid CLI and its headless browser; no browser wind
 The Snacks backend prepares images throughout the document, including those outside the viewport. Diagram rendering and downloads share a two-job limit across previews; work already running may finish into the cache after a preview closes. Image-heavy documents therefore do more work up front than the native backend. Animation and video playback are not covered by this backend; use the native backend for those features.
 
 With the Snacks backend, automatic layout uses the available window width instead of the native backend's 80-column cap. Images fit proportionally within that width and the window height minus six rows, without enlarging beyond their original pixel size. An explicitly supplied `max_width` still takes precedence.
+
+On an image or its title, press Enter to open a focused image tab. This requires ImageMagick (`magick`).
+
+| Key in the image tab | Action |
+|---|---|
+| `+` / `=` / `-` | Zoom in / out, from 1× to 16× the fitted overview |
+| `h/j/k/l` or arrow keys | Pan |
+| `0` | Restore the complete overview |
+| `q` / `<Esc>` | Close the image tab and return to the document |
+
+Zoom uses the converted image's existing pixels; it does not regenerate a higher-resolution diagram.
 
 ## Commands
 

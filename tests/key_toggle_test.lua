@@ -51,7 +51,8 @@ end
 --- float keymaps, and return everything plus the captured toggle calls.
 ---@param content table
 ---@param close_keys? string[]
-local function setup(content, close_keys)
+---@param on_image_open? fun(row: integer): boolean
+local function setup(content, close_keys, on_image_open)
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, content.lines)
   local win = vim.api.nvim_open_win(buf, true, {
@@ -66,6 +67,7 @@ local function setup(content, close_keys)
   local calls = { fold = {}, expand = {} }
   display_utils.setup_float_keymaps(buf, ns, win, content, nil, {
     close_keys = close_keys,
+    on_image_open = on_image_open,
     get_content = function()
       return content
     end,
@@ -201,6 +203,27 @@ test("<CR> still closes when explicitly a close key", function()
   vim.api.nvim_win_set_cursor(win, { 4, 0 })
   feed "<CR>"
   assert_false(vim.api.nvim_win_is_valid(win), "<CR> as close key: window closed")
+  cleanup(win, buf)
+end)
+
+test("<CR> activates an image before folding or closing and falls through elsewhere", function()
+  local opened = {}
+  local buf, win, calls = setup(make_content(), { "<CR>" }, function(row)
+    if row ~= 0 then return false end
+    opened[#opened + 1] = row
+    return true
+  end)
+  vim.api.nvim_win_set_cursor(win, { 1, 0 })
+  feed "<CR>"
+  assert_eq(opened, { 0 }, "Enter activates the image at the cursor")
+  assert_eq(#calls.fold, 0, "image activation takes precedence over folding")
+  assert_true(vim.api.nvim_win_is_valid(win), "image activation does not close the preview")
+  vim.api.nvim_win_set_cursor(win, { 2, 0 })
+  feed "<CR>"
+  assert_eq(#calls.expand, 1, "Enter still expands other content")
+  vim.api.nvim_win_set_cursor(win, { 4, 0 })
+  feed "<CR>"
+  assert_false(vim.api.nvim_win_is_valid(win), "explicit close fallback still works outside content")
   cleanup(win, buf)
 end)
 

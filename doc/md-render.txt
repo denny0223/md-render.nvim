@@ -1040,6 +1040,17 @@ Automatic layout uses the available window width (unless max_width is
 explicit) and fits images within the window height minus six rows. Images
 keep their aspect ratio and do not grow beyond their original pixel size.
 
+                                                        *md-render-image-view*
+Press <Enter> on an image or its title to open a focused image tab. ImageMagick
+(magick) is required. In this tab:
+
+  + / = / -       Zoom in/out, between 1x and 16x the fitted overview.
+  h/j/k/l         Pan; arrow keys also work.
+  0               Restore the complete overview.
+  q / <Esc>       Close the image tab and return to the document.
+
+Zoom enlarges existing pixels; it does not regenerate the diagram.
+
 						       *image.set_download_fn()*
 image.set_download_fn({fn}) ~
 	Set a custom download function for web images.  By default, curl is

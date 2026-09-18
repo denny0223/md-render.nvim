@@ -420,7 +420,7 @@ end
 ---@param win integer
 ---@param content MdRender.Content
 ---@param close_handle MdRender.FloatWin|MdRender.TabWin|nil
----@param opts? { close_line_idx?: integer, close_keys?: string[], on_fold_toggle?: fun(source_line: integer, collapsed: boolean), on_expand_toggle?: fun(block_id: integer, expanded: boolean), get_content?: fun(): MdRender.Content }
+---@param opts? { close_line_idx?: integer, close_keys?: string[], on_fold_toggle?: fun(source_line: integer, collapsed: boolean), on_expand_toggle?: fun(block_id: integer, expanded: boolean), on_image_open?: fun(row: integer): boolean, get_content?: fun(): MdRender.Content }
 function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
   opts = opts or {}
   local close_line_idx = opts.close_line_idx
@@ -433,8 +433,7 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
   local close_keys = opts.close_keys or { "q", "<Esc>", "<C-c>" }
   local cr_is_close = vim.tbl_contains(close_keys, "<CR>")
   for _, key in ipairs(close_keys) do
-    -- <CR> is bound below so it can toggle a block under the cursor first and
-    -- fall back to closing only when the cursor is not on a foldable region.
+    -- <CR> activates content under the cursor before falling back to closing.
     if key ~= "<CR>" then
       vim.api.nvim_buf_set_keymap(buf, "n", key, ":close<CR>", { noremap = true, silent = true })
     end
@@ -488,11 +487,12 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
   -- it buffer-locally also suppresses Vim's default "E490: No fold found".
   vim.keymap.set("n", "za", toggle_at_cursor, { buffer = buf, noremap = true, silent = true })
 
-  -- `<CR>` toggles the block under the cursor and is otherwise a no-op: it is
+  -- `<CR>` opens an image or toggles a block and is otherwise a no-op: it is
   -- not a close key by default (closing on Enter is unintuitive — use q / <Esc>
   -- / <C-c>). It still falls back to closing when a caller opts <CR> into
   -- close_keys explicitly (cr_is_close).
   vim.keymap.set("n", "<CR>", function()
+    if opts.on_image_open and opts.on_image_open(vim.api.nvim_win_get_cursor(0)[1] - 1) then return end
     if toggle_at_cursor() then return end
     if cr_is_close then vim.cmd.close() end
   end, { buffer = buf, noremap = true, silent = true })

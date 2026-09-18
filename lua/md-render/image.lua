@@ -795,7 +795,7 @@ function M.supports_kitty()
     _kitty_supported = false
     return false
   end
-  -- The selected transport owns capability detection.
+  -- The selected transport owns capability detection, including tmux clients.
   if config.backend == "snacks" then
     _kitty_supported = require("md-render.snacks_image").supported()
     return _kitty_supported

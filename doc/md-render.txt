@@ -1026,7 +1026,10 @@ Install snacks.nvim, then configure: >lua
   })
   require("md-render.image").setup { backend = "snacks" }
 <
-Requires Kitty. Mermaid uses its usual CLI and headless browser.
+Requires Kitty. In tmux, select this backend and enable
+`set -g allow-passthrough on`. Transport and Unicode placeholder placements
+are provided by Snacks; native-backend tmux support is unchanged.
+Mermaid uses its usual CLI and headless browser.
 The default backend remains "kitty".
 This backend prepares all document images, including off-screen images.
 Diagram rendering and downloads share two concurrent jobs across previews;

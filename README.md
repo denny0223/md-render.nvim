@@ -163,12 +163,14 @@ Inside a rendered preview (floating, tab, or in-place toggle), these buffer-loca
 
 ### Optional Snacks image backend
 
-Install [snacks.nvim](https://github.com/folke/snacks.nvim) and select its image backend for static images and diagrams in Kitty:
+Install [snacks.nvim](https://github.com/folke/snacks.nvim) and select its image backend for static images and diagrams in Kitty, including inside tmux:
 
 ```lua
 require("snacks").setup({ image = { enabled = true, doc = { enabled = false }, math = { enabled = false } } })
 require("md-render.image").setup({ backend = "snacks" })
 ```
+
+For Kitty inside tmux, use this backend and enable `set -g allow-passthrough on`. This integration relies on Snacks for transport and Unicode placeholder placements; it does not add tmux support to the native backend.
 
 Mermaid still requires the Mermaid CLI and its headless browser; no browser window is opened. The default backend remains `kitty`.
 

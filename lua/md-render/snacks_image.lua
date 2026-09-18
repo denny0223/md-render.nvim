@@ -6,6 +6,19 @@ local permits = async.semaphore(2)
 
 function M.supported()
   if not (_G.Snacks and Snacks.image) then return false end
+  -- Reattached tmux panes can lack KITTY_WINDOW_ID; ask the current client.
+  -- Set Snacks' public override before its XTVERSION probe can time out.
+  if vim.env.SNACKS_KITTY == nil then
+    local kitty = vim.env.KITTY_WINDOW_ID ~= nil
+    if vim.env.TMUX then
+      local cmd = { "tmux", "display-message", "-p" }
+      if vim.env.TMUX_PANE then vim.list_extend(cmd, { "-t", vim.env.TMUX_PANE }) end
+      cmd[#cmd + 1] = "#{client_termname}"
+      local result = vim.system(cmd, { text = true }):wait(1000)
+      kitty = result.code == 0 and vim.trim(result.stdout or "") == "xterm-kitty"
+    end
+    if kitty then vim.env.SNACKS_KITTY = "1" end
+  end
   return Snacks.image.terminal.env().placeholders == true
 end
 

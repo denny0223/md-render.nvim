@@ -176,6 +176,8 @@ Mermaid still requires the Mermaid CLI and its headless browser; no browser wind
 
 The Snacks backend prepares images throughout the document, including those outside the viewport. Diagram rendering and downloads share a two-job limit across previews; work already running may finish into the cache after a preview closes. Image-heavy documents therefore do more work up front than the native backend. Animation and video playback are not covered by this backend; use the native backend for those features.
 
+With the Snacks backend, automatic layout uses the available window width instead of the native backend's 80-column cap. Images fit proportionally within that width and the window height minus six rows, without enlarging beyond their original pixel size. An explicitly supplied `max_width` still takes precedence.
+
 ## Commands
 
 The plugin exposes a single `:MdRender` command with subcommands:

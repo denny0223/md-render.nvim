@@ -191,6 +191,7 @@ MdPreview.build_content = function(lines, opts)
     source_line_offset = body_start - 1,
     buf_dir = opts.buf_dir,
     text_scale = opts.text_scale,
+    image_max_height = opts.image_max_height,
   })
 
   return b:result()
@@ -498,17 +499,22 @@ function Session:scroll_to_source_line(source_cursor_line)
   vim.api.nvim_win_set_cursor(self.win, { target, 0 })
 end
 
+--- Update automatic layout bounds; return whether a rebuild is needed.
+function Session:resize(win)
+  local snacks = require("md-render.image").config().backend == "snacks"
+  local width = self._explicit_max_width and self.opts.max_width
+    or math.min(usable_win_width(win), snacks and math.huge or DEFAULT_MAX_WIDTH)
+  local height = snacks and math.max(1, vim.api.nvim_win_get_height(win) - 6) or nil
+  local changed = width ~= (self.opts.max_width or DEFAULT_MAX_WIDTH) or height ~= self.opts.image_max_height
+  self.opts.max_width, self.opts.image_max_height = width, height
+  return changed
+end
+
 --- Bind a window to this session and start displaying images in it.
 ---@param win integer
 function Session:bind_window(win)
   self.win = win
-  if not self._explicit_max_width then
-    local win_width = math.min(usable_win_width(win), DEFAULT_MAX_WIDTH)
-    if win_width ~= (self.opts.max_width or DEFAULT_MAX_WIDTH) then
-      self.opts.max_width = win_width
-      self:rebuild()
-    end
-  end
+  if self:resize(win) then self:rebuild() end
   self.image_state = display_utils.setup_images(win, self.content, self.ns, {
     buf = self.buf,
     build_content = function()
@@ -1746,17 +1752,12 @@ local function install_win_resize_handler(session)
   vim.api.nvim_create_autocmd("WinResized", {
     group = augroup,
     callback = function()
-      if session._explicit_max_width then return end
       local render_wins = vim.fn.win_findbuf(session.buf)
       if #render_wins == 0 then return end
 
       local win = render_wins[1]
       if not vim.api.nvim_win_is_valid(win) then return end
-      local win_width = math.min(usable_win_width(win), DEFAULT_MAX_WIDTH)
-      if win_width == (session.opts.max_width or DEFAULT_MAX_WIDTH) then return end
-
-      session.opts.max_width = win_width
-      schedule_live_rebuild(session)
+      if session:resize(win) then schedule_live_rebuild(session) end
     end,
   })
 end

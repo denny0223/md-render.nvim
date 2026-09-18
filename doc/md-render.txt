@@ -1036,6 +1036,10 @@ Diagram rendering and downloads share two concurrent jobs across previews;
 already running conversions may finish into the cache after closing.
 Use the native backend for animation and video playback.
 
+Automatic layout uses the available window width (unless max_width is
+explicit) and fits images within the window height minus six rows. Images
+keep their aspect ratio and do not grow beyond their original pixel size.
+
 						       *image.set_download_fn()*
 image.set_download_fn({fn}) ~
 	Set a custom download function for web images.  By default, curl is

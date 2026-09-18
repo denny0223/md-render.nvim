@@ -414,6 +414,29 @@ function M.image_dimensions(path)
   if h:byte(1) == 0xFF and h:byte(2) == 0xD8 then return jpeg_dimensions(path) end
   if h:sub(1, 4) == "RIFF" then return webp_dimensions(path) end
   if h:sub(1, 3) == "GIF" then return gif_dimensions(path) end
+  local svg = read_header(path, 4096)
+  local attrs = svg and svg:match "<svg%s(.-)>"
+  if attrs then
+    attrs = " " .. attrs
+    local function dimension(name)
+      local value = attrs:match("%s" .. name .. [=[%s*=%s*["']([^"']+)["']]=])
+      return value and tonumber(value:match "^([%d.]+)$" or value:match "^([%d.]+)px$")
+    end
+    local w, height = dimension "width", dimension "height"
+    if not w or not height then
+      local box = attrs:match [=[%sviewBox%s*=%s*["']([^"']+)["']]=]
+      if box then
+        local values = {}
+        for n in box:gmatch "[-+]?[%d.]+" do
+          values[#values + 1] = tonumber(n)
+        end
+        if #values == 4 then
+          w, height = values[3], values[4]
+        end
+      end
+    end
+    if w and height and w > 0 and height > 0 then return w, height end
+  end
   return nil
 end
 

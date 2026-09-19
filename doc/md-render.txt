@@ -1045,9 +1045,17 @@ Press <Enter> on an image or its title to open a focused image tab. ImageMagick
 (magick) is required. In this tab:
 
   + / = / -       Zoom in/out, between 1x and 16x the fitted overview.
-  h/j/k/l         Pan; arrow keys also work.
-  0               Restore the complete overview.
+  h/j/k/l         Pan by 1/8 of the visible width/height; arrows also work.
+  zH / zL         Pan left/right by half a screen.
+  <C-d> / <C-u>   Pan down/up by half a screen.
+  <C-f> / <C-b>   Page down/up, keeping two rows of overlap where possible.
+  gg / G          Jump to the top/bottom edge.
+  0 / ^           Jump to the left edge.
+  $               Jump to the right edge.
+  f               Fit the complete image in the window and center it.
   q / <Esc>       Close the image tab and return to the document.
+
+Edge jumps preserve the zoom level and the position on the other axis.
 
 Zoom enlarges existing pixels; it does not regenerate the diagram.
 

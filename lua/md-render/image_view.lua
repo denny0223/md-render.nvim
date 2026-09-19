@@ -134,7 +134,11 @@ function M.open(path)
           return
         end
         local col = math.floor((cols + 2 - g.cols) / 2)
-        local lines = { ("  %.0f%%  +/- zoom · h/j/k/l pan · 0 fit · q back"):format(state.zoom * 100) }
+        local lines = {
+          ("  %.0f%%  +/- zoom · hjkl zH/zL ^F/^B/^D/^U pan · gg/G 0/$ edges · f fit · q back"):format(
+            state.zoom * 100
+          ),
+        }
         for _ = 1, rows do
           lines[#lines + 1] = string.rep(" ", cols + 2)
         end
@@ -179,8 +183,18 @@ function M.open(path)
   end
   local function pan(dx, dy)
     if not state.crop then return end
-    state.x = state.x + dx * state.crop.w / state.iw / 8
-    state.y = state.y + dy * state.crop.h / state.ih / 8
+    state.x = state.x + dx * state.crop.w / state.iw
+    state.y = state.y + dy * state.crop.h / state.ih
+    paint()
+  end
+  local function page(direction)
+    if not state.crop then return end
+    -- Keep two screen rows of overlap, with at least one row of progress.
+    pan(0, direction * math.max(1, state.crop.rows - 2) / state.crop.rows)
+  end
+  local function edge(x, y)
+    if not state.crop then return end
+    state.x, state.y = x or state.x, y or state.y
     paint()
   end
   local keys = {
@@ -193,26 +207,57 @@ function M.open(path)
     ["-"] = function()
       zoom(1 / 1.25)
     end,
-    ["0"] = function()
+    f = function()
       state.zoom, state.x, state.y = 1, 0.5, 0.5
       paint()
     end,
     h = function()
-      pan(-1, 0)
+      pan(-1 / 8, 0)
     end,
     l = function()
-      pan(1, 0)
+      pan(1 / 8, 0)
     end,
     k = function()
-      pan(0, -1)
+      pan(0, -1 / 8)
     end,
     j = function()
-      pan(0, 1)
+      pan(0, 1 / 8)
+    end,
+    zH = function()
+      pan(-1 / 2, 0)
+    end,
+    zL = function()
+      pan(1 / 2, 0)
+    end,
+    ["<C-d>"] = function()
+      pan(0, 1 / 2)
+    end,
+    ["<C-u>"] = function()
+      pan(0, -1 / 2)
+    end,
+    ["<C-f>"] = function()
+      page(1)
+    end,
+    ["<C-b>"] = function()
+      page(-1)
+    end,
+    gg = function()
+      edge(nil, 0)
+    end,
+    G = function()
+      edge(nil, 1)
+    end,
+    ["0"] = function()
+      edge(0, nil)
+    end,
+    ["$"] = function()
+      edge(1, nil)
     end,
     q = function()
       vim.api.nvim_win_close(win, true)
     end,
   }
+  keys["^"] = keys["0"]
   keys["<Esc>"], keys["<Left>"], keys["<Right>"], keys["<Up>"], keys["<Down>"] = keys.q, keys.h, keys.l, keys.k, keys.j
   for key, action in pairs(keys) do
     vim.keymap.set("n", key, action, { buffer = buf, silent = true })

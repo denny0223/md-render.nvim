@@ -6,6 +6,14 @@ This fork of [delphinus/md-render.nvim](https://github.com/delphinus/md-render.n
 
 A Markdown rendering engine for Neovim. Transforms raw Markdown into richly highlighted, interactive content — right inside your editor. Supports floating windows, tab views, and a pager mode for `less`-like usage from the command line.
 
+## Getting started
+
+1. Check the [requirements](#requirements), then choose one [installation method](#installation).
+2. To use this fork's Kitty/tmux support, viewport fitting, and image zoom/pan, follow the [Snacks image setup](#optional-snacks-image-backend). The basic installation keeps the native backend, which also supports animation and video.
+3. Restart Neovim after installing and configuring the plugins. Open a Markdown file and run `:MdRender tab`. Use `q` to close the preview. With Snacks and `magick` configured, press Enter on a loaded image to open its image tab; `+` / `-` zoom, `hjkl` pan, `f` fits the whole image, and `q` returns to the document.
+
+For the full [key reference](#keymaps), [commands](#commands), and [troubleshooting](#faq--troubleshooting), see below.
+
 <figure align="center">
   <img src="https://github.com/user-attachments/assets/6c51f971-84bb-49fe-aaff-21db40712187" width="900" height="685" alt="md-render.nvim showcase: inline formatting, tables, callouts, code blocks, images, video, and Mermaid diagrams" />
 </figure>
@@ -36,7 +44,7 @@ A Markdown rendering engine for Neovim. Transforms raw Markdown into richly high
 
 ## Try it yourself
 
-The repo bundles a showcase Markdown file demonstrating every feature. After cloning, view it with the pager:
+After [installing and configuring the plugin](#installation), you can open the bundled showcase with the pager. Cloning the repository alone does not install the plugin into Neovim:
 
 ```bash
 git clone https://github.com/denny0223/md-render.nvim
@@ -49,24 +57,28 @@ Or, once the plugin is installed, run `:MdRender demo` to see a built-in demo of
 ## Requirements
 
 - Neovim >= 0.12 (uses `vim.api.nvim_ui_send` for terminal writes)
-- For inline images and video: a terminal supporting the [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/).
+- For inline images and video with the default native backend (`kitty`): a terminal supporting the [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/).
   Verified on [WezTerm](https://wezfurlong.org/wezterm/), [Kitty](https://sw.kovidgoyal.net/kitty/), and [Ghostty](https://ghostty.org/) (macOS/Linux).
+- The optional [Snacks backend](#optional-snacks-image-backend) also requires Unicode placeholders. Its documented setup targets Kitty, directly or inside tmux.
 
 <details>
-<summary><strong>Optional dependencies</strong></summary>
+<summary><strong>Dependencies by feature</strong></summary>
+
+These dependencies are optional for basic Markdown rendering, but required for the features that use them. Plugin managers install Neovim plugins; install command-line tools separately and make them available on Neovim's `$PATH`.
 
 | Dependency | Purpose | Fallback |
 |---|---|---|
 | [curl](https://curl.se/) | Download web images and video | Custom function via `set_download_fn()` |
-| [FFmpeg](https://ffmpeg.org/) (`ffmpeg` / `ffprobe`) | JPEG/WebP → PNG conversion, animated GIF / video frame extraction | Falls back to ImageMagick (images only; video requires ffmpeg) |
-| [ImageMagick](https://imagemagick.org/) (`magick`) | JPEG/WebP → PNG, animated GIF frame extraction | `sips` (macOS) handles static conversion; animated GIF requires ffmpeg or magick |
-| [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) | Render Mermaid diagrams as images | Falls back to `npx -y @mermaid-js/mermaid-cli` |
+| [snacks.nvim](https://github.com/folke/snacks.nvim) | Optional image backend, viewport fitting, and focused image tabs | Default native backend remains available; it does not provide these fork features |
+| [FFmpeg](https://ffmpeg.org/) (`ffmpeg` / `ffprobe`) | Native backend: JPEG/WebP → PNG conversion, animated GIF / video frame extraction | Falls back to ImageMagick (images only; video requires ffmpeg) |
+| [ImageMagick](https://imagemagick.org/) (`magick`) | Snacks image conversion and image-tab zoom/pan; native image conversion and GIF frame extraction | Native conversion can use the tools below. The image tab requires `magick`, including for PNG; `ffmpeg`, `sips`, or an installation providing only `convert` cannot replace it |
+| [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) and its headless browser | Render Mermaid diagrams with either backend | Falls back to `npx -y @mermaid-js/mermaid-cli` (requires Node.js/npm and may download the CLI); the browser is still required |
 | [PlantUML](https://plantuml.com/) (`plantuml`, or `java` with `$PLANTUML_JAR`) | Render PlantUML diagrams as images | A PlantUML server, if you name one (needs curl); otherwise the fence stays a code block |
 | [budoux.lua](https://github.com/delphinus/budoux.lua) | CJK phrase-level line breaking (BudouX) | Character-level splitting (kinsoku rules still apply) |
 | Treesitter parsers | Syntax highlighting in code blocks | Code blocks rendered without highlighting |
 | [nvim-web-devicons](https://github.com/nvim-tree/nvim-web-devicons) or [mini.icons](https://github.com/echasnovski/mini.icons) | File type icons in code block headers | Built-in icon table |
 
-For image/video format conversion and animation support, the plugin tries tools in this order:
+For the **native backend**, image/video conversion tries tools in this order. [Snacks conversion](https://github.com/folke/snacks.nvim/blob/main/docs/image.md) uses ImageMagick for non-PNG images; it does not use this fallback chain.
 
 | Use case | 1st | 2nd | 3rd |
 |---|---|---|---|
@@ -78,12 +90,15 @@ For image/video format conversion and animation support, the plugin tries tools 
 
 ## Installation
 
+The examples below use the default native backend (`kitty`). For Kitty/tmux images, viewport fitting, and zoom/pan, follow [Optional Snacks image backend](#optional-snacks-image-backend) as well. Use this fork's default branch: its inherited upstream release tags do not include those features, so the lazy.nvim examples use `version = false`.
+
 ### lazy.nvim
 
 ```lua
 {
   "denny0223/md-render.nvim",
   version = false,
+  cmd = "MdRender",
   dependencies = {
     { "nvim-tree/nvim-web-devicons", version = "*" }, -- optional: file type icons in code blocks
     { "delphinus/budoux.lua", version = "*" }, -- optional: CJK phrase-level line breaking
@@ -119,6 +134,72 @@ add({
   },
 })
 ```
+
+### Optional Snacks image backend
+
+This setup enables static images, diagrams, viewport fitting, and focused image tabs. It requires:
+
+- [snacks.nvim](https://github.com/folke/snacks.nvim), loaded and configured before opening an md-render preview.
+- Kitty with Unicode placeholder support. Inside tmux, add `set -g allow-passthrough on` to your tmux configuration and reload it. Other terminals supported by Snacks have not been verified with this integration; the native backend's terminal list above does not establish Snacks compatibility.
+- ImageMagick with the `magick` command on Neovim's `$PATH` for the complete image workflow, including zoom/pan. Installing only FFmpeg or `sips` is insufficient.
+- For Mermaid, the Mermaid CLI (`mmdc`, or the `npx` fallback) and its headless browser. Snacks handles image display; it does not replace the diagram renderer. No browser window is opened.
+
+For lazy.nvim, use this in place of the basic md-render spec above. Keep the optional icon/BudouX dependencies if you use them:
+
+```lua
+{
+  "denny0223/md-render.nvim",
+  version = false,
+  cmd = "MdRender",
+  dependencies = {
+    {
+      "folke/snacks.nvim",
+      lazy = false,
+      priority = 1000,
+      opts = {
+        image = {
+          enabled = true,
+          doc = { enabled = false },
+          math = { enabled = false },
+        },
+      },
+    },
+  },
+  config = function()
+    require("md-render.image").setup({ backend = "snacks" })
+  end,
+  keys = {
+    { "<leader>mp", "<Plug>(md-render-preview)",     desc = "Markdown preview (toggle)" },
+    { "<leader>mt", "<Plug>(md-render-preview-tab)", desc = "Markdown preview in tab (toggle)" },
+    { "<leader>md", "<Plug>(md-render-demo)",        desc = "Markdown render demo" },
+  },
+}
+```
+
+For vim.pack, add `"https://github.com/folke/snacks.nvim"` to the `vim.pack.add()` list. For mini.deps, add `"folke/snacks.nvim"` to md-render's `depends` list. After both plugins have loaded, configure them in this order:
+
+```lua
+require("snacks").setup({
+  image = {
+    enabled = true,
+    doc = { enabled = false },
+    math = { enabled = false },
+  },
+})
+require("md-render.image").setup({ backend = "snacks" })
+```
+
+If you already configure Snacks, merge these `image` options into its existing configuration; do not call `setup()` a second time. Disabling Snacks' document and math rendering lets md-render own the Markdown preview; those Snacks features are not needed by this integration.
+
+After loading the plugins, check the setup:
+
+1. Run `:checkhealth snacks`. Check that `:echo executable('magick')` returns `1` and `:lua print(require("md-render.image").config().backend)` prints `snacks`.
+2. Inside tmux, `tmux show-options -gv allow-passthrough` should print `on`.
+3. In Kitty, open a Markdown file containing a local PNG and run `:MdRender tab`. Wait for the image to appear, place the cursor on it or its title, and press Enter to verify that its image tab opens. Tool availability alone does not verify terminal display.
+
+Animation and video playback remain native-backend features. The Snacks backend prepares images throughout the document, including off-screen images; diagram rendering and downloads share a two-job limit across previews, and work already running may finish into the cache after closing a preview. Image-heavy documents therefore do more work up front.
+
+Automatic layout uses the available window width instead of the native backend's 80-column cap. Images fit proportionally within that width and the window height minus six rows, without enlarging beyond their original pixel size. An explicitly supplied `max_width` still takes precedence. See [Image tab keys](#image-tab-keys) for navigation.
 
 ## Comparison with similar plugins
 
@@ -163,24 +244,9 @@ Inside a rendered preview (floating, tab, or in-place toggle), these buffer-loca
 | `<LeftMouse>` | Toggle folds, expand regions, and open links by clicking |
 | `q` / `<Esc>` / `<C-c>` | Close the window (floating / tab mode only) |
 
-### Optional Snacks image backend
+### Image tab keys
 
-Install [snacks.nvim](https://github.com/folke/snacks.nvim) and select its image backend for static images and diagrams in Kitty, including inside tmux:
-
-```lua
-require("snacks").setup({ image = { enabled = true, doc = { enabled = false }, math = { enabled = false } } })
-require("md-render.image").setup({ backend = "snacks" })
-```
-
-For Kitty inside tmux, use this backend and enable `set -g allow-passthrough on`. This integration relies on Snacks for transport and Unicode placeholder placements; it does not add tmux support to the native backend.
-
-Mermaid still requires the Mermaid CLI and its headless browser; no browser window is opened. The default backend remains `kitty`.
-
-The Snacks backend prepares images throughout the document, including those outside the viewport. Diagram rendering and downloads share a two-job limit across previews; work already running may finish into the cache after a preview closes. Image-heavy documents therefore do more work up front than the native backend. Animation and video playback are not covered by this backend; use the native backend for those features.
-
-With the Snacks backend, automatic layout uses the available window width instead of the native backend's 80-column cap. Images fit proportionally within that width and the window height minus six rows, without enlarging beyond their original pixel size. An explicitly supplied `max_width` still takes precedence.
-
-On an image or its title, press Enter to open a focused image tab. This requires ImageMagick (`magick`).
+With the [Snacks backend](#optional-snacks-image-backend) configured and ImageMagick (`magick`) installed, press Enter on an image or its title to open a focused image tab. The following keys are set automatically in that tab; no additional plugin or keymap configuration is needed.
 
 | Key in the image tab | Action |
 |---|---|
@@ -234,7 +300,7 @@ Behavior:
 - When the same source is shown in multiple windows, only the invoking window swaps; edits from other windows are reflected on the next toggle into render mode.
 - Cursor position round-trips between source and render via the source-line mapping.
 - `number`, `relativenumber`, and `list` are turned off on render-mode windows. The originals are stashed on the window and restored when toggling back to source.
-- Inside render mode, `q` / `<Esc>` / `<C-c>` are **not** bound to close — call `:MdRender toggle` again to return to source mode. `<LeftMouse>`, `za`, and `<CR>` still toggle folds and expand regions (and `<LeftMouse>` opens links).
+- Inside render mode, `q` / `<Esc>` / `<C-c>` are **not** bound to close — call `:MdRender toggle` again to return to source mode. `<LeftMouse>`, `za`, and `<CR>` still toggle folds and expand regions (and `<LeftMouse>` opens links). With the Snacks backend, `<CR>` also opens images.
 
 ### Auto-toggle on Insert mode (experimental)
 
@@ -393,6 +459,8 @@ md-render previewer. All arguments are passed through:
 same three file types as the telescope previewer (Markdown, image/video, and
 fallback).
 
+This picker integration is separate from the [Snacks image backend](#optional-snacks-image-backend). If Snacks is already configured, merge one of the following `picker` tables into that configuration instead of calling `setup()` again.
+
 Configure it globally to apply to all pickers:
 
 ```lua
@@ -419,16 +487,30 @@ require("snacks").setup({
 ## FAQ / Troubleshooting
 
 <details>
+<summary><strong><code>:MdRender</code> is not an editor command</strong></summary>
+
+Check that your plugin manager has installed and loaded `denny0223/md-render.nvim`. For lazy.nvim, keep `cmd = "MdRender"` in the spec so typing the command loads the plugin. Cloning the repository alone does not install it; follow [Installation](#installation), then restart Neovim.
+
+</details>
+
+<details>
 <summary><strong>Images don't show — only their alt text or filenames appear</strong></summary>
 
-Inline image display requires a terminal that supports the [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/). Verify you're using **WezTerm**, **Kitty**, or **Ghostty**. tmux and other multiplexers may strip the image escape sequences unless explicitly configured to pass them through.
+With the default native backend, inline image display requires a terminal supporting the [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/), such as **WezTerm**, **Kitty**, or **Ghostty**. For Kitty inside tmux, use the [Snacks setup and checks](#optional-snacks-image-backend), including `allow-passthrough`. Enabling tmux passthrough alone does not add tmux support to the native backend.
 
 </details>
 
 <details>
 <summary><strong>Videos appear as a single static frame</strong></summary>
 
-Video frame extraction requires `ffmpeg` to be installed and available in `$PATH`. Without it, the plugin falls back to displaying just the first frame as a still image. Install it via your package manager (e.g. `brew install ffmpeg`).
+Video playback uses the native backend (`kitty`); the Snacks backend does not provide animation or video playback. With the native backend, frame extraction requires `ffmpeg` to be installed and available in `$PATH`. Without it, the plugin falls back to displaying just the first frame as a still image. Install it via your package manager (e.g. `brew install ffmpeg`).
+
+</details>
+
+<details>
+<summary><strong>Enter does not open an image tab</strong></summary>
+
+Use a document preview such as `:MdRender tab`, select the [Snacks backend](#optional-snacks-image-backend), and check that `:echo executable('magick')` returns `1`. Wait for the image to finish loading, then place the cursor on it or its title before pressing Enter. The built-in `:MdRender demo` window does not provide this image-opening action.
 
 </details>
 
@@ -477,7 +559,7 @@ A space next to a narrow character is left alone, so `これは **API** です�
 <details>
 <summary><strong>Code blocks have no syntax highlighting</strong></summary>
 
-Syntax highlighting requires the corresponding treesitter parser to be installed. For example, to highlight Lua code blocks, install the `lua` parser via `:TSInstall lua` (with [nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter)) or via Neovim 0.11+'s built-in parser management.
+Syntax highlighting requires the corresponding Treesitter parser to be available. Neovim bundles parsers for several languages, including Lua. Install additional parsers with [nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter), or see `:help treesitter-parsers` for manual installation.
 
 </details>
 

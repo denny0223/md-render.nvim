@@ -9,6 +9,7 @@ License: MIT
 はじめに						|md-render-introduction|
 必要要件						|md-render-requirements|
 インストール						|md-render-installation|
+  Snacks 画像バックエンド			      |md-render-snacks-image|
 マッピング						    |md-render-mappings|
 コマンド						    |md-render-commands|
   見出しの拡大表示(実験的)				 |md-render-text-size|
@@ -21,6 +22,7 @@ Snacks.nvim 連携					      |md-render-snacks|
   Markdown						    |md-render-markdown|
   Display Utilities				       |md-render-display-utils|
   Image							       |md-render-image|
+  画像タブのキー				       |md-render-image-view|
 使用例							     |md-render-example|
 バッファ変数					 |md-render-buffer-variables|
 ハイライトグループ					  |md-render-highlights|
@@ -67,19 +69,30 @@ md-render.nvim は Neovim 用の Markdown レンダリングエンジンです�
 必要要件						*md-render-requirements*
 
 - Neovim >= 0.12（端末への書き出しに |nvim_ui_send()| を使用）
-- Kitty graphics protocol に対応したターミナル（画像・動画の表示に必要）：
+- ネイティブバックエンド（デフォルトの "kitty"）で画像・動画を表示する場合は
+  Kitty graphics protocol に対応したターミナル：
   - WezTerm (https://wezfurlong.org/wezterm/)
   - Kitty (https://sw.kovidgoyal.net/kitty/)
   - Ghostty (https://ghostty.org/)
+- オプションの Snacks バックエンドは Unicode プレースホルダーにも依存します。
+  設定例は Kitty 単体、または Kitty 内の tmux を対象としています。
+  必要な依存関係と設定は |md-render-snacks-image| を参照してください。
 
 ==============================================================================
 インストール						*md-render-installation*
+
+基本の例はデフォルトのネイティブバックエンド（"kitty"）を使います。
+Kitty/tmux の画像表示、サイズ調整、ズーム・パンには、下記の
+|md-render-snacks-image| の設定も必要です。引き継いだ upstream のリリースタグ
+にはこれらの機能が含まれないため、このフォークのデフォルトブランチを使います。
+そのため、例では version = false を指定しています。
 
 lazy.nvim の場合: >lua
 
   {
     "denny0223/md-render.nvim",
     version = false,
+    cmd = "MdRender",
     dependencies = {
       { "nvim-tree/nvim-web-devicons", version = "*" },
       { "delphinus/budoux.lua", version = "*" },
@@ -103,6 +116,95 @@ lazy.nvim の場合: >lua
     },
   }
 <
+
+                                                        *md-render-snacks-image*
+Snacks 画像バックエンド（オプション） ~
+
+静止画・ダイアグラム、サイズ調整、専用画像タブには以下が必要です：
+
+- snacks.nvim：md-render のプレビューを開く前に、読み込みと設定を
+  完了してください。
+- Unicode プレースホルダー対応の Kitty。tmux 内では設定ファイルに
+  `set -g allow-passthrough on` を追加して再読み込みしてください。
+  Snacks が対応する他の端末は、この連携では未検証です。ネイティブバックエンド
+  の対応一覧は、Snacks の互換性を保証しません。
+- Neovim の PATH から magick を実行できる ImageMagick。
+  画像機能一式に必要です。画像タブは PNG でも magick が必須で、
+  ffmpeg、sips、convert のみのインストールでは代替できません。
+- Mermaid には mmdc（または npx のフォールバック）とヘッドレスブラウザ。
+  Snacks は画像を表示し、ダイアグラムのレンダラを置き換えません。ブラウザの
+  ウィンドウは開きません。npx は Node.js/npm が必要で、CLI をダウンロードする
+  場合があります。他の機能の依存関係は |md-render-dependencies| を参照。
+
+プラグインマネージャーがインストールするのは Neovim プラグインです。
+コマンドラインツールは別途インストールしてください。
+lazy.nvim では基本の md-render spec を次の例に置き換えます。アイコンや BudouX
+を使う場合は、それらの依存関係も残してください： >lua
+
+  {
+    "denny0223/md-render.nvim",
+    version = false,
+    cmd = "MdRender",
+    dependencies = {
+      {
+        "folke/snacks.nvim",
+        lazy = false,
+        priority = 1000,
+        opts = {
+          image = {
+            enabled = true,
+            doc = { enabled = false },
+            math = { enabled = false },
+          },
+        },
+      },
+    },
+    config = function()
+      require("md-render.image").setup({ backend = "snacks" })
+    end,
+    keys = {
+      { "<leader>mp", "<Plug>(md-render-preview)" },
+      { "<leader>mt", "<Plug>(md-render-preview-tab)" },
+      { "<leader>md", "<Plug>(md-render-demo)" },
+    },
+  }
+<
+vim.pack では vim.pack.add() に "https://github.com/folke/snacks.nvim" を追加。
+mini.deps では md-render の depends に "folke/snacks.nvim" を追加。
+両プラグインを読み込んだ後、次の順で設定してください： >lua
+
+  require("snacks").setup({
+    image = {
+      enabled = true,
+      doc = { enabled = false },
+      math = { enabled = false },
+    },
+  })
+  require("md-render.image").setup({ backend = "snacks" })
+<
+Snacks を設定済みの場合は、その設定に image オプションを統合し、setup() を
+二度呼ばないでください。Snacks 側の document と math の描画を無効にして、
+プレビューを md-render に任せます。この連携にそれらの機能は不要です。
+
+読み込み後に :checkhealth snacks を実行し、次を確認してください： >vim
+
+  :echo executable('magick')
+  :lua print(require("md-render.image").config().backend)
+<
+それぞれ 1 と "snacks" が期待値です。tmux 内では
+`tmux show-options -gv allow-passthrough` が "on" を返す必要があります。
+最後に Kitty でローカルの PNG を含む Markdown を開き、:MdRender tab を実行。
+画像が表示されたら画像またはタイトル上で Enter を押し、画像タブが開くことを
+確認してください。ツールが見つかるだけでは表示確認にはなりません。
+
+デフォルトのバックエンドは "kitty" のままです。アニメーションと動画の再生は
+ネイティブバックエンドの機能です。tmux の passthrough を有効にするだけでは、
+ネイティブバックエンドに tmux 対応は追加されません。
+Snacks は画面外も含む文書全体の画像を準備します。ダイアグラム描画と
+ダウンロードは全プレビューで同時に 2 ジョブまで実行し、プレビューを閉じても
+実行中の処理はキャッシュへの保存まで完了する場合があります。
+画像が多い文書では初期処理量が増えます。レイアウトは |md-render-image|、
+操作は |md-render-image-view| を参照してください。
 
 ==============================================================================
 マッピング						    *md-render-mappings*
@@ -150,8 +252,8 @@ lazy.nvim の場合: >lua
 	`q` / `<Esc>` / `<C-c>`	プレビューウィンドウを閉じる
 	`za`		カーソル行のコールアウトの折りたたみ / 省略領域の
 			展開を切り替える (該当しない行では何もしない)
-	`<CR>`		カーソル行のコールアウトの折りたたみ / 省略領域の
-			展開を切り替える (該当しない行では何もしない)
+	`<CR>`		カーソル上の画像を開く（Snacks バックエンド）、または
+			コールアウトの折りたたみ / 省略領域の展開を切り替える
 	`<LeftMouse>`	リンクのクリック、折りたたみ、領域展開
 	`<MouseMove>`	マウスをリンクに乗せると、エディタ下部の小さな
 			フロートウィンドウに完全な URL を表示。
@@ -161,8 +263,8 @@ lazy.nvim の場合: >lua
 |:MdRender-toggle| で開かれたレンダーモードのバッファでは `q` / `<Esc>` /
 `<C-c>` は閉じる動作に**割り当てられません**。ソースに戻すには再度
 |:MdRender-toggle| を呼びます。`<LeftMouse>` / `za` / `<CR>` は折りたたみ・
-展開を引き続き切り替え (リンク open は `<LeftMouse>`)、`<MouseMove>` の URL
-表示も有効なままです。
+展開を引き続き切り替えます。Snacks では `<CR>` で画像も開けます。
+リンク open は `<LeftMouse>`、`<MouseMove>` の URL 表示も有効なままです。
 
 ==============================================================================
 コマンド						    *md-render-commands*
@@ -983,6 +1085,31 @@ display_utils.setup_images({win}, {content}, {ns}, {opts}) ~
 ------------------------------------------------------------------------------
 IMAGE							       *md-render-image*
 
+Snacks の設定、依存関係、確認手順は |md-render-snacks-image| を参照。
+
+Snacks の自動レイアウトは利用可能なウィンドウ幅を使います（max_width を明示
+した場合はそちらを優先）。画像は縦横比を保ち、その幅と「高さ − 6 行」に
+収まり、元のピクセルサイズを超えて拡大しません。
+
+                                                        *md-render-image-view*
+Snacks バックエンドと ImageMagick（magick）を設定し、画像またはタイトル上で
+<Enter> を押すと専用画像タブが開きます。キーは自動設定され、追加のプラグインや
+キーマップ設定は不要です：
+
+  + / = / -       全体表示を基準に 1〜16 倍でズームイン / アウト。
+  h/j/k/l         表示中の幅 / 高さの 1/8 ずつパン。矢印キーも使用可。
+  zH / zL         左 / 右へ半画面パン。
+  <C-d> / <C-u>   下 / 上へ半画面パン。
+  <C-f> / <C-b>   下 / 上へページ移動（可能なら画面上の 2 行分を重複）。
+  gg / G          上端 / 下端へ移動。
+  0 / ^           左端へ移動。
+  $               右端へ移動。
+  f               画像全体をウィンドウに収め、中央に配置。
+  q / <Esc>       画像タブを閉じて文書に戻る。
+
+端への移動はズーム倍率ともう一方の軸の位置を維持します。ズームは既存のピクセル
+を拡大するもので、高解像度のダイアグラムを再生成する機能ではありません。
+
 						       *image.set_download_fn()*
 image.set_download_fn({fn}) ~
 	Web 画像のダウンロード関数をカスタム設定します。デフォルトでは curl が
@@ -1141,6 +1268,13 @@ Details ~
 ==============================================================================
 オプション依存						*md-render-dependencies*
 
+基本的な Markdown 描画では省略できますが、各機能を使う場合は必要です。
+コマンドラインツールは別途インストールし、Neovim の PATH に含めてください。
+
+  snacks.nvim          オプションの画像バックエンド、サイズ調整、画像タブ。
+                       設定は |md-render-snacks-image| を参照。
+                       https://github.com/folke/snacks.nvim
+
   nvim-web-devicons    コードブロックヘッダのファイルタイプアイコン。内蔵アイ
   (または |mini.icons|)  コンテーブルにフォールバック。
                        https://github.com/nvim-tree/nvim-web-devicons
@@ -1156,16 +1290,22 @@ Details ~
   curl                 Web 画像・動画のダウンロード。
                        |image.set_download_fn()| で置換可。
 
-  FFmpeg               JPEG/WebP → PNG 変換、アニメーション GIF / 動画のフ
+  FFmpeg               ネイティブ：JPEG/WebP → PNG、GIF / 動画のフ
   (ffmpeg/ffprobe)     レーム展開。画像は ImageMagick にフォールバック。動画
                        には ffmpeg が必要。
 
-  ImageMagick          JPEG/WebP → PNG、アニメーション GIF フレーム展開。
-  (magick)             macOS では `sips` が静止画変換を処理。アニメーション
-                       GIF には ffmpeg か magick が必要。
+  ImageMagick          Snacks の PNG 以外の画像変換に必要。
+  (magick)             画像タブは PNG でも magick が必須で、ffmpeg、sips、
+                       convert のみでは代替不可。
+                       ネイティブ静止画は sips → ffmpeg → magick の順、
+                       GIF は ffmpeg → magick の順で変換を試みます。
+                       このフォールバック順序は Snacks には適用されません。
+                       https://github.com/folke/snacks.nvim/blob/main/docs/image.md
 
   Mermaid CLI          Mermaid ダイアグラムを画像として描画。 `npx -y
   (mmdc)               @mermaid-js/mermaid-cli` にフォールバック。
+                       Node.js/npm が必要で、CLI をダウンロードする場合が
+                       あります。両バックエンドでヘッドレスブラウザも必要。
                        https://github.com/mermaid-js/mermaid-cli
 
 ==============================================================================

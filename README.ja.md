@@ -1,6 +1,6 @@
 # md-render.nvim
 
-[English version / 英語版はこちら](README.md)
+[English](README.md) · [正體中文（台灣）](README.zh-TW.md) · **日本語**
 
 この [delphinus/md-render.nvim](https://github.com/delphinus/md-render.nvim) のフォークは、Kitty/tmux 向けのオプションの Snacks 画像バックエンド、ウィンドウに合わせた画像サイズ調整、ズーム・パン可能な画像タブを追加しています。
 

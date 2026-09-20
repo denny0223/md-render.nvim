@@ -1,8 +1,8 @@
 # md-render.nvim
 
-This fork of [delphinus/md-render.nvim](https://github.com/delphinus/md-render.nvim) adds an optional Snacks backend for static images and diagrams in Kitty/tmux, viewport fitting, and an image tab with zoom and pan. See the [Neovim configuration](https://github.com/denny0223/.nvim) for a complete setup.
+**English** · [正體中文（台灣）](README.zh-TW.md) · [日本語](README.ja.md)
 
-[日本語版はこちら / Japanese version](README.ja.md) — Full Japanese/CJK support with kinsoku shori and BudouX phrase segmentation.
+This fork of [delphinus/md-render.nvim](https://github.com/delphinus/md-render.nvim) adds an optional Snacks backend for static images and diagrams in Kitty/tmux, viewport fitting, and an image tab with zoom and pan. See the [Neovim configuration](https://github.com/denny0223/.nvim) for a complete setup.
 
 A Markdown rendering engine for Neovim. Transforms raw Markdown into richly highlighted, interactive content — right inside your editor. Supports floating windows, tab views, and a pager mode for `less`-like usage from the command line.
 

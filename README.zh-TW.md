@@ -14,6 +14,8 @@
 
 完整的[按鍵說明](#按鍵設定)、[指令](#指令)與[疑難排解](#常見問題與疑難排解)請見下方。
 
+包含函式庫 API 的[完整參考手冊](doc/md-render.twx)，也能在 Neovim 中以 `:help md-render-contents@tw` 開啟。英文版使用 `:help md-render-contents@en`，日文版使用 `:help md-render-contents@ja`。若想優先使用正體中文說明，可在 `init.lua` 設定 `vim.opt.helplang = { "tw", "en" }`；沒有翻譯的項目會使用英文。
+
 <figure align="center">
   <img src="https://github.com/user-attachments/assets/6c51f971-84bb-49fe-aaff-21db40712187" width="900" height="685" alt="md-render.nvim 功能展示：行內格式、表格、提示區塊、程式碼區塊、圖片、影片與 Mermaid 圖表" />
 </figure>

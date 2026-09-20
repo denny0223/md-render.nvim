@@ -14,6 +14,8 @@ A Markdown rendering engine for Neovim. Transforms raw Markdown into richly high
 
 For the full [key reference](#keymaps), [commands](#commands), and [troubleshooting](#faq--troubleshooting), see below.
 
+The complete [reference manual](doc/md-render.txt), including the library API, is also available inside Neovim with `:help md-render-contents@en`. Use `:help md-render-contents@tw` for Traditional Chinese (Taiwan), or `:help md-render-contents@ja` for Japanese.
+
 <figure align="center">
   <img src="https://github.com/user-attachments/assets/6c51f971-84bb-49fe-aaff-21db40712187" width="900" height="685" alt="md-render.nvim showcase: inline formatting, tables, callouts, code blocks, images, video, and Mermaid diagrams" />
 </figure>

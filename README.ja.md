@@ -14,6 +14,8 @@ Neovim 用の Markdown レンダリングエンジンです。生の Markdown �
 
 詳しくは [キーマップ](#キーマップ)、[コマンド](#コマンド)、[トラブルシューティング](#faq--トラブルシューティング) を参照してください。
 
+ライブラリ API を含む[リファレンスマニュアル](doc/md-render.jax)は、Neovim 内でも `:help md-render-contents@ja` で開けます。英語は `:help md-render-contents@en`、正體中文（台灣）は `:help md-render-contents@tw` を使ってください。
+
 <figure align="center">
   <img src="https://github.com/user-attachments/assets/6c51f971-84bb-49fe-aaff-21db40712187" width="900" height="685" alt="md-render.nvim ショーケース：インライン書式、テーブル、コールアウト、コードブロック、画像、動画、Mermaid ダイアグラム" />
 </figure>

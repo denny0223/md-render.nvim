@@ -2,6 +2,10 @@
 
 Author: delphinus License: MIT
 
+English: `:help md-render-contents@en`
+正體中文（台灣）: `:help md-render-contents@tw`
+日本語: `:help md-render-contents@ja`
+
 ==============================================================================
 CONTENTS						    *md-render-contents*
 

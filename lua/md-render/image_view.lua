@@ -31,6 +31,7 @@ function M.open(path)
   vim.cmd "tabnew"
   local win, buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
   local state = { zoom = 1, x = 0.5, y = 0.5, serial = 0, win = win, buf = buf }
+  local drag
   vim.b[buf].md_render_image_view = true
   vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
   vim.bo[buf].filetype = "md-render-image"
@@ -40,6 +41,7 @@ function M.open(path)
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, "p")
   local group = vim.api.nvim_create_augroup("md_render_image_view_" .. buf, { clear = true })
+  local mouse_ns = vim.api.nvim_create_namespace("md_render_image_mouse_" .. buf)
 
   -- Track the latest reading position, including scrolling without moving the
   -- cursor. WinClosed runs after Neovim has already selected a fallback window,
@@ -51,6 +53,8 @@ function M.open(path)
       local current = vim.api.nvim_get_current_win()
       if event.event == "WinEnter" then
         viewer_active = current == win
+      elseif current == win then
+        drag = nil
       elseif current == origin_win and vim.api.nvim_win_get_buf(current) == origin_buf then
         origin_view = vim.fn.winsaveview()
       end
@@ -81,6 +85,7 @@ function M.open(path)
   local function cleanup()
     if state.closed then return end
     state.closed = true
+    vim.on_key(nil, mouse_ns)
     if state.job then state.job:kill(15) end
     if state.pending then state.pending:close() end
     if state.placement then state.placement:close() end
@@ -105,24 +110,23 @@ function M.open(path)
 
   local function paint()
     if not valid() or not state.path then return end
-    state.serial = state.serial + 1
-    local serial = state.serial
-    if state.job then state.job:kill(15) end
-    if state.pending then
-      state.pending:close()
-      state.pending = nil
-      vim.fn.delete(state.pending_file)
-      state.pending_file = nil
-    end
     local cols = math.max(1, vim.api.nvim_win_get_width(win) - 2)
     local rows = math.max(1, vim.api.nvim_win_get_height(win) - 2)
     local cell = image.get_cell_size()
     if not cell then return end
     local g = M.geometry(state.iw, state.ih, cols, rows, cell, state.zoom, state.x, state.y)
     state.x, state.y, state.crop = g.cx, g.cy, g
+    -- Finish the current frame during input bursts, then draw the latest view.
+    if state.job or state.pending then
+      state.dirty = true
+      return
+    end
+    state.dirty = false
+    state.serial = state.serial + 1
+    local serial, zoom_level = state.serial, state.zoom
     local file = dir .. "/" .. serial .. ".png"
     local started = vim.uv.hrtime()
-    -- ponytail: crop the cached PNG per input; profile before adding a custom GPU/placeholder renderer.
+    -- ponytail: crop cached PNGs; profile before adding a custom GPU/placeholder renderer.
     state.job = vim.system(
       { "magick", state.path, "-crop", ("%dx%d+%d+%d"):format(g.w, g.h, g.x, g.y), "+repage", file },
       { text = true },
@@ -131,13 +135,12 @@ function M.open(path)
         state.job = nil
         if result.code ~= 0 then
           vim.notify("md-render: image crop failed: " .. (result.stderr or ""), vim.log.levels.ERROR)
+          if state.dirty then paint() end
           return
         end
         local col = math.floor((cols + 2 - g.cols) / 2)
         local lines = {
-          ("  %.0f%%  +/- zoom · hjkl zH/zL ^F/^B/^D/^U pan · gg/G 0/$ edges · f fit · q back"):format(
-            state.zoom * 100
-          ),
+          ("  %.0f%% · hjkl move · +/- zoom · f fit · ? help · q back"):format(zoom_level * 100),
         }
         for _ = 1, rows do
           lines[#lines + 1] = string.rep(" ", cols + 2)
@@ -168,6 +171,11 @@ function M.open(path)
               state.pending, state.pending_file = nil, nil
             end
             state.elapsed_ms = (vim.uv.hrtime() - started) / 1e6
+            if state.dirty then
+              vim.schedule(function()
+                if state.dirty then paint() end
+              end)
+            end
           end,
         })
         vim.api.nvim_win_set_cursor(win, { 1, 0 })
@@ -181,11 +189,16 @@ function M.open(path)
     state.zoom = math.max(1, math.min(16, state.zoom * factor))
     paint()
   end
-  local function pan(dx, dy)
+  local function pan(dx, dy, count)
     if not state.crop then return end
-    state.x = state.x + dx * state.crop.w / state.iw
-    state.y = state.y + dy * state.crop.h / state.ih
+    count = count or vim.v.count1
+    state.x = state.x + dx * count * state.crop.w / state.iw
+    state.y = state.y + dy * count * state.crop.h / state.ih
     paint()
+  end
+  local function scroll(dx, dy, count)
+    if not state.crop then return end
+    pan(dx / state.crop.cols, dy / state.crop.rows, count)
   end
   local function page(direction)
     if not state.crop then return end
@@ -199,9 +212,6 @@ function M.open(path)
   end
   local keys = {
     ["+"] = function()
-      zoom(1.25)
-    end,
-    ["="] = function()
       zoom(1.25)
     end,
     ["-"] = function()
@@ -241,6 +251,12 @@ function M.open(path)
     ["<C-b>"] = function()
       page(-1)
     end,
+    ["<C-e>"] = function()
+      scroll(0, 1)
+    end,
+    ["<C-y>"] = function()
+      scroll(0, -1)
+    end,
     gg = function()
       edge(nil, 0)
     end,
@@ -256,12 +272,81 @@ function M.open(path)
     q = function()
       vim.api.nvim_win_close(win, true)
     end,
+    ["?"] = function()
+      vim.cmd.help "md-render-image-view"
+    end,
   }
-  keys["^"] = keys["0"]
-  keys["<Esc>"], keys["<Left>"], keys["<Right>"], keys["<Up>"], keys["<Down>"] = keys.q, keys.h, keys.l, keys.k, keys.j
+  for alias, key in pairs {
+    ["="] = "+",
+    ["<kPlus>"] = "+",
+    ["<kMinus>"] = "-",
+    ["^"] = "0",
+    ["<Esc>"] = "q",
+    ["<Left>"] = "h",
+    ["<Right>"] = "l",
+    ["<Up>"] = "k",
+    ["<Down>"] = "j",
+    ["<PageUp>"] = "<C-b>",
+    ["<PageDown>"] = "<C-f>",
+    ["<kPageUp>"] = "<C-b>",
+    ["<kPageDown>"] = "<C-f>",
+    ["<Home>"] = "0",
+    ["<End>"] = "$",
+    ["<kHome>"] = "0",
+    ["<kEnd>"] = "$",
+    ["<C-Home>"] = "gg",
+    ["<C-End>"] = "G",
+  } do
+    keys[alias] = keys[key]
+  end
   for key, action in pairs(keys) do
     vim.keymap.set("n", key, action, { buffer = buf, silent = true })
   end
+  local mouse_actions = {
+    ["<ScrollWheelUp>"] = "zoom_in",
+    ["<ScrollWheelDown>"] = "zoom_out",
+    ["<ScrollWheelLeft>"] = "ignore",
+    ["<ScrollWheelRight>"] = "ignore",
+    ["<LeftMouse>"] = "press",
+    ["<LeftDrag>"] = "drag",
+    ["<LeftRelease>"] = "release",
+  }
+  -- Follow the pointer for zoom, and capture drags until release, even outside
+  -- the image window. Repeated clicks must not select the placeholder text.
+  vim.on_key(function(key)
+    local action = mouse_actions[vim.fn.keytrans(key):gsub("^<[234]%-", "<")]
+    if not action then return end
+    if vim.o.mouse == "" then
+      drag = nil
+      return
+    end
+    local mouse = vim.fn.getmousepos()
+    if action == "press" then drag = nil end
+    if action == "release" and drag then
+      drag = nil
+      return ""
+    end
+    if action == "drag" and drag then
+      local previous = drag
+      drag = mouse
+      scroll(previous.screencol - mouse.screencol, previous.screenrow - mouse.screenrow, 1)
+      return ""
+    end
+    if mouse.winid ~= win or mouse.line == 0 then return end
+    if action == "zoom_in" then
+      zoom(1.25)
+    elseif action == "zoom_out" then
+      zoom(1 / 1.25)
+    elseif action == "press" then
+      if state.crop then
+        vim.api.nvim_set_current_win(win)
+        drag = mouse
+      end
+    elseif action ~= "ignore" then
+      return
+    end
+    return ""
+  end, mouse_ns)
   vim.api.nvim_create_autocmd("WinResized", { group = group, callback = paint })
   require("md-render.async").run(function()
     local png = require("md-render.async").await(2, image.ensure_png_async, path)

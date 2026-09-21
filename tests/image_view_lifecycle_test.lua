@@ -50,13 +50,13 @@ end
 local crops = {}
 vim.system = function(cmd, _, callback)
   assert(cmd[1] == "magick" and cmd[3] == "-crop", "unexpected process")
-  local job = { file = cmd[#cmd] }
+  local job = { file = cmd[#cmd], crop = cmd[4] }
   assert(vim.uv.fs_copyfile(cmd[2], job.file))
   function job:kill()
     self.killed = true
   end
-  function job:complete()
-    callback { code = 0 }
+  function job:complete(code)
+    callback { code = code or 0 }
   end
   crops[#crops + 1] = job
   return job
@@ -91,14 +91,32 @@ flush_updates()
 assert(view.placement == first and not view.pending, "first frame was not promoted")
 assert_only_drawn(first)
 zoom()
-local superseded = finish_crop(2)
-zoom() -- Supersede B before its debounced update can retire displayed A.
-assert(superseded.closed and vim.fn.filereadable(crops[2].file) == 0, "superseded pending frame was not retired")
+zoom()
+assert(#crops == 2 and not crops[2].killed, "new input must not cancel a running crop")
+local second = finish_crop(2)
+for _ = 1, 10 do
+  zoom() -- Keep B alive while newer input waits for its placement to finish.
+end
+local latest = view.crop
+assert(#crops == 2 and not crops[2].killed and not second.closed, "input bursts must let the pending frame finish")
 assert(not first.closed and vim.fn.filereadable(crops[1].file) == 1, "displayed frame must survive pending work")
+flush_updates()
+wait_for(function()
+  return #crops == 3
+end, "latest view was not rendered after the pending frame")
+assert(
+  crops[3].crop == ("%dx%d+%d+%d"):format(latest.w, latest.h, latest.x, latest.y),
+  "queued render used a stale crop"
+)
+assert_only_drawn(second)
 local third = finish_crop(3)
 flush_updates()
 assert(view.placement == third and not view.pending, "latest frame was not promoted")
-assert(first.closed and vim.fn.filereadable(crops[1].file) == 0, "latest frame stranded its displayed predecessor")
+assert(first.closed and second.closed, "latest frame stranded a displayed predecessor")
+assert(
+  vim.fn.filereadable(crops[1].file) == 0 and vim.fn.filereadable(crops[2].file) == 0,
+  "retired crops were not removed"
+)
 assert_only_drawn(third)
 
 zoom()
@@ -117,9 +135,30 @@ assert_only_drawn(background)
 
 zoom()
 local pending = finish_crop(5)
+zoom() -- Closing must also discard queued input.
 vim.api.nvim_buf_delete(view.buf, { force = true })
 assert(view.closed and background.closed and pending.closed, "wipe must close both displayed and pending frames")
 assert(vim.fn.isdirectory(vim.fs.dirname(crops[5].file)) == 0, "wipe left crop files behind")
 flush_updates() -- Queued callbacks after cleanup must be harmless.
+assert(#crops == 5, "closing the viewer started a queued crop")
+
+-- A failed conversion must not strand input queued while it was running.
+view = require("md-render.image_view").open(root .. "/tests/fixtures/test_4x4.png")
+wait_for(function()
+  return #crops == 6
+end, "error recovery view did not start")
+vim.fn.maparg("+", "n", false, true).callback()
+local notify, errors = vim.notify, {}
+vim.notify = function(message)
+  errors[#errors + 1] = message
+end
+crops[6]:complete(1)
+wait_for(function()
+  return #crops == 7
+end, "failed conversion stranded queued input")
+vim.notify = notify
+assert(#errors == 1 and errors[1]:find("image crop failed", 1, true), "crop error was not reported")
+vim.api.nvim_buf_delete(view.buf, { force = true })
+assert(crops[7].killed, "closing the viewer must cancel its active conversion")
 vim.fn.delete(cache, "rf")
-print "Image view lifecycle: rapid zoom, off-tab completion and pending/displayed cleanup OK"
+print "Image view lifecycle: input coalescing, off-tab completion and pending/displayed cleanup OK"

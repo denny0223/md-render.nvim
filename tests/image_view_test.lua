@@ -36,7 +36,32 @@ do
     return { kill = function() end }
   end
   image._test_cell_size = cell
-  local navigation_keys = { "zH", "zL", "<C-d>", "<C-u>", "<C-f>", "<C-b>", "gg", "G", "0", "^", "$", "f" }
+  local navigation_keys = {
+    "zH",
+    "zL",
+    "<C-d>",
+    "<C-u>",
+    "<C-f>",
+    "<C-b>",
+    "<C-e>",
+    "<C-y>",
+    "<PageUp>",
+    "<PageDown>",
+    "<kPageUp>",
+    "<kPageDown>",
+    "<Home>",
+    "<End>",
+    "<kHome>",
+    "<kEnd>",
+    "<C-Home>",
+    "<C-End>",
+    "gg",
+    "G",
+    "0",
+    "^",
+    "$",
+    "f",
+  }
   local original_maps = {}
   for _, key in ipairs(navigation_keys) do
     original_maps[key] = vim.fn.maparg(key, "n", false, true)
@@ -75,12 +100,27 @@ do
       { "<C-u>", 0, -1 / 2 },
       { "<C-f>", 0, page },
       { "<C-b>", 0, -page },
+      { "<PageDown>", 0, page },
+      { "<PageUp>", 0, -page },
+      { "<kPageDown>", 0, page },
+      { "<kPageUp>", 0, -page },
+      { "<C-e>", 0, 1 / view.crop.rows },
+      { "<C-y>", 0, -1 / view.crop.rows },
+      { "3j", 0, 3 / 8 },
+      { "3<Left>", -3 / 8, 0 },
+      { "2zL", 1, 0 },
+      { "2<C-u>", 0, -1 },
+      { "2<C-f>", 0, 2 * page },
+      { "2<PageUp>", 0, -2 * page },
+      { "3<C-e>", 0, 3 / view.crop.rows },
     } do
       center()
       local before = view.crop
       press(move[1])
-      assert(math.abs(view.crop.x - before.x - move[2] * before.w) <= 1, move[1] .. " horizontal distance")
-      assert(math.abs(view.crop.y - before.y - move[3] * before.h) <= 1, move[1] .. " vertical distance")
+      local x = math.max(0, math.min(view.iw - before.w, before.x + move[2] * before.w))
+      local y = math.max(0, math.min(view.ih - before.h, before.y + move[3] * before.h))
+      assert(math.abs(view.crop.x - x) <= 1, move[1] .. " horizontal distance")
+      assert(math.abs(view.crop.y - y) <= 1, move[1] .. " vertical distance")
     end
     for _, jump in ipairs {
       { "0", "x", 0, "y" },
@@ -88,6 +128,12 @@ do
       { "$", "x", 1, "y" },
       { "gg", "y", 0, "x" },
       { "G", "y", 1, "x" },
+      { "<Home>", "x", 0, "y" },
+      { "<End>", "x", 1, "y" },
+      { "<kHome>", "x", 0, "y" },
+      { "<kEnd>", "x", 1, "y" },
+      { "<C-Home>", "y", 0, "x" },
+      { "<C-End>", "y", 1, "x" },
     } do
       center()
       press "l"
@@ -126,6 +172,33 @@ do
     assert(view.crop.x == 0 and view.crop.y == 0, key .. " must preserve the overview")
     assert(view.crop.w == view.iw and view.crop.h == view.ih)
   end
+  press "<kPlus>"
+  assert(view.zoom == 1.25, "keypad plus must zoom in")
+  press "<kMinus>"
+  assert(view.zoom == 1, "keypad minus must zoom out")
+
+  -- Use real helptags without generating files in the checkout.
+  local help_root, helplang = vim.fn.tempname(), vim.o.helplang
+  vim.fn.mkdir(help_root .. "/doc", "p")
+  for _, name in ipairs { "md-render.txt", "md-render.twx" } do
+    vim.fn.writefile(vim.fn.readfile("doc/" .. name), help_root .. "/doc/" .. name)
+  end
+  vim.cmd.helptags(help_root .. "/doc")
+  vim.opt.rtp:prepend(help_root)
+  for lang, extension in pairs { en = "txt", tw = "twx" } do
+    vim.o.helplang = lang
+    press "?"
+    assert(vim.bo.buftype == "help" and vim.api.nvim_buf_get_name(0):match("md%-render%." .. extension .. "$"))
+    assert(
+      vim.api.nvim_get_current_line():find("*md-render-image-view*", 1, true),
+      "help must open at the image controls"
+    )
+    vim.cmd "quit"
+    assert(vim.api.nvim_get_current_win() == view.win and not view.closed, "help must preserve the image tab")
+  end
+  vim.opt.rtp:remove(help_root)
+  vim.o.helplang = helplang
+  vim.fn.delete(help_root, "rf")
   vim.api.nvim_win_close(extra_win, true)
   press "q"
   assert(vim.wait(1000, function()
@@ -136,7 +209,7 @@ do
   end
   vim.system, image._test_cell_size = system, cell_size
 end
-print "Image navigation: page/half-page keys, edge jumps, zoom/resize, overview and buffer scope OK"
+print "Image navigation: physical keys, counts, fine scroll, help, zoom/resize and buffer scope OK"
 
 local function check_return(close, message)
   vim.api.nvim_win_set_cursor(origin, { 60, 0 })

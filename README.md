@@ -248,22 +248,9 @@ Inside a rendered preview (floating, tab, or in-place toggle), these buffer-loca
 
 ### Image tab keys
 
-With the [Snacks backend](#optional-snacks-image-backend) configured and ImageMagick (`magick`) installed, press Enter on an image or its title to open a focused image tab. The following keys are set automatically in that tab; no additional plugin or keymap configuration is needed.
+With the [Snacks backend](#optional-snacks-image-backend) configured and ImageMagick (`magick`) installed, press Enter on an image or its title to open a focused image tab. Use arrows or `hjkl` to move, `+/-` to zoom, `f` to fit the complete image, and `q` to return. These keys are set automatically in the image tab.
 
-| Key in the image tab | Action |
-|---|---|
-| `+` / `=` / `-` | Zoom in / out, from 1× to 16× the fitted overview |
-| `h/j/k/l` or arrow keys | Pan by one eighth of the visible image width or height |
-| `zH` / `zL` | Pan left / right by half a screen |
-| `<C-d>` / `<C-u>` | Pan down / up by half a screen |
-| `<C-f>` / `<C-b>` | Page down / up, retaining two screen rows of overlap where possible |
-| `gg` / `G` | Jump to the top / bottom edge |
-| `0` / `^` | Jump to the left edge |
-| `$` | Jump to the right edge |
-| `f` | Fit the complete image in the window and center it |
-| `q` / `<Esc>` | Close the image tab and return to the document |
-
-Edge jumps preserve the zoom level and the position on the other axis.
+Scroll the mouse wheel to zoom, or hold the left mouse button and drag to move the image. Vim-style navigation, Page Up/Down, Home/End, and counts are also supported. Press `?` or use `:help md-render-image-view` for the [complete reference](doc/md-render.txt).
 
 Zoom uses the converted image's existing pixels; it does not regenerate a higher-resolution diagram.
 

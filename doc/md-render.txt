@@ -1127,23 +1127,29 @@ pixel size.
 
                                                         *md-render-image-view*
 With the Snacks backend and ImageMagick (magick), press <Enter> on an image
-or its title to open a focused image tab. These keys are set automatically;
-no additional plugin or keymap configuration is needed:
+or its title to open a focused image tab. Its keys are set automatically:
 
-  + / = / -       Zoom in/out, between 1x and 16x the fitted overview.
-  h/j/k/l         Pan by 1/8 of the visible width/height; arrows also work.
-  zH / zL         Pan left/right by half a screen.
-  <C-d> / <C-u>   Pan down/up by half a screen.
-  <C-f> / <C-b>   Page down/up, keeping two rows of overlap where possible.
-  gg / G          Jump to the top/bottom edge.
-  0 / ^           Jump to the left edge.
-  $               Jump to the right edge.
-  f               Fit the complete image in the window and center it.
-  q / <Esc>       Close the image tab and return to the document.
+  Zoom          + / = / - (also keypad + / -).
+  Pan           h/j/k/l or arrows; 1/8 of the visible width/height.
+  Half screen   zH / zL (left/right), <C-d> / <C-u> (down/up).
+  Page          <C-f> / <C-b> or <PageDown> / <PageUp> (down/up).
+  Fine scroll   <C-e> / <C-y>; one screen row down/up.
+  Edges         0 / ^ / <Home> and $ / <End> (left/right);
+                gg / <C-Home> and G / <C-End> (top/bottom).
+  Fit           f; fit the complete image and center it.
+  Help          ?; open this reference.
+  Back          q / <Esc>; close the image tab and return to the document.
 
-Edge jumps preserve the zoom level and the position on the other axis.
+Counts repeat pan, half-screen, page, and fine-scroll steps, e.g. 3j or
+2<PageDown>. Pages keep two screen rows of overlap where possible. Edge
+jumps preserve zoom and the other axis. Keypad navigation keys also work.
 
-Zoom enlarges existing pixels; it does not regenerate the diagram.
+With 'mouse' enabled, wheel up/down zooms in/out like +/-, without changing
+focus. Hold the left mouse button and drag to move the image with the
+pointer; release to stop. Trackpad vertical scroll events also zoom.
+
+Zoom ranges from 1x to 16x the fitted overview. It enlarges existing pixels;
+it does not regenerate the diagram.
 
 						       *image.set_download_fn()*
 image.set_download_fn({fn}) ~

@@ -71,15 +71,15 @@ nvim +"MdRender pager" assets/showcase.md
 |---|---|---|
 | [curl](https://curl.se/) | 下載網路圖片與影片 | 可透過 `set_download_fn()` 提供自訂下載函式 |
 | [snacks.nvim](https://github.com/folke/snacks.nvim) | 選用圖片後端、自動調整圖片大小與獨立圖片分頁 | 仍可使用預設原生後端，但不會有這些 fork 新增功能 |
-| [FFmpeg](https://ffmpeg.org/)（`ffmpeg` / `ffprobe`） | 原生後端的 JPEG/WebP → PNG 轉換、GIF 動畫與影片影格擷取 | 圖片可改用 ImageMagick；影片仍需要 ffmpeg |
-| [ImageMagick](https://imagemagick.org/)（`magick`） | Snacks 圖片轉換、圖片分頁縮放與平移，以及原生後端的圖片轉換與 GIF 影格擷取 | 原生後端可使用下表的替代工具。圖片分頁即使開啟 PNG 也需要 `magick`，無法用 `ffmpeg`、`sips` 或只有 `convert` 指令的安裝取代 |
+| [FFmpeg](https://ffmpeg.org/)（`ffmpeg` / `ffprobe`） | 原生後端的 JPEG/WebP → PNG 轉換，以及兩個後端共用的 GIF 動畫與影片影格擷取 | 圖片可改用 ImageMagick；影片仍需要 ffmpeg |
+| [ImageMagick](https://imagemagick.org/)（`magick`） | Snacks 圖片轉換、圖片分頁縮放與平移，以及原生圖片轉換與共用的 GIF 影格擷取 | 原生後端可使用下表的替代工具。圖片分頁即使開啟 PNG 也需要 `magick`，無法用 `ffmpeg`、`sips` 或只有 `convert` 指令的安裝取代 |
 | [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli)（`mmdc`）及其無頭瀏覽器 | 兩種後端都用它產生 Mermaid 圖表 | 找不到 `mmdc` 時會改用 `npx -y @mermaid-js/mermaid-cli`，需要 Node.js/npm，且可能下載 CLI；瀏覽器仍是必要條件 |
 | [PlantUML](https://plantuml.com/)（`plantuml`，或 `java` 搭配 `$PLANTUML_JAR`） | 產生 PlantUML 圖表 | 只有在你指定伺服器時，才會改用該伺服器，並需要 curl；否則維持程式碼區塊 |
 | [budoux.lua](https://github.com/delphinus/budoux.lua) | 使用 BudouX，讓中日韓文字依詞組換行 | 未安裝時依字元斷行，仍保留行首行尾禁則 |
 | Treesitter 剖析器 | 程式碼區塊的語法醒目提示 | 未安裝時仍會顯示程式碼，但沒有語法醒目提示 |
 | [nvim-web-devicons](https://github.com/nvim-tree/nvim-web-devicons) 或 [mini.icons](https://github.com/echasnovski/mini.icons) | 程式碼區塊標題的檔案類型圖示 | 改用內建圖示表 |
 
-**原生後端**會依下列順序尋找圖片與影片轉換工具。[Snacks 的轉換流程](https://github.com/folke/snacks.nvim/blob/main/docs/image.md)則使用 ImageMagick 處理非 PNG 圖片，不使用這套替代順序。
+**原生後端**的靜態圖片轉換，以及兩個後端共用的影格擷取，會依下列順序尋找工具。[Snacks 的轉換流程](https://github.com/folke/snacks.nvim/blob/main/docs/image.md)則使用 ImageMagick 處理非 PNG 靜態圖片。
 
 | 用途 | 第一順位 | 第二順位 | 第三順位 |
 |---|---|---|---|
@@ -198,7 +198,7 @@ require("md-render.image").setup({ backend = "snacks" })
 2. 如果使用 tmux，`tmux show-options -gv allow-passthrough` 應顯示 `on`。
 3. 在 Kitty 中開啟含有本機 PNG 圖片的 Markdown 檔案，執行 `:MdRender tab`。等圖片出現後，將游標移到圖片或標題上，按 Enter 確認能開啟圖片分頁。找到工具不代表終端機一定能正確顯示，仍需完成這一步。
 
-動畫與影片播放仍由原生後端提供。Snacks 後端會準備整份文件的圖片，包括目前畫面外的圖片；所有預覽共用最多兩個圖表產生／下載工作，關閉預覽後，已經開始的工作仍可能繼續執行並寫入快取。因此，圖片較多的文件會有較多前置處理。
+兩個後端都能播放 GIF 動畫與影片。Snacks 後端使用 Kitty 的動畫功能，也支援在 tmux 內播放；影片影格擷取需要 `ffmpeg`。Snacks 後端會準備整份文件的圖片，包括目前畫面外的圖片；所有預覽共用最多兩個圖表產生／下載／影格擷取工作，關閉預覽後，已經開始的工作仍可能繼續執行並寫入快取。因此，圖片較多的文件會有較多前置處理。
 
 自動排版會使用視窗可用寬度，不套用原生後端的 80 欄上限。圖片保持長寬比，放入可用寬度與「視窗高度減 6 行」的範圍內，且不會超過原始像素大小。若明確指定 `max_width`，仍會優先使用該值。操作方式請見[圖片分頁按鍵](#圖片分頁按鍵)。
 
@@ -485,7 +485,7 @@ require("snacks").setup({
 <details>
 <summary><strong>影片只顯示一張靜態圖片</strong></summary>
 
-影片播放使用原生後端（`kitty`）；Snacks 後端不提供動畫或影片播放。原生後端需要能從 `$PATH` 找到 `ffmpeg`，才能擷取影片影格；沒有安裝時，會退回以第一個影格顯示靜態圖片。請透過套件管理器安裝，例如 `brew install ffmpeg`。
+兩個後端都需要能從 `$PATH` 找到 `ffmpeg`，才能擷取影片影格。Snacks 後端可在 Kitty 中播放，包括 tmux 內的預覽；沒有安裝時，會退回以第一個影格顯示靜態圖片。請透過套件管理器安裝，例如 `brew install ffmpeg`。
 
 </details>
 

@@ -72,15 +72,15 @@ These dependencies are optional for basic Markdown rendering, but required for t
 |---|---|---|
 | [curl](https://curl.se/) | Download web images and video | Custom function via `set_download_fn()` |
 | [snacks.nvim](https://github.com/folke/snacks.nvim) | Optional image backend, viewport fitting, and focused image tabs | Default native backend remains available; it does not provide these fork features |
-| [FFmpeg](https://ffmpeg.org/) (`ffmpeg` / `ffprobe`) | Native backend: JPEG/WebP → PNG conversion, animated GIF / video frame extraction | Falls back to ImageMagick (images only; video requires ffmpeg) |
-| [ImageMagick](https://imagemagick.org/) (`magick`) | Snacks image conversion and image-tab zoom/pan; native image conversion and GIF frame extraction | Native conversion can use the tools below. The image tab requires `magick`, including for PNG; `ffmpeg`, `sips`, or an installation providing only `convert` cannot replace it |
+| [FFmpeg](https://ffmpeg.org/) (`ffmpeg` / `ffprobe`) | Native JPEG/WebP → PNG conversion; GIF / video frame extraction for both backends | Falls back to ImageMagick (images only; video requires ffmpeg) |
+| [ImageMagick](https://imagemagick.org/) (`magick`) | Snacks image conversion and image-tab zoom/pan; native image conversion and shared GIF frame extraction | Native conversion can use the tools below. The image tab requires `magick`, including for PNG; `ffmpeg`, `sips`, or an installation providing only `convert` cannot replace it |
 | [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) and its headless browser | Render Mermaid diagrams with either backend | Falls back to `npx -y @mermaid-js/mermaid-cli` (requires Node.js/npm and may download the CLI); the browser is still required |
 | [PlantUML](https://plantuml.com/) (`plantuml`, or `java` with `$PLANTUML_JAR`) | Render PlantUML diagrams as images | A PlantUML server, if you name one (needs curl); otherwise the fence stays a code block |
 | [budoux.lua](https://github.com/delphinus/budoux.lua) | CJK phrase-level line breaking (BudouX) | Character-level splitting (kinsoku rules still apply) |
 | Treesitter parsers | Syntax highlighting in code blocks | Code blocks rendered without highlighting |
 | [nvim-web-devicons](https://github.com/nvim-tree/nvim-web-devicons) or [mini.icons](https://github.com/echasnovski/mini.icons) | File type icons in code block headers | Built-in icon table |
 
-For the **native backend**, image/video conversion tries tools in this order. [Snacks conversion](https://github.com/folke/snacks.nvim/blob/main/docs/image.md) uses ImageMagick for non-PNG images; it does not use this fallback chain.
+Static conversion in the **native backend** and frame extraction in both backends try tools in this order. [Snacks conversion](https://github.com/folke/snacks.nvim/blob/main/docs/image.md) uses ImageMagick for static non-PNG images.
 
 | Use case | 1st | 2nd | 3rd |
 |---|---|---|---|
@@ -199,7 +199,7 @@ After loading the plugins, check the setup:
 2. Inside tmux, `tmux show-options -gv allow-passthrough` should print `on`.
 3. In Kitty, open a Markdown file containing a local PNG and run `:MdRender tab`. Wait for the image to appear, place the cursor on it or its title, and press Enter to verify that its image tab opens. Tool availability alone does not verify terminal display.
 
-Animation and video playback remain native-backend features. The Snacks backend prepares images throughout the document, including off-screen images; diagram rendering and downloads share a two-job limit across previews, and work already running may finish into the cache after closing a preview. Image-heavy documents therefore do more work up front.
+Both backends play animated GIFs and videos. The Snacks backend uses Kitty animation support, including inside tmux; video frame extraction requires `ffmpeg`. The Snacks backend prepares images throughout the document, including off-screen images; diagram rendering, downloads, and frame extraction share a two-job limit across previews, and work already running may finish into the cache after closing a preview. Image-heavy documents therefore do more work up front.
 
 Automatic layout uses the available window width instead of the native backend's 80-column cap. Images fit proportionally within that width and the window height minus six rows, without enlarging beyond their original pixel size. An explicitly supplied `max_width` still takes precedence. See [Image tab keys](#image-tab-keys) for navigation.
 
@@ -492,7 +492,7 @@ With the default native backend, inline image display requires a terminal suppor
 <details>
 <summary><strong>Videos appear as a single static frame</strong></summary>
 
-Video playback uses the native backend (`kitty`); the Snacks backend does not provide animation or video playback. With the native backend, frame extraction requires `ffmpeg` to be installed and available in `$PATH`. Without it, the plugin falls back to displaying just the first frame as a still image. Install it via your package manager (e.g. `brew install ffmpeg`).
+Both backends require `ffmpeg` in `$PATH` for video frame extraction. The Snacks backend plays those frames in Kitty, including inside tmux. Without it, the plugin falls back to displaying just the first frame as a still image. Install it via your package manager (e.g. `brew install ffmpeg`).
 
 </details>
 

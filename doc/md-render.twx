@@ -191,9 +191,10 @@ setup()。停用 Snacks 的文件與數學式渲染，讓 md-render 負責預覽
 移到圖片或其標題，按 Enter 確認能開啟圖片分頁。只確認工具存在，還不足以驗證
 實際顯示是否正常。
 
-預設後端仍為 "kitty"。動畫與影片播放需要原生後端；只開啟 tmux passthrough
-不會讓原生後端支援 tmux。Snacks 會預先處理文件中的所有圖片，包括畫面之外的
-圖片。圖表產生與下載共用最多兩個並行工作，且此上限跨預覽共用；關閉預覽後，
+預設後端仍為 "kitty"。兩個後端都能播放 GIF 動畫與影片；Snacks 使用 Kitty
+的動畫功能，也支援 tmux。影片影格擷取需要 ffmpeg。Snacks 會預先處理文件中
+的所有圖片，包括畫面之外的圖片。圖表產生、下載與影格擷取共用最多兩個並行
+工作，且此上限跨預覽共用；關閉預覽後，
 已開始的轉換仍可能完成並寫入快取。因此，圖片較多的文件在開始時會做較多處理。
 圖片配置請見 |md-render-image|，圖片分頁操作請見 |md-render-image-view|。
 
@@ -1194,15 +1195,16 @@ DETAILS 區塊 ~
   curl                 下載網路圖片與影片。可透過 |image.set_download_fn()|
                        改用自訂下載函式。
 
-  FFmpeg               原生後端的 JPEG/WebP 轉 PNG，以及 GIF 動畫／影片
-  (ffmpeg/ffprobe)     影格擷取。圖片可改用 ImageMagick，影片仍需要 ffmpeg。
+  FFmpeg               原生後端的 JPEG/WebP 轉 PNG，以及兩個後端共用的
+  (ffmpeg/ffprobe)     GIF 動畫／影片影格擷取。圖片可改用 ImageMagick，
+                       影片仍需要 ffmpeg。
 
   ImageMagick          Snacks 轉換非 PNG 圖片時需要此工具。圖片分頁即使開啟
   (magick)             PNG 也需要 magick，不能以 ffmpeg、sips 或只有 convert
                        的安裝取代。
                        原生靜態圖片轉換依序嘗試 sips、ffmpeg、magick；
-                       原生 GIF 影格擷取依序嘗試 ffmpeg、magick。
-                       這些替代順序不適用於 Snacks。
+                       兩個後端的 GIF 影格擷取依序嘗試 ffmpeg、magick。
+                       Snacks 靜態圖片轉換使用 ImageMagick。
                        https://github.com/folke/snacks.nvim/blob/main/docs/image.md
 
   Mermaid CLI          將 Mermaid 圖表轉為圖片。找不到 mmdc 時改用

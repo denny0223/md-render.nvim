@@ -201,10 +201,11 @@ a Markdown file containing a local PNG in Kitty and run :MdRender tab. Wait
 for the image, place the cursor on it or its title, and press Enter to verify
 that its image tab opens. Tool availability alone does not verify display.
 
-The default backend remains "kitty". Animation and video playback require
-the native backend; tmux passthrough alone does not add native-backend tmux
-support. Snacks prepares all document images, including off-screen images.
-Diagram rendering and downloads share two concurrent jobs across previews;
+The default backend remains "kitty". Both backends play animated GIFs and
+videos; Snacks uses Kitty animation support, including inside tmux. Video
+frame extraction requires ffmpeg. Snacks prepares all document images,
+including off-screen images. Diagram rendering, downloads, and frame
+extraction share two concurrent jobs across previews;
 already running conversions may finish into the cache after closing.
 Image-heavy documents therefore do more work up front.
 See |md-render-image| for layout and |md-render-image-view| for navigation.
@@ -1332,16 +1333,16 @@ that use them. Install command-line tools separately on Neovim's PATH.
   curl                 Download web images and video.  Can be replaced
                        via |image.set_download_fn()|.
 
-  FFmpeg               Native backend: JPEG/WebP to PNG, animated GIF / video
-  (ffmpeg/ffprobe)     frame extraction.  Falls back to ImageMagick for
+  FFmpeg               Native JPEG/WebP to PNG; GIF / video frame extraction
+  (ffmpeg/ffprobe)     for both backends.  Falls back to ImageMagick for
                        images; video requires ffmpeg.
 
   ImageMagick          Required for Snacks conversion of non-PNG images.
   (magick)             Image tabs require magick even for PNG; ffmpeg, sips,
                        or convert alone cannot replace it.
                        Native static conversion tries sips, ffmpeg, magick;
-                       native GIF extraction tries ffmpeg, then magick.
-                       These fallback chains do not apply to Snacks.
+                       both backends try ffmpeg, then magick for GIF frames.
+                       Snacks static conversion uses ImageMagick.
                        https://github.com/folke/snacks.nvim/blob/main/docs/image.md
 
   Mermaid CLI          Render Mermaid diagrams as images.  Falls back to

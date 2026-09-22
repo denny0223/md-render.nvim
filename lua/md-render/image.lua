@@ -1487,6 +1487,9 @@ local function build_frame_extract_cmd(tool, path, cache_dir, total_frames)
     -- Convert to display frame rate (5 fps matches the 200 ms animation timer)
     table.insert(vf_parts, "fps=5")
     table.insert(vf_parts, "scale='min(400,iw)':'min(400,ih)':force_original_aspect_ratio=decrease")
+    -- GIFs can report an unset pixel aspect ratio; Snacks uses PNG density
+    -- when sizing placements, so keep decoded frames square-pixel images.
+    table.insert(vf_parts, "setsar=1")
     -- No `-vsync` / `-fps_mode`: the `fps` filter above already resamples to a
     -- constant rate, so the mode is redundant, and neither spelling works on
     -- every FFmpeg. `-vsync` was deprecated in 2022 (5.1 added `-fps_mode` as
@@ -1639,7 +1642,8 @@ end
 ---@return string
 function get_frames_cache_dir(gif_path)
   local hash = vim.fn.sha256(gif_path):sub(1, 16)
-  local dir = get_cache_dir() .. "/frames_" .. hash
+  -- v2 discards frames with the old, unnormalized PNG pixel aspect ratio.
+  local dir = get_cache_dir() .. "/frames_" .. hash .. "_v2"
   return dir
 end
 
@@ -1661,6 +1665,52 @@ function get_cached_frames(gif_path, cache_dir)
   return frames
 end
 
+--- Extract animated GIF/video frames without choosing a terminal transport.
+---@param path string
+---@param callback fun(frames: string[]?) sorted PNG paths, or nil on failure
+function M.extract_frames_async(path, callback)
+  local anim_tool = find_anim_tool()
+  if not anim_tool then
+    callback(nil)
+    return
+  end
+
+  local cache_dir = get_frames_cache_dir(path)
+
+  shared_work(cache_dir, function()
+    -- Check frame cache first
+    local frames = get_cached_frames(path, cache_dir)
+
+    if not frames then
+      -- Count frames first
+      local count_result = async.system(build_frame_count_cmd(anim_tool, path), { text = true })
+      local total_frames = 1
+      if count_result.code == 0 and count_result.stdout then
+        total_frames = tonumber(count_result.stdout:match "%d+") or 1
+      end
+
+      vim.fn.mkdir(cache_dir, "p")
+
+      local cmd = build_frame_extract_cmd(anim_tool, path, cache_dir, total_frames)
+      local result = async.system(cmd, { text = true, timeout = 30000 })
+      if result.code ~= 0 then
+        warn_extract_failed(anim_tool, result)
+        vim.fn.delete(cache_dir, "rf")
+        return nil
+      end
+
+      frames = vim.fn.glob(cache_dir .. "/frame_*.png", false, true)
+      table.sort(frames)
+      if #frames == 0 then
+        vim.fn.delete(cache_dir, "rf")
+        return nil
+      end
+    end
+
+    return frames
+  end, callback)
+end
+
 --- Extract GIF frames and transmit asynchronously.
 --- Large GIFs are sampled down to MAX_ANIM_FRAMES.
 --- Extracted frames are cached on disk for fast subsequent loads.
@@ -1671,14 +1721,6 @@ function M.transmit_animated_async(path, callback)
     callback(nil)
     return
   end
-
-  local anim_tool = find_anim_tool()
-  if not anim_tool then
-    callback(nil)
-    return
-  end
-
-  local cache_dir = get_frames_cache_dir(path)
 
   --- Transmit pre-extracted frames.
   --- Sends frames in small batches (BATCH_SIZE), yielding to the event loop
@@ -1734,35 +1776,8 @@ function M.transmit_animated_async(path, callback)
   -- Keyed on the source file: the frames are transmitted, not just produced, so
   -- a second run would send every frame to the terminal a second time.
   shared_work("frames:" .. path, function()
-    -- Check frame cache first
-    local frames = get_cached_frames(path, cache_dir)
-
-    if not frames then
-      -- Count frames first
-      local count_result = async.system(build_frame_count_cmd(anim_tool, path), { text = true })
-      local total_frames = 1
-      if count_result.code == 0 and count_result.stdout then
-        total_frames = tonumber(count_result.stdout:match "%d+") or 1
-      end
-
-      vim.fn.mkdir(cache_dir, "p")
-
-      local cmd = build_frame_extract_cmd(anim_tool, path, cache_dir, total_frames)
-      local result = async.system(cmd, { text = true, timeout = 30000 })
-      if result.code ~= 0 then
-        warn_extract_failed(anim_tool, result)
-        vim.fn.delete(cache_dir, "rf")
-        return nil
-      end
-
-      frames = vim.fn.glob(cache_dir .. "/frame_*.png", false, true)
-      table.sort(frames)
-      if #frames == 0 then
-        vim.fn.delete(cache_dir, "rf")
-        return nil
-      end
-    end
-
+    local frames = async.await(2, M.extract_frames_async, path)
+    if not frames then return nil end
     return transmit_frames(frames)
   end, callback)
 end

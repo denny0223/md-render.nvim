@@ -72,15 +72,15 @@ nvim +"MdRender pager" assets/showcase.md
 |---|---|---|
 | [curl](https://curl.se/) | Web 画像・動画のダウンロード | `set_download_fn()` でカスタム関数を指定可 |
 | [snacks.nvim](https://github.com/folke/snacks.nvim) | オプションの画像バックエンド、サイズ調整、専用画像タブ | デフォルトのネイティブバックエンドは引き続き使用可。ただし、これらのフォーク独自機能は使えません |
-| [FFmpeg](https://ffmpeg.org/) (`ffmpeg` / `ffprobe`) | ネイティブバックエンド：JPEG/WebP → PNG 変換、アニメーション GIF / 動画のフレーム展開 | ImageMagick にフォールバック（画像のみ。動画には ffmpeg が必要） |
-| [ImageMagick](https://imagemagick.org/) (`magick`) | Snacks の画像変換と画像タブのズーム・パン、ネイティブの画像変換と GIF フレーム展開 | ネイティブの変換は下表のツールで代替可。画像タブは PNG でも `magick` が必須で、`ffmpeg`、`sips`、`convert` のみのインストールでは代替できません |
+| [FFmpeg](https://ffmpeg.org/) (`ffmpeg` / `ffprobe`) | ネイティブの JPEG/WebP → PNG 変換、両バックエンド共通の GIF / 動画のフレーム展開 | ImageMagick にフォールバック（画像のみ。動画には ffmpeg が必要） |
+| [ImageMagick](https://imagemagick.org/) (`magick`) | Snacks の画像変換と画像タブのズーム・パン、ネイティブの画像変換と共通の GIF フレーム展開 | ネイティブの変換は下表のツールで代替可。画像タブは PNG でも `magick` が必須で、`ffmpeg`、`sips`、`convert` のみのインストールでは代替できません |
 | [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) とヘッドレスブラウザ | 両バックエンドで Mermaid ダイアグラムを描画 | `npx -y @mermaid-js/mermaid-cli` にフォールバック（Node.js/npm が必要で、CLI をダウンロードする場合があります）。ブラウザも引き続き必要です |
 | [PlantUML](https://plantuml.com/) (`plantuml`、または `java` と `$PLANTUML_JAR`) | PlantUML ダイアグラムを画像として描画 | 指定した場合のみ PlantUML サーバ（curl が必要）。指定が無ければコードブロックのまま |
 | [budoux.lua](https://github.com/delphinus/budoux.lua) | CJK フレーズ単位の改行（BudouX） | 1文字ずつ分割（禁則処理は維持） |
 | Treesitter パーサー | コードブロックのシンタックスハイライト | ハイライトなしで表示 |
 | [nvim-web-devicons](https://github.com/nvim-tree/nvim-web-devicons) または [mini.icons](https://github.com/echasnovski/mini.icons) | コードブロックヘッダのファイルタイプアイコン | 内蔵アイコンテーブル |
 
-**ネイティブバックエンド**では、画像・動画の変換ツールを以下の順で検索します。[Snacks の変換](https://github.com/folke/snacks.nvim/blob/main/docs/image.md) は PNG 以外に ImageMagick を使うため、このフォールバック順序は適用されません。
+**ネイティブバックエンド**の静止画変換と、両バックエンド共通のフレーム展開では、以下の順でツールを検索します。[Snacks の変換](https://github.com/folke/snacks.nvim/blob/main/docs/image.md) は PNG 以外の静止画に ImageMagick を使います。
 
 | ユースケース | 1st | 2nd | 3rd |
 |---|---|---|---|
@@ -199,7 +199,7 @@ Snacks をすでに設定している場合は、その設定に上記の `image
 2. tmux 内では `tmux show-options -gv allow-passthrough` が `on` を返す必要があります。
 3. Kitty でローカルの PNG を含む Markdown ファイルを開き、`:MdRender tab` を実行します。画像が表示されたら画像またはそのタイトル上で Enter を押し、画像タブが開くことを確認してください。ツールが見つかるだけでは、端末での表示確認にはなりません。
 
-アニメーションと動画の再生はネイティブバックエンドの機能です。Snacks バックエンドは画面外も含む文書全体の画像を準備します。ダイアグラム描画とダウンロードは全プレビューで同時に 2 ジョブまで実行し、プレビューを閉じても実行中の処理はキャッシュへの保存まで完了する場合があります。画像が多い文書では初期処理量が増えます。
+両バックエンドで GIF アニメーションと動画を再生できます。Snacks は Kitty のアニメーション機能を使い、tmux 内でも再生できます。動画のフレーム展開には `ffmpeg` が必要です。Snacks バックエンドは画面外も含む文書全体の画像を準備します。ダイアグラム描画、ダウンロード、フレーム展開は全プレビューで同時に 2 ジョブまで実行し、プレビューを閉じても実行中の処理はキャッシュへの保存まで完了する場合があります。画像が多い文書では初期処理量が増えます。
 
 自動レイアウトはネイティブバックエンドの 80 桁上限を使わず、利用可能なウィンドウ幅を使います。画像は縦横比を保ち、その幅と「ウィンドウの高さ − 6 行」に収まり、元のピクセルサイズを超えて拡大しません。`max_width` を明示した場合はそちらを優先します。操作方法は [画像タブのキー](#画像タブのキー) を参照してください。
 
@@ -502,7 +502,7 @@ require("snacks").setup({
 <details>
 <summary><strong>動画が静止画 1 枚しか表示されない</strong></summary>
 
-動画の再生にはネイティブバックエンド（`kitty`）を使います。Snacks バックエンドはアニメーションや動画の再生を提供しません。ネイティブバックエンドでのフレーム展開には `ffmpeg` が `$PATH` に必要です。なければ、最初のフレームを静止画として表示するフォールバックになります。パッケージマネージャでインストールしてください（例：`brew install ffmpeg`）。
+両バックエンドで動画のフレーム展開には `ffmpeg` が `$PATH` に必要です。Snacks は Kitty で再生し、tmux 内のプレビューにも対応します。なければ、最初のフレームを静止画として表示するフォールバックになります。パッケージマネージャでインストールしてください（例：`brew install ffmpeg`）。
 
 </details>
 

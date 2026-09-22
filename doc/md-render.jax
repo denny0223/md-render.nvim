@@ -201,11 +201,11 @@ Snacks を設定済みの場合は、その設定に image オプションを統
 画像が表示されたら画像またはタイトル上で Enter を押し、画像タブが開くことを
 確認してください。ツールが見つかるだけでは表示確認にはなりません。
 
-デフォルトのバックエンドは "kitty" のままです。アニメーションと動画の再生は
-ネイティブバックエンドの機能です。tmux の passthrough を有効にするだけでは、
-ネイティブバックエンドに tmux 対応は追加されません。
-Snacks は画面外も含む文書全体の画像を準備します。ダイアグラム描画と
-ダウンロードは全プレビューで同時に 2 ジョブまで実行し、プレビューを閉じても
+デフォルトのバックエンドは "kitty" のままです。両バックエンドで GIF と動画を
+再生でき、Snacks は Kitty のアニメーション機能で tmux 内でも再生できます。
+動画のフレーム展開には ffmpeg が必要です。Snacks は画面外も含む文書全体の
+画像を準備します。描画、ダウンロード、フレーム展開は全プレビューで同時に
+2 ジョブまで実行し、プレビューを閉じても
 実行中の処理はキャッシュへの保存まで完了する場合があります。
 画像が多い文書では初期処理量が増えます。レイアウトは |md-render-image|、
 操作は |md-render-image-view| を参照してください。
@@ -1294,16 +1294,17 @@ Details ~
   curl                 Web 画像・動画のダウンロード。
                        |image.set_download_fn()| で置換可。
 
-  FFmpeg               ネイティブ：JPEG/WebP → PNG、GIF / 動画のフ
-  (ffmpeg/ffprobe)     レーム展開。画像は ImageMagick にフォールバック。動画
-                       には ffmpeg が必要。
+  FFmpeg               ネイティブ：JPEG/WebP → PNG。両バックエンド共通：
+  (ffmpeg/ffprobe)     GIF / 動画のフレーム展開。画像は ImageMagick に
+                       フォールバック。動画には ffmpeg が必要。
 
   ImageMagick          Snacks の PNG 以外の画像変換に必要。
   (magick)             画像タブは PNG でも magick が必須で、ffmpeg、sips、
                        convert のみでは代替不可。
                        ネイティブ静止画は sips → ffmpeg → magick の順、
-                       GIF は ffmpeg → magick の順で変換を試みます。
-                       このフォールバック順序は Snacks には適用されません。
+                       GIF フレームは両バックエンドとも ffmpeg → magick
+                       の順で展開を試みます。
+                       Snacks の静止画変換には ImageMagick を使います。
                        https://github.com/folke/snacks.nvim/blob/main/docs/image.md
 
   Mermaid CLI          Mermaid ダイアグラムを画像として描画。 `npx -y

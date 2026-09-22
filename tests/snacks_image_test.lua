@@ -78,5 +78,100 @@ backend.cleanup(state)
 assert(state.closed and placement.closed, "cleanup must retire the placement")
 assert(#drawn_rows() == 0, "cleanup must remove image extmarks")
 vim.api.nvim_win_close(other_win, true)
+
+-- Animated sources must bypass Snacks' first-page conversion. Exercise the
+-- real decoder and placements, recording only the requests sent to Kitty.
+if vim.fn.executable "ffmpeg" == 1 then
+  local requests, request = {}, terminal.request
+  terminal.request = function(opts)
+    requests[#requests + 1] = vim.deepcopy(opts)
+    request(opts)
+  end
+  local media = { image_placements = {} }
+  for idx, name in ipairs { "test_animated.gif", "test.mp4", "test_animated.gif" } do
+    media.image_placements[idx] = { path = root .. "/assets/demo/" .. name, line = 0, col = 0, cols = 4, rows = 3 }
+  end
+  local animated = backend.setup(win, media)
+  local function loaded()
+    for idx = 1, 3 do
+      local object = animated.objects[idx]
+      local task = object and object.img._md_render_upload
+      if not object or not object:ready() or not task or not task:completed() then return false end
+    end
+    return true
+  end
+  assert(vim.wait(15000, loaded, 10), "GIF and MP4 must upload animation frames")
+  assert(animated.objects[1].img == animated.objects[3].img, "repeated GIFs must share the uploaded animation")
+  local function count(action, id)
+    local total = 0
+    for _, req in ipairs(requests) do
+      if req.a == action and req.i == id then total = total + 1 end
+    end
+    return total
+  end
+  for idx = 1, 2 do
+    local img = animated.objects[idx].img
+    assert(img.info.dpi.width == img.info.dpi.height, "decoded frames must not distort Snacks' placement size")
+    assert(count("f", img.id) > 0, "animated media was reduced to a still image")
+    assert(count("a", img.id) == 2, "animation must load once and loop")
+    local frames = count("f", img.id)
+    local old_task = img._md_render_upload
+    img.sent = false -- Snacks can resend an image after evicting it from its cache.
+    img:send()
+    assert(
+      vim.wait(3000, function()
+        return img._md_render_upload ~= old_task and img._md_render_upload:completed()
+      end, 10),
+      "retransmitted images must restore their frames"
+    )
+    assert(count("f", img.id) == frames * 2, "resend lost animation frames")
+  end
+  -- SSH must send PNG bytes, not paths on the remote host. Reassemble chunks
+  -- and compare them with the same decoded frames sent by the local transport.
+  local video = animated.objects[2].img
+  local expected = {}
+  for _, req in ipairs(requests) do
+    if req.a == "f" and req.i == video.id then expected[#expected + 1] = vim.base64.decode(req.data) end
+  end
+  local first_remote = #requests + 1
+  terminal._env.remote = true
+  video.sent = false
+  video:send()
+  assert(
+    vim.wait(3000, function()
+      return video._md_render_upload:completed()
+    end, 10),
+    "remote upload timed out"
+  )
+  local data, frame, chunked = "", 1, false
+  for idx = first_remote, #requests do
+    local req = requests[idx]
+    if req.a == "f" then
+      assert(req.i == video.id and req.t == "d" and #req.data <= 4096, "invalid remote frame chunk")
+      data = data .. req.data
+      chunked = chunked or req.m == 1
+      if req.m == 0 then
+        local file = assert(io.open(expected[frame], "rb"))
+        assert(vim.base64.decode(data) == file:read "*a", "remote frame bytes were corrupted")
+        file:close()
+        data, frame = "", frame + 1
+      end
+    end
+  end
+  assert(chunked and frame - 1 == #expected / 2, "remote transport must send every frame exactly once")
+  terminal._env.remote = nil
+  local before = #requests
+  backend.update(animated, media)
+  assert(vim.wait(3000, loaded, 10), "rebuild must restore animated placements")
+  for idx = before + 1, #requests do
+    assert(requests[idx].a ~= "f", "rebuild appended duplicate frames to a cached image")
+  end
+  backend.cleanup(animated)
+  assert(#drawn_rows() == 0, "animation cleanup must remove placeholders")
+  terminal.request = request
+  print "Snacks animation: GIF, MP4, shared frames, retransmit, remote chunks, rebuild and cleanup OK"
+else
+  print "SKIP Snacks animation: ffmpeg unavailable"
+end
 vim.fn.delete(cache, "rf")
 print "Snacks image lifecycle: same-layout rebuild, off-tab completion and cleanup OK"

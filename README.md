@@ -250,6 +250,8 @@ Inside a rendered preview (floating, tab, or in-place toggle), these buffer-loca
 
 With the [Snacks backend](#optional-snacks-image-backend) configured and ImageMagick (`magick`) installed, press Enter on an image or its title to open a focused image tab. Use arrows or `hjkl` to move, `+/-` to zoom, `f` to fit the complete image, and `q` to return. These keys are set automatically in the image tab.
 
+GIF and video tabs require Kitty 0.31 or newer and play automatically. Press Space to pause or resume; zooming and panning preserve the playback state. Playback controls affect only the image tab.
+
 Scroll the mouse wheel to zoom, or hold the left mouse button and drag to move the image. Vim-style navigation, Page Up/Down, Home/End, and counts are also supported. Press `?` or use `:help md-render-image-view` for the [complete reference](doc/md-render.txt).
 
 Zoom uses the converted image's existing pixels; it does not regenerate a higher-resolution diagram.

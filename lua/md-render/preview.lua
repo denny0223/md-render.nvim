@@ -584,7 +584,7 @@ function Session:install_float_keymaps(close_handle, keymap_opts)
       for idx, p in ipairs(self.content.image_placements or {}) do
         if row >= p.line - 1 and row < p.line + p.rows then
           local object = self.image_state and self.image_state.objects[idx]
-          if object and object:ready() then require("md-render.image_view").open(object.img.file) end
+          if object and object:ready() then require("md-render.image_view").open(p.path or object.img.file) end
           return true
         end
       end

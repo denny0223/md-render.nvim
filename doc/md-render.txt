@@ -1130,6 +1130,7 @@ pixel size.
 With the Snacks backend and ImageMagick (magick), press <Enter> on an image
 or its title to open a focused image tab. Its keys are set automatically:
 
+  Playback      <Space>; pause/resume GIFs and videos.
   Zoom          + / = / - (also keypad + / -).
   Pan           h/j/k/l or arrows; 1/8 of the visible width/height.
   Half screen   zH / zL (left/right), <C-d> / <C-u> (down/up).
@@ -1140,6 +1141,13 @@ or its title to open a focused image tab. Its keys are set automatically:
   Fit           f; fit the complete image and center it.
   Help          ?; open this reference.
   Back          q / <Esc>; close the image tab and return to the document.
+
+GIF and video tabs require Kitty 0.31 or newer and start playing automatically.
+Pausing holds the current frame;
+zooming and panning preserve the playback state. Playback controls affect only
+this tab, independently of the document preview. This uses the same silent
+frame preview as inline playback: with ffmpeg, 5 fps, at most 400x400 pixels
+and 300 frames (up to 60 seconds).
 
 Counts repeat pan, half-screen, page, and fine-scroll steps, e.g. 3j or
 2<PageDown>. Pages keep two screen rows of overlap where possible. Edge

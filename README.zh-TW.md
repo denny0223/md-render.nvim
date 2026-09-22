@@ -249,6 +249,8 @@ vim.keymap.set("n", "<leader>md", "<Plug>(md-render-demo)",        { desc = "Mar
 
 完成 [Snacks 後端](#選用-snacks-圖片後端)設定並安裝 ImageMagick（`magick`）後，在圖片或其標題上按 Enter，即可開啟獨立圖片分頁。使用方向鍵或 `hjkl` 移動、`+/-` 縮放、`f` 顯示完整圖片、`q` 返回。這些按鍵會自動設定在圖片分頁內。
 
+GIF 與影片分頁需要 Kitty 0.31 以上版本，開啟後會自動播放，按空白鍵可暫停或繼續；縮放與平移會維持目前的播放狀態。播放控制只影響圖片分頁。
+
 滑鼠滾輪可縮放圖片，按住左鍵拖曳可移動圖片。也支援 Vim 風格導覽、Page Up／Down、Home／End 與數字前綴。按 `?` 或使用 `:help md-render-image-view` 查閱[完整操作說明](doc/md-render.twx)。
 
 縮放使用轉換後圖片既有的像素，不會重新產生更高解析度的圖表。

@@ -5,7 +5,7 @@ local async = require "md-render.async"
 local permits = async.semaphore(2)
 
 -- Keep Snacks' placement/transport lifecycle; Kitty cycles frames itself.
-local function animate(img, frames)
+function M.animate(img, frames, playing)
   if img._md_render_animation then return end
   img._md_render_animation = true
   local on_send = img.on_send
@@ -14,7 +14,7 @@ local function animate(img, frames)
     if self._md_render_upload then self._md_render_upload:close() end
     self._md_render_upload = async.run(function()
       local terminal = Snacks.image.terminal
-      terminal.request { a = "a", i = self.id, r = 1, z = 200, s = 2, v = 1 }
+      terminal.request { a = "a", i = self.id, r = 1, z = 200, s = (not playing or playing()) and 2 or 1, v = 1 }
       for idx = 2, #frames do
         if terminal.env().remote then
           local file = assert(io.open(frames[idx], "rb"))
@@ -36,7 +36,7 @@ local function animate(img, frames)
         end
         if idx % 10 == 0 then async.sleep(10) end
       end
-      terminal.request { a = "a", i = self.id, s = 3 }
+      terminal.request { a = "a", i = self.id, s = (not playing or playing()) and 3 or 1 }
     end)
     self._md_render_upload:detach()
   end
@@ -126,7 +126,7 @@ function M.update(state, content)
       local function place(path, frames)
         local object = Snacks.image.placement.new(state.buf, path, opts)
         state.objects[idx] = object
-        if frames and #frames > 1 then animate(object.img, frames) end
+        if frames and #frames > 1 then M.animate(object.img, frames) end
       end
       if p.animated or p.video or image.is_video_file(p.path) or image.is_animated_gif(p.path) then
         async.run(function()

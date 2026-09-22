@@ -1,4 +1,4 @@
--- Focus one image in a Neovim tab; keep terminal placement owned by Snacks.
+-- Focus one image in a Neovim tab, anchored by Snacks.
 local M = {}
 local image = require "md-render.image"
 
@@ -30,7 +30,7 @@ function M.open(path)
   local origin_view = vim.fn.winsaveview()
   vim.cmd "tabnew"
   local win, buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
-  local state = { zoom = 1, x = 0.5, y = 0.5, serial = 0, win = win, buf = buf }
+  local state = { zoom = 1, x = 0.5, y = 0.5, serial = 0, win = win, buf = buf, playing = true }
   local drag
   vim.b[buf].md_render_image_view = true
   vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
@@ -87,8 +87,11 @@ function M.open(path)
     state.closed = true
     vim.on_key(nil, mouse_ns)
     if state.job then state.job:kill(15) end
+    local media = state.media
+    if media and media._md_render_upload then media._md_render_upload:close() end
     if state.pending then state.pending:close() end
     if state.placement then state.placement:close() end
+    if media then Snacks.image.terminal.request { a = "d", d = "I", i = media.id } end
     vim.fn.delete(dir, "rf")
     pcall(vim.api.nvim_del_augroup_by_id, group)
   end
@@ -108,6 +111,10 @@ function M.open(path)
     end,
   })
 
+  local function header(zoom_level)
+    local playback = state.frames and (state.playing and "Space pause · " or "Space play · ") or ""
+    return ("  %.0f%% · %shjkl · +/- · f fit · ? help · q back"):format(zoom_level * 100, playback)
+  end
   local function paint()
     if not valid() or not state.path then return end
     local cols = math.max(1, vim.api.nvim_win_get_width(win) - 2)
@@ -124,66 +131,103 @@ function M.open(path)
     state.dirty = false
     state.serial = state.serial + 1
     local serial, zoom_level = state.serial, state.zoom
-    local file = dir .. "/" .. serial .. ".png"
+    local file = state.frames and state.path or dir .. "/" .. serial .. ".png"
     local started = vim.uv.hrtime()
-    -- ponytail: crop cached PNGs; profile before adding a custom GPU/placeholder renderer.
-    state.job = vim.system(
-      { "magick", state.path, "-crop", ("%dx%d+%d+%d"):format(g.w, g.h, g.x, g.y), "+repage", file },
-      { text = true },
-      vim.schedule_wrap(function(result)
-        if not valid() or serial ~= state.serial then return end
-        state.job = nil
-        if result.code ~= 0 then
-          vim.notify("md-render: image crop failed: " .. (result.stderr or ""), vim.log.levels.ERROR)
-          if state.dirty then paint() end
-          return
-        end
-        local col = math.floor((cols + 2 - g.cols) / 2)
-        local lines = {
-          ("  %.0f%% · hjkl move · +/- zoom · f fit · ? help · q back"):format(zoom_level * 100),
-        }
-        for _ = 1, rows do
-          lines[#lines + 1] = string.rep(" ", cols + 2)
-        end
-        vim.bo[buf].modifiable = true
-        vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-        vim.bo[buf].modifiable = false
+    local function show(result)
+      if not valid() or serial ~= state.serial then return end
+      state.job = nil
+      if result.code ~= 0 then
+        vim.notify("md-render: image crop failed: " .. (result.stderr or ""), vim.log.levels.ERROR)
+        if state.dirty then paint() end
+        return
+      end
+      local col = math.floor((cols + 2 - g.cols) / 2)
+      local lines = {
+        header(zoom_level),
+      }
+      for _ = 1, rows do
+        lines[#lines + 1] = string.rep(" ", cols + 2)
+      end
+      vim.bo[buf].modifiable = true
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+      vim.bo[buf].modifiable = false
+      local opts = {
+        inline = true,
+        conceal = true,
+        pos = { 2, col },
+        range = state.media and { 2, col, 2, col + 1 } or { 2, col, g.rows + 1, col },
+        width = state.media and 1 or g.cols,
+        height = state.media and 1 or g.rows,
+        on_update = function(p)
+          if not valid() or (serial ~= state.serial and p ~= state.placement) then
+            p:close()
+            return
+          end
+          -- Snacks fits to natural size. The focused view explicitly allows upscaling.
+          Snacks.image.terminal.request {
+            a = "p",
+            U = 1,
+            i = p.img.id,
+            p = p.id,
+            C = 1,
+            c = state.media and 1 or g.cols,
+            r = state.media and 1 or g.rows,
+          }
+          p:render_grid { 2, col, width = state.media and 1 or g.cols, height = state.media and 1 or g.rows }
+          if state.media and state.media.sent then
+            -- Virtual placements ignore source crops. Anchor the cropped media
+            -- to a transparent cell so it follows Snacks across tabs/tmux.
+            local fit_width = g.cols * cell.cell_w / g.w <= g.rows * cell.cell_h / g.h
+            Snacks.image.terminal.request {
+              a = "p",
+              i = state.media.id,
+              p = 1,
+              P = p.img.id,
+              Q = p.id,
+              C = 1,
+              c = fit_width and g.cols or 0,
+              r = fit_width and 0 or g.rows,
+              x = g.x,
+              y = g.y,
+              w = g.w,
+              h = g.h,
+            }
+          end
+          if state.placement ~= p then
+            if state.placement then state.placement:close() end
+            if state.file and state.file ~= file then vim.fn.delete(state.file) end
+            state.placement, state.file = p, file
+            state.pending, state.pending_file = nil, nil
+          end
+          state.elapsed_ms = (vim.uv.hrtime() - started) / 1e6
+          if state.dirty then vim.schedule(function()
+            if state.dirty then paint() end
+          end) end
+        end,
+      }
+      if state.frames and state.placement then
+        -- Replacing the anchor would also delete its attached animation.
+        state.placement.opts = opts
+        opts.on_update(state.placement)
+      else
         state.pending_file = file
-        state.pending = Snacks.image.placement.new(buf, file, {
-          inline = true,
-          conceal = true,
-          pos = { 2, col },
-          range = { 2, col, g.rows + 1, col },
-          width = g.cols,
-          height = g.rows,
-          on_update = function(p)
-            if not valid() or (serial ~= state.serial and p ~= state.placement) then
-              p:close()
-              return
-            end
-            -- Snacks fits to natural size. The focused view explicitly allows upscaling.
-            Snacks.image.terminal.request { a = "p", U = 1, i = p.img.id, p = p.id, C = 1, c = g.cols, r = g.rows }
-            p:render_grid { 2, col, width = g.cols, height = g.rows }
-            if state.placement ~= p then
-              if state.placement then state.placement:close() end
-              if state.file then vim.fn.delete(state.file) end
-              state.placement, state.file = p, file
-              state.pending, state.pending_file = nil, nil
-            end
-            state.elapsed_ms = (vim.uv.hrtime() - started) / 1e6
-            if state.dirty then
-              vim.schedule(function()
-                if state.dirty then paint() end
-              end)
-            end
-          end,
-        })
-        vim.api.nvim_win_set_cursor(win, { 1, 0 })
-        vim.api.nvim_win_call(win, function()
-          vim.fn.winrestview { topline = 1, leftcol = 0 }
-        end)
+        state.pending = Snacks.image.placement.new(buf, file, opts)
+      end
+      vim.api.nvim_win_set_cursor(win, { 1, 0 })
+      vim.api.nvim_win_call(win, function()
+        vim.fn.winrestview { topline = 1, leftcol = 0 }
       end)
-    )
+    end
+    if state.frames then
+      show { code = 0 }
+    else
+      -- ponytail: crop cached PNGs; profile before changing the static-image renderer.
+      state.job = vim.system(
+        { "magick", state.path, "-crop", ("%dx%d+%d+%d"):format(g.w, g.h, g.x, g.y), "+repage", file },
+        { text = true },
+        vim.schedule_wrap(show)
+      )
+    end
   end
   local function zoom(factor)
     state.zoom = math.max(1, math.min(16, state.zoom * factor))
@@ -211,6 +255,16 @@ function M.open(path)
     paint()
   end
   local keys = {
+    ["<Space>"] = function()
+      if not state.frames then return end
+      state.playing = not state.playing
+      if state.media and state.media.sent then
+        Snacks.image.terminal.request { a = "a", i = state.media.id, s = state.playing and 3 or 1 }
+      end
+      vim.bo[buf].modifiable = true
+      vim.api.nvim_buf_set_lines(buf, 0, 1, false, { header(state.zoom) })
+      vim.bo[buf].modifiable = false
+    end,
     ["+"] = function()
       zoom(1.25)
     end,
@@ -349,7 +403,13 @@ function M.open(path)
   end, mouse_ns)
   vim.api.nvim_create_autocmd("WinResized", { group = group, callback = paint })
   require("md-render.async").run(function()
-    local png = require("md-render.async").await(2, image.ensure_png_async, path)
+    local async = require "md-render.async"
+    local frames
+    if image.is_video_file(path) or image.is_video_content(path) or image.is_animated_gif(path) then
+      frames = async.await(2, image.extract_frames_async, path)
+    end
+    if not valid() then return end
+    local png = frames and frames[1] or async.await(2, image.ensure_png_async, path)
     if not valid() then return end
     local iw, ih
     if png then
@@ -358,6 +418,31 @@ function M.open(path)
     if not iw or not ih then
       vim.notify("md-render: unable to load image", vim.log.levels.ERROR)
       return
+    end
+    if frames and #frames > 1 then
+      -- Private media keeps playback independent of inline previews. A separate
+      -- transparent anchor avoids showing uncropped pixels behind transparent GIFs.
+      local file = dir .. "/media.png"
+      assert(vim.uv.fs_copyfile(png, file))
+      state.frames, state.media = frames, Snacks.image.image.new(file)
+      require("md-render.snacks_image").animate(state.media, frames, function()
+        return state.playing
+      end)
+      local on_send = state.media.on_send
+      state.media.on_send = function(self)
+        if state.closed then
+          Snacks.image.terminal.request { a = "d", d = "I", i = self.id }
+          return
+        end
+        on_send(self)
+        if state.placement then state.placement.opts.on_update(state.placement) end
+      end
+      png = dir .. "/anchor.png"
+      local anchor = assert(io.open(png, "wb"))
+      anchor:write(
+        vim.base64.decode "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=="
+      )
+      anchor:close()
     end
     state.path, state.iw, state.ih = png, iw, ih
     paint()

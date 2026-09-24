@@ -1795,6 +1795,30 @@ end
 local function install_render_buf_guards(session)
   local augroup = vim.api.nvim_create_augroup(toggle_buf_augroup(session.buf), { clear = true })
 
+  -- Ex splits copy window options, but not w: variables. Preserve their source snapshot.
+  -- ponytail: Ex split ancestry only; arbitrary API targets need explicit origin tracking.
+  vim.api.nvim_create_autocmd("WinNew", {
+    group = augroup,
+    callback = function()
+      local win = vim.api.nvim_get_current_win()
+      if vim.api.nvim_win_get_buf(win) ~= session.buf or vim.api.nvim_win_get_config(win).relative ~= "" then return end
+      local parent = vim.fn.win_getid(vim.fn.winnr "#")
+      if parent == 0 then
+        local tab = vim.fn.tabpagenr "#"
+        parent = vim.fn.win_getid(vim.fn.tabpagewinnr(tab), tab)
+      end
+      local ok, state = pcall(vim.api.nvim_win_get_var, parent, "md_render_state")
+      if
+        ok
+        and type(state) == "table"
+        and state.render_buf == session.buf
+        and vim.api.nvim_win_get_buf(parent) == session.buf
+      then
+        vim.api.nvim_win_set_var(win, "md_render_state", state)
+      end
+    end,
+  })
+
   vim.api.nvim_create_autocmd("BufEnter", {
     group = augroup,
     buffer = session.buf,
@@ -1958,19 +1982,39 @@ local function get_or_create_toggle_session(source_bufnr, opts)
   return session
 end
 
---- Read window-local toggle state. Returns nil when the window has never
---- been toggled or when the recorded buffers are no longer valid.
+--- Resolve toggle state for this window's current buffer.
 ---@param win integer
 ---@return { source_buf: integer, render_buf: integer, mode: "source"|"render", source_view?: vim.fn.winsaveview.ret }?
 local function get_win_state(win)
   local ok, state = pcall(vim.api.nvim_win_get_var, win, "md_render_state")
-  if not ok or type(state) ~= "table" then return nil end
+  if not ok or type(state) ~= "table" then state = nil end
+  local buf = vim.api.nvim_win_get_buf(win)
+  -- A render buffer can also be entered without toggle/split (e.g. :buffer).
+  local session = MdPreview._sessions[buf]
+  if session and _toggle_sessions[session.source_bufnr] == session then
+    if not state or state.render_buf ~= session.buf then
+      state = {
+        source_buf = session.source_bufnr,
+        render_buf = session.buf,
+        mode = "render",
+        source_wo = session._source_wo,
+      }
+      vim.api.nvim_win_set_var(win, "md_render_state", state)
+    end
+  end
+  if not state then return nil end
   if not state.source_buf or not vim.api.nvim_buf_is_valid(state.source_buf) then return nil end
+  -- :new / :split {file} can replace the buffer after WinNew copied state.
+  if buf ~= state.source_buf and buf ~= state.render_buf then return nil end
+  state.mode = buf == state.render_buf and "render" or "source"
   return state
 end
 
 local function set_win_state(win, state)
   vim.api.nvim_win_set_var(win, "md_render_state", state)
+  -- Fallback for render-buffer entries without a saved window state.
+  local session = _toggle_sessions[state.source_buf]
+  if session and state.mode == "render" then session._source_wo = state.source_wo end
 end
 
 --- Toggle between source and render mode in the current window.
@@ -2015,13 +2059,6 @@ MdPreview.toggle = function(opts)
   end
 
   -- ---- source → render ----
-  -- If we're on a render buf belonging to a session whose state is stale
-  -- (e.g. user manually :buffer'd here), bail out cleanly.
-  if state and cur_buf == state.render_buf then
-    vim.notify("md-render: window state is inconsistent; please reopen the source buffer", vim.log.levels.WARN)
-    return
-  end
-
   local source_bufnr = cur_buf
   local ok, warn = check_markdown_buffer(source_bufnr)
   if not ok then
@@ -2091,6 +2128,8 @@ MdPreview.split = function(opts)
     vim.cmd { cmd = "split", mods = opts.mods or {} }
     local new_win = vim.api.nvim_get_current_win()
     vim.api.nvim_win_set_buf(new_win, state.source_buf)
+    -- This window shows the source, so discard its inherited preview state.
+    pcall(vim.api.nvim_win_del_var, new_win, "md_render_state")
     -- The new split inherited render-mode window options from cur_win;
     -- restore the source view's options from the originals stashed on
     -- cur_win when it first went source -> render.

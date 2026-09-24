@@ -513,8 +513,22 @@ end
 --- Bind a window to this session and start displaying images in it.
 ---@param win integer
 function Session:bind_window(win)
+  self:cleanup_images()
   self.win = win
   if self:resize(win) then self:rebuild() end
+  -- Own teardown before the renderers' WinClosed handlers, so they are
+  -- detached once and cannot queue work while this window is closing.
+  self._win_closed = vim.api.nvim_create_autocmd("WinClosed", {
+    pattern = tostring(win),
+    once = true,
+    callback = function()
+      self:cleanup_images()
+      -- WinClosed runs before the window is removed from win_findbuf().
+      vim.schedule(function()
+        if not self.win then self:refresh_images() end
+      end)
+    end,
+  })
   self.image_state = display_utils.setup_images(win, self.content, self.ns, {
     buf = self.buf,
     build_content = function()
@@ -536,16 +550,28 @@ function Session:is_visible()
   return #vim.fn.win_findbuf(self.buf) > 0
 end
 
---- Update images after a rebuild.
+--- Update renderers after a rebuild, or bind a surviving preview window.
 function Session:refresh_images()
-  if self.win and vim.api.nvim_win_is_valid(self.win) then
-    self.image_state = display_utils.update_images(self.image_state, self.win, self.content)
-    self.text_size_state = require("md-render.text_size").refresh(self.text_size_state, self.win, self.content)
+  if not self.win or not vim.api.nvim_win_is_valid(self.win) or vim.api.nvim_win_get_buf(self.win) ~= self.buf then
+    self:cleanup_images()
+    if not vim.api.nvim_buf_is_valid(self.buf) then return end
+    local win = vim.fn.win_findbuf(self.buf)[1]
+    if win then
+      self:bind_window(win)
+      if self._rebind_keymaps then self._rebind_keymaps(win) end
+    end
+    return
   end
+  self.image_state = display_utils.update_images(self.image_state, self.win, self.content)
+  self.text_size_state = require("md-render.text_size").refresh(self.text_size_state, self.win, self.content)
 end
 
---- Tear down image state (does not destroy the buffer).
+--- Release the bound window and its renderers (keeps the buffer).
 function Session:cleanup_images()
+  if self._win_closed then
+    pcall(vim.api.nvim_del_autocmd, self._win_closed)
+    self._win_closed = nil
+  end
   if self.image_state then
     display_utils.cleanup_images(self.image_state)
     self.image_state = nil
@@ -554,6 +580,7 @@ function Session:cleanup_images()
     require("md-render.text_size").detach(self.text_size_state)
     self.text_size_state = nil
   end
+  self.win = nil
 end
 
 --- Install the standard click/keymap handlers on a window-managed close handle
@@ -563,7 +590,7 @@ end
 ---@param keymap_opts? { close_keys?: string[], close_line_idx?: integer }
 function Session:install_float_keymaps(close_handle, keymap_opts)
   keymap_opts = keymap_opts or {}
-  display_utils.setup_float_keymaps(self.buf, self.ns, self.win, self.content, close_handle, {
+  self._rebind_keymaps = display_utils.setup_float_keymaps(self.buf, self.ns, self.win, self.content, close_handle, {
     close_keys = keymap_opts.close_keys,
     close_line_idx = keymap_opts.close_line_idx,
     get_content = function()
@@ -826,8 +853,9 @@ MdPreview.show_pager = function(opts)
 
   -- Click handling (links, folds, expand)
   vim.keymap.set("n", "<LeftRelease>", function()
+    local target_win = session.win
     local mouse = vim.fn.getmousepos()
-    if mouse.winid ~= win then return end
+    if mouse.winid ~= target_win then return end
 
     local click_line = mouse.line - 1
     local click_col = mouse.column - 1
@@ -850,14 +878,14 @@ MdPreview.show_pager = function(opts)
               if session.content.footnote_anchors then
                 local target_line = session.content.footnote_anchors[anchor]
                 if target_line then
-                  vim.api.nvim_win_set_cursor(win, { target_line + 1, 0 })
+                  vim.api.nvim_win_set_cursor(target_win, { target_line + 1, 0 })
                   return true
                 end
               end
               if session.content.heading_anchors then
                 local target_line = session.content.heading_anchors[anchor]
                 if target_line then
-                  vim.api.nvim_win_set_cursor(win, { target_line + 1, 0 })
+                  vim.api.nvim_win_set_cursor(target_win, { target_line + 1, 0 })
                   return true
                 end
               end
@@ -2035,10 +2063,7 @@ MdPreview.toggle = function(opts)
       return
     end
 
-    if session and session.win == win then
-      session:cleanup_images()
-      session.win = nil
-    end
+    if session and session.win == win then session:cleanup_images() end
 
     vim.api.nvim_win_set_buf(win, state.source_buf)
     restore_render_win_opts(win, state.source_wo)
@@ -2080,12 +2105,6 @@ MdPreview.toggle = function(opts)
   if (session.opts.indent or default_indent) ~= default_indent then
     session.opts.indent = default_indent
     session:rebuild()
-  end
-
-  -- Rebind the session's image state if it was attached to a different window.
-  if session.win and session.win ~= win and vim.api.nvim_win_is_valid(session.win) then
-    session:cleanup_images()
-    session.win = nil
   end
 
   vim.api.nvim_win_set_buf(win, session.buf)
@@ -2165,13 +2184,6 @@ MdPreview.split = function(opts)
 
   vim.cmd { cmd = "split", mods = opts.mods or {} }
   local new_win = vim.api.nvim_get_current_win()
-
-  -- Image binding: Session.win is single-window. Hand off images from a
-  -- previously bound window (e.g. a prior toggle) to the new split.
-  if session.win and session.win ~= new_win and vim.api.nvim_win_is_valid(session.win) then
-    session:cleanup_images()
-    session.win = nil
-  end
 
   vim.api.nvim_win_set_buf(new_win, session.buf)
   session:bind_window(new_win)

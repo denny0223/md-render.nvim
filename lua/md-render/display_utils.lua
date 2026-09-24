@@ -421,6 +421,7 @@ end
 ---@param content MdRender.Content
 ---@param close_handle MdRender.FloatWin|MdRender.TabWin|nil
 ---@param opts? { close_line_idx?: integer, close_keys?: string[], on_fold_toggle?: fun(source_line: integer, collapsed: boolean), on_expand_toggle?: fun(block_id: integer, expanded: boolean), on_image_open?: fun(row: integer): boolean, get_content?: fun(): MdRender.Content }
+---@return fun(win: integer) rebind Update the target window without replacing buffer mappings.
 function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
   opts = opts or {}
   local close_line_idx = opts.close_line_idx
@@ -581,6 +582,11 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
       try_open_url()
     end
   end, { buffer = buf, noremap = true, silent = true })
+
+  return function(new_win)
+    win = new_win
+    UrlHover.attach(buf, ns, win)
+  end
 end
 
 ---@class MdRender.AnimState

@@ -307,6 +307,72 @@ test("put_image: generates correct placement sequence", function()
   teardown()
 end)
 
+for _, border in ipairs { "none", "single" } do
+  for _, winbar in ipairs { "", "image test" } do
+    test("put_image: screen rows and clipping with " .. border .. " border and " .. winbar, function()
+      setup_capture()
+      local buf = vim.api.nvim_create_buf(false, true)
+      local lines = { string.rep("body ", 20), "" } -- 3 screen rows, then 1 blank row
+      for _ = 1, 12 do
+        table.insert(lines, string.rep(" ", 40))
+      end
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+      local win = vim.api.nvim_open_win(buf, true, {
+        relative = "editor",
+        row = 2,
+        col = 3,
+        width = 40,
+        height = 8,
+        border = border,
+      })
+      vim.wo[win].wrap = true
+      vim.wo[win].winbar = winbar
+      vim.cmd "redraw!"
+      local top = vim.fn.screenpos(win, 1, 1).row
+      local visible_rows = winbar == "" and 4 or 3
+
+      image.put_image(101, win, 2, 3, 15, 6, nil, 1500, 600)
+      local p = parse_params(parse_kitty_sequences(captured_output())[1].params)
+      assert_match(captured_output(), "\x1b%[" .. (top + 4) .. ";%d+H", "wrapped text shifts the image down")
+      assert_eq(tonumber(p.r), visible_rows, "bottom crop uses screen rows, excluding border and winbar")
+      assert_eq(tonumber(p.h), visible_rows * 100, "bottom crop preserves image scale")
+
+      -- The anchor is still buffer row 3, but now below the screen.
+      vim.api.nvim_buf_set_lines(buf, 0, 1, false, { string.rep("body ", 100) })
+      vim.cmd "redraw!"
+      captured = {}
+      assert_eq(vim.fn.screenpos(win, 3, 1).row, 0, "wrapped text pushes the anchor off screen")
+      image.put_image(101, win, 2, 3, 15, 6, nil, 1500, 600)
+      assert_eq(captured_output(), "", "off-screen anchor must not fall back to buffer-row placement")
+
+      -- Scroll into the image's reserved rows: retain the existing top crop.
+      vim.api.nvim_buf_set_lines(buf, 0, 1, false, { lines[1] })
+      vim.fn.winrestview { topline = 4, lnum = 4, col = 0 }
+      vim.cmd "redraw!"
+      captured = {}
+      image.put_image(101, win, 2, 3, 15, 6, nil, 1500, 600)
+      p = parse_params(parse_kitty_sequences(captured_output())[1].params)
+      assert_match(captured_output(), "\x1b%[" .. top .. ";%d+H", "top crop stays inside the text area")
+      assert_eq({ p.y, p.h, p.r }, { "100", "500", "5" }, "scrolling one row crops one row of pixels")
+
+      -- With nowrap, column 1 can be hidden while part of the image is visible.
+      vim.wo[win].wrap = false
+      vim.fn.winrestview { topline = 1, lnum = 1, col = 20, leftcol = 5 }
+      vim.cmd "redraw!"
+      captured = {}
+      assert_eq(vim.fn.screenpos(win, 3, 1).row, 0, "horizontal scroll hides the first character")
+      image.put_image(101, win, 2, 3, 15, 2, nil, 1500, 200)
+      p = parse_params(parse_kitty_sequences(captured_output())[1].params)
+      assert_match(captured_output(), "\x1b%[" .. (top + 2) .. ";%d+H", "horizontal crop retains its visible row")
+      assert_eq({ p.x, p.w, p.c }, { "200", "1300", "13" }, "horizontal crop still preserves image scale")
+
+      vim.api.nvim_win_close(win, true)
+      vim.api.nvim_buf_delete(buf, { force = true })
+      teardown()
+    end)
+  end
+end
+
 test("put_image: skips image outside visible area (below)", function()
   setup_capture()
 

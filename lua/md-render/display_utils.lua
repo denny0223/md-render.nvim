@@ -595,6 +595,7 @@ end
 ---@field anims table<string, MdRender.AnimState>  path -> animation state
 ---@field tasks table<MdRender.ImagePlacement, vim.async.Task>  work started per placement
 ---@field win integer
+---@field closed boolean
 ---@field redraw_timer any?
 ---@field autocmd_ids integer[]
 
@@ -654,6 +655,7 @@ function M.setup_images(win, content, ns, opts)
     anims = {},
     tx_dims = {}, -- path → {w, h}: actual transmitted image dimensions
     win = win,
+    closed = false,
     redraw_timer = nil,
     autocmd_ids = {},
   }
@@ -667,7 +669,7 @@ function M.setup_images(win, content, ns, opts)
       if state._rebuild_timer then state._rebuild_timer:stop() end
       state._rebuild_timer = vim.defer_fn(function()
         state._rebuild_timer = nil
-        if not vim.api.nvim_win_is_valid(win) then return end
+        if state.closed or not vim.api.nvim_win_is_valid(win) then return end
         local buf = opts.buf
         if not vim.api.nvim_buf_is_valid(buf) then return end
         local new_content = opts.build_content()
@@ -722,7 +724,7 @@ function M.setup_images(win, content, ns, opts)
   end
 
   local function place_images()
-    if not vim.api.nvim_win_is_valid(state.win) then return end
+    if state.closed or not vim.api.nvim_win_is_valid(state.win) then return end
 
     -- Retry transmit for images that have a path but no ID (up to MAX_RETRIES).
     -- Skip placements whose conversion is already in flight to avoid spawning
@@ -812,6 +814,7 @@ function M.setup_images(win, content, ns, opts)
   state.anim_timer = anim_timer
 
   local function start_anim_timer()
+    if state.closed then return end
     -- Check if any animation has multiple frames
     local has_multi = false
     for _, anim in pairs(state.anims) do
@@ -829,6 +832,7 @@ function M.setup_images(win, content, ns, opts)
       200,
       200,
       vim.schedule_wrap(function()
+        if state.closed then return end
         if not vim.api.nvim_win_is_valid(state.win) then
           anim_timer:stop()
           return
@@ -898,7 +902,7 @@ function M.setup_images(win, content, ns, opts)
 
   local function redraw_images()
     state.redraw_timer = nil
-    if not vim.api.nvim_win_is_valid(state.win) then return end
+    if state.closed or not vim.api.nvim_win_is_valid(state.win) then return end
     -- Pause animation during redraw! to prevent concurrent placement writes
     pause_anim_timers()
     if is_wezterm() then
@@ -915,6 +919,7 @@ function M.setup_images(win, content, ns, opts)
     else
       vim.cmd "redraw!"
       vim.schedule(function()
+        if state.closed then return end
         place_images()
         resume_anim_timers()
         M.announce_repaint "image"
@@ -923,6 +928,7 @@ function M.setup_images(win, content, ns, opts)
   end
 
   local function schedule_redraw()
+    if state.closed then return end
     if state.redraw_timer then state.redraw_timer:stop() end
     -- Pause animations immediately on scroll to stop terminal writes
     pause_anim_timers()
@@ -1009,9 +1015,17 @@ function M.setup_images(win, content, ns, opts)
     end
 
     local frame_ids, tmp_dir, frame_w, frame_h = async.await(function(callback)
-      image.transmit_animated_async(path, callback, state)
+      image.transmit_animated_async(path, function(ids, ...)
+        -- A cancelled await discards its result; release late IDs here.
+        if state.closed or not vim.api.nvim_win_is_valid(state.win) then
+          if ids then image.delete_images(ids) end
+          callback(nil)
+          return
+        end
+        callback(ids, ...)
+      end, state)
     end)
-    if not frame_ids or not vim.api.nvim_win_is_valid(state.win) then return end
+    if not frame_ids then return end
     state.anims[path] = {
       frame_ids = frame_ids,
       current = 1,
@@ -1071,8 +1085,17 @@ function M.setup_images(win, content, ns, opts)
       return
     end
 
-    local id, tx_w, tx_h = async.await(2, image.transmit_image_async, path)
-    if not id or not vim.api.nvim_win_is_valid(state.win) then return end
+    local id, tx_w, tx_h = async.await(function(callback)
+      image.transmit_image_async(path, function(id, ...)
+        if state.closed or not vim.api.nvim_win_is_valid(state.win) then
+          if id then image.delete_image(id) end
+          callback(nil)
+          return
+        end
+        callback(id, ...)
+      end)
+    end)
+    if not id then return end
     -- Concurrent placements of one file share the state's first image ID.
     -- Release a duplicate transmission instead of losing its ownership.
     if state.image_ids[path] then
@@ -1158,7 +1181,7 @@ function M.setup_images(win, content, ns, opts)
 
   ---@param placement MdRender.ImagePlacement
   process_placement = function(placement)
-    if in_flight(placement) then return end
+    if state.closed or in_flight(placement) then return end
     tasks[placement] = async.run(function()
       permits:with(function()
         -- The window can go, and the placement can scroll away, while this is
@@ -1324,13 +1347,12 @@ end
 ---@param state MdRender.ImageState?
 function M.cleanup_images(state)
   if state and state.snacks then return require("md-render.snacks_image").cleanup(state) end
-  if not state then return end
+  if not state or state.closed then return end
+  state.closed = true
   local image = require "md-render.image"
 
-  -- Stop work still under way rather than letting it run to completion against
-  -- a window that is going away. Closing a task wakes it where it is waiting,
-  -- so the ffmpeg behind a video the user just closed does not keep going and
-  -- then transmit its frames into nothing.
+  -- Stop placement tasks. Shared producers may still finish; their completion
+  -- callbacks release any image IDs that arrive after this state is closed.
   for _, task in pairs(state.tasks or {}) do
     task:close()
   end

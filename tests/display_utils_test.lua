@@ -234,9 +234,10 @@ test("cleanup_images preserves another preview's images and shared animation sou
   local single = vim.fn.tempname() .. ".gif"
   vim.fn.writefile(vim.fn.readfile(gif, "b"), single, "b")
   local stored, placement_counts, puts = {}, {}, {}
-  local global_deletes = 0
+  local global_deletes, writes = 0, 0
   -- Track stored data separately from placements: d=i retains it, d=I releases it.
   vim.api.nvim_ui_send = function(data)
+    writes = writes + 1
     for seq in data:gmatch "\x1b_G(.-)\x1b\\" do
       local params = {}
       for key, value in seq:gmatch "([%w_]+)=([^,;]+)" do
@@ -316,8 +317,30 @@ test("cleanup_images preserves another preview's images and shared animation sou
     )
   end
 
+  -- Hold the redraw callback that would otherwise run just after cleanup.
+  local real_cmd, real_schedule = vim.cmd, vim.schedule
+  local queued_redraw
+  vim.cmd = function(command)
+    if command == "redraw!" then
+      vim.schedule = function(callback)
+        vim.schedule = real_schedule
+        queued_redraw = callback
+      end
+    else
+      real_cmd(command)
+    end
+  end
+  states[1].schedule_redraw()
+  local queued = vim.wait(1000, function()
+    return queued_redraw ~= nil
+  end, 1)
+  vim.cmd, vim.schedule = real_cmd, real_schedule
+  assert_eq(queued, true, "a repaint is queued before cleanup")
   global_deletes = 0 -- Exclude the deliberate first-use terminal reset.
   display_utils.cleanup_images(states[1])
+  local before = writes
+  if queued_redraw then queued_redraw() end
+  assert_eq(writes, before, "a queued repaint cannot write after cleanup")
   assert_eq(global_deletes, 0, "preview cleanup never requests a terminal-wide deletion")
   assert_eq(stored[states[2].image_ids[png]], true, "closing one preview retains the other's static image")
   for _, id in ipairs(states[2].anims[gif].frame_ids) do
@@ -336,6 +359,84 @@ test("cleanup_images preserves another preview's images and shared animation sou
   image.reset_cache()
   vim.fn.delete(single)
 end)
+
+for _, animated in ipairs { false, true } do
+  test("cleanup_images releases late " .. (animated and "animation" or "static") .. " results", function()
+    local image = require "md-render.image"
+    local method = animated and "extract_frames_async" or "ensure_png_async"
+    local real_produce, real_send = image[method], vim.api.nvim_ui_send
+    local png = vim.fn.getcwd() .. "/tests/fixtures/test_4x4.png"
+    local path = animated and vim.fn.getcwd() .. "/assets/demo/test_animated.gif" or png
+    local pending, stored, deleted = {}, {}, {}
+    local resurrected = false
+    image[method] = function(_, callback)
+      pending[#pending + 1] = callback
+    end
+    vim.api.nvim_ui_send = function(data)
+      for seq in data:gmatch "\x1b_G(.-)\x1b\\" do
+        local id = tonumber(seq:match ",i=(%d+)")
+        if seq:match "^a=t," then
+          if deleted[id] then resurrected = true end
+          stored[id] = true
+        elseif seq:match "^a=d,d=I," then
+          stored[id], deleted[id] = nil, true
+        end
+      end
+    end
+    image._set_kitty_supported(true)
+    local states, wins, bufs = {}, {}, {}
+    for i = 1, 2 do
+      local buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.fn["repeat"]({ "" }, 12))
+      local win = vim.api.nvim_open_win(buf, false, {
+        relative = "editor",
+        row = 0,
+        col = (i - 1) * 25,
+        width = 24,
+        height = 12,
+      })
+      states[i] = display_utils.setup_images(win, {
+        image_placements = { { path = path, line = 0, col = 0, cols = 5, rows = 2 } },
+      }, nil)
+      wins[i], bufs[i] = win, buf
+    end
+    assert_eq(
+      vim.wait(1000, function()
+        return #pending == 2
+      end, 1),
+      true,
+      "both previews await their source"
+    )
+    -- Keep the window valid: closing the renderer is enough to end ownership.
+    display_utils.cleanup_images(states[1])
+    for _, callback in ipairs(pending) do
+      if animated then
+        callback(vim.fn["repeat"]({ png }, 23))
+      else
+        callback(png, false)
+      end
+    end
+    local expected = animated and 23 or 1
+    assert_eq(
+      vim.wait(1000, function()
+        return vim.tbl_count(stored) == expected and vim.tbl_count(deleted) == expected
+      end, 1),
+      true,
+      "late results are released while the live preview finishes loading"
+    )
+    assert_eq(resurrected, false, "deleted frame IDs are never transmitted again")
+    assert_eq(next(states[1].image_ids), nil, "closed preview never adopts late static IDs")
+    assert_eq(next(states[1].anims), nil, "closed preview never starts a late animation")
+    display_utils.cleanup_images(states[2])
+    assert_eq(next(stored), nil, "both previews leave no stored images")
+    for i, win in ipairs(wins) do
+      vim.api.nvim_win_close(win, true)
+      vim.api.nvim_buf_delete(bufs[i], { force = true })
+    end
+    image[method], vim.api.nvim_ui_send = real_produce, real_send
+    image._set_kitty_supported(nil)
+  end)
+end
 
 test("setup_images renders an on-screen diagram straight away", function()
   local h = mermaid_harness(0)
@@ -369,8 +470,8 @@ test("setup_images keeps only a few placements in flight at once", function()
 end)
 
 test("cleanup_images stops work that is still running", function()
-  -- Closing the window while an ffmpeg or a curl is in flight should stop it,
-  -- not let it run to completion and transmit into a window that is gone.
+  -- Cancel active placements and work queued behind the semaphore. Shared
+  -- producers may finish; late-result cleanup is covered above.
   local h = mermaid_harness(0, 8)
   h.settle()
 

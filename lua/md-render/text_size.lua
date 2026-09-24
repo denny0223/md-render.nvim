@@ -669,6 +669,7 @@ M._stats = { paints = 0, invalidations = 0, skipped = 0, keepalives = 0 }
 ---@param state MdRender.TextSizeState
 ---@param drawn { p: MdRender.TextPlacement, row: integer, col: integer, icon_col: integer? }[]
 local function write_runs(state, drawn)
+  if state.closed then return end
   state.drawn = drawn
   if #drawn == 0 then return end
   local out = {}
@@ -755,7 +756,7 @@ end
 --- and the plain-size heading in between.
 ---@param state MdRender.TextSizeState
 function M.paint(state)
-  if not state or not M.supports() then return end
+  if not state or state.closed or not M.supports() then return end
 
   local drawn = visible_placements(state)
   local key = layout_key(drawn)
@@ -868,7 +869,7 @@ end
 ---@param state MdRender.TextSizeState
 ---@param forced? boolean skip the rate limit; the caller has already coalesced
 local function reassert(state, forced)
-  if not vim.api.nvim_win_is_valid(state.win) then return end
+  if state.closed or not vim.api.nvim_win_is_valid(state.win) then return end
   local now = vim.uv.now()
   if not forced and state.last_reassert_at and (now - state.last_reassert_at) < REASSERT_GAP_MS then return end
   state.last_reassert_at = now
@@ -932,7 +933,7 @@ end
 ---@param state MdRender.TextSizeState
 local function restore_runs_now(state)
   vim.schedule(function()
-    if not vim.api.nvim_win_is_valid(state.win) then return end
+    if state.closed or not vim.api.nvim_win_is_valid(state.win) then return end
     local drawn = visible_placements(state)
     write_runs(state, drawn)
     state.owes_invalidate = true
@@ -1167,6 +1168,7 @@ end
 ---@param state MdRender.TextSizeState?
 function M.detach(state)
   if not state then return end
+  state.closed = true
   active[state.win] = nil
   stop_redraw_notification()
   if state.redraw_timer then

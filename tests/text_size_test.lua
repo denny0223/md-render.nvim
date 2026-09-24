@@ -615,6 +615,40 @@ do
   text_size.setup { enabled = false }
 end
 
+-- A queued window redraw must not revive a detached renderer in a valid window.
+do
+  text_size.setup { enabled = true }
+  with_support(true, function()
+    local out = render { "# Heading", "", "Body." }
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, out.lines)
+    local win = vim.api.nvim_get_current_win()
+    local prev_buf = vim.api.nvim_win_get_buf(win)
+    vim.api.nvim_win_set_buf(win, buf)
+
+    local writes = {}
+    local real_send = vim.api.nvim_ui_send
+    vim.api.nvim_ui_send = function(s)
+      table.insert(writes, s)
+    end
+    local state = text_size.attach(win, out)
+    text_size.paint(state)
+    assert_true(table.concat(writes):find("\27]66;", 1, true) ~= nil, "native headings were painted before detach")
+    vim.api.nvim_exec_autocmds("WinNew", { modeline = false })
+    text_size.detach(state)
+    writes = {}
+    vim.wait(100, function()
+      return #writes > 0
+    end, 5)
+    assert_eq(#writes, 0, "queued redraw cannot write after detach")
+
+    vim.api.nvim_ui_send = real_send
+    vim.api.nvim_win_set_buf(win, prev_buf)
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end)
+  text_size.setup { enabled = false }
+end
+
 -- Test 20: a queued paint no longer blocks re-asserting an unchanged layout.
 -- The old guard sat at the top of `reassert` and returned whenever a paint was
 -- pending — which is for up to `BURST_MS` after any scroll or cursor movement,

@@ -1894,6 +1894,15 @@ function M.put_image(image_id, win, row, col, display_cols, display_rows, anim_p
   end)
   if ok_wb and wb and wb ~= "" then winbar_height = 1 end
   local screen_row = wininfo.winrow + visual_row + border_top_height + winbar_height
+  -- Account for wrapped text above a visible anchor. Keep the top-crop path
+  -- for anchors above the viewport. With horizontal scrolling (nowrap), column
+  -- 1 can be hidden while the image is visible, so retain buffer-row arithmetic.
+  if row >= topline and leftcol == 0 then
+    local pos = vim.fn.screenpos(win, row + 1, 1)
+    if pos.row == 0 then return end
+    screen_row = pos.row
+    visual_row = screen_row - wininfo.winrow - border_top_height - winbar_height
+  end
 
   -- Bottom crop: image extends below visible area
   local visible_rows = win_height - visual_row

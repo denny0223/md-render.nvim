@@ -1716,7 +1716,8 @@ end
 --- Extracted frames are cached on disk for fast subsequent loads.
 ---@param path string absolute path to animated GIF
 ---@param callback fun(frame_ids: integer[]?, tmp_dir: string?, frame_w: integer?, frame_h: integer?)
-function M.transmit_animated_async(path, callback)
+---@param owner? table renderer sharing these frame IDs
+function M.transmit_animated_async(path, callback, owner)
   if not M.supports_kitty() then
     callback(nil)
     return
@@ -1740,6 +1741,7 @@ function M.transmit_animated_async(path, callback)
     for i = 1, total do
       _image_id = _image_id + 1
       all_ids[i] = _image_id
+      _image_paths[_image_id] = frames[i]
     end
 
     ---@param first integer
@@ -1748,9 +1750,11 @@ function M.transmit_animated_async(path, callback)
       local last = math.min(first + BATCH_SIZE - 1, total)
       M.begin_batch()
       for i = first, last do
-        local b64_path = vim.base64.encode(frames[i])
-        term_write(string.format("\x1b_Ga=t,f=100,t=f,i=%d,q=2;%s\x1b\\", all_ids[i], b64_path))
-        _image_paths[all_ids[i]] = frames[i]
+        -- Cleanup may release these IDs before the background batch runs.
+        if _image_paths[all_ids[i]] == frames[i] then
+          local b64_path = vim.base64.encode(frames[i])
+          term_write(string.format("\x1b_Ga=t,f=100,t=f,i=%d,q=2;%s\x1b\\", all_ids[i], b64_path))
+        end
       end
       M.flush_batch()
       return last
@@ -1773,9 +1777,9 @@ function M.transmit_animated_async(path, callback)
     return all_ids, nil, frame_w, frame_h
   end
 
-  -- Keyed on the source file: the frames are transmitted, not just produced, so
-  -- a second run would send every frame to the terminal a second time.
-  shared_work("frames:" .. path, function()
+  -- Reuse IDs within one renderer; another renderer must be able to clear or
+  -- delete its own frames independently. File extraction remains shared.
+  shared_work("frames:" .. tostring(owner) .. ":" .. path, function()
     local frames = async.await(2, M.extract_frames_async, path)
     if not frames then return nil end
     return transmit_frames(frames)
@@ -1947,7 +1951,7 @@ end
 ---@param image_id integer
 function M.clear_placements(image_id)
   if not M.supports_kitty() then return end
-  term_write(string.format("\x1b_Ga=d,d=a,i=%d,q=2\x1b\\", image_id))
+  term_write(string.format("\x1b_Ga=d,d=i,i=%d,q=2\x1b\\", image_id))
 end
 
 --- Delete all images and placements from terminal memory.
@@ -1965,7 +1969,7 @@ end
 ---@param image_id integer
 function M.delete_image(image_id)
   if not M.supports_kitty() then return end
-  term_write(string.format("\x1b_Ga=d,d=i,i=%d\x1b\\", image_id))
+  term_write(string.format("\x1b_Ga=d,d=I,i=%d\x1b\\", image_id))
   if _temp_image_paths[image_id] and _image_paths[image_id] then
     os.remove(_image_paths[image_id])
     _temp_image_paths[image_id] = nil
@@ -1979,7 +1983,7 @@ function M.delete_images(image_ids)
   if not M.supports_kitty() or #image_ids == 0 then return end
   local parts = {}
   for _, id in ipairs(image_ids) do
-    table.insert(parts, string.format("\x1b_Ga=d,d=i,i=%d\x1b\\", id))
+    table.insert(parts, string.format("\x1b_Ga=d,d=I,i=%d\x1b\\", id))
     if _temp_image_paths[id] and _image_paths[id] then
       os.remove(_image_paths[id])
       _temp_image_paths[id] = nil

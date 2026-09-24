@@ -444,7 +444,7 @@ test("clear_placements: generates correct delete sequence", function()
 
   local p = parse_params(seqs[1].params)
   assert_eq(p.a, "d", "action should be 'd' (delete)")
-  assert_eq(p.d, "a", "delete target should be 'a' (all placements for image)")
+  assert_eq(p.d, "i", "delete only this image's placements, preserving other images")
   assert_eq(p.i, "42", "image ID should match")
   assert_eq(p.q, "2", "quiet mode should be 2")
   teardown()
@@ -472,7 +472,7 @@ test("delete_image: generates correct single-image delete", function()
 
   local p = parse_params(seqs[1].params)
   assert_eq(p.a, "d", "action should be 'd'")
-  assert_eq(p.d, "i", "delete target should be 'i' (specific image)")
+  assert_eq(p.d, "I", "delete the specific image and free its stored data")
   assert_eq(p.i, "77", "image ID should match")
   teardown()
 end)
@@ -488,7 +488,7 @@ test("delete_images: generates multiple delete sequences", function()
   for idx, seq in ipairs(seqs) do
     local p = parse_params(seq.params)
     assert_eq(p.a, "d", "seq " .. idx .. ": action should be 'd'")
-    assert_eq(p.d, "i", "seq " .. idx .. ": delete target should be 'i'")
+    assert_eq(p.d, "I", "seq " .. idx .. ": delete the image and its stored data")
   end
 
   -- Verify each ID is present
@@ -506,6 +506,84 @@ test("delete_images: does nothing for empty list", function()
   setup_capture()
   image.delete_images {}
   assert_eq(#captured, 0, "should not write anything for empty list")
+  teardown()
+end)
+
+test("image cleanup: retains files for repaint and removes only owned temporary conversions", function()
+  local original_terminal, ensure_png = vim.env.TERM_PROGRAM, image.ensure_png
+  vim.env.TERM_PROGRAM = "ghostty"
+  image.reset_cache()
+  setup_capture()
+  local paths, ids = {}, {}
+  image.ensure_png = function()
+    local path = vim.fn.tempname() .. ".png"
+    vim.fn.writefile({ "temporary conversion" }, path)
+    paths[#paths + 1] = path
+    return path, true
+  end
+  for i = 1, 2 do
+    ids[i] = image.transmit_image(test_png)
+  end
+  image.clear_placements(ids[1])
+  assert_eq(vim.fn.filereadable(paths[1]), 1, "hiding an image retains its converted file for repaint")
+  image.delete_image(ids[1])
+  assert_eq(vim.fn.filereadable(paths[1]), 0, "single deletion removes its temporary conversion")
+  assert_eq(vim.fn.filereadable(paths[2]), 1, "single deletion preserves another image's file")
+  image.delete_images { ids[2] }
+  assert_eq(vim.fn.filereadable(paths[2]), 0, "batch deletion removes its temporary conversion")
+  assert_eq(vim.fn.filereadable(test_png), 1, "deletion preserves the original source file")
+  image.ensure_png, vim.env.TERM_PROGRAM = ensure_png, original_terminal
+  teardown()
+end)
+
+test("animation cleanup: deleted frames stay deleted while another owner keeps loading", function()
+  setup_capture()
+  local extract = image.extract_frames_async
+  image.extract_frames_async = function(_, callback)
+    vim.defer_fn(function()
+      callback(vim.fn["repeat"]({ test_png }, 23))
+    end, 1)
+  end
+
+  local owners, answers = { {}, {} }, {}
+  for i = 1, 2 do
+    image.transmit_animated_async(test_png, function(ids)
+      answers[i] = ids
+    end, owners[i])
+  end
+  assert_true(
+    vim.wait(1000, function()
+      return answers[1] ~= nil and answers[2] ~= nil
+    end, 1),
+    "both owners receive their frames"
+  )
+  assert_true(not vim.deep_equal(answers[1], answers[2]), "independent owners have independent image IDs")
+
+  image.delete_images(answers[1])
+  captured = {}
+  assert_true(
+    vim.wait(1000, function()
+      for _, seq in ipairs(parse_kitty_sequences(captured_output())) do
+        local p = parse_params(seq.params)
+        if p.a == "t" and tonumber(p.i) == answers[2][23] then return true end
+      end
+      return false
+    end, 1),
+    "the surviving owner's final batch arrives"
+  )
+  local later = {}
+  for _, seq in ipairs(parse_kitty_sequences(captured_output())) do
+    local p = parse_params(seq.params)
+    if p.a == "t" then later[tonumber(p.i)] = true end
+  end
+  for _, id in ipairs(answers[1]) do
+    assert_nil(later[id], "cleanup prevents late transmission of frame " .. id)
+  end
+  assert_true(later[answers[2][23]], "the other owner's final batch still transmits")
+  assert_eq(vim.fn.filereadable(test_png), 1, "persistent frame files survive image deletion")
+
+  image.delete_images(answers[2])
+  image.extract_frames_async = extract
   teardown()
 end)
 

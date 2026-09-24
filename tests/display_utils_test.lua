@@ -223,6 +223,120 @@ local function mermaid_harness(line, count)
   return calls
 end
 
+test("cleanup_images preserves another preview's images and shared animation source", function()
+  local image = require "md-render.image"
+  local terminal, ghostty_resources = vim.env.TERM_PROGRAM, vim.env.GHOSTTY_RESOURCES_DIR
+  vim.env.TERM_PROGRAM, vim.env.GHOSTTY_RESOURCES_DIR = "kitty", nil
+  image.reset_cache()
+  local real_send, real_extract = vim.api.nvim_ui_send, image.extract_frames_async
+  local png = vim.fn.getcwd() .. "/tests/fixtures/test_4x4.png"
+  local gif = vim.fn.getcwd() .. "/assets/demo/test_animated.gif"
+  local single = vim.fn.tempname() .. ".gif"
+  vim.fn.writefile(vim.fn.readfile(gif, "b"), single, "b")
+  local stored, placement_counts, puts = {}, {}, {}
+  local global_deletes = 0
+  -- Track stored data separately from placements: d=i retains it, d=I releases it.
+  vim.api.nvim_ui_send = function(data)
+    for seq in data:gmatch "\x1b_G(.-)\x1b\\" do
+      local params = {}
+      for key, value in seq:gmatch "([%w_]+)=([^,;]+)" do
+        params[key] = value
+      end
+      local id = tonumber(params.i)
+      if params.a == "t" then
+        stored[id] = true
+      elseif params.a == "p" then
+        placement_counts[id] = (placement_counts[id] or 0) + 1
+        puts[id] = (puts[id] or 0) + 1
+      elseif params.a == "d" and params.d == "A" then
+        global_deletes = global_deletes + 1
+      elseif params.a == "d" and (params.d == "I" or params.d == "i") then
+        placement_counts[id] = 0
+        if params.d == "I" then stored[id] = nil end
+      end
+    end
+  end
+  image._set_kitty_supported(true)
+  image.extract_frames_async = function(path, callback)
+    vim.defer_fn(function()
+      callback(path == single and { png } or { png, png })
+    end, 1)
+  end
+
+  local states, wins, bufs = {}, {}, {}
+  for i = 1, 2 do
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.fn["repeat"]({ "" }, 12))
+    local win = vim.api.nvim_open_win(buf, false, {
+      relative = "editor",
+      row = 0,
+      col = (i - 1) * 25,
+      width = 24,
+      height = 12,
+    })
+    local placements = {}
+    for j, path in ipairs { png, png, gif, gif, single } do
+      placements[j] = { path = path, line = (j - 1) * 2, col = 0, cols = 5, rows = 2 }
+    end
+    states[i] = display_utils.setup_images(win, { image_placements = placements }, nil)
+    wins[i], bufs[i] = win, buf
+  end
+  assert_eq(
+    vim.wait(1000, function()
+      for _, state in ipairs(states) do
+        if not state.anims[gif] or not state.anims[single] or not state.image_ids[png] then return false end
+        for _, task in pairs(state.tasks) do
+          if task:status() ~= "completed" then return false end
+        end
+      end
+      return true
+    end, 1),
+    true,
+    "both previews finish loading repeated static and animated images"
+  )
+  assert_eq(vim.tbl_count(stored), 8, "each preview owns one PNG and three animation frames without orphan IDs")
+  assert_eq(
+    states[1].anims[gif].frame_ids[1] ~= states[2].anims[gif].frame_ids[1],
+    true,
+    "previews own distinct frame IDs"
+  )
+  assert_eq(
+    vim.wait(1500, function()
+      return (puts[states[1].image_ids[png]] or 0) >= 6
+    end, 1),
+    true,
+    "static images are re-placed across multiple animation ticks"
+  )
+  for _, state in ipairs(states) do
+    assert_eq(placement_counts[state.image_ids[png]], 2, "animation ticks keep only the two intended static placements")
+    assert_eq(
+      placement_counts[state.anims[single].frame_ids[1]],
+      1,
+      "single-frame animations do not accumulate placements"
+    )
+  end
+
+  global_deletes = 0 -- Exclude the deliberate first-use terminal reset.
+  display_utils.cleanup_images(states[1])
+  assert_eq(global_deletes, 0, "preview cleanup never requests a terminal-wide deletion")
+  assert_eq(stored[states[2].image_ids[png]], true, "closing one preview retains the other's static image")
+  for _, id in ipairs(states[2].anims[gif].frame_ids) do
+    assert_eq(stored[id], true, "closing one preview retains the other's animation frame " .. id)
+  end
+  assert_eq(vim.tbl_count(stored), 4, "only the surviving preview owns stored images")
+  display_utils.cleanup_images(states[2])
+  assert_eq(vim.tbl_count(stored), 0, "closing both previews releases all of their images")
+  assert_eq(vim.fn.filereadable(png), 1, "cleanup does not delete the source PNG")
+  for i, win in ipairs(wins) do
+    vim.api.nvim_win_close(win, true)
+    vim.api.nvim_buf_delete(bufs[i], { force = true })
+  end
+  image.extract_frames_async, vim.api.nvim_ui_send = real_extract, real_send
+  vim.env.TERM_PROGRAM, vim.env.GHOSTTY_RESOURCES_DIR = terminal, ghostty_resources
+  image.reset_cache()
+  vim.fn.delete(single)
+end)
+
 test("setup_images renders an on-screen diagram straight away", function()
   local h = mermaid_harness(0)
   h.settle()

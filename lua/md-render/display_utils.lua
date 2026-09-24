@@ -833,22 +833,18 @@ function M.setup_images(win, content, ns, opts)
           anim_timer:stop()
           return
         end
-        -- Clear only animation previous frames, then re-place ALL images.
-        -- - Animation frames must be cleared for the new frame to show
-        --   (WezTerm doesn't visually replace overlapping placements).
-        -- - Static images are NOT cleared but still re-placed every tick
-        --   because WezTerm removes placements when TUI rewrites cells.
-        -- - Clearing must happen BEFORE placing (clear after put causes
-        --   WezTerm to remove the just-placed images too).
-        for _, anim in pairs(state.anims) do
-          if #anim.frame_ids > 1 then
-            local prev_id = anim.frame_ids[anim.current]
-            anim.current = anim.current % #anim.frame_ids + 1
-            if prev_id then image.clear_placements(prev_id) end
-          end
-        end
         image.begin_batch()
         local ok, err = pcall(function()
+          -- WezTerm needs every image re-placed after TUI cell writes. Clear
+          -- this state's old placements first so repeated puts cannot stack.
+          for _, id in pairs(state.image_ids) do
+            image.clear_placements(id)
+          end
+          for _, anim in pairs(state.anims) do
+            local prev_id = anim.frame_ids[anim.current]
+            if prev_id then image.clear_placements(prev_id) end
+            anim.current = anim.current % #anim.frame_ids + 1
+          end
           for _, placement in ipairs(state.placements) do
             local anim = state.anims[placement.path]
             if anim then
@@ -987,7 +983,7 @@ function M.setup_images(win, content, ns, opts)
   ---
   --- The same file is routinely placed more than once — the same video in the
   --- English and Japanese sections of a README — and `transmit_animated_async`
-  --- deduplicates the runs itself, so every placement here can just ask.
+  --- deduplicates the runs within this state, so every placement here can ask.
   ---@async
   ---@param path string
   ---@param placement MdRender.ImagePlacement
@@ -1012,9 +1008,10 @@ function M.setup_images(win, content, ns, opts)
       return
     end
 
-    local frame_ids, tmp_dir, frame_w, frame_h = async.await(2, image.transmit_animated_async, path)
+    local frame_ids, tmp_dir, frame_w, frame_h = async.await(function(callback)
+      image.transmit_animated_async(path, callback, state)
+    end)
     if not frame_ids or not vim.api.nvim_win_is_valid(state.win) then return end
-    state.image_ids[path] = frame_ids[1]
     state.anims[path] = {
       frame_ids = frame_ids,
       current = 1,
@@ -1076,6 +1073,13 @@ function M.setup_images(win, content, ns, opts)
 
     local id, tx_w, tx_h = async.await(2, image.transmit_image_async, path)
     if not id or not vim.api.nvim_win_is_valid(state.win) then return end
+    -- Concurrent placements of one file share the state's first image ID.
+    -- Release a duplicate transmission instead of losing its ownership.
+    if state.image_ids[path] then
+      image.delete_image(id)
+    else
+      state.image_ids[path] = id
+    end
     -- Update dimensions to match the actually transmitted image
     -- (conversion may have resized it, e.g. large JPEG → 2000px PNG)
     if tx_w and tx_h then
@@ -1087,7 +1091,6 @@ function M.setup_images(win, content, ns, opts)
     state.tx_dims[path] = { placement.img_w, placement.img_h }
     -- Clear all placeholder lines (using original count before recalculation)
     clear_placeholder_text(placement, placeholder_rows)
-    state.image_ids[path] = id
     -- Use schedule_redraw to re-place ALL images together after redraw!
     schedule_redraw()
   end
@@ -1354,8 +1357,6 @@ function M.cleanup_images(state)
   end
 
   image.delete_images(ids)
-  -- Robust fallback: some terminals (Ghostty) may not support per-ID deletion
-  image.delete_all()
 
   -- Stop redraw timer
   if state.redraw_timer then state.redraw_timer:stop() end

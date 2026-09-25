@@ -144,20 +144,11 @@ end
 
 local _supported = nil
 
---- How long to wait for the terminal to identify itself.
----
---- Only paid in full by a terminal that never answers; a reply short-circuits
---- the wait. Kitty answers in ~120 ms on a warm desktop but was measured at
---- ~260 ms inside a container under Xvfb, so a tight bound silently disables
---- the feature on slow machines — which is indistinguishable, from the user's
---- side, from the terminal not supporting it.
-local PROBE_TIMEOUT_MS = 1000
-
 --- `$TERM_PROGRAM` values that are certainly not Kitty.
 ---
 --- Worth short-circuiting on now that the feature is on by default: the probe
 --- above is only cheap for a terminal that answers XTVERSION, and one that
---- answers nothing costs the full `PROBE_TIMEOUT_MS` on the first preview.
+--- answers nothing costs the one-second timeout on the first preview.
 --- Apple Terminal is exactly that case. This never turns Kitty *off* — none of
 --- these strings is one Kitty sets — so the strict "positive answer only" rule
 --- still stands.
@@ -172,51 +163,6 @@ local NOT_KITTY = {
   ["WarpTerminal"] = true,
   ["WezTerm"] = true,
 }
-
---- Ask the terminal to identify itself (XTVERSION) and accept only Kitty >= 0.40.
---- Returns nil when the terminal stays silent, which is treated as "no".
----
---- Implemented directly on `TermResponse` + `nvim_ui_send` rather than through
---- `vim.tty.request`, which does not exist before Neovim 0.13 — on 0.12
---- `vim.tty` only carries `query`. Depending on it made the whole feature a
---- silent no-op on the oldest Neovim this plugin supports.
----@return boolean?
-local function probe_xtversion()
-  if type(vim.api.nvim_ui_send) ~= "function" then return nil end
-
-  local result = nil
-  local ok_au, id = pcall(vim.api.nvim_create_autocmd, "TermResponse", {
-    nested = true,
-    callback = function(ev)
-      -- `ev.data` is a table carrying `sequence` on 0.12 and 0.13; accept a
-      -- bare string too in case that ever changes back.
-      local resp = ev.data
-      if type(resp) == "table" then resp = resp.sequence end
-      if type(resp) ~= "string" then return end
-
-      local major, minor = resp:match "kitty%((%d+)%.(%d+)"
-      if major then
-        result = (tonumber(major) > 0) or (tonumber(minor) >= 40)
-        return true
-      end
-      -- Some other terminal answered XTVERSION. Do not retry, do not guess.
-      if resp:match "^\27P>|" then
-        result = false
-        return true
-      end
-      -- Anything else is an unrelated response (cursor position, colours, the
-      -- primary device attributes that follow); keep listening.
-    end,
-  })
-  if not ok_au then return nil end
-
-  vim.api.nvim_ui_send "\27[>0q"
-  vim.wait(PROBE_TIMEOUT_MS, function()
-    return result ~= nil
-  end, 10)
-  pcall(vim.api.nvim_del_autocmd, id)
-  return result
-end
 
 --- True when the host terminal implements the text sizing protocol.
 ---@return boolean
@@ -233,13 +179,15 @@ function M.supports()
     _supported = false
     return false
   end
-  _supported = probe_xtversion() == true
+  local version = require("md-render.tty").kitty_version()
+  _supported = version ~= nil and (version[1] > 0 or version[2] >= 40)
   return _supported
 end
 
 --- Clear the cached probe result (for tests, or after `:restart`).
 function M.reset_cache()
   _supported = nil
+  require("md-render.tty").reset()
 end
 
 --- How a heading level is scaled, or nil when it must stay plain.

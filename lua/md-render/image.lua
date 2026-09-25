@@ -829,8 +829,10 @@ function M.supports_kitty()
     _kitty_supported = true
     return true
   end
-  _kitty_supported = false
-  return false
+  -- SSH normally forwards TERM, but not KITTY_WINDOW_ID or TERM_PROGRAM.
+  -- Share the positive XTVERSION result with native heading detection.
+  _kitty_supported = (vim.env.SSH_TTY ~= nil or vim.env.TERM == "xterm-kitty") and tty_mod.kitty_version() ~= nil
+  return _kitty_supported
 end
 
 function M.reset_cache()
@@ -1391,6 +1393,21 @@ end
 
 local _image_paths = {} -- image_id → file path (for Ghostty a=T workaround)
 local _temp_image_paths = {} -- image_id → true for temp files that need cleanup
+
+--- Transmit base64-encoded PNG bytes without requiring a shared filesystem.
+--- Each Kitty payload is at most 4096 bytes, including on an SSH TTY.
+function M.transmit_png(data)
+  if not M.supports_kitty() or data == "" then return nil end
+  M.clear_all()
+  _image_id = _image_id + 1
+  local id = _image_id
+  for start = 1, #data, 4096 do
+    local more = start + 4096 <= #data and 1 or 0
+    local params = start == 1 and string.format("a=t,f=100,t=d,i=%d,q=2,", id) or ""
+    term_write(string.format("\x1b_G%sm=%d;%s\x1b\\", params, more, data:sub(start, start + 4095)))
+  end
+  return id
+end
 
 --- Transmit image data to terminal (store without displaying).
 --- The image can then be displayed cheaply with put_image().
@@ -2008,7 +2025,8 @@ end
 function M.clear_all()
   if _session_cleared then return end
   _session_cleared = true
-  if not M.supports_kitty() then return end
+  -- Snacks owns its stored images; never delete them or reset live heading IDs.
+  if config.backend == "snacks" or not M.supports_kitty() then return end
   -- d=A: delete all stored image data and placements
   term_write "\x1b_Ga=d,d=A\x1b\\"
   -- Reset ID counter and path mapping to ensure clean state

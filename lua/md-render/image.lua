@@ -829,8 +829,10 @@ function M.supports_kitty()
     _kitty_supported = true
     return true
   end
-  _kitty_supported = false
-  return false
+  -- SSH normally forwards TERM, but not KITTY_WINDOW_ID or TERM_PROGRAM.
+  -- Share the positive XTVERSION result with native heading detection.
+  _kitty_supported = (vim.env.SSH_TTY ~= nil or vim.env.TERM == "xterm-kitty") and tty_mod.kitty_version() ~= nil
+  return _kitty_supported
 end
 
 function M.reset_cache()

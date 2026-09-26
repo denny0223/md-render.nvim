@@ -14,7 +14,10 @@ end
 image.get_cell_size = function()
   return { cell_w = 19, cell_h = 44 }
 end
-vim.api.nvim_ui_send = function() end
+local terminal = {}
+vim.api.nvim_ui_send = function(data)
+  terminal[#terminal + 1] = data
+end
 local transmissions = 0
 image.png_status = function()
   return { supported = true }
@@ -200,6 +203,30 @@ assert(vim.wait(1000, function()
   return state.drawn == 2
 end))
 local p = content.text_placements[1]
+local osc8 = "\x1b]8;;"
+local stop = "\x1b\\"
+local linked_row = osc8
+  .. "#first"
+  .. stop
+  .. "   "
+  .. osc8
+  .. stop
+  .. " "
+  .. osc8
+  .. "#second"
+  .. stop
+  .. " "
+  .. osc8
+  .. stop
+  .. string.rep(" ", 19)
+  .. osc8
+  .. stop
+for row = p.line + 1, p.line + p.scale do
+  assert(
+    table.concat(terminal):find(string.format("\x1b[%d;%dH\x1b[0m", row, p.col + 1) .. linked_row, 1, true),
+    "terminal links cover both image rows, while gaps and padding reset the URL"
+  )
+end
 assert(state.masked and #vim.api.nvim_buf_get_extmarks(0, state.mask_ns, 0, -1, {}) == 2)
 assert(vim.deep_equal(vim.api.nvim__ns_get(state.mask_ns).wins, { win }), "text masks belong to the image window")
 assert(vim.deep_equal(vim.api.nvim_buf_get_lines(0, 0, -1, false), content.lines), "masking never changes yank text")
@@ -212,12 +239,24 @@ assert(
   vim.deep_equal(vim.api.nvim_buf_get_extmarks(0, state.mask_ns, 0, -1, {}), masks),
   "graphics repaints must reuse text masks instead of triggering more redraws"
 )
+local mouse = { winid = win, screenrow = p.line + 2, screencol = p.col + 3, line = p.line + 2, column = 1 }
+local mapped, projected = heading.mouse_position(mouse)
+assert(projected and mapped.line == p.line + 1 and mapped.column == p.col + 4)
+assert(state.entries[1].visible, "hover keeps a visible target")
+mouse.screencol = p.col + 4
+assert(heading.mouse_position(mouse).line == 0, "image padding cannot open an underlying link")
+state.entries[1].visible = false
+assert(heading.mouse_position(mouse) == mouse, "no invisible retained targets")
+state.entries[1].visible = true
 local function paint()
   vim.api.nvim_exec_autocmds("SafeState", {})
 end
+-- An ordinary image redraw does not physically clear terminal-only URLs.
+utils.announce_repaint "image"
+assert(state.linked, "redraw! must retain the outstanding terminal URL cleanup")
 vim.o.termguicolors = false
 paint()
-assert(state.drawn == 0 and not state.masked, "switching to indexed colors withdraws existing images")
+assert(state.drawn == 0 and not state.masked and not state.linked, "text fallback withdraws images and their URLs")
 vim.o.termguicolors = true
 paint()
 assert(state.drawn == 2, "restoring truecolor restores the compatible images")
@@ -227,6 +266,12 @@ assert(state.drawn == 2, "moving through the heading margin keeps its image")
 vim.wo[win].cursorline = true
 paint()
 assert(state.drawn == 1, "CursorLine feedback also stays visible from the heading margin")
+state.gesture = state.entries[1]
+paint()
+assert(state.drawn == 2, "a held image press retains its visible target despite CursorLine")
+heading.release_mouse(win)
+paint()
+assert(state.drawn == 1, "release restores CursorLine feedback")
 vim.wo[win].cursorlineopt = "number"
 paint()
 assert(state.drawn == 2, "number-only cursorline leaves heading styles unchanged")
@@ -280,6 +325,9 @@ vim.wo[win].winhighlight = "Normal:Error"
 paint()
 assert(state.drawn == 0, "custom window highlights must not be covered by cached colors")
 vim.wo[win].winhighlight = ""
+-- :mode resolves Normal through winhighlight; finish the option's redraw
+-- before checking the restored global colors, as a TUI does between inputs.
+vim.cmd "redraw"
 vim.fn.setreg("/", "first")
 vim.v.hlsearch, vim.o.ignorecase = 1, false
 paint()
@@ -321,7 +369,7 @@ paint()
 assert(state.drawn == 0 and not state.masked and state.force_text, "direct style edits withdraw cached pixels")
 vim.api.nvim_set_hl(0, "MdRenderLinkAnchor", anchor_style)
 heading.detach(state)
-assert(state.closed and state.drawn == 0)
+assert(state.closed and state.drawn == 0 and heading.mouse_position(mouse) == mouse)
 assert(#vim.api.nvim_buf_get_extmarks(0, state.mask_ns, 0, -1, {}) == 0, "detach restores every masked character")
 local float = vim.api.nvim_open_win(vim.api.nvim_get_current_buf(), true, {
   relative = "editor",
@@ -425,17 +473,23 @@ local ok, err = pcall(function()
     vim.system = function() return nil end
     vim.fn.screenpos = function(_, row, col) return {row=row, col=col} end
     local content = {
-      lines = {"Body", "Heading", ""}, source_line_map={1,2,2},
+      lines = {"Body", "Heading", "", "Plain", ""}, source_line_map={1,2,2,3,3},
+      link_metadata={{line=1,col_start=0,col_end=7,url="https://example.invalid/\27\\\7\127"}},
       text_placements={{line=1,col=0,text="Heading",scale=2,
-        raster={data="png",cols=10,width=130,height=60,transparent=true}}},
+        raster={data="png",cols=10,width=130,height=60,transparent=true,
+          columns={0,0,1,2,3,4,5,6,false,false}}},
+        {line=3,col=0,text="Plain",scale=2,
+          raster={data="png",cols=10,width=130,height=60,transparent=true}}},
     }
     vim.api.nvim_buf_set_lines(0,0,-1,false,content.lines)
     local state = require("md-render.heading_image").attach(vim.api.nvim_get_current_win(), content)
+    assert(state.entries[1].links:find("https://example.invalid/%1B\\%07%7F",1,true),
+      "URL controls must not escape the OSC 8 payload")
     local events = 0
     _G.idle_events = -1
     vim.api.nvim_create_autocmd("SafeState", { callback = function() events = events + 1 end })
     vim.defer_fn(function()
-      _G.idle_events = state.masked and events or -2
+      _G.idle_events = state.masked and state.linked and events or -2
       require("md-render.heading_image").detach(state)
     end, 100)
   ]],

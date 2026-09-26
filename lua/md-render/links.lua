@@ -1,5 +1,12 @@
 local M = {}
 
+--- Shared by Markdown style spans and native link extmarks.
+function M.highlight(url)
+  return url:match "^#" and "MdRenderLinkAnchor"
+    or url:match "^obsidian://" and "MdRenderLinkObsidian"
+    or "MdRenderLink"
+end
+
 --- Find the link containing a byte position; extmark query bounds are inclusive.
 function M.at(buf, ns, row, col)
   if not vim.api.nvim_buf_is_valid(buf) or row < 0 or col < 0 or row >= vim.api.nvim_buf_line_count(buf) then

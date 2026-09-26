@@ -117,6 +117,60 @@ test("standard link [text](https://...) has external URL", function()
   assert_match(links[1].url, "^https://", "external link: URL is https")
 end)
 
+test("link styles retain destination colors before nested inline styles", function()
+  for _, target in ipairs {
+    { "#target", "MdRenderLinkAnchor" },
+    { "obsidian://open?vault=notes", "MdRenderLinkObsidian" },
+    { "https://example.com", "MdRenderLink" },
+    { "guide.md", "MdRenderLink" },
+  } do
+    local url, group = unpack(target)
+    for _, source in ipairs {
+      "## [漢字](" .. url .. ")",
+      "## [漢字][ref]",
+      "## [漢字][]",
+      "## [漢字]",
+      '## <a href="' .. url .. '">漢字</a>',
+    } do
+      local rendered, highlights, links = Markdown.render(source, nil, nil, { ref = url, ["漢字"] = url })
+      local groups = {}
+      for _, hl in ipairs(highlights) do
+        if hl.col == links[1].col_start and hl.end_col == links[1].col_end then groups[#groups + 1] = hl.hl end
+      end
+      assert_eq(rendered:sub(links[1].col_start + 1, links[1].col_end), "漢字", "UTF-8 link span is preserved")
+      assert_eq(groups, group == "MdRenderLink" and { group } or { "Underlined", group }, source)
+    end
+  end
+  for _, destination in ipairs { [[\#target]], "&#35;target" } do
+    local _, highlights, links = Markdown.render("## [漢字](" .. destination .. ")")
+    assert_eq(links[1].url, "#target", "classification uses the resolved destination")
+    assert_eq(highlights[#highlights].hl, "MdRenderLinkAnchor", "escaped anchors retain their color")
+  end
+  local _, highlights = Markdown.render "## ==[`漢字`](#target)=="
+  assert_eq(
+    vim.tbl_map(function(hl)
+      return hl.hl
+    end, highlights),
+    { "MdRenderH2", "Underlined", "MdRenderLinkAnchor", "MdRenderHighlight", "MdRenderInlineCode" },
+    "link colors remain below nested highlight and code styles"
+  )
+end)
+
+test("bare links have link colors while plain underlines remain decoration", function()
+  for _, source in ipairs {
+    "## https://example.com",
+    "## <https://example.com>",
+    "## #12",
+    '## <img src="https://example.com/image.png" alt="image">',
+  } do
+    local _, highlights = Markdown.render(source, "https://github.com/example/project")
+    assert_eq(highlights[#highlights].hl, "MdRenderLink", source)
+  end
+  local _, highlights = Markdown.render "<u>plain underline</u>"
+  assert_eq(#highlights, 1, "plain underline is not a hyperlink")
+  assert_eq(highlights[1].hl, "Underlined", "plain underline keeps its original style")
+end)
+
 test("local destinations retain spaces while display text and spans are normalized", function()
   local refs = Markdown.parse_reference_links { '[ref]: <two  spaces.md> "Title"' }
   for _, source in ipairs {
@@ -133,11 +187,11 @@ test("local destinations retain spaces while display text and spans are normaliz
     for _, link in ipairs(links) do
       local label = link.url == "next.md" and "next" or "two words"
       assert_eq(rendered:sub(link.col_start + 1, link.col_end), label, "link span covers its label")
-      local underlined = false
+      local styled = false
       for _, hl in ipairs(highlights) do
-        if hl.hl == "Underlined" and hl.col == link.col_start and hl.end_col == link.col_end then underlined = true end
+        if hl.hl == "MdRenderLink" and hl.col == link.col_start and hl.end_col == link.col_end then styled = true end
       end
-      assert_eq(underlined, true, "underline stays aligned with the link")
+      assert_eq(styled, true, "link style stays aligned with the label")
     end
   end
 end)

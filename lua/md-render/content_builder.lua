@@ -1840,6 +1840,14 @@ function ContentBuilder:render_document(lines, opts)
       end
     end
 
+    -- Text placements use byte columns, including the separately painted icon.
+    for _, placement in ipairs(self.text_placements) do
+      if placement.line >= from_line and placement.line < to_line then
+        placement.col = placement.col + prefix_len
+        if placement.icon_col then placement.icon_col = placement.icon_col + prefix_len end
+      end
+    end
+
     for _, link in ipairs(self.link_metadata) do
       if link.line >= from_line and link.line < to_line then
         link.col_start = link.col_start + prefix_len

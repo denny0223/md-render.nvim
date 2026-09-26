@@ -4,6 +4,22 @@ local async = require "md-render.async"
 
 local M = {}
 
+--- Mouse coordinates shared by preview clicks and URL hover.
+function M.getmousepos(release)
+  local mouse = vim.fn.getmousepos()
+  local headings = package.loaded["md-render.heading_image"]
+  if headings then
+    local position, projected = headings.mouse_position(mouse)
+    if release and headings.release_mouse(mouse.winid) then
+      -- A drag must never become a link click, even if Neovim coalesced its
+      -- mouse coordinates and did not enter Visual mode.
+      position = vim.tbl_extend("force", position, { line = 0, column = 0 })
+    end
+    return position, projected
+  end
+  return mouse
+end
+
 local _osc8_supported = nil
 
 local function is_wezterm()
@@ -578,8 +594,9 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
   end, { buffer = buf, noremap = true, silent = true })
 
   vim.keymap.set("n", "<LeftRelease>", function()
-    local mouse = vim.fn.getmousepos()
-    if mouse.winid == win then
+    local mouse, projected = M.getmousepos(true)
+    if mouse.winid == win and mouse.line > 0 then
+      if projected then vim.api.nvim_win_set_cursor(win, { mouse.line, mouse.column - 1 }) end
       if close_line_idx and close_handle and mouse.line == close_line_idx + 1 then
         close_handle:close_if_valid()
         return

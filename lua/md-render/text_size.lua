@@ -513,7 +513,7 @@ end
 ---@return integer? right
 ---@return integer? top
 ---@return integer? bottom
-local function text_area(win)
+function M.text_area(win)
   local wininfo = vim.fn.getwininfo(win)[1]
   if not wininfo then return nil end
 
@@ -555,7 +555,7 @@ end
 local function visible_placements(state)
   local win = state.win
   if not vim.api.nvim_win_is_valid(win) then return {} end
-  local left, right, top, bottom = text_area(win)
+  local left, right, top, bottom = M.text_area(win)
   if not left then return {} end
   local buf = vim.api.nvim_win_get_buf(win)
 

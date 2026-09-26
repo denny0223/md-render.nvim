@@ -1,7 +1,8 @@
--- Project shaped byte ranges into usable native text, styles and links.
+-- Async layout/cache ownership and native/image interaction invariants.
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
 local image = require "md-render.image"
 local size = require "md-render.text_size"
+local heading = require "md-render.heading_image"
 local Builder = require("md-render.content_builder").ContentBuilder
 vim.o.termguicolors = true
 size.supports = function()
@@ -14,6 +15,11 @@ image.get_cell_size = function()
   return { cell_w = 19, cell_h = 44 }
 end
 vim.api.nvim_ui_send = function() end
+local transmissions = 0
+image.transmit_png = function()
+  transmissions = transmissions + 1
+  return transmissions
+end
 vim.api.nvim_set_hl(0, "Normal", { fg = 0x112233 })
 vim.api.nvim_set_hl(0, "@markup.heading", { fg = 0xabcdef })
 vim.api.nvim_set_hl(0, "MdRenderH2", { fg = 0xff9977, bold = false })
@@ -123,6 +129,7 @@ for i, line_text in ipairs(details.lines) do
   end
 end
 local utils = require "md-render.display_utils"
+local win = vim.api.nvim_get_current_win()
 utils.apply_content_to_buffer(0, vim.api.nvim_create_namespace "heading_test", content)
 local view = utils.remap_view({ lnum = 2, topline = 2, col = 10 }, {
   lines = { "body", "  FIRST SECOND" },
@@ -148,6 +155,145 @@ for _, mark in ipairs(marks) do
   end
 end
 assert(stacked, "overlapping Markdown styles use ordered highlight groups")
+local screenpos = vim.fn.screenpos
+vim.fn.screenpos = function(_, line, col)
+  return { row = line, col = col }
+end
+local state = assert(heading.attach(win, content))
+assert(vim.wait(1000, function()
+  return state.drawn == 2
+end))
+local p = content.text_placements[1]
+assert(state.masked and #vim.api.nvim_buf_get_extmarks(0, state.mask_ns, 0, -1, {}) == 2)
+assert(vim.deep_equal(vim.api.nvim__ns_get(state.mask_ns).wins, { win }), "text masks belong to the image window")
+assert(vim.deep_equal(vim.api.nvim_buf_get_lines(0, 0, -1, false), content.lines), "masking never changes yank text")
+local masks = vim.api.nvim_buf_get_extmarks(0, state.mask_ns, 0, -1, {})
+for _ = 1, 3 do
+  state.last_layout = nil
+  vim.api.nvim_exec_autocmds("SafeState", {})
+end
+assert(
+  vim.deep_equal(vim.api.nvim_buf_get_extmarks(0, state.mask_ns, 0, -1, {}), masks),
+  "graphics repaints must reuse text masks instead of triggering more redraws"
+)
+local mouse = { winid = win, screenrow = p.line + 2, screencol = p.col + 3, line = p.line + 2, column = 1 }
+local mapped, projected = heading.mouse_position(mouse)
+assert(projected and mapped.line == p.line + 1 and mapped.column == p.col + 4)
+assert(state.entries[1].visible, "hover keeps a visible target")
+mouse.screencol = p.col + 4
+assert(heading.mouse_position(mouse).line == 0, "image padding cannot open an underlying link")
+state.entries[1].visible = false
+assert(heading.mouse_position(mouse) == mouse, "no invisible retained targets")
+state.entries[1].visible = true
+local function paint()
+  vim.api.nvim_exec_autocmds("SafeState", {})
+end
+vim.o.termguicolors = false
+paint()
+assert(state.drawn == 0 and not state.masked, "switching to indexed colors withdraws existing images")
+vim.o.termguicolors = true
+paint()
+assert(state.drawn == 2, "restoring truecolor restores the compatible images")
+vim.api.nvim_win_set_cursor(win, { p.line + 1, 0 })
+paint()
+assert(state.drawn == 2, "moving through the heading margin keeps its image")
+vim.api.nvim_win_set_cursor(win, { p.line + 1, p.col })
+paint()
+assert(state.drawn == 1, "a cursor inside the image reveals native text")
+assert(#vim.api.nvim_buf_get_extmarks(0, state.mask_ns, 0, -1, {}) == 1, "revealed text is never masked")
+local columns = state.entries[1].cols
+state.entries[1].cols = 4
+vim.api.nvim_win_set_cursor(win, { p.line + 1, p.col + #p.text - 1 })
+paint()
+assert(state.drawn == 1, "a compact image must not mask the cursor on wider buffer text")
+state.entries[1].cols = columns
+vim.api.nvim_win_set_cursor(win, { 1, 0 })
+local get_mode, line = vim.api.nvim_get_mode, vim.fn.line
+vim.api.nvim_get_mode = function()
+  return { mode = "v" }
+end
+vim.fn.line = function(expr, ...)
+  if expr == "v" then return p.line + 1 end
+  return line(expr, ...)
+end
+paint()
+assert(state.drawn == 1, "Visual selection leaves unrelated headings visible")
+vim.fn.line = function(expr, ...)
+  if expr == "v" then return 1 end
+  return line(expr, ...)
+end
+paint()
+assert(state.drawn == 2, "selecting only body text keeps all heading images")
+vim.api.nvim_get_mode, vim.fn.line = get_mode, line
+local feedback_ns = vim.api.nvim_create_namespace "heading_feedback_test"
+vim.hl.range(0, feedback_ns, "IncSearch", { p.line, p.col }, { p.line, p.col + 4 })
+paint()
+assert(state.drawn == 1, "external yank/highlight feedback reveals only the affected heading")
+vim.api.nvim_buf_clear_namespace(0, feedback_ns, 0, -1)
+paint()
+assert(state.drawn == 2, "images return after the user's highlight expires")
+vim.fn.setreg("/", "Body")
+vim.v.hlsearch = 1
+paint()
+assert(state.drawn == 2, "unrelated search does not suppress heading images")
+vim.fn.setreg("/", "FIRST")
+paint()
+assert(state.drawn == 1 and vim.fn.getreg "/" == "FIRST" and vim.v.hlsearch == 1)
+vim.cmd "nohlsearch"
+paint()
+assert(state.drawn == 2)
+vim.wo[win].winhighlight = "Normal:Error"
+paint()
+assert(state.drawn == 0, "custom window highlights must not be covered by cached colors")
+vim.wo[win].winhighlight = ""
+vim.fn.setreg("/", "first")
+vim.v.hlsearch, vim.o.ignorecase = 1, false
+paint()
+local sensitive = state.drawn
+vim.o.ignorecase = true
+paint()
+assert(state.drawn < sensitive, "changing regex options updates image withdrawal")
+vim.o.ignorecase = false
+vim.cmd "nohlsearch"
+paint()
+vim.cmd "botright vnew"
+local other = vim.api.nvim_get_current_win()
+paint()
+assert(state.drawn == 2, "inactive previews remain readable")
+vim.cmd "tabnew"
+paint()
+assert(state.drawn == 0, "off-tab previews never draw")
+vim.cmd "tabclose"
+paint()
+assert(state.drawn == 2)
+vim.api.nvim_win_close(other, true)
+heading.detach(state)
+assert(state.closed and state.drawn == 0 and heading.mouse_position(mouse) == mouse)
+assert(#vim.api.nvim_buf_get_extmarks(0, state.mask_ns, 0, -1, {}) == 0, "detach restores every masked character")
+local float = vim.api.nvim_open_win(vim.api.nvim_get_current_buf(), true, {
+  relative = "editor",
+  row = 0,
+  col = 0,
+  width = 40,
+  height = 10,
+  style = "minimal",
+})
+local floating = assert(heading.attach(float, content))
+assert(
+  vim.wait(1000, function()
+    return floating.drawn == 2
+  end),
+  "minimal floats' EndOfBuffer mapping must not disable heading images"
+)
+local custom_ns = vim.api.nvim_create_namespace "heading_custom_theme"
+vim.api.nvim_set_hl(custom_ns, "Normal", { bg = 0x123456 })
+vim.api.nvim_win_set_hl_ns(float, custom_ns)
+paint()
+assert(floating.drawn == 0 and not floating.masked, "actual window theme overrides still retain native text")
+vim.api.nvim_win_close(float, true)
+assert(floating.closed)
+vim.fn.screenpos = screenpos
+
 local normal_float = vim.api.nvim_get_hl(0, { name = "NormalFloat", link = false })
 vim.api.nvim_set_hl(0, "NormalFloat", { italic = true })
 local float_batch = #callbacks + 1
@@ -194,4 +340,54 @@ assert(warning:find "missing%-python", "failure includes actionable diagnostics"
 assert(#failed.text_placements == 1)
 vim.system, vim.notify_once = system, notify
 
-print "Heading content: shared layouts, styles, links, reflow and text fallback OK"
+-- A child editor reaches the real idle loop; vim.wait in this script does not.
+local child = vim.fn.jobstart(
+  { vim.v.progpath, "--embed", "--headless", "-n", "-u", "NONE", "--noplugin", "-i", "NONE" },
+  { rpc = true }
+)
+local ok, err = pcall(function()
+  vim.rpcrequest(
+    child,
+    "nvim_exec_lua",
+    [[
+    package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. package.path
+    vim.o.termguicolors = true
+    local image = require "md-render.image"
+    image.supports_kitty = function() return true end
+    image.get_cell_size = function() return { cell_w = 13, cell_h = 30 } end
+    image.transmit_png = function() return 1 end
+    image.put_image = function() end
+    image.clear_placements = function() end
+    image.delete_image = function() end
+    vim.system = function() return nil end
+    vim.fn.screenpos = function(_, row, col) return {row=row, col=col} end
+    local content = {
+      lines = {"Body", "Heading", ""}, source_line_map={1,2,2},
+      text_placements={{line=1,col=0,text="Heading",scale=2,
+        raster={data="png",cols=10,width=130,height=60,transparent=true}}},
+    }
+    vim.api.nvim_buf_set_lines(0,0,-1,false,content.lines)
+    local state = require("md-render.heading_image").attach(vim.api.nvim_get_current_win(), content)
+    local events = 0
+    _G.idle_events = -1
+    vim.api.nvim_create_autocmd("SafeState", { callback = function() events = events + 1 end })
+    vim.defer_fn(function()
+      _G.idle_events = state.masked and events or -2
+      require("md-render.heading_image").detach(state)
+    end, 100)
+  ]],
+    {}
+  )
+  local events
+  assert(
+    vim.wait(1000, function()
+      events = vim.rpcrequest(child, "nvim_exec_lua", "return idle_events", {})
+      return events >= 0
+    end, 20),
+    "child editor never reached idle"
+  )
+  assert(events > 0 and events < 50, "idle repaint must settle instead of waking itself: " .. events)
+end)
+vim.fn.jobstop(child)
+assert(ok, err)
+print "Heading images: async cache, style order, search, lifecycle and fallback OK"

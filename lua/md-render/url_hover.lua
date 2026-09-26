@@ -138,7 +138,7 @@ local function url_at_mouse(mouse, buf, ns)
 end
 
 local function handle_mouse_move()
-  local mouse = vim.fn.getmousepos()
+  local mouse = require("md-render.display_utils").getmousepos()
   local entry = registered[mouse.winid]
 
   if not entry then

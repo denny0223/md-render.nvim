@@ -156,6 +156,39 @@ function M.apply_treesitter_highlights(buf, ns, content)
   end
 end
 
+--- Stack overlapping heading styles in document order, below user highlights.
+local function apply_heading_highlights(buf, ns, row, groups, length)
+  local boundaries = {}
+  for _, group in ipairs(groups) do
+    boundaries[#boundaries + 1] = group.col
+    boundaries[#boundaries + 1] = group.end_col == -1 and length or math.min(group.end_col, length)
+  end
+  table.sort(boundaries)
+  for i = 2, #boundaries do
+    local first, last = boundaries[i - 1], boundaries[i]
+    if first < last then
+      local stack, seen = {}, {}
+      for index = #groups, 1, -1 do
+        local group = groups[index]
+        local key = group.hl .. ":" .. tostring(group.hl_eol == true)
+        if not seen[key] and group.col <= first and (group.end_col == -1 or group.end_col >= last) then
+          table.insert(stack, 1, group)
+          seen[key] = true
+        end
+      end
+      -- Give every layer its own priority below user feedback.
+      for layer, group in ipairs(stack) do
+        vim.api.nvim_buf_set_extmark(buf, ns, row, first, {
+          end_col = last,
+          hl_group = group.hl,
+          hl_eol = group.hl_eol,
+          priority = vim.hl.priorities.treesitter + layer,
+        })
+      end
+    end
+  end
+end
+
 --- Apply highlights, link extmarks, and optional title extmark to a buffer
 ---@param buf integer
 ---@param ns integer
@@ -163,6 +196,7 @@ end
 ---@param opts? { title_url?: string }
 function M.apply_content_to_buffer(buf, ns, content, opts)
   opts = opts or {}
+  content.highlight_ns = ns
   -- Replacing unchanged rows would collapse native jump/mark positions into
   -- the replaced range. Let Neovim adjust only the rows that actually changed.
   local old = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
@@ -184,6 +218,10 @@ function M.apply_content_to_buffer(buf, ns, content, opts)
   for _, hl_info in ipairs(content.highlights) do
     local line_text = content.lines[hl_info.line + 1]
     if line_text then
+      if content.heading_lines and content.heading_lines[hl_info.line] then
+        apply_heading_highlights(buf, ns, hl_info.line, hl_info.groups, #line_text)
+        goto next_highlight
+      end
       for _, group in ipairs(hl_info.groups) do
         local end_col = group.end_col
         if end_col == -1 or end_col > #line_text then end_col = #line_text end
@@ -195,6 +233,7 @@ function M.apply_content_to_buffer(buf, ns, content, opts)
         vim.api.nvim_buf_set_extmark(buf, ns, hl_info.line, group.col, extmark_opts)
       end
     end
+    ::next_highlight::
   end
 
   for _, link in ipairs(content.link_metadata) do
@@ -204,17 +243,12 @@ function M.apply_content_to_buffer(buf, ns, content, opts)
       local col_end = link.col_end
       if col_start > #line_text then goto next_link end
       if col_end > #line_text then col_end = #line_text end
-      local hl
-      if link.url:match "^#" then
-        hl = "MdRenderLinkAnchor"
-      elseif link.url:match "^obsidian://" then
-        hl = "MdRenderLinkObsidian"
-      else
-        hl = "Underlined"
-      end
       vim.api.nvim_buf_set_extmark(buf, ns, link.line, col_start, {
         end_col = col_end,
-        hl_group = hl,
+        -- Heading links already belong to the ordered style stack.
+        hl_group = not (content.heading_lines and content.heading_lines[link.line])
+            and require("md-render.links").highlight(link.url)
+          or nil,
         url = link.url,
       })
     end

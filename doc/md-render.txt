@@ -594,9 +594,8 @@ Limitations: ~
   terminals swallow an OSC 66 sequence together with its payload text, which
   would delete the heading rather than fall back to unscaled text.  Anywhere
   else the feature costs nothing and headings render as they always did.
-- Inline formatting inside a heading (inline code, links, `==highlight==`)
-  loses its colors while scaled — the whole run is drawn in the heading
-  highlight.
+- Headings with inline formatting or links retain ordinary text so their
+  styles and link colors stay visible.
 - A heading whose second row would fall outside the window stays plain until
   it is scrolled into view.
 - A repaint by anything else (another plugin forcing a redraw, a message or
@@ -1286,6 +1285,8 @@ INLINE FORMATTING ~
   *MdRenderHighlight*   Obsidian `==highlight==` markers
   *MdRenderTag*         Obsidian `#tag` syntax (links to `Label`)
   *MdRenderMath*        Inline/block math (links to `Special`)
+  *MdRenderLink*        External and local-file links (copies `Underlined`;
+                        missing RGB/cterm foregrounds use `DiagnosticInfo`)
   *MdRenderLinkAnchor*  Anchor links `#heading`
                         (links to `DiagnosticHint`)
 							  *MdRenderLinkObsidian*

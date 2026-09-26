@@ -91,6 +91,12 @@ function M.setup_highlights()
   vim.api.nvim_set_hl(0, "MdRenderTag", { link = "Label", default = true })
   -- Inline/block math
   vim.api.nvim_set_hl(0, "MdRenderMath", { link = "Special", default = true })
+  -- Keep the theme's link style, supplying only its missing foreground colors.
+  local link_hl = vim.api.nvim_get_hl(0, { name = "Underlined", link = false })
+  local fallback = vim.api.nvim_get_hl(0, { name = "DiagnosticInfo", link = false })
+  link_hl.fg, link_hl.ctermfg = link_hl.fg or fallback.fg, link_hl.ctermfg or fallback.ctermfg
+  link_hl.default = true
+  vim.api.nvim_set_hl(0, "MdRenderLink", link_hl)
   -- Internal anchor links (#heading)
   vim.api.nvim_set_hl(0, "MdRenderLinkAnchor", { link = "DiagnosticHint", default = true })
   -- Obsidian wikilinks ([[...]])
@@ -140,6 +146,16 @@ function M.setup_inline_code_highlight()
     vim.api.nvim_set_hl(0, "MdRenderInlineCode", { bg = bg, default = true })
   end
 end
+
+-- Run after the colorscheme and user ColorScheme callbacks have defined their
+-- groups, then initialize defaults without replacing explicit overrides.
+vim.api.nvim_create_autocmd("ColorScheme", {
+  callback = function()
+    vim.schedule(function()
+      M.setup_highlights()
+    end)
+  end,
+})
 
 -- Re-export submodules (preview is lazy-loaded to avoid circular dependency)
 M.ContentBuilder = require("md-render.content_builder").ContentBuilder

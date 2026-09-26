@@ -567,8 +567,8 @@ Kitty graphics に使っているのと同じ経路です。Neovim はこの書�
   OSC 66 をペイロードのテキストごと捨てる端末があるためです(等倍で表示され
   るのではなく、見出しが消えてしまう)。それ以外の端末では何も起こらず、
   見出しは従来どおりに描画されます。
-- 見出し内のインライン書式(インラインコード・リンク・`==highlight==`)は
-  拡大中は色が失われ、見出し全体が同じハイライトで描かれます。
+- インライン書式やリンクを含む見出しは、色と書式を保つため通常の文字で
+  表示します。
 - 2 行目がウィンドウの外にはみ出す見出しは、スクロールして見えるようになる
   まで等倍のままです。
 - 他の何かによる再描画(他のプラグインによる強制再描画、メッセージやポップ
@@ -1222,6 +1222,8 @@ b:md_render ~
   *MdRenderHighlight*   Obsidian `==highlight==` マーカー
   *MdRenderTag*         Obsidian `#tag` （ `Label` にリンク）
   *MdRenderMath*        数式（ `Special` にリンク）
+  *MdRenderLink*        外部リンクとローカルファイルへのリンク（ `Underlined`
+                        を継承し、未指定の RGB/cterm 文字色は `DiagnosticInfo`）
   *MdRenderLinkAnchor*  アンカーリンク `#heading`
                         （ `DiagnosticHint` にリンク）
   *MdRenderLinkObsidian*

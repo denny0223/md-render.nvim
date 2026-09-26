@@ -27,7 +27,7 @@ local ok, err = pcall(function()
     local image = require "md-render.image"
     image.supports_kitty = function() return true end
     image.get_cell_size = function() return { cell_w = 19, cell_h = 44 } end
-    image.png_status = function() return { supported = true } end
+    image.png_status = function() return png_failure and {supported=false,reason="PNG rejected"} or { supported = true } end
     image.transmit_png = function(_, callback) callback(); return 1 end
     image.put_image = function() end
     image.delete_image = function() end
@@ -39,9 +39,9 @@ local ok, err = pcall(function()
     end
     local size = require "md-render.text_size"
     size.supports = function() return true end
-    size.setup { backend = "image" }
+    size.setup { backend = "auto" }
     _G.preview = require "md-render.preview"
-    _G.complete = function()
+    _G.complete = function(failure)
       local batch = jobs
       jobs = {}
       for _, job in ipairs(batch) do
@@ -53,10 +53,20 @@ local ok, err = pcall(function()
           outputs[index] = { lines = {{ start = 0, ["end"] = #entry.text, text = entry.text,
             data = "png", cols = 30, width = 570, height = 88, columns = columns }} }
         end
-        job.callback { code = 0, stdout = vim.json.encode(outputs) }
+        if failure == "worker" then
+          job.callback { code = 1, stderr = "Pango unavailable" }
+        else
+          job.callback { code = 0, stdout = vim.json.encode(outputs) }
+        end
+      end
+      if failure == "png" then
+        _G.png_failure = true
+        image.fail_png "PNG rejected"
       end
     end
     _G.start = function(tag, with_image)
+      _G.png_failure = nil
+      size.retry_image()
       if _G.session then
         local old = session
         preview.toggle()
@@ -82,46 +92,81 @@ local ok, err = pcall(function()
       _G.before = vim.api.nvim_buf_get_lines(0, 0, -1, false)
     end
   ]]
-  for _, mode in ipairs { "v", "s", "no", "c" } do
-    phase = mode
-    lua("start(...)", mode)
-    wait_for "return #jobs > 0"
-    if mode == "v" or mode == "s" then
-      lua [[vim.cmd "normal! v$"]]
-      if mode == "s" then input "<C-g>" end
-    elseif mode == "no" then
-      input "y"
-    else
-      input "/SELECT"
-    end
-    wait_for("return vim.api.nvim_get_mode().mode == " .. vim.inspect(mode))
-    lua [[_G.anchor, _G.cursor = vim.fn.getpos "v", vim.fn.getpos "."; complete()]]
-    if mode == "v" then
-      lua [[
+  for _, failure in ipairs { "success", "worker", "png" } do
+    for _, mode in ipairs { "v", "s", "no", "c" } do
+      phase = failure .. " " .. mode
+      lua("start(...)", phase)
+      wait_for "return #jobs > 0"
+      if mode == "v" or mode == "s" then
+        lua [[vim.cmd "normal! v$"]]
+        if mode == "s" then input "<C-g>" end
+      elseif mode == "no" then
+        input "y"
+      else
+        input "/SELECT"
+      end
+      wait_for("return vim.api.nvim_get_mode().mode == " .. vim.inspect(mode))
+      lua([[_G.anchor, _G.cursor = vim.fn.getpos "v", vim.fn.getpos "."; complete(...)]], failure)
+      if mode == "v" then
+        lua [[
         vim.api.nvim_exec_autocmds("ColorScheme", {})
         vim.api.nvim_exec_autocmds("VimResized", {})
       ]]
+      end
+      wait_for "return session.dirty"
+      assert(lua [[return vim.deep_equal(before, vim.api.nvim_buf_get_lines(0,0,-1,false))]], mode .. " text changed")
+      assert(
+        lua [[return vim.deep_equal(anchor, vim.fn.getpos "v") and vim.deep_equal(cursor, vim.fn.getpos ".")]],
+        mode .. " endpoints changed"
+      )
+      if mode == "v" or mode == "s" then
+        if mode == "s" then input "<C-g>" end
+        input "y"
+        wait_for [[return vim.fn.getreg '"' == selected_line .. "\n"]]
+      elseif mode == "no" then
+        input "$"
+        wait_for [[return vim.fn.getreg '"' == selected_line]]
+      else
+        input "<CR>"
+        wait_for [[return vim.fn.getreg "/" == "SELECT"]]
+      end
+      wait_for "return vim.api.nvim_get_mode().mode == 'n' and not session.dirty and #session.content.text_placements == 2"
+      assert(lua "return session.content.heading_backend" == (failure == "success" and "image" or "native"))
+      lua [[vim.cmd "nohlsearch"]]
     end
-    wait_for "return session.dirty"
-    assert(lua [[return vim.deep_equal(before, vim.api.nvim_buf_get_lines(0,0,-1,false))]], mode .. " text changed")
-    assert(
-      lua [[return vim.deep_equal(anchor, vim.fn.getpos "v") and vim.deep_equal(cursor, vim.fn.getpos ".")]],
-      mode .. " endpoints changed"
-    )
-    if mode == "v" or mode == "s" then
-      if mode == "s" then input "<C-g>" end
-      input "y"
-      wait_for [[return vim.fn.getreg '"' == selected_line .. "\n"]]
-    elseif mode == "no" then
-      input "$"
-      wait_for [[return vim.fn.getreg '"' == selected_line]]
-    else
-      input "<CR>"
-      wait_for [[return vim.fn.getreg "/" == "SELECT"]]
-    end
-    wait_for "return vim.api.nvim_get_mode().mode == 'n' and not session.dirty and #session.content.text_placements == 2"
-    lua [[vim.cmd "nohlsearch"]]
   end
+
+  -- Native fallback must also yield to search, Visual and timed yank feedback.
+  phase = "native feedback"
+  lua [[
+    local size = require "md-render.text_size"
+    local state = session.text_size_state
+    local row = state.placements[1].line + 1
+    _G.feedback_row = row
+    vim.api.nvim_win_set_cursor(0, {row, 0})
+    vim.cmd "normal! v$"
+    size.paint(state)
+    for _, d in ipairs(state.drawn or {}) do assert(d.p.line ~= row - 1) end
+  ]]
+  input "y"
+  wait_for "return vim.api.nvim_get_mode().mode == 'n'"
+  lua [[
+    local size = require "md-render.text_size"
+    local ns = vim.api.nvim_create_namespace "auto-test-yank"
+    vim.api.nvim_buf_set_extmark(0, ns, feedback_row-1, 0, {end_row=feedback_row, end_col=0, hl_group="IncSearch"})
+    size.paint(session.text_size_state)
+    for _, d in ipairs(session.text_size_state.drawn or {}) do assert(d.p.line ~= feedback_row-1) end
+    vim.api.nvim_buf_clear_namespace(0, ns, 0, -1)
+    vim.fn.setreg("/", "Top")
+    vim.v.hlsearch = 1
+    size.paint(session.text_size_state)
+    for _, d in ipairs(session.text_size_state.drawn or {}) do assert(d.p.line ~= feedback_row-1) end
+    vim.cmd "nohlsearch"
+  ]]
+  lua [[start("resume image"); complete()]]
+  wait_for "return #jobs > 0"
+  lua [[complete()]]
+  wait_for "return session.content.heading_backend == 'image' and #session.content.text_placements == 2"
 
   -- The ordinary window-resize handler calls Session:rebuild directly.
   phase = "resize"

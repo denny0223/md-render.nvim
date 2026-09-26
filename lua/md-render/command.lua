@@ -5,7 +5,7 @@ local M = {}
 
 local SUBCOMMANDS = { "float", "tab", "pager", "toggle", "split", "auto", "demo", "textsize" }
 local AUTO_ARGS = { "on", "off", "toggle" }
-local TEXTSIZE_ARGS = { "on", "off", "toggle", "image", "native" }
+local TEXTSIZE_ARGS = { "on", "off", "toggle", "auto", "image", "native", "status" }
 
 local function preview()
   return require("md-render").preview
@@ -36,7 +36,10 @@ function M.dispatch(args)
     local cur = text_size.config().enabled
     local backend = text_size.config().backend
     local want
-    if a == "image" or a == "native" then
+    if a == "status" then
+      vim.notify("MdRender textsize: " .. text_size.status())
+      return
+    elseif a == "auto" or a == "image" or a == "native" then
       want, backend = true, a
     elseif a == "on" then
       want = true
@@ -46,21 +49,12 @@ function M.dispatch(args)
       want = not cur
     else
       vim.notify(
-        "MdRender textsize: unknown argument '" .. a .. "' (expected on|off|toggle|image|native)",
+        "MdRender textsize: unknown argument '" .. a .. "' (expected on|off|toggle|auto|image|native|status)",
         vim.log.levels.WARN
       )
       return
     end
-    if want and not text_size.supports() then
-      vim.notify(
-        "MdRender textsize: this terminal does not implement OSC 66 (needs Kitty >= 0.40)",
-        vim.log.levels.WARN
-      )
-      return
-    end
-    if a == "image" and package.loaded["md-render.heading_layout"] then
-      require("md-render.heading_layout").retry_failed()
-    end
+    if a == "auto" or a == "image" then text_size.retry_image() end
     text_size.setup { enabled = want, backend = backend }
     vim.notify("MdRender textsize: " .. (want and backend or "off"))
     -- Heading rows are reserved at build time, so the content has to be rebuilt.

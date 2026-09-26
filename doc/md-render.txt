@@ -320,13 +320,13 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 	                takes a second arg `on` / `off` / `toggle`
 	                (defaults to `toggle`)
 	  textsize    - [EXPERIMENTAL] scale headings in Kitty (on by default);
-	                takes `on` / `off` / `toggle` / `image` / `native`
+	                takes `on` / `off` / `toggle` / `auto` / `image` / `native` / `status`
 	                (defaults to `toggle`)
 	  demo        - show a demo window with every supported notation
 
 	Tab completion lists the subcommands for the first arg, and
 	`on` / `off` / `toggle` after `auto` and `textsize`.
-	`textsize` also completes `image` / `native`.
+	`textsize` also completes `auto` / `image` / `native` / `status`.
 
 	The per-subcommand sections below describe behaviour in detail.
 
@@ -488,22 +488,29 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 <
 
 							  *:MdRender-textsize*
-:MdRender textsize [on|off|toggle|image|native] ~
+:MdRender textsize [on|off|toggle|auto|image|native|status] ~
 	[EXPERIMENTAL] Draw headings larger than the base font size in Kitty.
-	Native text sizing is on by default wherever the terminal supports
-	it; see |md-render-text-size|. Image headings are opt-in; see
-	|md-render-image-headings| for requirements and interaction limits.
+	Use `auto` for image -> native OSC 66 -> ordinary text. The default
+	is native. See |md-render-image-headings| for image requirements.
 
-	With no argument this toggles.  Turning it on when the terminal does
-	not implement the protocol prints a warning and changes nothing.
+	With no argument this toggles. `on` retains the selected backend;
+	`off` removes heading overlays. `native` skips image probes and
+	dependencies; explicit `image` falls back only to ordinary text.
+	Unsupported backends leave usable text without changing the policy.
 
-	Because the extra rows a scaled heading needs are reserved while the
-	content is built, switching this rebuilds every preview currently on
-	screen.
+	`status` reports the selected policy, effective backend and reason.
+	`auto` and `image` retry cached failures. Source/render toggling
+	retains the selected policy. Switching rebuilds visible previews,
+	waiting for active selections, operators, command-line input and
+	yank feedback before changing the underlying layout.
 
-	`image` enables experimental Pango/Cairo image headings; `native`
-	restores the default OSC 66 renderer. `on` retains the last renderer.
-	`off` removes all heading overlays. See |md-render-image-headings|.
+	Auto images require confirmed terminal PNG support, measured cell
+	dimensions, termguicolors and a working renderer. Pending work leaves
+	text visible. PNG replies time out after 1.5 seconds; layout work
+	times out after 5 seconds. Environment failures are cached for this
+	session without repeated subprocesses or automatic warnings. Fix the
+	environment, then run `:MdRender textsize auto` to retry. Local glyph,
+	style or link limitations leave only that heading as ordinary text.
 
 Image headings (experimental)			*md-render-image-headings*
 
@@ -541,17 +548,25 @@ below user highlights such as vim.hl.on_yank(). Custom reverse, nocombine,
 blending, alternate underlines and window highlight overrides retain text,
 as do missing glyphs, oversized fonts, unrepresentable text/link targets and
 headings inside <details>. Colorscheme/terminal resize events refresh the layout. Use `:MdRender textsize image` after direct font/highlight
-changes or to retry a failed renderer. Errors are available in `:messages`.
+changes or to retry a failed renderer. `:MdRender textsize status` reports
+the reason; explicit image mode also reports failures in `:messages`.
 
-Before terminal Shift-drag selection or modifier-clicking OSC 8 links, use
-`:MdRender textsize off`. Terminal-owned actions use text-cell coordinates;
-direct terminal interaction over images is outside this backend's guarantee.
-Use `:MdRender textsize image` to resume reading without clearing search state.
+For terminal Shift-drag selection, return to the Markdown source. In an
+in-place preview, use |:MdRender-toggle|; toggle again to resume the preview
+with the same heading backend. Open internal anchors with an ordinary
+mouse click; use gf on local file links. Terminal OSC 8 modifier-clicks
+are not supported over images.
 
-Requires Kitty >= 0.40, Neovim >= 0.12 and termguicolors. Indexed-color mode
-retains text. Tested on Linux, directly and through an SSH PTY to Linux. Python, Pango/Cairo and fonts run on the Neovim host;
-PNG bytes are streamed to the client, with no shared image files. Other OS
-and client combinations and tmux image headings are not yet validated.
+To select rendered text or use its OSC 8 links, `:MdRender textsize off` keeps
+the preview open with ordinary headings. Use `:MdRender textsize on` to
+restore the selected backend. The source buffer has no preview-generated
+OSC 8 links.
+
+Images require Neovim >= 0.12, confirmed PNG support and termguicolors;
+native sizing requires Kitty >= 0.40. Tested on Linux with Kitty, directly
+and through a loopback SSH PTY to Linux. Python, Pango/Cairo and fonts run on the Neovim host;
+PNG bytes are streamed to the client, with no shared image files. Images are disabled on Windows and through tmux. Other OS
+and client combinations remain unverified.
 For assistive technology or tools needing text, use `textsize off` or the
 source buffer. Screen-reader compatibility has not been tested. Missing
 rendering dependencies retain ordinary text.
@@ -577,7 +592,8 @@ level its own size:
 	#####	1.25x
 	######	1.17x
 
-This is on whenever the terminal supports it, with no configuration.  Turn it
+Select with `:MdRender textsize native`; auto uses it when image requirements
+fail. Search, selection and user highlights reveal ordinary text. Turn it
 off for the session with `:MdRender textsize off`, or permanently with: >lua
 
 	require("md-render.text_size").setup { enabled = false }

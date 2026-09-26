@@ -120,7 +120,7 @@ end
 
 ---@class MdRender.TextSize.Config
 ---@field enabled boolean master switch (default true)
----@field backend "native"|"image" heading renderer (default native)
+---@field backend "auto"|"native"|"image" heading renderer (default native)
 ---@field image { font: string, font_size: number|"auto", python: string } Pango image options
 
 ---@type MdRender.TextSize.Config
@@ -135,7 +135,10 @@ local config = {
 function M.setup(opts)
   opts = opts or {}
   if opts.backend ~= nil then
-    assert(opts.backend == "native" or opts.backend == "image", "text_size.backend must be native or image")
+    assert(
+      opts.backend == "auto" or opts.backend == "native" or opts.backend == "image",
+      "text_size.backend must be auto, native or image"
+    )
   end
   if opts.image then
     local image_opts = vim.tbl_extend("force", config.image, opts.image)
@@ -149,6 +152,10 @@ function M.setup(opts)
         or (type(image_opts.font_size) == "number" and image_opts.font_size > 0 and image_opts.font_size < math.huge),
       "text_size.image.font_size must be auto or a positive finite pixel size"
     )
+    if not vim.deep_equal(config.image, image_opts) then
+      local layout = package.loaded["md-render.heading_layout"]
+      if layout then layout.retry_failed() end
+    end
     config.image = image_opts
   end
   if opts.enabled ~= nil then config.enabled = opts.enabled end
@@ -197,7 +204,7 @@ function M.supports()
   end
   -- No UI attached (`--headless`, `-l`): nothing would receive the bytes, and
   -- the probe would sit out its whole timeout waiting for an answer.
-  if #vim.api.nvim_list_uis() == 0 or NOT_KITTY[vim.env.TERM_PROGRAM or ""] then
+  if #vim.api.nvim_list_uis() == 0 or vim.env.TMUX or NOT_KITTY[vim.env.TERM_PROGRAM or ""] then
     _supported = false
     return false
   end
@@ -212,6 +219,48 @@ function M.reset_cache()
   require("md-render.tty").reset()
 end
 
+vim.api.nvim_create_autocmd({ "UIEnter", "UILeave" }, { callback = M.reset_cache })
+
+--- Resolve the configured policy before reserving any heading rows.
+--- Pending work stays plain; confirmed environment failures may use native.
+---@return "image"|"native"|"plain" backend
+---@return string? reason
+function M.resolve_backend()
+  if not config.enabled then return "plain", "text sizing is off" end
+  if config.backend == "native" then
+    if M.supports() then return "native" end
+    return "plain", "terminal does not support native OSC 66 headings"
+  end
+  local layout = package.loaded["md-render.heading_layout"]
+  local reason = layout and layout.failure(config.image.python)
+  if not reason and not vim.o.termguicolors then reason = "image headings require termguicolors" end
+  if not reason then
+    local image = require "md-render.image"
+    local probe = image.png_status()
+    if probe.supported == nil then return "plain", probe.reason end
+    reason = probe.reason
+    if probe.supported then
+      local cell = image.get_cell_size(true)
+      if cell and cell.cell_w >= 1 and cell.cell_h >= 1 then return "image" end
+      reason = "terminal cell dimensions are unavailable"
+    end
+  end
+  if config.backend == "auto" and M.supports() then return "native", reason end
+  return "plain", reason
+end
+
+function M.status()
+  local backend, reason = M.resolve_backend()
+  return (config.enabled and config.backend or "off") .. " -> " .. backend .. (reason and (": " .. reason) or "")
+end
+
+function M.retry_image()
+  local image = package.loaded["md-render.image"]
+  if image then image.reset_png() end
+  local layout = package.loaded["md-render.heading_layout"]
+  if layout then layout.retry_failed() end
+end
+
 --- How a heading level is scaled, or nil when it must stay plain.
 ---
 --- The terminal check belongs here, not only at paint time: the extra rows a
@@ -219,11 +268,12 @@ end
 --- that can never paint them must not get them reserved either.
 ---@param level integer 1-6
 ---@return MdRender.TextSize.Spec?
-function M.spec_for(level)
+function M.spec_for(level, backend)
   if not config.enabled then return nil end
   local spec = SPECS[level]
   if not spec then return nil end
-  if not M.supports() then return nil end
+  backend = backend or M.resolve_backend()
+  if backend == "plain" or (backend == "native" and not M.supports()) then return nil end
   return spec
 end
 
@@ -1004,9 +1054,11 @@ end
 function M.attach(win, content)
   if not config.enabled then return nil end
   if not content.text_placements or #content.text_placements == 0 then return nil end
-  if not M.supports() then return nil end
   if not vim.api.nvim_win_is_valid(win) then return nil end
-  if config.backend == "image" then return require("md-render.heading_image").attach(win, content) end
+  local backend = content.heading_backend or M.resolve_backend()
+  if backend == "plain" then return nil end
+  if backend == "image" then return require("md-render.heading_image").attach(win, content) end
+  if not M.supports() then return nil end
 
   ---@type MdRender.TextSizeState
   local state = {
@@ -1145,7 +1197,8 @@ end
 ---@param content MdRender.Content
 ---@return MdRender.TextSizeState|MdRender.HeadingImageState|nil
 function M.refresh(state, win, content)
-  if state and (state.image_headings or config.backend == "image" or not config.enabled) then
+  local backend = content.heading_backend or M.resolve_backend()
+  if state and (state.image_headings or backend ~= "native" or not config.enabled) then
     M.detach(state)
     return M.attach(win, content)
   end

@@ -183,6 +183,46 @@ local ok, err = pcall(function()
     vim.api.nvim_win_close(survivor, true)
     assert(current.closed, "closing the last preview left its image input listener active")
   ]]
+
+  -- Auto images must use the same local-file navigation and return history.
+  lua [[
+    _G.link_root = vim.fn.tempname()
+    vim.fn.mkdir(link_root, "p")
+    link_root = vim.uv.fs_realpath(link_root)
+    vim.fn.writefile({"Body", "", "## Destination"}, link_root .. "/target.md")
+    vim.api.nvim_win_set_buf(0, source)
+    vim.api.nvim_buf_set_lines(source, 2, 3, false, {
+      "## [FIRST](" .. link_root .. "/target.md) [SECOND](#second)",
+    })
+    require("md-render.text_size").setup { backend = "auto" }
+    preview.toggle()
+    _G.session = preview._sessions[vim.api.nvim_get_current_buf()]
+    _G.link_origin = session.buf
+    vim.cmd "normal! gg"
+    vim.cmd "redraw"
+  ]]
+  ready()
+  mouse("left", "press", 1, 7)
+  mouse("left", "release", 1, 7)
+  vim.rpcrequest(child, "nvim_input", "gf")
+  assert(
+    vim.wait(1000, function()
+      return lua [[
+      local target = preview._sessions[vim.api.nvim_get_current_buf()]
+      return target and target.buf ~= link_origin
+        and vim.api.nvim_buf_get_name(target.source_bufnr) == link_root .. "/target.md"
+    ]]
+    end, 5),
+    "gf did not follow the projected image-heading link"
+  )
+  vim.rpcrequest(child, "nvim_input", "<C-o>")
+  assert(
+    vim.wait(1000, function()
+      return lua "return vim.api.nvim_get_current_buf() == link_origin"
+    end, 5),
+    "native jump history did not return to the image-heading preview"
+  )
+  lua [[vim.fn.delete(link_root, "rf")]]
 end)
 vim.fn.jobstop(child)
 assert(ok, err)

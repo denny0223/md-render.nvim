@@ -971,7 +971,6 @@ function MarkdownTable.render(parsed_table, indent, max_width, expanded, buf_dir
         local diff = col_widths[col] - img_cols
         if diff > 0 and diff % 2 == 1 then img_cols = img_cols + 1 end
         local center_pad = math.max(0, math.floor((col_widths[col] - img_cols) / 2))
-        col_display_offset = col_display_offset + center_pad
 
         -- Pass pre-computed img_w/img_h so process_placement skips recalculation
         -- (which would undo the +1 expansion above).
@@ -980,9 +979,11 @@ function MarkdownTable.render(parsed_table, indent, max_width, expanded, buf_dir
           resolved = img.resolved,
           src_url = img.src_url,
           line_offset = img_start_line_idx,
-          col = col_display_offset,
+          col = col_display_offset + center_pad,
           rows = img.display_rows,
           cols = img_cols,
+          cell_col = col_display_offset - 1,
+          cell_cols = col_widths[col] + 2,
           img_w = cached_img and cached_img.img_w or nil,
           img_h = cached_img and cached_img.img_h or nil,
           video = img.video,

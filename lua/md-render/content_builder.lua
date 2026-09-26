@@ -35,9 +35,11 @@
 ---@class MdRender.ImagePlacement
 ---@field path string? absolute path to image file (nil if not yet downloaded)
 ---@field line integer 0-indexed rendered line where image starts
----@field col integer 0-indexed column offset
+---@field col integer 0-indexed display column offset
 ---@field rows integer display height in cells
 ---@field cols integer display width in cells
+---@field cell_col? integer 0-indexed display column of the table cell interior
+---@field cell_cols? integer table cell width including padding, excluding borders
 ---@field img_w? integer source image width in pixels
 ---@field img_h? integer source image height in pixels
 ---@field animated? boolean true if animated GIF
@@ -500,6 +502,8 @@ function ContentBuilder:add_table(
         col = p.col,
         rows = p.rows,
         cols = p.cols,
+        cell_col = p.cell_col,
+        cell_cols = p.cell_cols,
         src_url = p.src_url,
         img_w = p.img_w,
         img_h = p.img_h,
@@ -1679,6 +1683,14 @@ function ContentBuilder:render_document(lines, opts)
       if link.line >= from_line and link.line < to_line then
         link.col_start = link.col_start + prefix_len
         link.col_end = link.col_end + prefix_len
+      end
+    end
+
+    local prefix_cols = vim.api.nvim_strwidth(prefix)
+    for _, placement in ipairs(self.image_placements) do
+      if placement.line >= from_line and placement.line < to_line then
+        placement.col = placement.col + prefix_cols
+        if placement.cell_col then placement.cell_col = placement.cell_col + prefix_cols end
       end
     end
 

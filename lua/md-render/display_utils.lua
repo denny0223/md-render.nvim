@@ -156,6 +156,39 @@ function M.apply_treesitter_highlights(buf, ns, content)
   end
 end
 
+--- Keep the same source passage and heading character when reflow changes rows.
+function M.remap_view(view, old, new)
+  local function row_at(row)
+    local source = old.source_line_map[row]
+    if not source then return math.min(row, #new.lines) end
+    local first = row
+    while first > 1 and old.source_line_map[first - 1] == source do
+      first = first - 1
+    end
+    local target, last
+    for index, value in ipairs(new.source_line_map) do
+      if value == source then
+        target, last = target or index, index
+      end
+    end
+    return target and math.min(target + row - first, last) or math.min(row, #new.lines)
+  end
+  local position = (old.heading_positions or {})[view.lnum]
+  local source = old.source_line_map[view.lnum]
+  view.lnum, view.topline = row_at(view.lnum), row_at(view.topline)
+  if position then
+    local byte = position.byte + math.max(0, view.col - position.col)
+    for row, point in pairs(new.heading_positions or {}) do
+      if new.source_line_map[row] == source and byte >= point.byte and byte < point.byte + point.length then
+        view.lnum, view.col = row, point.col + byte - point.byte
+        break
+      end
+    end
+  end
+  view.col = math.min(view.col, #(new.lines[view.lnum] or ""))
+  return view
+end
+
 --- Stack overlapping heading styles in document order, below user highlights.
 local function apply_heading_highlights(buf, ns, row, groups, length)
   local boundaries = {}

@@ -249,6 +249,7 @@ assert(ok, err)
 -- Valid JSON can still have the wrong protocol shape. All such responses must
 -- retain the original text and expose a useful retryable error.
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. package.path
+require("md-render.text_size").setup { backend = "image" }
 local layout = require "md-render.heading_layout"
 local system, notify = vim.system, vim.notify_once
 local callback, warning
@@ -271,6 +272,7 @@ for index, response in ipairs {
   '[{"lines":[{"start":0,"end":7,"text":"Heading","cols":1,"data":"png","width":19,"height":44,"columns":false}]}]',
   '[{"lines":[{"start":0,"end":7,"text":"Heading","cols":1,"data":"png","width":19,"height":44,"columns":[999]}]}]',
 } do
+  layout.retry_failed()
   callback, warning = nil, nil
   local entry = layout.request({ entries = { { text = "Heading" } }, test = index }, "python3")
   assert(vim.wait(1000, function()

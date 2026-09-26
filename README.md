@@ -4,13 +4,22 @@
 
 This fork of [delphinus/md-render.nvim](https://github.com/delphinus/md-render.nvim) adds an optional Snacks backend for static images and diagrams in Kitty/tmux, viewport fitting, and an image tab with zoom and pan. See the [Neovim configuration](https://github.com/denny0223/.nvim) for a complete setup.
 
-A Markdown rendering engine for Neovim. Transforms raw Markdown into richly highlighted, interactive content — right inside your editor. Supports floating windows, tab views, and a pager mode for `less`-like usage from the command line.
+A Markdown rendering engine for Neovim. Transforms raw Markdown into richly highlighted, interactive content — right inside your editor. Edit alongside a live preview with synchronized scrolling, read in a floating window or tab, or use the pager for `less`-like reading from the command line.
 
 ## Getting started
 
 1. Check the [requirements](#requirements), then choose one [installation method](#installation).
 2. To use this fork's Kitty/tmux support, viewport fitting, and image zoom/pan, follow the [Snacks image setup](#optional-snacks-image-backend). The basic installation keeps the native backend, which also supports animation and video.
-3. Restart Neovim after installing and configuring the plugins. Open a Markdown file and run `:MdRender tab`. Use `q` to close the preview. With Snacks and `magick` configured, press Enter on a loaded image to open its image tab; `+` / `-` zoom, `hjkl` pan, `f` fits the whole image, and `q` returns to the document.
+3. Restart Neovim after installing and configuring the plugins, then open a Markdown file. Choose a workflow from its source window:
+
+| Task | Command | Close the preview |
+|---|---|---|
+| Write with a live preview on the right | `:botright vert MdRender split` | Switch to the preview window, then run `:q` |
+| Read in a tab | `:MdRender tab` | Press `q` |
+
+The split keeps focus in the source window so you can keep editing; the preview updates without saving. In Normal mode, `<C-w>p` (Ctrl-w then p) selects the previous window; immediately after opening the split, that is the preview. The [keymap examples](#keymaps) include an optional `<leader>ms` shortcut.
+
+With Snacks and `magick` configured, press Enter on a loaded image in the preview to open its [image tab](#image-tab-keys) for zoom and pan.
 
 For the full [key reference](#keymaps), [commands](#commands), and [troubleshooting](#faq--troubleshooting), see below.
 
@@ -106,6 +115,7 @@ The examples below use the default native backend (`kitty`). For Kitty/tmux imag
     { "delphinus/budoux.lua", version = "*" }, -- optional: CJK phrase-level line breaking
   },
   keys = {
+    { "<leader>ms", "<cmd>botright vert MdRender split<CR>", desc = "Open Markdown preview on the right" },
     { "<leader>mp", "<Plug>(md-render-preview)",     desc = "Markdown preview (toggle)" },
     { "<leader>mt", "<Plug>(md-render-preview-tab)", desc = "Markdown preview in tab (toggle)" },
     { "<leader>md", "<Plug>(md-render-demo)",        desc = "Markdown render demo" },
@@ -171,6 +181,7 @@ For lazy.nvim, use this in place of the basic md-render spec above. Keep the opt
     require("md-render.image").setup({ backend = "snacks" })
   end,
   keys = {
+    { "<leader>ms", "<cmd>botright vert MdRender split<CR>", desc = "Open Markdown preview on the right" },
     { "<leader>mp", "<Plug>(md-render-preview)",     desc = "Markdown preview (toggle)" },
     { "<leader>mt", "<Plug>(md-render-preview-tab)", desc = "Markdown preview in tab (toggle)" },
     { "<leader>md", "<Plug>(md-render-demo)",        desc = "Markdown render demo" },
@@ -221,10 +232,13 @@ md-render.nvim aims to be a dedicated previewer that runs entirely in the termin
 The plugin provides `<Plug>` mappings but does **not** set any default keybindings. Map them yourself:
 
 ```lua
+vim.keymap.set("n", "<leader>ms", "<cmd>botright vert MdRender split<CR>", { desc = "Open Markdown preview on the right" })
 vim.keymap.set("n", "<leader>mp", "<Plug>(md-render-preview)",     { desc = "Markdown preview (toggle)" })
 vim.keymap.set("n", "<leader>mt", "<Plug>(md-render-preview-tab)", { desc = "Markdown preview in tab (toggle)" })
 vim.keymap.set("n", "<leader>md", "<Plug>(md-render-demo)",        { desc = "Markdown render demo" })
 ```
+
+Use the `<leader>ms` example from the Markdown source window to open a preview on the right. Each invocation opens a new window; see [Source/render split](#sourcerender-split) for navigation and closing.
 
 | `<Plug>` mapping | Description |
 |---|---|
@@ -297,7 +311,7 @@ Tab completion lists the subcommands for the first arg, `on` / `off` / `toggle` 
 Behavior:
 
 - The render buffer is **read-only** and reused across toggles (one render buffer per source).
-- When the same source is shown in multiple windows, only the invoking window swaps; edits from other windows are reflected on the next toggle into render mode.
+- When the same source is shown in multiple windows, only the invoking window swaps. Edits from other windows update the preview automatically.
 - Cursor position round-trips between source and render via the source-line mapping.
 - `number`, `relativenumber`, and `list` are turned off on render-mode windows. The originals are stashed on the window and restored when toggling back to source.
 - Inside render mode, `q` / `<Esc>` / `<C-c>` are **not** bound to close — call `:MdRender toggle` again to return to source mode. `<LeftMouse>`, `za`, and `<CR>` still toggle folds and expand regions (and `<LeftMouse>` opens links). With the Snacks backend, `<CR>` also opens images.
@@ -410,15 +424,25 @@ See `:help md-render-text-size` for the full rationale.
   <figcaption><em>Source/render split — edits propagate live, including inline images</em></figcaption>
 </figure>
 
-`:MdRender split` opens a split showing the source buffer and the rendered view together. Direction follows standard Vim split modifiers:
+To edit Markdown with a live preview on the right, run this from the source window:
+
+```vim
+:botright vert MdRender split
+```
+
+The preview opens at the far right of the current tab, including when other splits already exist. Focus stays in the source window. Edits appear without saving, and cursor/scroll position is synchronized in both directions.
+
+In Normal mode, `<C-w>p` selects the previous window. Immediately after opening the split, this takes you to the preview. To close the preview, switch to its window and use `:q` or `<C-w>c`; plain `q` is not a close key in this mode.
+
+Each invocation opens another window. From a source window it shows the preview; from a split or in-place preview it shows the source. Direction follows standard Vim split modifiers:
 
 - `:MdRender split` — horizontal split
-- `:vert MdRender split` — vertical split (typical "README + code" layout)
-- `:tab MdRender split` — split inside a new tab
+- `:vert MdRender split` — source and preview side by side; placement follows `splitright`
+- `:tab MdRender split` — open the other view in a new tab
 - `:topleft MdRender split` — place at the top
 - `:botright MdRender split` — place at the bottom
 
-Edits to the source propagate live, and cursor/scroll position is synchronized in both directions. See `:help :MdRender-split` for full behavior and the inline-image limitation.
+See `:help :MdRender-split` for full behavior and the inline-image limitation.
 
 ### Pager mode
 

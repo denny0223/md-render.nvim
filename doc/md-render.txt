@@ -40,6 +40,9 @@ editor.  Supports floating windows, tab views, in-place toggle between
 source and render mode (|:MdRender-toggle|), and a pager mode for `less`-like
 usage from the command line.
 
+For writing, keep the source beside a live preview with synchronized
+scrolling using |:MdRender-split|.
+
 Features: ~
 
 - Rich inline formatting (bold, strikethrough, inline code, links,
@@ -104,6 +107,11 @@ Using lazy.nvim: >lua
     },
     keys = {
       {
+        "<leader>ms",
+        "<cmd>botright vert MdRender split<CR>",
+        desc = "Open Markdown preview on the right",
+      },
+      {
         "<leader>mp",
         "<Plug>(md-render-preview)",
         desc = "Markdown preview (toggle)",
@@ -166,6 +174,7 @@ the optional icon/BudouX dependencies if you use them: >lua
       require("md-render.image").setup({ backend = "snacks" })
     end,
     keys = {
+      { "<leader>ms", "<cmd>botright vert MdRender split<CR>" },
       { "<leader>mp", "<Plug>(md-render-preview)" },
       { "<leader>mt", "<Plug>(md-render-preview-tab)" },
       { "<leader>md", "<Plug>(md-render-demo)" },
@@ -216,10 +225,15 @@ MAPPINGS						    *md-render-mappings*
 This plugin provides `<Plug>` mappings but does NOT set any default keybindings.
 Map them yourself: >lua
 
+  vim.keymap.set("n", "<leader>ms",
+    "<cmd>botright vert MdRender split<CR>")
   vim.keymap.set("n", "<leader>mp", "<Plug>(md-render-preview)")
   vim.keymap.set("n", "<leader>mt", "<Plug>(md-render-preview-tab)")
   vim.keymap.set("n", "<leader>md", "<Plug>(md-render-demo)")
 <
+
+Use the <leader>ms example from the Markdown source window. Each invocation
+opens a new preview on the right. See |:MdRender-split| for navigation.
 
 						     *<Plug>(md-render-preview)*
 <Plug>(md-render-preview) ~
@@ -245,7 +259,7 @@ Map them yourself: >lua
 
 							    *<Plug>(md-render-split)*
 <Plug>(md-render-split) ~
-	Open a split window showing the source and rendered views of the
+	Open a horizontal split showing the source and rendered views of the
 	current Markdown buffer.  See |:MdRender-split|.
 
 							*<Plug>(md-render-demo)*
@@ -254,7 +268,7 @@ Map them yourself: >lua
 
 Inside the preview window, the following keys are available:
 
-	`q` / `<Esc>` / `<C-c>`	Close the preview window
+	`q` / `<Esc>` / `<C-c>`	Close the floating/tab preview window
 	`za`		Toggle the callout fold / expandable region under the
 			cursor (no-op when the cursor is not on one)
 	`<CR>`		Open the image under the cursor (Snacks backend), or
@@ -266,6 +280,8 @@ Inside the preview window, the following keys are available:
 			window at the bottom of the editor.  Requires
 			'mousemoveevent' (md-render enables it automatically
 			whenever a preview window is open).
+
+For a split preview, switch to its window and close it with `:q` or `<C-w>c`.
 
 Inside a render-mode buffer opened with |:MdRender-toggle|, `q` / `<Esc>` /
 `<C-c>` are NOT bound to close — call |:MdRender-toggle| again to return to
@@ -351,8 +367,8 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 	- The render buffer is read-only and reused across toggles (cached
 	  per source buffer; one render buffer per source).
 	- When the source buffer is shown in multiple windows, only the
-	  invoking window swaps; edits from any other window are reflected
-	  in the render buffer on the next toggle to render mode.
+	  invoking window swaps. Edits from other windows update the preview
+	  automatically.
 	- Cursor position round-trips: the source line nearest the cursor in
 	  render mode becomes the cursor target when toggling back, and vice
 	  versa.
@@ -428,23 +444,34 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 							     *:MdRender-split*
 :MdRender split ~
 	Open a split window so the source Markdown buffer and the rendered
-	view are visible at the same time.  Direction follows the standard
-	Vim split modifiers: >vim
+	view are visible at the same time. To write with a preview on the
+	right, run this from the Markdown source window: >vim
+
+	  :botright vert MdRender split
+<
+	The preview opens at the far right of the current tab, even with
+	existing splits. Focus stays in the source window; edits update the
+	preview without saving. In Normal mode, <C-w>p (Ctrl-w then p)
+	selects the previous window. Immediately after opening the split,
+	this takes you to the preview. To close the preview, switch to its
+	window and use `:q` or `<C-w>c`; plain `q` is not a close key in
+	this mode.
+
+	Other layouts follow the standard Vim split modifiers: >vim
 
 	  :MdRender split          " horizontal split
 	  :vert MdRender split     " vertical split
-	  :tab MdRender split      " split inside a new tab
+	  :tab MdRender split      " open the other view in a new tab
 	  :topleft MdRender split  " place at the top
 	  :botright MdRender split " place at the bottom
 <
 	Behavior is symmetric:
 
 	- From a source window, the new split shows the render.
-	- From a render window (created by |:MdRender-toggle|), the new
-	  split shows the source.
+	- From a render window created by |:MdRender-toggle| or
+	  |:MdRender-split|, the new split shows the source.
 
-	Either entry point yields a source/render pair in adjacent
-	windows.
+	Each invocation opens a new window.
 
 	The render buffer is shared with the |:MdRender-toggle| session
 	cache, so a subsequent |:MdRender-toggle| reuses the same render
@@ -453,8 +480,7 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 
 	Cursor and scroll position are synchronized between source and
 	render windows: moving the cursor or scrolling on either side
-	mirrors the other to the corresponding mapped line, with the
-	cursor placed at the same window row so the views stay aligned.
+	moves the other to the corresponding content position.
 
 	A cursor that already maps to its counterpart stays where it is.
 	Several source lines can share one rendered line — a collapsed
@@ -469,9 +495,9 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 	toggles or splits.
 
 	Limitation: inline images can only be bound to one window at a
-	time.  Calling |:MdRender-split| twice yields two render windows,
-	but only the most recent one displays inline images (the older
-	render window still receives text-content live updates).
+	time. Calling |:MdRender-split| twice from the source yields two
+	render windows, but only the most recent one displays inline images
+	(the older render window still receives text-content live updates).
 
 							     *:MdRender-pager*
 :MdRender pager ~

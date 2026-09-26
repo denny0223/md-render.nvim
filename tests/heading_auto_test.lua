@@ -1,6 +1,7 @@
 -- Policy decisions and failed async work must remain bounded and retryable.
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
 local size = require "md-render.text_size"
+assert(size.config().enabled and size.config().backend == "auto", "automatic headings are the default")
 local image = require "md-render.image"
 local layout = require "md-render.heading_layout"
 local Builder = require("md-render.content_builder").ContentBuilder

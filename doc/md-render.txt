@@ -490,8 +490,8 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 							  *:MdRender-textsize*
 :MdRender textsize [on|off|toggle|auto|image|native|status] ~
 	[EXPERIMENTAL] Draw headings larger than the base font size in Kitty.
-	Use `auto` for image -> native OSC 66 -> ordinary text. The default
-	is native. See |md-render-image-headings| for image requirements.
+	The default is `auto`: image -> native OSC 66 -> ordinary text.
+	See |md-render-image-headings| for image requirements.
 
 	With no argument this toggles. `on` retains the selected backend;
 	`off` removes heading overlays. `native` skips image probes and

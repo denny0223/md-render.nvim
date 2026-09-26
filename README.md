@@ -316,7 +316,7 @@ See `:help :MdRender-auto` for behavior details — the `i` / `I` / `a` / `A` / 
 
 ### Scaled headings (experimental)
 
-Use `:MdRender textsize auto` to select **image → native OSC 66 → ordinary text**. Images require a positive terminal PNG response, measured cell dimensions, `termguicolors` and a working Pango/Cairo renderer. If any environment requirement fails, `auto` tries native sizing; if that is unavailable too, headings stay ordinary text. Pending work also leaves text visible. Individual unsupported headings retain text without changing the backend for other headings.
+Headings default to `auto`: **image → native OSC 66 → ordinary text**. Images require a positive terminal PNG response, measured cell dimensions, `termguicolors` and a working Pango/Cairo renderer. If any environment requirement fails, `auto` tries native sizing; if that is unavailable too, headings stay ordinary text. Pending work also leaves text visible. Individual unsupported headings retain text without changing the backend for other headings.
 
 `:MdRender textsize status` reports the selected policy, effective backend and fallback reason. PNG acknowledgement has a 1.5-second timeout; layout work has a 5-second timeout. Environment failures are cached for the session without repeated subprocesses or automatic warnings. Run `:MdRender textsize auto` to retry after fixing the environment. Source/render toggling and `off` / `on` retain your backend choice; `native` skips image detection and dependencies, while explicit `image` falls back only to ordinary text. Configure `backend = "auto"` in the setup below to retain automatic selection.
 

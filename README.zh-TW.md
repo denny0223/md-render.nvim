@@ -315,7 +315,7 @@ autocmd FileType markdown silent! MdRender auto on
 
 ### 放大標題
 
-執行 `:MdRender textsize auto`，依 **圖片 → native OSC 66 → 一般文字** 選擇。圖片需要終端確認支援 PNG、可取得實際文字格尺寸、啟用 `termguicolors`，以及可用的 Pango/Cairo 排版程序。環境條件不足時，`auto` 會嘗試 native 放大；仍不支援則保留一般文字。等待偵測或排版期間也可閱讀原文；個別標題無法繪製時，只有該標題保留文字。
+標題預設使用 `auto`，依 **圖片 → native OSC 66 → 一般文字** 選擇。圖片需要終端確認支援 PNG、可取得實際文字格尺寸、啟用 `termguicolors`，以及可用的 Pango/Cairo 排版程序。環境條件不足時，`auto` 會嘗試 native 放大；仍不支援則保留一般文字。等待偵測或排版期間也可閱讀原文；個別標題無法繪製時，只有該標題保留文字。
 
 `:MdRender textsize status` 會顯示選擇的策略、實際後端與降級原因。PNG 回覆最多等待 1.5 秒，排版程序最多等待 5 秒；環境失敗會在本次 Neovim 工作階段快取，不會反覆啟動程序或自動跳出警告。修正環境後，再執行 `:MdRender textsize auto` 即可重試。切換原文／預覽或 `off`／`on` 都會保留後端選擇；`native` 不做圖片偵測也不啟動排版程序，明確選擇 `image` 時則只會降級至一般文字。也可在下方設定中使用 `backend = "auto"`。
 

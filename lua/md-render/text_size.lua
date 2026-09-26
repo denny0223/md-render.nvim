@@ -120,13 +120,13 @@ end
 
 ---@class MdRender.TextSize.Config
 ---@field enabled boolean master switch (default true)
----@field backend "auto"|"native"|"image" heading renderer (default native)
+---@field backend "auto"|"native"|"image" heading renderer (default auto)
 ---@field image { font: string, font_size: number|"auto", python: string } Pango image options
 
 ---@type MdRender.TextSize.Config
 local config = {
   enabled = true,
-  backend = "native",
+  backend = "auto",
   image = { font = "Noto Sans Mono,Noto Sans Mono CJK TC", font_size = "auto", python = "python3" },
 }
 

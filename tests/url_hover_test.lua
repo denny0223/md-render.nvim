@@ -103,6 +103,29 @@ test("url_at_mouse: returns nil when extmark has no URL", function()
   assert_eq(internal.url_at_mouse({ winid = 1, line = 1, column = 2 }, buf, ns), nil, "non-URL extmark ignored")
 end)
 
+test("url_at_mouse: a link on the following row is not under the mouse", function()
+  local buf = vim.api.nvim_create_buf(false, true)
+  local ns = vim.api.nvim_create_namespace "url_hover_rows"
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "plain", "link" })
+  vim.api.nvim_buf_set_extmark(buf, ns, 1, 0, { end_col = 4, url = "target.md" })
+  assert_eq(internal.url_at_mouse({ line = 1, column = 1 }, buf, ns), nil, "next row is excluded")
+  assert_eq(internal.url_at_mouse({ line = 2, column = 1 }, buf, ns), "target.md", "start is included")
+  assert_eq(internal.url_at_mouse({ line = 2, column = 5 }, buf, ns), nil, "end is excluded")
+  vim.api.nvim_buf_delete(buf, { force = true })
+end)
+
+test("url_at_mouse: finds links spanning multiple rows", function()
+  local buf = vim.api.nvim_create_buf(false, true)
+  local ns = vim.api.nvim_create_namespace "url_hover_multiline"
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "first", "middle", "last" })
+  vim.api.nvim_buf_set_extmark(buf, ns, 0, 2, { end_row = 2, end_col = 2, url = "target.md" })
+  assert_eq(internal.url_at_mouse({ line = 1, column = 2 }, buf, ns), nil, "before start is excluded")
+  assert_eq(internal.url_at_mouse({ line = 2, column = 1 }, buf, ns), "target.md", "middle row overlaps")
+  assert_eq(internal.url_at_mouse({ line = 3, column = 2 }, buf, ns), "target.md", "last byte is included")
+  assert_eq(internal.url_at_mouse({ line = 3, column = 3 }, buf, ns), nil, "final end is excluded")
+  vim.api.nvim_buf_delete(buf, { force = true })
+end)
+
 -- bottom_reserved_rows
 
 test("bottom_reserved_rows: cmdheight only when no statusline", function()

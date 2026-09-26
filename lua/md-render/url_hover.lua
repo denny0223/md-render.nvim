@@ -2,6 +2,7 @@
 --- editor while the mouse hovers over a link in a md-render preview.
 
 local M = {}
+local Links = require "md-render.links"
 
 local DEBOUNCE_MS = 100
 local WINBLEND = 15
@@ -133,25 +134,7 @@ end
 ---@param ns integer
 ---@return string?
 local function url_at_mouse(mouse, buf, ns)
-  if mouse.line < 1 or mouse.column < 1 then return nil end
-  local line = mouse.line - 1
-  local col = mouse.column - 1
-
-  if not vim.api.nvim_buf_is_valid(buf) then return nil end
-  local line_count = vim.api.nvim_buf_line_count(buf)
-  if line >= line_count then return nil end
-
-  local ok, marks = pcall(vim.api.nvim_buf_get_extmarks, buf, ns, { line, 0 }, { line + 1, 0 }, { details = true })
-  if not ok then return nil end
-
-  for _, mark in ipairs(marks) do
-    local _, _, start_col, details = unpack(mark)
-    if details and details.url then
-      local end_col = details.end_col or (start_col + 1)
-      if col >= start_col and col < end_col then return details.url end
-    end
-  end
-  return nil
+  return Links.at(buf, ns, mouse.line - 1, mouse.column - 1)
 end
 
 local function handle_mouse_move()

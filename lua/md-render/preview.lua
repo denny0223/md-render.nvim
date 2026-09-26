@@ -861,47 +861,35 @@ MdPreview.show_pager = function(opts)
     local click_col = mouse.column - 1
 
     local function try_open_url()
-      local extmarks = vim.api.nvim_buf_get_extmarks(
-        session.buf,
-        session.ns,
-        { click_line, 0 },
-        { click_line + 1, 0 },
-        { details = true }
-      )
-      for _, mark in ipairs(extmarks) do
-        local _, _, start_col, details = unpack(mark)
-        if details.url then
-          local end_col = details.end_col or (start_col + 1)
-          if click_col >= start_col and click_col < end_col then
-            local anchor = details.url:match "^#(.+)$"
-            if anchor then
-              if session.content.footnote_anchors then
-                local target_line = session.content.footnote_anchors[anchor]
-                if target_line then
-                  vim.api.nvim_win_set_cursor(target_win, { target_line + 1, 0 })
-                  return true
-                end
-              end
-              if session.content.heading_anchors then
-                local target_line = session.content.heading_anchors[anchor]
-                if target_line then
-                  vim.api.nvim_win_set_cursor(target_win, { target_line + 1, 0 })
-                  return true
-                end
-              end
+      local url = require("md-render.links").at(session.buf, session.ns, click_line, click_col)
+      if url then
+        local anchor = url:match "^#(.+)$"
+        if anchor then
+          if session.content.footnote_anchors then
+            local target_line = session.content.footnote_anchors[anchor]
+            if target_line then
+              vim.api.nvim_win_set_cursor(target_win, { target_line + 1, 0 })
               return true
             end
-            if details.url:match "^obsidian://" then
-              vim.notify("Opening: " .. details.url, vim.log.levels.INFO)
-              vim.ui.open(details.url)
-              return true
-            end
-            if display_utils.supports_osc8() then return false end
-            vim.notify("Opening: " .. details.url, vim.log.levels.INFO)
-            vim.ui.open(details.url)
-            return true
           end
+          if session.content.heading_anchors then
+            local target_line = session.content.heading_anchors[anchor]
+            if target_line then
+              vim.api.nvim_win_set_cursor(target_win, { target_line + 1, 0 })
+              return true
+            end
+          end
+          return true
         end
+        if url:match "^obsidian://" then
+          vim.notify("Opening: " .. url, vim.log.levels.INFO)
+          vim.ui.open(url)
+          return true
+        end
+        if display_utils.supports_osc8() then return false end
+        vim.notify("Opening: " .. url, vim.log.levels.INFO)
+        vim.ui.open(url)
+        return true
       end
       return false
     end

@@ -7,6 +7,8 @@ local links = require "md-render.links"
 local image = require "md-render.image"
 local root = vim.fn.tempname()
 vim.fn.mkdir(root, "p")
+-- Match buffer names when the temporary directory contains symlinks (macOS).
+root = assert(vim.uv.fs_realpath(root))
 vim.o.hidden = true
 vim.o.swapfile = false
 image._set_kitty_supported(true)

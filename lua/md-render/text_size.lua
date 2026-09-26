@@ -489,6 +489,8 @@ end
 ---@field icon_col integer? 0-indexed byte column the icon sits at
 
 ---@class MdRender.TextSizeState
+---@field buf integer
+---@field content MdRender.Content
 ---@field image_headings? false
 ---@field placements MdRender.TextPlacement[]
 ---@field win integer
@@ -580,7 +582,10 @@ local function visible_placements(state)
   local left, right, top, bottom = M.text_area(win)
   if not left then return {} end
   local buf = vim.api.nvim_win_get_buf(win)
+  if buf ~= state.buf or vim.api.nvim_win_get_tabpage(win) ~= vim.api.nvim_get_current_tabpage() then return {} end
 
+  local all, protected = require("md-render.heading_feedback").protected(state, state.placements)
+  if all then return {} end
   local out = {}
   for _, p in ipairs(state.placements) do
     -- Guard against a layout that moved without us being told. Placements are
@@ -602,7 +607,11 @@ local function visible_placements(state)
       -- Partially visible placements are skipped rather than clipped: the
       -- plain-size text underneath stays on screen, which is the graceful
       -- fallback. OSC 66 has no source-rectangle crop like graphics do.
-      if fits_vertically and fits_horizontally then
+      local feedback = false
+      for row = p.line, p.line + p.scale - 1 do
+        feedback = feedback or protected[row]
+      end
+      if fits_vertically and fits_horizontally and not feedback then
         -- The icon sits to the left of the text on the same line, so it is
         -- inside the window whenever the text is — unless the window is
         -- scrolled horizontally, which `screenpos` reports by putting it on
@@ -1002,6 +1011,8 @@ function M.attach(win, content)
   ---@type MdRender.TextSizeState
   local state = {
     placements = content.text_placements,
+    content = content,
+    buf = vim.api.nvim_win_get_buf(win),
     win = win,
     redraw_timer = nil,
     autocmd_ids = {},
@@ -1034,7 +1045,17 @@ function M.attach(win, content)
     WinNew = true,
     WinClosed = true,
   }
-  for _, event in ipairs { "WinScrolled", "WinResized", "WinNew", "WinClosed", "CursorMoved", "CursorMovedI" } do
+  for _, event in ipairs {
+    "WinScrolled",
+    "WinResized",
+    "WinNew",
+    "WinClosed",
+    "CursorMoved",
+    "CursorMovedI",
+    "ModeChanged",
+    "CmdlineChanged",
+    "TextYankPost",
+  } do
     -- Cursor movement leaves the runs where they are and needs no such thing.
     local destroys_runs = DESTROYS_RUNS[event]
     local id = vim.api.nvim_create_autocmd(event, {
@@ -1134,6 +1155,8 @@ function M.refresh(state, win, content)
     return nil
   end
   state.placements = content.text_placements
+  state.content, state.buf = content, vim.api.nvim_win_get_buf(win)
+  state.search_key = nil
   state.win = win
   -- Old blocks may sit where the new layout has none, so force the next paint
   -- through the invalidate path even if the positions happen to line up.

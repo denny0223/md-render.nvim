@@ -29,14 +29,16 @@ jobs:
         run: make test
 
   snacks:
-    name: Latest Snacks / Fedora
+    name: Optional image backends / Fedora
     runs-on: ubuntu-latest
     container: registry.fedoraproject.org/fedora:latest
     env:
       MD_RENDER_SNACKS_PATH: /tmp/snacks.nvim
     steps:
       - name: Install runtime
-        run: dnf install -y git neovim ImageMagick
+        run: >-
+          dnf install -y git neovim ImageMagick python3-gobject python3-cairo pango gobject-introspection
+          google-noto-sans-mono-vf-fonts google-noto-sans-cjk-vf-fonts
       - uses: actions/checkout@v4
       - name: Install latest Snacks
         run: git clone --depth=1 https://github.com/folke/snacks.nvim.git "$MD_RENDER_SNACKS_PATH"
@@ -45,6 +47,9 @@ jobs:
           nvim --version
           magick --version
           git -C "$MD_RENDER_SNACKS_PATH" rev-parse HEAD
+          rpm -q python3-gobject python3-cairo pango gobject-introspection google-noto-sans-mono-vf-fonts google-noto-sans-cjk-vf-fonts
+      - name: Run heading raster integration test
+        run: python3 tests/heading_raster_test.py
       - name: Run Snacks integration tests
         run: |
           for test in tests/snacks_*_test.lua tests/image_view_lifecycle_test.lua; do

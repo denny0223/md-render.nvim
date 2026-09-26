@@ -45,13 +45,6 @@ function M.dispatch(args)
       vim.notify("MdRender textsize: unknown argument '" .. a .. "' (expected on|off|toggle)", vim.log.levels.WARN)
       return
     end
-    if want and not text_size.supports() then
-      vim.notify(
-        "MdRender textsize: this terminal does not implement OSC 66 (needs Kitty >= 0.40)",
-        vim.log.levels.WARN
-      )
-      return
-    end
     text_size.setup { enabled = want }
     vim.notify("MdRender textsize: " .. (want and "on" or "off"))
     -- Heading rows are reserved at build time, so the content has to be rebuilt.

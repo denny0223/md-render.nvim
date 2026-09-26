@@ -148,11 +148,13 @@ function M.setup_inline_code_highlight()
 end
 
 -- Run after the colorscheme and user ColorScheme callbacks have defined their
--- groups, then initialize defaults without replacing explicit overrides.
+-- groups, then rebuild layouts using those defaults and explicit overrides.
 vim.api.nvim_create_autocmd("ColorScheme", {
   callback = function()
     vim.schedule(function()
       M.setup_highlights()
+      local preview = package.loaded["md-render.preview"]
+      if preview then preview.rebuild_visible() end
     end)
   end,
 })

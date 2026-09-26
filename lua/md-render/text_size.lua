@@ -404,17 +404,24 @@ local _sgr_cache = {}
 --- the background, or the scaled block would show the terminal's default
 --- background instead of the float's.
 ---@param hl_name string
----@return string
-local function sgr_for(hl_name)
-  local cached = _sgr_cache[hl_name]
-  if cached then return cached end
-
+---@param normal_name string
+---@return string?
+local function sgr_for(hl_name, normal_name)
   local hl = vim.api.nvim_get_hl(0, { name = hl_name, link = false })
-  local bg = hl.bg
-  if not bg then
-    local float = vim.api.nvim_get_hl(0, { name = "NormalFloat", link = false })
-    bg = float.bg or (vim.api.nvim_get_hl(0, { name = "Normal", link = false }) or {}).bg
+  if normal_name == "NormalFloat" then
+    hl = vim.tbl_extend("force", vim.api.nvim_get_hl(0, { name = normal_name, link = false }), hl)
   end
+  local normal = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
+  hl.fg, hl.bg = hl.fg or normal.fg, hl.bg or normal.bg
+  hl.default, hl.cterm, hl.ctermfg, hl.ctermbg = nil, nil, nil, nil
+  if hl.blend == 0 then hl.blend = nil end
+  local supported = { fg = true, bg = true, bold = true, italic = true }
+  for key, value in pairs(hl) do
+    if value and not supported[key] then return nil end
+  end
+  local key = hl_name .. ":" .. normal_name
+  local cached = _sgr_cache[key]
+  if cached and vim.deep_equal(cached.style, hl) then return cached.sgr end
 
   local parts = { "\x1b[0m" }
   if hl.bold then table.insert(parts, "\x1b[1m") end
@@ -430,15 +437,20 @@ local function sgr_for(hl_name)
       )
     )
   end
-  if bg then
+  if hl.bg then
     table.insert(
       parts,
-      string.format("\x1b[48;2;%d;%d;%dm", bit.rshift(bg, 16), bit.band(bit.rshift(bg, 8), 0xFF), bit.band(bg, 0xFF))
+      string.format(
+        "\x1b[48;2;%d;%d;%dm",
+        bit.rshift(hl.bg, 16),
+        bit.band(bit.rshift(hl.bg, 8), 0xFF),
+        bit.band(hl.bg, 0xFF)
+      )
     )
   end
 
   local sgr = table.concat(parts)
-  _sgr_cache[hl_name] = sgr
+  _sgr_cache[key] = { style = hl, sgr = sgr }
   return sgr
 end
 
@@ -467,6 +479,8 @@ end
 ---@field icon_col integer? 0-indexed byte column the icon sits at
 
 ---@class MdRender.TextSizeState
+---@field buf integer
+---@field content MdRender.Content
 ---@field image_headings? false
 ---@field placements MdRender.TextPlacement[]
 ---@field win integer
@@ -513,7 +527,7 @@ end
 ---@return integer? right
 ---@return integer? top
 ---@return integer? bottom
-local function text_area(win)
+function M.text_area(win)
   local wininfo = vim.fn.getwininfo(win)[1]
   if not wininfo then return nil end
 
@@ -555,12 +569,23 @@ end
 local function visible_placements(state)
   local win = state.win
   if not vim.api.nvim_win_is_valid(win) then return {} end
-  local left, right, top, bottom = text_area(win)
+  local left, right, top, bottom = M.text_area(win)
   if not left then return {} end
   local buf = vim.api.nvim_win_get_buf(win)
+  if buf ~= state.buf or vim.api.nvim_win_get_tabpage(win) ~= vim.api.nvim_get_current_tabpage() then return {} end
+  if
+    not vim.o.termguicolors
+    or vim.wo[win].winblend > 0
+    or require("md-render.heading_feedback").custom_highlights(win)
+  then
+    return {}
+  end
 
+  local all, protected = require("md-render.heading_feedback").protected(state, state.placements)
+  if all then return {} end
   local out = {}
   for _, p in ipairs(state.placements) do
+    local sgr = sgr_for(p.hl, p.normal or "Normal")
     -- Guard against a layout that moved without us being told. Placements are
     -- anchored to rendered line numbers, and anything that rebuilds the content
     -- (an image finishing its download and changing height, a fold, a live
@@ -580,7 +605,11 @@ local function visible_placements(state)
       -- Partially visible placements are skipped rather than clipped: the
       -- plain-size text underneath stays on screen, which is the graceful
       -- fallback. OSC 66 has no source-rectangle crop like graphics do.
-      if fits_vertically and fits_horizontally then
+      local feedback = false
+      for row = p.line, p.line + p.scale - 1 do
+        feedback = feedback or protected[row]
+      end
+      if sgr and fits_vertically and fits_horizontally and not feedback then
         -- The icon sits to the left of the text on the same line, so it is
         -- inside the window whenever the text is — unless the window is
         -- scrolled horizontally, which `screenpos` reports by putting it on
@@ -592,7 +621,7 @@ local function visible_placements(state)
           local ipos = vim.fn.screenpos(win, p.line + 1, p.icon_col + 1)
           if ipos.row == pos.row and ipos.col >= left then icon_col = ipos.col end
         end
-        table.insert(out, { p = p, row = pos.row, col = pos.col, icon_col = icon_col })
+        table.insert(out, { p = p, row = pos.row, col = pos.col, icon_col = icon_col, sgr = sgr })
       end
     end
   end
@@ -607,7 +636,7 @@ end
 local function layout_key(drawn)
   local parts = {}
   for _, d in ipairs(drawn) do
-    table.insert(parts, string.format("%d:%d:%d", d.row, d.col, d.p.line))
+    table.insert(parts, string.format("%d:%d:%d:%s", d.row, d.col, d.p.line, d.sgr))
   end
   return table.concat(parts, ";")
 end
@@ -625,7 +654,7 @@ local function write_runs(state, drawn)
   if #drawn == 0 then return end
   local out = {}
   for _, d in ipairs(drawn) do
-    local sgr = sgr_for(d.p.hl)
+    local sgr = d.sgr
     -- The level icon goes out as a run of its own, at plain size.
     --
     -- It has to be a run at all because `v=` moves the scaled text down inside
@@ -979,6 +1008,8 @@ function M.attach(win, content)
   ---@type MdRender.TextSizeState
   local state = {
     placements = content.text_placements,
+    content = content,
+    buf = vim.api.nvim_win_get_buf(win),
     win = win,
     redraw_timer = nil,
     autocmd_ids = {},
@@ -1011,7 +1042,17 @@ function M.attach(win, content)
     WinNew = true,
     WinClosed = true,
   }
-  for _, event in ipairs { "WinScrolled", "WinResized", "WinNew", "WinClosed", "CursorMoved", "CursorMovedI" } do
+  for _, event in ipairs {
+    "WinScrolled",
+    "WinResized",
+    "WinNew",
+    "WinClosed",
+    "CursorMoved",
+    "CursorMovedI",
+    "ModeChanged",
+    "CmdlineChanged",
+    "TextYankPost",
+  } do
     -- Cursor movement leaves the runs where they are and needs no such thing.
     local destroys_runs = DESTROYS_RUNS[event]
     local id = vim.api.nvim_create_autocmd(event, {
@@ -1107,6 +1148,8 @@ function M.refresh(state, win, content)
     return nil
   end
   state.placements = content.text_placements
+  state.content, state.buf = content, vim.api.nvim_win_get_buf(win)
+  state.search_key = nil
   state.win = win
   -- Old blocks may sit where the new layout has none, so force the next paint
   -- through the invalidate path even if the positions happen to line up.

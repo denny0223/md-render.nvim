@@ -5,7 +5,7 @@ local M = {}
 
 local SUBCOMMANDS = { "float", "tab", "pager", "toggle", "split", "auto", "demo", "textsize" }
 local AUTO_ARGS = { "on", "off", "toggle" }
-local TEXTSIZE_ARGS = { "on", "off", "toggle" }
+local TEXTSIZE_ARGS = { "on", "off", "toggle", "auto", "image", "native", "status" }
 
 local function preview()
   return require("md-render").preview
@@ -34,19 +34,29 @@ function M.dispatch(args)
     local text_size = require "md-render.text_size"
     local a = (fargs[2] or "toggle"):lower()
     local cur = text_size.config().enabled
+    local backend = text_size.config().backend
     local want
-    if a == "on" then
+    if a == "status" then
+      vim.notify("MdRender textsize: " .. text_size.status())
+      return
+    elseif a == "auto" or a == "image" or a == "native" then
+      want, backend = true, a
+    elseif a == "on" then
       want = true
     elseif a == "off" then
       want = false
     elseif a == "toggle" then
       want = not cur
     else
-      vim.notify("MdRender textsize: unknown argument '" .. a .. "' (expected on|off|toggle)", vim.log.levels.WARN)
+      vim.notify(
+        "MdRender textsize: unknown argument '" .. a .. "' (expected on|off|toggle|auto|image|native|status)",
+        vim.log.levels.WARN
+      )
       return
     end
-    text_size.setup { enabled = want }
-    vim.notify("MdRender textsize: " .. (want and "on" or "off"))
+    if a == "auto" or a == "image" then text_size.retry_image() end
+    text_size.setup { enabled = want, backend = backend }
+    vim.notify("MdRender textsize: " .. (want and backend or "off"))
     -- Heading rows are reserved at build time, so the content has to be rebuilt.
     p.rebuild_visible()
   elseif sub == "auto" then

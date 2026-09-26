@@ -39,7 +39,7 @@ local ok, err = pcall(function()
     end
     local size = require "md-render.text_size"
     size.supports = function() return true end
-    size.setup { backend = "image" }
+    size.setup { backend = "auto" }
     _G.preview = require "md-render.preview"
     _G.complete = function(failure)
       local batch = jobs
@@ -130,16 +130,39 @@ local ok, err = pcall(function()
         input "<CR>"
         wait_for [[return vim.fn.getreg "/" == "SELECT"]]
       end
-      local placements = failure == "success" and 2 or 0
-      wait_for(
-        "return vim.api.nvim_get_mode().mode == 'n' and not session.dirty and #session.content.text_placements == "
-          .. placements
-      )
-      assert(lua "return session.content.heading_backend" == (failure == "success" and "image" or "plain"))
+      wait_for "return vim.api.nvim_get_mode().mode == 'n' and not session.dirty and #session.content.text_placements == 2"
+      assert(lua "return session.content.heading_backend" == (failure == "success" and "image" or "native"))
       lua [[vim.cmd "nohlsearch"]]
     end
   end
 
+  -- Native fallback must also yield to search, Visual and timed yank feedback.
+  phase = "native feedback"
+  lua [[
+    local size = require "md-render.text_size"
+    local state = session.text_size_state
+    local row = state.placements[1].line + 1
+    _G.feedback_row = row
+    vim.api.nvim_win_set_cursor(0, {row, 0})
+    vim.cmd "normal! v$"
+    size.paint(state)
+    for _, d in ipairs(state.drawn or {}) do assert(d.p.line ~= row - 1) end
+  ]]
+  input "y"
+  wait_for "return vim.api.nvim_get_mode().mode == 'n'"
+  lua [[
+    local size = require "md-render.text_size"
+    local ns = vim.api.nvim_create_namespace "auto-test-yank"
+    vim.api.nvim_buf_set_extmark(0, ns, feedback_row-1, 0, {end_row=feedback_row, end_col=0, hl_group="IncSearch"})
+    size.paint(session.text_size_state)
+    for _, d in ipairs(session.text_size_state.drawn or {}) do assert(d.p.line ~= feedback_row-1) end
+    vim.api.nvim_buf_clear_namespace(0, ns, 0, -1)
+    vim.fn.setreg("/", "Top")
+    vim.v.hlsearch = 1
+    size.paint(session.text_size_state)
+    for _, d in ipairs(session.text_size_state.drawn or {}) do assert(d.p.line ~= feedback_row-1) end
+    vim.cmd "nohlsearch"
+  ]]
   lua [[start("resume image"); complete()]]
   wait_for "return #jobs > 0"
   lua [[complete()]]

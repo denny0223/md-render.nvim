@@ -210,6 +210,48 @@ do
   text_size.setup { enabled = false }
 end
 
+-- Details insert a multibyte prefix after heading layout. Text and icon
+-- anchors must still point into the final buffer, including wrapped lines.
+do
+  text_size.setup { enabled = true }
+  with_support(true, function()
+    for level = 1, 6 do
+      local lines = {
+        "# Before",
+        "<details open>",
+        "<summary>Study</summary>",
+        string.rep("#", level) .. " [共同研究](https://example.com/study)",
+        string.rep("#", level) .. " " .. string.rep("文字 ", 12),
+        "</details>",
+        "# After",
+      }
+      local opts = { max_width = 42, indent = "    " }
+      local out = render(lines, opts)
+      assert_true(#out.text_placements > 4, "details heading wraps at level " .. level)
+      for _, p in ipairs(out.text_placements) do
+        local line = out.lines[p.line + 1]
+        assert_eq(line:sub(p.col + 1, p.col + #p.text), p.text, "details text anchor matches the final buffer")
+        if p.icon then
+          assert_eq(line:sub(p.icon_col + 1, p.icon_col + #p.icon), p.icon, "details icon anchor matches")
+        end
+        if p.text == "Before" or p.text == "After" then
+          assert_eq(p.icon_col, #opts.indent, "details prefix does not move headings outside the block")
+        end
+      end
+      assert_eq(#out.link_metadata, 1, "details heading retains its link")
+      local link = out.link_metadata[1]
+      assert_eq(
+        out.lines[link.line + 1]:sub(link.col_start + 1, link.col_end),
+        "共同研究",
+        "link span stays aligned"
+      )
+      opts.fold_state = { [2] = true }
+      assert_eq(#render(lines, opts).text_placements, 2, "closed details leave only the outside headings")
+    end
+  end)
+  text_size.setup { enabled = false }
+end
+
 -- Test 7: a window too narrow to wrap sensibly leaves the heading plain
 do
   text_size.setup { enabled = true }

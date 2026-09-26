@@ -120,13 +120,13 @@ end
 
 ---@class MdRender.TextSize.Config
 ---@field enabled boolean master switch (default true)
----@field backend "native"|"image" heading renderer (default native)
+---@field backend "auto"|"native"|"image" heading renderer (default auto)
 ---@field image { font: string, font_size: number|"auto", python: string } Pango image options
 
 ---@type MdRender.TextSize.Config
 local config = {
   enabled = true,
-  backend = "native",
+  backend = "auto",
   image = { font = "Noto Sans Mono,Noto Sans Mono CJK TC", font_size = "auto", python = "python3" },
 }
 
@@ -135,7 +135,10 @@ local config = {
 function M.setup(opts)
   opts = opts or {}
   if opts.backend ~= nil then
-    assert(opts.backend == "native" or opts.backend == "image", "text_size.backend must be native or image")
+    assert(
+      opts.backend == "auto" or opts.backend == "native" or opts.backend == "image",
+      "text_size.backend must be auto, native or image"
+    )
   end
   if opts.image then
     local image_opts = vim.tbl_extend("force", config.image, opts.image)
@@ -219,7 +222,7 @@ end
 vim.api.nvim_create_autocmd({ "UIEnter", "UILeave" }, { callback = M.reset_cache })
 
 --- Resolve the configured policy before reserving any heading rows.
---- Pending work and image environment failures retain ordinary text.
+--- Pending work stays plain; confirmed environment failures may use native.
 ---@return "image"|"native"|"plain" backend
 ---@return string? reason
 function M.resolve_backend()
@@ -242,7 +245,13 @@ function M.resolve_backend()
       reason = "terminal cell dimensions are unavailable"
     end
   end
+  if config.backend == "auto" and M.supports() then return "native", reason end
   return "plain", reason
+end
+
+function M.status()
+  local backend, reason = M.resolve_backend()
+  return (config.enabled and config.backend or "off") .. " -> " .. backend .. (reason and (": " .. reason) or "")
 end
 
 function M.retry_image()

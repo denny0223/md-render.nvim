@@ -232,7 +232,7 @@ local ok, err = pcall(function()
   assert(lua [[return vim.fn.getreg('"')]] == "T SECO", "pager drag lost its projected origin")
   lua [[session:cleanup_images()]]
 
-  -- Image headings must use the same local-file navigation and return history.
+  -- Auto images must use the same local-file navigation and return history.
   lua [[
     _G.link_root = vim.fn.tempname()
     vim.fn.mkdir(link_root, "p")
@@ -242,7 +242,7 @@ local ok, err = pcall(function()
     vim.api.nvim_buf_set_lines(source, 2, 3, false, {
       "## [FIRST](" .. link_root .. "/target.md) [SECOND](#second)",
     })
-    require("md-render.text_size").setup { backend = "image" }
+    require("md-render.text_size").setup { backend = "auto" }
     preview.toggle()
     _G.session = preview._sessions[vim.api.nvim_get_current_buf()]
     _G.link_origin = session.buf

@@ -291,7 +291,7 @@ Markdown 目標沿用目前的預覽視窗；其他檔案在原始編輯視窗�
 	                `:vert`、`:tab`、`:topleft`、`:botright`。
 	  auto        - [實驗功能] 隨插入模式自動切換；第二個引數接受
 	                `on` / `off` / `toggle`（預設 `toggle`）。
-	  textsize    - [實驗功能] 使用 Kitty 文字大小協定放大標題
+	  textsize    - [實驗功能] 選擇標題放大後端或查看狀態
 	                （預設啟用）；第二個引數接受
 	                `on` / `off` / `toggle`（預設 `toggle`）。
 	  demo        - 開啟示範視窗，展示所有支援的記法。
@@ -433,15 +433,25 @@ Markdown 目標沿用目前的預覽視窗；其他檔案在原始編輯視窗�
 <
 
                                                           *:MdRender-textsize*
-:MdRender textsize [on|off|toggle] ~
-	[實驗功能] 使用 Kitty 文字大小協定，將標題繪製成比基本字型更大的尺寸。
-	支援此協定的終端機預設會啟用；功能與限制請見 |md-render-text-size|。
+:MdRender textsize [on|off|toggle|auto|image|native|status] ~
+	[實驗功能] 將標題繪製成比基本字型更大的尺寸。預設使用 `auto`，依
+	圖片、native OSC 66、一般文字的順序選擇。native 的功能與限制請見
+	|md-render-text-size|；圖片設定與操作限制請見 README.zh-TW.md。
 
-	不帶引數時會切換啟用狀態。在不支援協定的終端機上啟用時，會顯示警告，
-	並保持原狀。
+	不帶引數時會切換啟用狀態。`on` 保留已選後端；`off` 移除標題覆蓋層。
+	`native` 不做圖片偵測也不啟動排版程序；明確選擇 `image` 時只會降級至
+	一般文字。不支援的後端仍保留可讀文字，不會改變所選策略。
 
-	放大標題需要的額外行數是在建立內容時預留，因此切換此功能會重建畫面上
-	所有預覽。
+	`status` 顯示所選策略、實際後端與降級原因。`auto` 與 `image` 會重試
+	已快取的失敗。切換原文／預覽會保留所選策略；變更設定會重建畫面上的
+	預覽，並等待選取、操作符、命令列輸入與複製回饋結束，才改變底層版面。
+
+	圖片需要終端確認支援 PNG、實際文字格尺寸、termguicolors 與可用的
+	排版程序。等待期間保留文字；PNG 回覆最多等待 1.5 秒，排版最多等待
+	5 秒。`auto` 模式下，環境失敗會在本次工作階段快取，不會反覆啟動
+	程序或自動警告。
+	修正環境後，執行 `:MdRender textsize auto` 重試。個別字形、樣式或
+	連結無法繪製時，只有該標題保留一般文字。
 
                                                               *:MdRender-demo*
 :MdRender demo ~
@@ -513,8 +523,8 @@ Kitty 圖形相同的通道。Neovim 不知道這些額外繪製的內容，因�
   支援回覆才會啟用；未回覆或不是 Kitty 時會停用。這是因為某些終端機會連同
   OSC 66 後的文字一起吞掉，導致標題消失，無法退回一般文字。在其他終端機上
   不會增加額外處理，標題維持原本的顯示方式。
-- 放大時，標題內的行內程式碼、連結、`==highlight==` 等格式會失去個別顏色，
-  整段統一使用標題的醒目提示。
+- 含行內格式或連結的標題保留一般文字，維持原有樣式與連結顏色。
+  不支援的高亮效果、索引色與自訂高亮 namespace 也保留一般文字。
 - 若標題的第二行超出視窗範圍，會暫時維持一般大小，直到捲動至可完整顯示。
 - 其他來源的重繪，例如外掛強制重繪、訊息或彈出視窗遮住預覽、滑鼠捲動造成
   終端機搬移格子，都會讓標題回到一般大小，無法完全避免。恢復時依訊號抵達
@@ -1149,6 +1159,8 @@ b:md_render ~
   *MdRenderHighlight*   Obsidian `==highlight==` 標記。
   *MdRenderTag*         Obsidian `#tag` 語法（連結至 `Label`）。
   *MdRenderMath*        行內／區塊數學式（連結至 `Special`）。
+  *MdRenderLink*        外部與本機檔案連結（沿用 `Underlined` 樣式；缺少的
+                        RGB／cterm 字色取自 `DiagnosticInfo`）。
   *MdRenderLinkAnchor*  錨點連結 `#heading`（連結至 `DiagnosticHint`）。
                                                         *MdRenderLinkObsidian*
                         Obsidian wikilink `[[...]]`（連結至 `Special`）。

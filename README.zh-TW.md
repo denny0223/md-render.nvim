@@ -276,11 +276,11 @@ GIF 與影片分頁需要 Kitty 0.31 以上版本，開啟後會自動播放，�
 | `:MdRender toggle` | 在目前視窗切換 Markdown 原始文字與預覽 |
 | `:MdRender split` | 分割視窗，同時顯示原始文字與預覽；支援 `:vert`、`:tab`、`:topleft`、`:botright` |
 | `:MdRender auto [on\|off\|toggle]` | **實驗性功能**：依插入模式自動切換原始文字／預覽，各緩衝區分別設定 |
-| `:MdRender textsize [on\|off\|toggle]` | **實驗性功能**：透過 Kitty 文字大小協定放大標題，預設啟用 |
+| `:MdRender textsize [on\|off\|toggle\|auto\|image\|native\|status]` | **實驗性功能**：放大標題，可選自動、原生文字或圖片渲染，並查詢實際後端 |
 | `:MdRender pager` | 全螢幕分頁閱讀模式，隱藏介面裝飾，按 `q` 離開 Neovim |
 | `:MdRender demo` | 顯示內建 Markdown 語法展示 |
 
-輸入第一個參數時可用 Tab 補齊子指令；`auto` 與 `textsize` 後則會提供 `on`、`off`、`toggle`。
+輸入第一個參數時可用 Tab 補齊子指令；`auto` 與 `textsize` 後會提供 `on`、`off`、`toggle`，`textsize` 另有 `auto`、`image`、`native`、`status`。
 
 > **舊版相容性：** `:MdRenderTab`、`:MdRenderToggle`、`:MdRenderSplit`、`:MdRenderAuto`、`:MdRenderPager`、`:MdRenderDemo` 等舊指令仍可使用，會轉交給新的子指令。每次 Neovim 工作階段中，首次呼叫會顯示淘汰提示；未來主要版本將移除這些舊指令。
 
@@ -315,6 +315,35 @@ autocmd FileType markdown silent! MdRender auto on
 
 ### 放大標題
 
+標題預設使用 `auto`，依 **圖片 → native OSC 66 → 一般文字** 選擇。圖片需要終端確認支援 PNG、可取得實際文字格尺寸、啟用 `termguicolors`，以及可用的 Pango/Cairo 排版程序。環境條件不足時，`auto` 會嘗試 native 放大；仍不支援則保留一般文字。等待偵測或排版期間也可閱讀原文；個別標題無法繪製時，只有該標題保留文字。
+
+`:MdRender textsize status` 會顯示選擇的策略、實際後端與降級原因。PNG 回覆最多等待 1.5 秒，排版程序最多等待 5 秒；環境失敗會在本次 Neovim 工作階段快取，不會反覆啟動程序或自動跳出警告。修正環境後，再執行 `:MdRender textsize auto` 即可重試。切換原文／預覽或 `off`／`on` 都會保留後端選擇；`native` 不做圖片偵測也不啟動排版程序，明確選擇 `image` 時則只會降級至一般文字。也可在下方設定中使用 `backend = "auto"`。
+
+#### 試用圖片標題
+
+執行 `:MdRender textsize image`，再照常用 `:MdRender toggle` 開啟預覽；已開啟的預覽會立即更新。`:MdRender textsize native` 恢復 OSC 66 標題，`:MdRender textsize off` 則顯示一般大小的文字。
+
+這個實驗後端以 [Pango](https://www.pango.org/)／[Cairo](https://www.cairographics.org/) 在六級字型大小下排出自然字距，需要 Python 3、PyGObject、Pycairo，以及 Pango/PangoCairo 與 Cairo 的 introspection 資料。缺少套件時保留一般文字。字型與基準像素大小可設定為：
+
+```lua
+require("md-render.text_size").setup {
+  backend = "image",
+  image = { font = "Noto Sans Mono,Noto Sans Mono CJK TC", font_size = "auto", python = "python3" },
+}
+```
+
+預設 `font_size = "auto"` 會依終端格子的大小校準指定字型，保留六級不同的字級倍率；也可指定正的像素值。Pango 量測換行與字形位置，同一份位元組範圍會用於 buffer 文字、行內樣式與連結定位。排版在背景產生，預覽開啟期間會重用結果。
+
+懸停時圖片保持原位。單擊依可見字形定位，包含圖片下半列，再交由既有內部錨點處理器操作。游標沿標題左側空白或圖示移動時保留圖片；進入圖片範圍時，該段顯示文字，確保游標位置正確。拖曳從按下時的字元開始選取，Visual 選取只讓選取經過的標題列顯示文字。使用者設定的 yank 或其他高亮也會讓涵蓋的列暫時顯示文字，依高亮原本的持續時間恢復圖片。搜尋命中的標題保留高亮，其他標題仍顯示圖片，也不會清除搜尋狀態。在其他視窗編輯時，可見預覽仍保留圖片；重新換行或切換後端時，會維持正在閱讀的原文段落與標題字元。背景重新排版會等到選取、待完成的操作指令、命令列輸入與 yank 高亮結束後才套用。
+
+圖片沿用使用者的 `MdRenderH1`～`MdRenderH6` 與行內高亮群組，基本顏色來自 `Normal` 或 `NormalFloat`。未指定背景色時保留透明；只在顯示圖片的視窗遮住底下的字形，避免重影，buffer 文字與座標保持不變。顏色、背景、粗體、斜體、底線與刪除線保留 Markdown 樣式順序，並讓 `vim.hl.on_yank()` 等使用者高亮優先顯示。自訂反相、`nocombine`、透明混合、其他底線樣式或視窗專屬高亮會退回文字；缺字、字型尺寸過大、終端格線無法容納文字或連結目標，以及 `<details>` 內的標題，也保留文字。更換配色與終端尺寸時會更新排版；直接修改渲染高亮群組後，會先撤下舊圖片並重新繪製。調整字型後，可用 `:MdRender textsize image` 手動更新並重試失敗的繪圖。降級原因可用 `:MdRender textsize status` 檢視；明確使用 image 模式時，也會在 `:messages` 記錄繪圖錯誤。
+
+**終端操作：** 外部連結可用終端的 OSC 8 快捷操作開啟（Kitty 為 Ctrl＋Shift＋點擊），圖片標題的上下兩列皆可點擊。網址範圍對齊可見字形，仍由終端設定的程式開啟。內部錨點可用一般滑鼠點擊，本機檔案連結可用 `gf`。若要用終端 Shift＋拖曳選取，先執行 `:MdRender textsize off` 顯示渲染後文字，或用 `:MdRender toggle` 回到 Markdown 原文；圖片格子不含可選取的文字。
+
+**相容範圍：** 圖片標題需要 Neovim >= 0.12、終端確認 PNG 支援，以及 `termguicolors`（Kitty >= 0.28）；native 放大需要 Kitty >= 0.40。已在 Linux 上驗證直接執行 Kitty，以及透過本機 loopback SSH PTY 連入 Linux。Python、Pango/Cairo 與指定字型需安裝於 Neovim 所在主機；PNG 資料經終端連線傳送，不需共用圖片檔案。Windows 與 tmux 不啟用圖片標題；其他作業系統／客戶端組合尚未驗證。需要純文字畫面的終端工具或輔助科技可使用 `textsize off` 或原始 buffer；目前未進行螢幕閱讀器相容性實測。
+
+#### 原生文字標題
+
 > **實驗性功能，僅支援 Kitty：** 操作方式可能改變，也可能移除此功能。歡迎回報問題或不順手的地方。
 
 Kitty 0.40 加入[文字大小協定](https://sw.kovidgoyal.net/kitty/text-sizing-protocol/)（OSC 66），可以依基本字型大小的倍率繪製文字。md-render 用它為各層級標題設定不同大小：
@@ -323,7 +352,7 @@ Kitty 0.40 加入[文字大小協定](https://sw.kovidgoyal.net/kitty/text-sizin
 |---|---|---|---|---|---|---|
 | 大小 | 2.00 倍 | 1.75 倍 | 1.50 倍 | 1.40 倍 | 1.25 倍 | 1.17 倍 |
 
-終端機支援時就會自動啟用，不需要另外設定。可用 `:MdRender textsize off` 關閉，或在設定中永久停用：
+使用 `:MdRender textsize native` 選擇此後端；`auto` 在圖片環境不足時也會使用它。搜尋、選取與使用者高亮會讓受影響的標題暫時顯示一般文字。可用 `:MdRender textsize off` 關閉，或在設定中永久停用：
 
 ```lua
 require("md-render.text_size").setup { enabled = false }
@@ -342,7 +371,7 @@ Emoji 會獨立成段。對 Kitty 而言，宣告了寬度的一段文字是一�
 已知限制：
 
 - **僅支援 Kitty >= 0.40。** 外掛會透過 XTVERSION 詢問終端機身分，收到明確回覆才啟用。某些終端機會把 OSC 66 連同附帶文字一起丟棄，因此這裡採取嚴格偵測，避免標題消失。其他環境仍以一般大小顯示，不啟用此功能。
-- 標題內的行內程式碼、連結、`==醒目標示==` 等格式，在放大時不保留原本顏色。
+- 含行內格式或連結的標題保留一般文字，維持原有樣式與連結顏色。不支援的高亮效果、索引色與自訂高亮 namespace 也保留一般文字。
 - 每個層級都預留兩行高，只有 `#` 會填滿。其他層級使用 `v=2` 垂直置中，避免沿用協定預設的靠上對齊；例如 `######` 只有 1.17 倍，靠上時下方幾乎會空出一整行。
 - 層級圖示維持一般大小，但會獨立成段並置中，與標題對齊。使用 `n=1:d=2` 抵銷 `s=2` 的格子縮放。這也能避免 Nerd Font 圖示被裁切：這些圖示回報為一格寬，實際圖形卻更寬，若跟標題共用同一段，`󰉬` 可能只剩下「H」。獨立一段並設定 `w=1`，就能使用原本預留的兩格寬度。
 - 如果標題的第二行超出視窗，會先維持一般大小，捲動進入可見範圍後才放大。

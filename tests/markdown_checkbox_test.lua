@@ -502,7 +502,7 @@ end)
 test("html: <a href> renders as link", function()
   local text, highlights, _ = render '<a href="https://example.com">click here</a>'
   assert_eq(text, "click here", "html a: tags should be stripped")
-  assert_eq(highlights[1].hl, "Underlined", "html a: should be Underlined")
+  assert_eq(highlights[1].hl, "MdRenderLink", "html a: should use the link style")
 end)
 
 test("html: <a href> produces link metadata", function()
@@ -714,13 +714,13 @@ test("html nested: <a><b>text</b></a>", function()
   local Markdown = require "md-render.markdown"
   local text, highlights, links = Markdown.render '<a href="https://example.com"><b>link</b></a>'
   assert_eq(text, "link", "nested a-b: tags should be stripped")
-  local has_bold, has_underlined = false, false
+  local has_bold, has_link_style = false, false
   for _, hl in ipairs(highlights) do
     if hl.hl == "Bold" then has_bold = true end
-    if hl.hl == "Underlined" then has_underlined = true end
+    if hl.hl == "MdRenderLink" then has_link_style = true end
   end
   assert_eq(has_bold, true, "nested a-b: should have Bold")
-  assert_eq(has_underlined, true, "nested a-b: should have Underlined")
+  assert_eq(has_link_style, true, "nested a-b: should have MdRenderLink")
   assert_eq(#links, 1, "nested a-b: should have 1 link")
   assert_eq(links[1].url, "https://example.com", "nested a-b: url should match")
 end)
@@ -973,9 +973,9 @@ test("reference link with inline code: underline covers full text", function()
   assert_eq(text, "vim.system", "ref-code-in-link: text should strip backticks and link syntax")
   local underline
   for _, hl in ipairs(highlights) do
-    if hl.hl == "Underlined" then underline = hl end
+    if hl.hl == "MdRenderLink" then underline = hl end
   end
-  assert_eq(underline ~= nil, true, "ref-code-in-link: should have Underlined highlight")
+  assert_eq(underline ~= nil, true, "ref-code-in-link: should have MdRenderLink highlight")
   if underline then
     assert_eq(underline.col, 0, "ref-code-in-link: underline col should be 0")
     assert_eq(underline.end_col, #text, "ref-code-in-link: underline end_col should cover full text")

@@ -237,14 +237,23 @@ vim.keymap.set("n", "<leader>md", "<Plug>(md-render-demo)",        { desc = "Mar
 
 ### In-preview keys
 
-Inside a rendered preview (floating, tab, or in-place toggle), these buffer-local keys are set automatically:
+Inside a rendered preview (floating, tab, split, or in-place toggle), these buffer-local keys are set automatically:
 
 | Key | Action |
 |---|---|
 | `za` | Toggle the fold / expandable region under the cursor (no-op elsewhere) |
 | `<CR>` | Open the image under the cursor (Snacks backend), or toggle a fold / expandable region |
+| `gf` | Follow the local file link under the cursor; Markdown targets stay rendered |
 | `<LeftMouse>` | Toggle folds, expand regions, and open links by clicking |
 | `q` / `<Esc>` / `<C-c>` | Close the window (floating / tab mode only) |
+
+`gf` resolves the link destination relative to its source Markdown file, independently of the working directory. Markdown targets keep the current preview window; other files open for editing in the original source window, closing floating/tab previews. `Ctrl-O` returns to the preceding rendered document with its reading position and folds; after editing another file, that rendered return uses the source window. Outside a link, native `gf` and counts such as `2gf` still work.
+
+Directories open in the original source window through the configured directory browser (such as netrw), closing floating/tab previews. The browser retains its own navigation and buffer lifecycle.
+
+`Ctrl-O` and `Ctrl-I` remain native Neovim commands. Each window keeps its own jumplist: after opening another file in the source editing window, only the immediately preceding rendered document is guaranteed on return. Earlier preview history is not merged into that window.
+
+Local links support relative paths, POSIX absolute paths, and `file:///` URLs, including encoded filenames, inline/reference links, and optional titles. Missing or unreadable files leave the preview unchanged. Fragments do not yet select a heading; pager navigation and Windows/UNC paths are outside this feature's initial scope.
 
 ### Image tab keys
 

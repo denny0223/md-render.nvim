@@ -10,6 +10,7 @@ local demo_float_win = FloatWin.new "md_render_demo_float"
 local tab_win = TabWin.new "md_render_preview_tab"
 
 local MdPreview = {}
+local get_or_create_session
 
 --- Upper bound on render width when not explicitly overridden by the user.
 --- Long lines hurt readability even in wide windows, so we cap auto-sized
@@ -199,9 +200,9 @@ end
 
 -- =====================================================================
 -- Session: encapsulates a render buffer's content, state, and lifecycle.
--- One Session per (source buffer, namespace) — the render buffer is
--- reused across windows that show it. show / show_tab / show_pager and
--- :MdRenderToggle all build on top of this.
+-- Toggle/split share one Session per source; each float/tab presentation
+-- retains its own documents. Native window copies share their render buffer.
+-- show_pager also uses Session, with its own full-screen lifecycle.
 -- =====================================================================
 
 ---@class MdRender.Session
@@ -222,6 +223,9 @@ end
 ---@field _syncing? boolean           -- a scroll sync is in flight (see install_scroll_sync)
 ---@field _sync_unlock_timer? table   -- timer that releases `_syncing`
 ---@field _synced_views? table<integer, integer[]> -- per window, `{ topline, cursor_line, written_at }` of the last sync write
+---@field views? table<integer, table> -- last reading view per window, for close synchronization
+---@field jump_views? table<integer, table<string, table>> -- viewports keyed by native jump position
+---@field cache? table<integer, MdRender.Session> -- documents within this preview presentation
 local Session = {}
 Session.__index = Session
 
@@ -251,6 +255,7 @@ end
 ---@return MdRender.Session
 function Session.new(source_bufnr, ns_name, opts)
   local effective_opts = vim.tbl_extend("force", {}, opts or {})
+  local explicit_buf_dir = effective_opts.buf_dir ~= nil
   local source_name = vim.api.nvim_buf_get_name(source_bufnr)
   effective_opts.buf_dir = effective_opts.buf_dir or vim.fn.fnamemodify(source_name, ":h")
 
@@ -258,6 +263,7 @@ function Session.new(source_bufnr, ns_name, opts)
   self.source_bufnr = source_bufnr
   self.source_lines = vim.api.nvim_buf_get_lines(source_bufnr, 0, -1, false)
   self.opts = effective_opts
+  self._explicit_buf_dir = explicit_buf_dir
   self.fold_state = {}
   self.expand_state = {}
   self.buf = vim.api.nvim_create_buf(false, true)
@@ -286,7 +292,8 @@ function Session.new(source_bufnr, ns_name, opts)
   if source_name ~= "" then
     local saved_ei = vim.o.eventignore
     vim.o.eventignore = "all"
-    pcall(vim.api.nvim_buf_set_name, self.buf, source_name .. " [render]")
+    local named = pcall(vim.api.nvim_buf_set_name, self.buf, source_name .. " [render]")
+    if not named then vim.api.nvim_buf_set_name(self.buf, source_name .. " [render " .. self.buf .. "]") end
     vim.bo[self.buf].filetype = "md-render"
     vim.o.eventignore = saved_ei
     -- nvim_buf_set_name can flip readonly when it thinks the file already
@@ -318,18 +325,25 @@ function Session.new(source_bufnr, ns_name, opts)
   return self
 end
 
+--- Infer paths from the current source name; :saveas can move a cached source.
+function Session:source_directory()
+  local name = vim.api.nvim_buf_get_name(self.source_bufnr)
+  if self._explicit_buf_dir or name == "" then return self.opts.buf_dir end
+  return vim.fn.fnamemodify(name, ":h")
+end
+
 --- Refresh source_lines from the source buffer (call before rebuild when
 --- the source may have changed).
 function Session:refresh_source()
   if vim.api.nvim_buf_is_valid(self.source_bufnr) then
     self.source_lines = vim.api.nvim_buf_get_lines(self.source_bufnr, 0, -1, false)
+    self.opts.buf_dir = self:source_directory()
   end
 end
 
 --- Rebuild render content from the current source_lines and apply it.
 --- Preserves the view (topline/cursor) of every window currently displaying
---- the render buffer, since `apply_content_to_buffer` replaces all lines and
---- would otherwise reset topline.
+--- the render buffer, since changing lines can otherwise reset topline.
 function Session:rebuild()
   self.opts.fold_state = self.fold_state
   self.opts.expand_state = self.expand_state
@@ -512,10 +526,21 @@ end
 
 --- Bind a window to this session and start displaying images in it.
 ---@param win integer
-function Session:bind_window(win)
+---@param layout? { max_width?: integer, indent?: string }
+function Session:bind_window(win, layout)
   self:cleanup_images()
   self.win = win
-  if self:resize(win) then self:rebuild() end
+  if layout then
+    local explicit = layout.max_width ~= nil
+    self.dirty = self.dirty
+      or explicit ~= self._explicit_max_width
+      or (explicit and layout.max_width ~= self.opts.max_width)
+      or layout.indent ~= self.opts.indent
+    self._explicit_max_width = explicit
+    self.opts.max_width = layout.max_width or self.opts.max_width
+    self.opts.indent = layout.indent
+  end
+  if self:resize(win) or self.dirty then self:rebuild() end
   -- Own teardown before the renderers' WinClosed handlers, so they are
   -- detached once and cannot queue work while this window is closing.
   self._win_closed = vim.api.nvim_create_autocmd("WinClosed", {
@@ -542,6 +567,7 @@ function Session:bind_window(win)
     end,
   })
   self.text_size_state = require("md-render.text_size").attach(win, self.content)
+  if self._rebind_keymaps then self._rebind_keymaps(win) end
 end
 
 --- True when the render buffer is displayed in at least one window.
@@ -556,10 +582,7 @@ function Session:refresh_images()
     self:cleanup_images()
     if not vim.api.nvim_buf_is_valid(self.buf) then return end
     local win = vim.fn.win_findbuf(self.buf)[1]
-    if win then
-      self:bind_window(win)
-      if self._rebind_keymaps then self._rebind_keymaps(win) end
-    end
+    if win then self:bind_window(win) end
     return
   end
   self.image_state = display_utils.update_images(self.image_state, self.win, self.content)
@@ -590,6 +613,9 @@ end
 ---@param keymap_opts? { close_keys?: string[], close_line_idx?: integer }
 function Session:install_float_keymaps(close_handle, keymap_opts)
   keymap_opts = keymap_opts or {}
+  for _, key in ipairs { "q", "<Esc>", "<C-c>" } do
+    pcall(vim.keymap.del, "n", key, { buffer = self.buf })
+  end
   self._rebind_keymaps = display_utils.setup_float_keymaps(self.buf, self.ns, self.win, self.content, close_handle, {
     close_keys = keymap_opts.close_keys,
     close_line_idx = keymap_opts.close_line_idx,
@@ -664,51 +690,30 @@ function Session:install_footer()
   self._update_footer = update
   update()
 
-  vim.api.nvim_create_autocmd("CursorMoved", {
+  if self._footer_autocmd then pcall(vim.api.nvim_del_autocmd, self._footer_autocmd) end
+  self._footer_autocmd = vim.api.nvim_create_autocmd("CursorMoved", {
     buffer = self.buf,
     callback = update,
   })
 end
 
---- Track preview cursor and sync source cursor back when the window closes.
---- Used by show / show_tab (not pager — pager replaces the buffer in place).
-function Session:install_cursor_sync()
-  if not self.win or not vim.api.nvim_win_is_valid(self.win) then return end
-  local last_preview_line = vim.api.nvim_win_get_cursor(self.win)[1]
-  local win = self.win
-  local source_bufnr = self.source_bufnr
-
-  vim.api.nvim_create_autocmd("CursorMoved", {
-    buffer = self.buf,
-    callback = function()
-      if vim.api.nvim_win_is_valid(win) then last_preview_line = vim.api.nvim_win_get_cursor(win)[1] end
-    end,
-  })
-
-  local content_ref = self.content -- captured at install time; updated by rebuild via self.content
-  vim.api.nvim_create_autocmd("WinClosed", {
-    pattern = tostring(win),
-    once = true,
-    callback = function()
-      local source_line_map = self.content.source_line_map or content_ref.source_line_map
-      if source_line_map and last_preview_line <= #source_line_map then
-        local target_source_line = source_line_map[last_preview_line]
-        if target_source_line and target_source_line > 0 and vim.api.nvim_buf_is_valid(source_bufnr) then
-          local total_lines = vim.api.nvim_buf_line_count(source_bufnr)
-          target_source_line = math.min(target_source_line, total_lines)
-          for _, w in ipairs(vim.api.nvim_list_wins()) do
-            if vim.api.nvim_win_is_valid(w) and vim.api.nvim_win_get_buf(w) == source_bufnr then
-              vim.api.nvim_win_set_cursor(w, { target_source_line, 0 })
-              vim.api.nvim_win_call(w, function()
-                vim.cmd "normal! zz"
-              end)
-              break
-            end
-          end
-        end
-      end
-    end,
-  })
+--- Restore the corresponding source position when a managed preview closes.
+function Session:sync_source_cursor(win)
+  local view = self.views and self.views[win]
+  local line = view and view.lnum
+  if vim.api.nvim_win_is_valid(win) then line = vim.api.nvim_win_get_cursor(win)[1] end
+  local source_line = line and self:rendered_to_source(line)
+  if not source_line or source_line < 1 or not vim.api.nvim_buf_is_valid(self.source_bufnr) then return end
+  local source_win = vim.fn.win_findbuf(self.source_bufnr)[1]
+  if source_win then
+    vim.api.nvim_win_set_cursor(
+      source_win,
+      { math.min(source_line, vim.api.nvim_buf_line_count(self.source_bufnr)), 0 }
+    )
+    vim.api.nvim_win_call(source_win, function()
+      vim.cmd "normal! zz"
+    end)
+  end
 end
 
 -- =====================================================================
@@ -741,8 +746,9 @@ MdPreview.show = function(opts)
     return
   end
 
+  local source_win = vim.api.nvim_get_current_win()
   local source_cursor_line = vim.api.nvim_win_get_cursor(0)[1]
-  local session = Session.new(bufnr, "md_render_preview", opts)
+  local session = get_or_create_session(bufnr, opts, {})
 
   local win = display_utils.open_float_window(session.buf, session.content, float_win, {
     title = " Markdown Preview ",
@@ -750,11 +756,11 @@ MdPreview.show = function(opts)
     enter = true,
   })
 
-  session:bind_window(win)
+  if session.win ~= win then session:bind_window(win) end
   session:scroll_to_source_line(source_cursor_line)
-  session:install_cursor_sync()
   session:install_footer()
   session:install_float_keymaps(float_win)
+  session:install_navigation(source_win, float_win)
 end
 
 -- =====================================================================
@@ -773,8 +779,9 @@ MdPreview.show_tab = function(opts)
     return
   end
 
+  local source_win = vim.api.nvim_get_current_win()
   local source_cursor_line = vim.api.nvim_win_get_cursor(0)[1]
-  local session = Session.new(bufnr, "md_render_preview_tab", opts)
+  local session = get_or_create_session(bufnr, opts, {})
 
   vim.cmd "tabnew"
   local win = vim.api.nvim_get_current_win()
@@ -792,15 +799,14 @@ MdPreview.show_tab = function(opts)
   vim.wo[win].statusline = " Markdown Preview "
 
   vim.bo[session.buf].modifiable = false
-  vim.bo[session.buf].bufhidden = "wipe"
-  vim.bo[session.buf].buftype = "nofile"
+  vim.bo[session.buf].bufhidden = "hide"
 
   tab_win:setup(win)
 
-  session:bind_window(win)
+  if session.win ~= win then session:bind_window(win) end
   session:scroll_to_source_line(source_cursor_line)
-  session:install_cursor_sync()
   session:install_float_keymaps(tab_win)
+  session:install_navigation(source_win, tab_win)
 end
 
 -- =====================================================================
@@ -925,7 +931,8 @@ end
 -- toggle: same-window source ↔ render swap
 -- =====================================================================
 
--- One Session per source buffer, shared across windows showing the same source.
+-- Toggle/split share their source cache. Each float/tab starts its own cache,
+-- so simultaneous presentations never rewrite one another's rendered layout.
 ---@type table<integer, MdRender.Session>
 local _toggle_sessions = {}
 
@@ -949,6 +956,9 @@ local function save_render_win_opts(win)
   for _, entry in ipairs(RENDER_WIN_OPTS) do
     saved[entry[1]] = vim.api.nvim_get_option_value(entry[1], { win = win })
   end
+  for _, name in ipairs { "cursorline", "wrap", "spell", "statusline", "winbar" } do
+    saved[name] = vim.api.nvim_get_option_value(name, { win = win })
+  end
   return saved
 end
 
@@ -960,8 +970,8 @@ end
 
 local function restore_render_win_opts(win, saved)
   if not saved then return end
-  for _, entry in ipairs(RENDER_WIN_OPTS) do
-    if saved[entry[1]] ~= nil then vim.api.nvim_set_option_value(entry[1], saved[entry[1]], { win = win }) end
+  for name, value in pairs(saved) do
+    vim.api.nvim_set_option_value(name, value, { win = win })
   end
 end
 
@@ -1036,19 +1046,23 @@ end
 --- Listen for source buffer changes and trigger debounced live rebuilds.
 ---@param session MdRender.Session
 local function install_live_update(session)
-  local augroup = vim.api.nvim_create_augroup(live_update_augroup(session.source_bufnr), { clear = true })
+  local source_bufnr = session.source_bufnr
+  local augroup = vim.api.nvim_create_augroup(live_update_augroup(source_bufnr), { clear = true })
 
   vim.api.nvim_create_autocmd({
     "TextChanged",
     "TextChangedI",
     "BufWritePost",
     "BufReadPost", -- :e reload
+    "BufFilePost", -- :file / :saveas can change relative image and link paths
     "FileChangedShellPost", -- external change detected via :checktime / autoread
   }, {
     group = augroup,
-    buffer = session.source_bufnr,
+    buffer = source_bufnr,
     callback = function()
-      schedule_live_rebuild(session)
+      for _, current in pairs(MdPreview._sessions) do
+        if current.source_bufnr == source_bufnr and current.cache then schedule_live_rebuild(current) end
+      end
     end,
   })
 end
@@ -1774,7 +1788,7 @@ end
 --- new window dimensions.
 ---@param session MdRender.Session
 local function install_win_resize_handler(session)
-  local augroup = vim.api.nvim_create_augroup(win_resize_augroup(session.source_bufnr), { clear = true })
+  local augroup = vim.api.nvim_create_augroup(win_resize_augroup(session.buf), { clear = true })
 
   vim.api.nvim_create_autocmd("WinResized", {
     group = augroup,
@@ -1847,14 +1861,14 @@ local function install_render_buf_guards(session)
       local win = vim.api.nvim_get_current_win()
       if vim.api.nvim_win_get_buf(win) == session.buf then apply_render_win_opts(win) end
 
-      -- Mirror the stale-content check from get_or_create_toggle_session
+      -- Mirror the stale-content check from get_or_create_session
       -- so paths that swap to the render buf without going through
       -- MdPreview.toggle (jumplist Ctrl-O / Ctrl-I, :buffer, :b#, etc.)
       -- still see fresh content, including edits made without TextChanged.
       if vim.api.nvim_buf_is_valid(session.source_bufnr) then
         local current = vim.api.nvim_buf_get_lines(session.source_bufnr, 0, -1, false)
         if session.dirty or not vim.deep_equal(current, session.source_lines) then
-          session.source_lines = current
+          session:refresh_source()
           session:rebuild()
           session:refresh_images()
         end
@@ -1926,6 +1940,29 @@ local function install_render_buf_guards(session)
   })
 end
 
+--- Release one rendered document; source watchers may still serve other previews.
+function Session:dispose()
+  if self._debounce_timer then self._debounce_timer:stop() end
+  if self._sync_unlock_timer then self._sync_unlock_timer:stop() end
+  self:cleanup_images()
+  self.win = nil
+  if self.cache and self.cache[self.source_bufnr] == self then self.cache[self.source_bufnr] = nil end
+  MdPreview._sessions[self.buf] = nil
+  if vim.api.nvim_buf_is_valid(self.buf) then
+    local win = vim.fn.win_findbuf(self.buf)[1]
+    if win then
+      -- Keep the last normal window when disposal runs from a floating preview.
+      pcall(vim.api.nvim_win_call, win, function()
+        vim.api.nvim_buf_delete(self.buf, { force = true })
+      end)
+    else
+      pcall(vim.api.nvim_buf_delete, self.buf, { force = true })
+    end
+  end
+  pcall(vim.api.nvim_del_augroup_by_name, toggle_buf_augroup(self.buf))
+  pcall(vim.api.nvim_del_augroup_by_name, win_resize_augroup(self.buf))
+end
+
 --- When the source buffer is wiped, drop the cached session and its render buf.
 ---@param session MdRender.Session
 local function install_source_watcher(session)
@@ -1937,25 +1974,19 @@ local function install_source_watcher(session)
     buffer = source_bufnr,
     once = true,
     callback = function()
-      if session._debounce_timer then
-        session._debounce_timer:stop()
-        session._debounce_timer = nil
-      end
       local astate = _auto_state[source_bufnr]
       if astate then
         if astate.in_timer then astate.in_timer:stop() end
         if astate.leave_timer then astate.leave_timer:stop() end
         _auto_state[source_bufnr] = nil
       end
-      session:cleanup_images()
-      if vim.api.nvim_buf_is_valid(session.buf) then pcall(vim.api.nvim_buf_delete, session.buf, { force = true }) end
-      _toggle_sessions[source_bufnr] = nil
-      pcall(vim.api.nvim_del_augroup_by_name, toggle_buf_augroup(session.buf))
+      for _, current in pairs(MdPreview._sessions) do
+        if current.source_bufnr == source_bufnr and current.cache then current:dispose() end
+      end
       pcall(vim.api.nvim_del_augroup_by_name, toggle_src_augroup(source_bufnr))
       pcall(vim.api.nvim_del_augroup_by_name, live_update_augroup(source_bufnr))
       pcall(vim.api.nvim_del_augroup_by_name, scroll_sync_augroup(source_bufnr))
       pcall(vim.api.nvim_del_augroup_by_name, shadow_augroup(source_bufnr))
-      pcall(vim.api.nvim_del_augroup_by_name, win_resize_augroup(source_bufnr))
       pcall(vim.api.nvim_del_augroup_by_name, auto_augroup(source_bufnr))
     end,
   })
@@ -1963,12 +1994,14 @@ end
 
 ---@param source_bufnr integer
 ---@param opts? table
+---@param cache? table<integer, MdRender.Session>
 ---@return MdRender.Session
-local function get_or_create_toggle_session(source_bufnr, opts)
-  local session = _toggle_sessions[source_bufnr]
+get_or_create_session = function(source_bufnr, opts, cache)
+  cache = cache or _toggle_sessions
+  local session = cache[source_bufnr]
   if session and not vim.api.nvim_buf_is_valid(session.buf) then
     -- Render buf was wiped externally; drop and rebuild.
-    pcall(vim.api.nvim_del_augroup_by_name, toggle_buf_augroup(session.buf))
+    session:dispose()
     session = nil
   end
 
@@ -1979,21 +2012,26 @@ local function get_or_create_toggle_session(source_bufnr, opts)
     -- TextChanged in headless contexts) is still picked up here.
     local current = vim.api.nvim_buf_get_lines(session.source_bufnr, 0, -1, false)
     if session.dirty or not vim.deep_equal(current, session.source_lines) then
-      session.source_lines = current
+      session:refresh_source()
       session:rebuild()
     end
     return session
   end
 
   session = Session.new(source_bufnr, "md_render_toggle_" .. source_bufnr, opts)
+  session.cache = cache
   apply_render_buf_options(session)
   install_render_buf_guards(session)
   install_source_watcher(session)
   install_live_update(session)
-  install_scroll_sync(session)
-  install_shadow_cursor(session)
+  -- Source editing and scroll/shadow synchronization belong to toggle/split.
+  -- Floating/tab presentations retain independent layout and reading state.
+  if cache == _toggle_sessions then
+    install_scroll_sync(session)
+    install_shadow_cursor(session)
+  end
   install_win_resize_handler(session)
-  _toggle_sessions[source_bufnr] = session
+  cache[source_bufnr] = session
   return session
 end
 
@@ -2032,6 +2070,324 @@ local function set_win_state(win, state)
   if session and state.mode == "render" then session._source_wo = state.source_wo end
 end
 
+-- Native jumps keep the document history. This table only owns the resources
+-- and presentation of each window; hidden Sessions retain folds and views.
+local navigation_windows = {}
+local pending_views = {}
+local enter_navigation
+
+local function view_key(line, col)
+  return line .. ":" .. col
+end
+
+local function remember_view(session, win, view)
+  session.views[win] = view
+  session.jump_views = session.jump_views or {}
+  local views = session.jump_views[win] or {}
+  views[view_key(view.lnum, view.col)] = view
+  session.jump_views[win] = views
+  -- getjumplist() normalizes pending entries: calling it inside BufLeave
+  -- would remove the jump currently being recorded. Prune after it settles.
+  vim.schedule(function()
+    if not vim.api.nvim_win_is_valid(win) then return end
+    local latest = session.views[win]
+    local saved = session.jump_views[win]
+    if not (latest and saved) then return end
+    local retained = { [view_key(latest.lnum, latest.col)] = true }
+    local tab = vim.fn.win_id2tabwin(win)[1]
+    for _, jump in ipairs(vim.fn.getjumplist(win, tab)[1]) do
+      if jump.bufnr == session.buf then retained[view_key(jump.lnum, jump.col)] = true end
+    end
+    for key in pairs(saved) do
+      if not retained[key] then saved[key] = nil end
+    end
+  end)
+end
+
+local function restore_view(session, win)
+  if pending_views[win] ~= session then return end
+  pending_views[win] = nil
+  if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= session.buf then return end
+  local saved = session.jump_views and session.jump_views[win]
+  local cursor = vim.api.nvim_win_get_cursor(win)
+  local view = saved and saved[view_key(cursor[1], cursor[2])]
+  if view then vim.api.nvim_win_call(win, function()
+    vim.fn.winrestview(view)
+  end) end
+end
+
+local function detach_session(session, win)
+  if session.win ~= win then return end
+  session:cleanup_images()
+  session.win = nil
+  -- Session images have one owner. Hand them back to a retained split when
+  -- a jump or window close removes the most recently bound view.
+  for _, other in ipairs(vim.fn.win_findbuf(session.buf)) do
+    if other ~= win and vim.api.nvim_win_is_valid(other) then
+      local context = navigation_windows[other]
+      session:bind_window(other, context and context.layout)
+      break
+    end
+  end
+end
+
+local function leave_navigation(win, context)
+  if not context.session then return end
+  detach_session(context.session, win)
+  if context.close_handle and context.close_handle.win == win then context.close_handle:detach() end
+  if vim.api.nvim_win_get_config(win).relative == "" then restore_render_win_opts(win, context.source_wo) end
+  pcall(vim.api.nvim_win_del_var, win, "md_render_state")
+  context.session = nil
+end
+
+local function navigation_origin(session)
+  -- Native splits do not copy window variables. The alternate window (or
+  -- previous tab's active window for :tab split) still identifies the parent.
+  local previous = vim.fn.winnr "#"
+  local win = previous > 0 and vim.fn.win_getid(previous) or nil
+  if not win then
+    local tab = vim.fn.tabpagenr "#"
+    if tab > 0 then win = vim.fn.win_getid(vim.fn.tabpagewinnr(tab), tab) end
+  end
+  local context = win and navigation_windows[win]
+  return context and context.session == session and context or nil
+end
+
+local function navigation_context(win, session)
+  local origin = navigation_origin(session)
+  local context = {
+    source_win = origin and origin.source_win or win,
+    source_wo = origin and origin.source_wo or save_render_win_opts(win),
+    layout = origin and origin.layout,
+    session = session,
+  }
+  navigation_windows[win] = context
+  return context
+end
+
+function Session:install_navigation(source_win, close_handle, source_wo)
+  local win = self.win
+  self.views = self.views or {}
+  vim.bo[self.buf].bufhidden = "hide"
+  navigation_windows[win] = {
+    source_win = source_win,
+    close_handle = close_handle,
+    source_wo = source_wo or save_render_win_opts(source_win),
+    render_wo = save_render_win_opts(win),
+    layout = { max_width = self._explicit_max_width and self.opts.max_width or nil, indent = self.opts.indent },
+    session = self,
+  }
+  vim.keymap.set("n", "gf", function()
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local links = require "md-render.links"
+    local url = links.at(self.buf, self.ns, cursor[1] - 1, cursor[2])
+    if not url then
+      vim.cmd.normal { tostring(vim.v.count1) .. "gf", bang = true }
+      return
+    end
+    local path = links.file_path(url, self:source_directory())
+    if not path then
+      vim.notify("md-render: not a local file link: " .. url, vim.log.levels.WARN)
+      return
+    end
+    local stat = vim.uv.fs_stat(path)
+    if
+      not stat
+      or (stat.type ~= "file" and stat.type ~= "directory")
+      or not vim.uv.fs_access(path, stat.type == "directory" and "RX" or "R")
+    then
+      vim.notify("md-render: not a readable file or directory: " .. path, vim.log.levels.WARN)
+      return
+    end
+    local ok, err = pcall(self.follow_file, self, path)
+    if not ok then vim.notify("md-render: cannot open " .. path .. ": " .. tostring(err), vim.log.levels.WARN) end
+  end, { buffer = self.buf, desc = "Follow rendered file link" })
+end
+
+function Session:follow_file(path)
+  local win = vim.api.nvim_get_current_win()
+  -- Adopt render windows exposed without the usual enter events.
+  if not navigation_windows[win] then enter_navigation() end
+  local context = navigation_windows[win]
+  local view = vim.fn.winsaveview()
+  local target = vim.fn.bufadd(path)
+  -- Enter directories only in the destination window, where the user's
+  -- directory browser can handle BufEnter/BufReadCmd normally.
+  if vim.fn.isdirectory(path) == 0 then
+    vim.fn.bufload(target)
+    if not vim.api.nvim_buf_is_loaded(target) then error "could not read file" end
+    if check_markdown_buffer(target) then
+      local opts = vim.tbl_extend("force", {}, self.opts)
+      opts.buf_dir = nil
+      opts.max_width = self._explicit_max_width and self.opts.max_width or nil
+      local next_session = get_or_create_session(target, opts, self.cache)
+      -- Mark the target Session for navigation so BufEnter can adopt it.
+      next_session.views = next_session.views or {}
+      vim.cmd.buffer(next_session.buf)
+      return
+    end
+  end
+
+  local source_win = context.source_win
+  if not vim.api.nvim_win_is_valid(source_win) then error "source editing window was closed" end
+  if source_win ~= win then
+    -- A jumplist belongs to a window. Seed the source window with the current
+    -- render before opening the editor, without attaching preview resources.
+    -- :buffer (without !) preserves Neovim's modified-buffer protection.
+    local previous = navigation_windows[source_win]
+    local previous_session = previous and previous.session
+    local source_wo = previous_session and previous.source_wo or save_render_win_opts(source_win)
+    local previous_view
+    vim.api.nvim_win_call(source_win, function()
+      if previous_session then restore_view(previous_session, source_win) end
+      previous_view = vim.fn.winsaveview()
+      vim.cmd { cmd = "buffer", args = { tostring(self.buf) }, mods = { noautocmd = true } }
+      vim.fn.winrestview(view)
+    end)
+    -- Only detach after :buffer succeeds, so E37 leaves the old view intact.
+    if previous then
+      if previous_session then remember_view(previous_session, source_win, previous_view) end
+      leave_navigation(source_win, previous)
+    end
+    remember_view(self, source_win, view)
+    navigation_windows[source_win] = {
+      source_win = source_win,
+      source_wo = source_wo,
+      layout = context.layout,
+      session = self,
+    }
+    if context.close_handle then context.close_handle:close_if_valid() end
+    vim.api.nvim_set_current_win(source_win)
+  end
+  vim.cmd.buffer(target)
+end
+
+local navigation_group = vim.api.nvim_create_augroup("md_render_navigation", { clear = true })
+vim.on_key(function()
+  -- Finish a native return before the next key, including scroll commands in
+  -- a macro. Scheduling alone would restore over that subsequent command.
+  local win = vim.api.nvim_get_current_win()
+  local session = pending_views[win]
+  if session then restore_view(session, win) end
+end, vim.api.nvim_create_namespace "md_render_navigation")
+vim.api.nvim_create_autocmd("BufLeave", {
+  group = navigation_group,
+  callback = function()
+    local win = vim.api.nvim_get_current_win()
+    local context = navigation_windows[win]
+    if context and not context.session then context.source_wo = save_render_win_opts(win) end
+    local session = MdPreview._sessions[vim.api.nvim_get_current_buf()]
+    if session and session.views then
+      -- A macro can leave again before the scheduled return-view restoration.
+      restore_view(session, win)
+      remember_view(session, win, vim.fn.winsaveview())
+    end
+  end,
+})
+
+enter_navigation = function()
+  local win = vim.api.nvim_get_current_win()
+  local buf = vim.api.nvim_get_current_buf()
+  local context = navigation_windows[win]
+  local session = MdPreview._sessions[buf]
+  if session and not session.views then session = nil end
+  if session and context and context.session == session and session.win == win then
+    if context.close_handle and context.close_handle.win ~= win then
+      context.close_handle:setup(win, { auto_close = false })
+    end
+    session:install_float_keymaps(context.close_handle, not context.close_handle and { close_keys = {} } or nil)
+    return
+  end
+  if context and context.session ~= session then leave_navigation(win, context) end
+  if not session then return end
+  context = context or navigation_context(win, session)
+  restore_render_win_opts(win, context.render_wo)
+  apply_render_win_opts(win)
+  if session.win ~= win or not session.image_state then session:bind_window(win, context.layout) end
+  if context.close_handle then context.close_handle:setup(win, { auto_close = false }) end
+  session:install_float_keymaps(context.close_handle, not context.close_handle and { close_keys = {} } or nil)
+  session:install_navigation(context.source_win, context.close_handle, context.source_wo)
+  if context.close_handle == float_win then session:install_footer() end
+  set_win_state(win, {
+    source_buf = session.source_bufnr,
+    render_buf = session.buf,
+    mode = "render",
+    source_wo = context.source_wo,
+  })
+  if session.jump_views and session.jump_views[win] then
+    -- Ctrl-O places the cursor after BufEnter. Restore only the viewport
+    -- belonging to that native position, including earlier visits here.
+    pending_views[win] = session
+    vim.schedule(function()
+      restore_view(session, win)
+    end)
+  end
+end
+
+vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter" }, {
+  group = navigation_group,
+  callback = function(ev)
+    local win, buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
+    if ev.event == "WinEnter" and not navigation_windows[win] then
+      -- :tabnew/:new briefly inherit the old buffer; a native :split keeps it.
+      local session = MdPreview._sessions[buf]
+      if not (session and session.views) then return end
+      -- Register editor options before a following :edit or native gf can
+      -- leave the inherited render. Only resource binding must be deferred.
+      navigation_context(win, session)
+      vim.schedule(function()
+        if vim.api.nvim_get_current_win() == win and vim.api.nvim_win_get_buf(win) == buf then enter_navigation() end
+      end)
+    else
+      enter_navigation()
+    end
+  end,
+})
+
+vim.api.nvim_create_autocmd("WinClosed", {
+  group = navigation_group,
+  callback = function(ev)
+    local win = tonumber(ev.match)
+    local context = navigation_windows[win]
+    if context and context.session then
+      if context.close_handle then context.session:sync_source_cursor(win) end
+      detach_session(context.session, win)
+    end
+    navigation_windows[win] = nil
+    pending_views[win] = nil
+    for _, session in pairs(MdPreview._sessions) do
+      if session.views then session.views[win] = nil end
+      if session.jump_views then session.jump_views[win] = nil end
+    end
+    -- Wait until the close and any gf handoff have finished recording native jumps.
+    vim.schedule(function()
+      local referenced = {}
+      for _, remaining in ipairs(vim.api.nvim_list_wins()) do
+        local buf = vim.api.nvim_win_get_buf(remaining)
+        referenced[buf] = true
+        local state = get_win_state(remaining)
+        if state and state.mode == "source" and state.source_buf == buf then referenced[state.render_buf] = true end
+        local tab = vim.fn.win_id2tabwin(remaining)[1]
+        for _, jump in ipairs(vim.fn.getjumplist(remaining, tab)[1]) do
+          referenced[jump.bufnr] = true
+        end
+      end
+      local caches = {}
+      for buf, session in pairs(MdPreview._sessions) do
+        local cache = session.cache
+        if cache and cache ~= _toggle_sessions then caches[cache] = caches[cache] or referenced[buf] or false end
+      end
+      for cache, retained in pairs(caches) do
+        if not retained then
+          for _, session in pairs(cache) do
+            session:dispose()
+          end
+        end
+      end
+    end)
+  end,
+})
+
 --- Toggle between source and render mode in the current window.
 ---@param opts? { max_width?: integer }
 MdPreview.toggle = function(opts)
@@ -2041,7 +2397,7 @@ MdPreview.toggle = function(opts)
 
   -- ---- render → source ----
   if state and state.mode == "render" and cur_buf == state.render_buf then
-    local session = _toggle_sessions[state.source_buf]
+    local session = MdPreview._sessions[state.render_buf]
     local rendered_line = vim.api.nvim_win_get_cursor(win)[1]
     local source_line = session and session:rendered_to_source(rendered_line) or nil
 
@@ -2049,8 +2405,6 @@ MdPreview.toggle = function(opts)
       vim.notify("md-render: source buffer is no longer valid", vim.log.levels.WARN)
       return
     end
-
-    if session and session.win == win then session:cleanup_images() end
 
     vim.api.nvim_win_set_buf(win, state.source_buf)
     restore_render_win_opts(win, state.source_wo)
@@ -2084,7 +2438,8 @@ MdPreview.toggle = function(opts)
   end)
   local source_wo = save_render_win_opts(win)
 
-  local session = get_or_create_toggle_session(source_bufnr, opts)
+  local previous = state and state.source_buf == source_bufnr and MdPreview._sessions[state.render_buf]
+  local session = get_or_create_session(source_bufnr, opts, previous and previous.cache)
 
   -- Restore content indent when toggling into a full-width window (may have
   -- been cleared by a prior MdRenderSplit).
@@ -2095,7 +2450,7 @@ MdPreview.toggle = function(opts)
   end
 
   vim.api.nvim_win_set_buf(win, session.buf)
-  session:bind_window(win)
+  if session.win ~= win then session:bind_window(win) end
   session:scroll_to_source_line(source_cursor_line)
 
   -- Click handlers on the render buf — no close keys (toggle owns lifecycle).
@@ -2108,6 +2463,7 @@ MdPreview.toggle = function(opts)
     source_view = source_view,
     source_wo = source_wo,
   })
+  session:install_navigation(win, nil, source_wo)
 end
 
 -- =====================================================================
@@ -2140,9 +2496,11 @@ MdPreview.split = function(opts)
     -- restore the source view's options from the originals stashed on
     -- cur_win when it first went source -> render.
     restore_render_win_opts(new_win, state.source_wo)
+    local context = navigation_windows[cur_win]
+    if context then context.source_win = new_win end
     -- New split now shows the source while cur_win still shows render;
     -- both sides are visible, so paint the shadow immediately.
-    local session = _toggle_sessions[state.source_buf]
+    local session = MdPreview._sessions[state.render_buf]
     if session and session._shadow_recompute then session._shadow_recompute() end
     return
   end
@@ -2161,7 +2519,7 @@ MdPreview.split = function(opts)
   -- :MdRenderToggle on the split restores them on the render -> source
   -- transition.
   local source_wo = save_render_win_opts(cur_win)
-  local session = get_or_create_toggle_session(source_bufnr, opts)
+  local session = get_or_create_session(source_bufnr, opts)
 
   -- Split windows have no border — remove content indent for space efficiency.
   if (session.opts.indent or "  ") ~= "" then
@@ -2173,7 +2531,7 @@ MdPreview.split = function(opts)
   local new_win = vim.api.nvim_get_current_win()
 
   vim.api.nvim_win_set_buf(new_win, session.buf)
-  session:bind_window(new_win)
+  if session.win ~= new_win then session:bind_window(new_win) end
   session:scroll_to_source_line(source_cursor_line)
   session:install_float_keymaps(nil, { close_keys = {} })
   vim.wo[new_win].winbar = " Markdown Preview"
@@ -2184,6 +2542,7 @@ MdPreview.split = function(opts)
     mode = "render",
     source_wo = source_wo,
   })
+  session:install_navigation(cur_win, nil, source_wo)
 
   -- Return focus to the source window — the render split is a preview,
   -- not an editing target.
@@ -2301,8 +2660,8 @@ function MdPreview.auto_on(opts)
   if not win_state or win_state.mode ~= "render" then MdPreview.toggle(opts) end
 
   -- Install Insert-entry keymaps on the render buffer (now created by toggle).
-  local session = _toggle_sessions[bufnr]
-  if session and vim.api.nvim_buf_is_valid(session.buf) then install_auto_insert_keymaps(session.buf) end
+  local session = MdPreview._sessions[vim.api.nvim_get_current_buf()]
+  if session then install_auto_insert_keymaps(session.buf) end
 end
 
 --- Disable auto-toggle for the current buffer and, if the current window is
@@ -2321,8 +2680,9 @@ function MdPreview.auto_off()
   end
   pcall(vim.api.nvim_del_augroup_by_name, auto_augroup(bufnr))
 
-  local session = _toggle_sessions[bufnr]
-  if session then uninstall_auto_insert_keymaps(session.buf) end
+  for _, session in pairs(MdPreview._sessions) do
+    if session.source_bufnr == bufnr then uninstall_auto_insert_keymaps(session.buf) end
+  end
 
   local win = vim.api.nvim_get_current_win()
   local win_state = get_win_state(win)

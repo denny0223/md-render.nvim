@@ -194,7 +194,9 @@ end
 ---@param win integer
 function M.attach(buf, ns, win)
   ensure_initialized()
+  local already_registered = registered[win] ~= nil
   registered[win] = { buf = buf, ns = ns }
+  if already_registered then return end
   vim.api.nvim_create_autocmd("WinClosed", {
     group = vim.api.nvim_create_augroup(AUGROUP, { clear = false }),
     pattern = tostring(win),

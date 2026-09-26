@@ -178,7 +178,8 @@ local function paint(state)
   local selecting = active and selection_modes[mode:sub(1, 1)]
   local interacting = interaction_rows(state, selecting)
   local searching = search_rows(state)
-  local native = state.force_text
+  local native = state.failed
+    or state.force_text
     or not vim.o.termguicolors
     or overrides_heading_styles(state.win)
     or vim.wo[state.win].winblend > 0
@@ -225,6 +226,7 @@ local function paint(state)
       and not searching[p.line + 1]
       and not covered
       and entry.id
+      and entry.ready
       and rect.left >= left
       and rect.right <= right
       and rect.top >= top
@@ -342,9 +344,23 @@ function M.attach(win, content)
       local entry = vim.tbl_extend("force", {}, raster, {
         placement = p,
         col = vim.fn.strdisplaywidth(content.lines[p.line + 1]:sub(1, p.col)),
-        id = image.transmit_png(raster.data),
       })
       state.entries[#state.entries + 1] = entry
+      entry.id = image.transmit_png(raster.data, function(err)
+        if state.closed then return end
+        if err then
+          state.failed = true
+          erase(state)
+          image.fail_png(err)
+        else
+          entry.ready = true
+          repaint(state)
+        end
+      end)
+      if not entry.id then
+        state.failed = true
+        image.fail_png "terminal PNG transmission is unavailable"
+      end
     end
   end
   repaint(state)

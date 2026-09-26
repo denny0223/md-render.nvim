@@ -142,8 +142,9 @@ end
 
 local TIOCGWINSZ = (vim.fn.has "mac" == 1 or vim.fn.has "bsd" == 1) and 0x40087468 or 0x5413
 
+---@param exact? boolean require measured pixels for heading hit targets
 ---@return { cell_w: number, cell_h: number }?
-function M.get_cell_size()
+function M.get_cell_size(exact)
   if M._test_cell_size then return M._test_cell_size end
   if IS_WINDOWS then return nil end
   ensure_ffi()
@@ -160,7 +161,9 @@ function M.get_cell_size()
     if rc ~= 0 then return nil end
   end
   local xpixel, ypixel = sz.xpixel, sz.ypixel
+  if sz.col == 0 or sz.row == 0 then return nil end
   if xpixel == 0 or ypixel == 0 then
+    if exact then return nil end
     xpixel = sz.col * 8
     ypixel = sz.row * 16
   end
@@ -846,6 +849,7 @@ function M.reset_cache()
   _plantuml_cmd = nil
   _plantuml_checked = false
   tty_mod.reset()
+  M.reset_png()
 end
 
 --- Override kitty support detection for testing.
@@ -1394,16 +1398,122 @@ end
 local _image_paths = {} -- image_id → file path (for Ghostty a=T workaround)
 local _temp_image_paths = {} -- image_id → true for temp files that need cleanup
 
+-- PNG queries and uploads share one response listener. A returned image ID
+-- alone says nothing about whether the terminal accepted the bytes.
+local png_pending, png_probe = {}, nil
+local png_refresh_pending = false
+
+local function refresh_headings()
+  if png_refresh_pending then return end
+  png_refresh_pending = true
+  vim.schedule(function()
+    png_refresh_pending = false
+    local preview = package.loaded["md-render.preview"]
+    if preview then preview.rebuild_visible() end
+  end)
+end
+
+local function cancel_png(id)
+  local pending = png_pending[id]
+  if not pending then return end
+  png_pending[id] = nil
+  if pending.timer and not pending.timer:is_closing() then
+    pending.timer:stop()
+    pending.timer:close()
+  end
+  return pending.callback
+end
+
+local function finish_png(id, err)
+  local callback = cancel_png(id)
+  if callback then vim.schedule(function()
+    callback(err)
+  end) end
+end
+
+local function await_png(id, callback)
+  png_pending[id] = { callback = callback }
+  png_pending[id].timer = vim.defer_fn(function()
+    finish_png(id, "terminal PNG response timed out")
+  end, 1500)
+end
+
+vim.api.nvim_create_autocmd("TermResponse", {
+  callback = function(ev)
+    local sequence = type(ev.data) == "table" and ev.data.sequence or ev.data
+    if type(sequence) ~= "string" then return end
+    local id, response = sequence:match "^\27_Gi=(%d+);(.*)"
+    if not id then return end
+    response = response:gsub("\27\\$", "")
+    finish_png(tonumber(id), response ~= "OK" and response or nil)
+  end,
+})
+
+function M.reset_png()
+  if png_probe and png_probe.id then cancel_png(png_probe.id) end
+  png_probe = nil
+end
+
+function M.fail_png(reason)
+  M.reset_png()
+  png_probe = { supported = false, reason = reason }
+  refresh_headings()
+end
+
+--- Positive PNG acknowledgement, independent of native OSC 66 support.
+--- While the bounded query is pending, callers keep ordinary buffer text.
+function M.png_status()
+  if IS_WINDOWS then return { supported = false, reason = "image transport is unavailable on Windows" } end
+  if #vim.api.nvim_list_uis() == 0 or type(vim.api.nvim_ui_send) ~= "function" then
+    return { supported = false, reason = "no terminal UI attached" }
+  end
+  if vim.env.TMUX then return { supported = false, reason = "image headings are not supported through tmux" } end
+  if vim.env.TERM_PROGRAM == "Apple_Terminal" then
+    return { supported = false, reason = "terminal does not support PNG graphics" }
+  end
+  if png_probe then return png_probe end
+  _image_id = _image_id + 1
+  local probe = { id = _image_id, reason = "waiting for terminal PNG support" }
+  png_probe = probe
+  await_png(probe.id, function(err)
+    if png_probe ~= probe then return end
+    probe.supported, probe.reason = err == nil, err
+    if not err then _kitty_supported = true end
+    refresh_headings()
+  end)
+  -- a=q validates a real 1x1 PNG without storing or displaying it.
+  local png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+  vim.api.nvim_ui_send(string.format("\27_Ga=q,t=d,f=100,i=%d;%s\27\\", probe.id, png))
+  return probe
+end
+
+vim.api.nvim_create_autocmd({ "UIEnter", "UILeave" }, {
+  callback = function()
+    M.reset_png()
+    refresh_headings()
+  end,
+})
+
+vim.api.nvim_create_autocmd("VimLeavePre", {
+  callback = function()
+    for id in pairs(png_pending) do
+      cancel_png(id)
+    end
+  end,
+})
+
 --- Transmit base64-encoded PNG bytes without requiring a shared filesystem.
 --- Each Kitty payload is at most 4096 bytes, including on an SSH TTY.
-function M.transmit_png(data)
+---@param callback? fun(error?: string) called after acknowledgement or timeout
+function M.transmit_png(data, callback)
   if not M.supports_kitty() or data == "" then return nil end
   M.clear_all()
   _image_id = _image_id + 1
   local id = _image_id
+  if callback then await_png(id, callback) end
   for start = 1, #data, 4096 do
     local more = start + 4096 <= #data and 1 or 0
-    local params = start == 1 and string.format("a=t,f=100,t=d,i=%d,q=2,", id) or ""
+    local params = start == 1 and string.format("a=t,f=100,t=d,i=%d,q=%d,", id, callback and 0 or 2) or ""
     term_write(string.format("\x1b_G%sm=%d;%s\x1b\\", params, more, data:sub(start, start + 4095)))
   end
   return id
@@ -1994,6 +2104,7 @@ end
 --- Delete a stored image from terminal memory
 ---@param image_id integer
 function M.delete_image(image_id)
+  cancel_png(image_id)
   if not M.supports_kitty() then return end
   term_write(string.format("\x1b_Ga=d,d=I,i=%d\x1b\\", image_id))
   if _temp_image_paths[image_id] and _image_paths[image_id] then
@@ -2029,8 +2140,7 @@ function M.clear_all()
   if config.backend == "snacks" or not M.supports_kitty() then return end
   -- d=A: delete all stored image data and placements
   term_write "\x1b_Ga=d,d=A\x1b\\"
-  -- Reset ID counter and path mapping to ensure clean state
-  _image_id = 100
+  -- Keep IDs monotonic: a capability query may still have a reply in flight.
   for id, path in pairs(_image_paths) do
     if _temp_image_paths[id] then os.remove(path) end
   end

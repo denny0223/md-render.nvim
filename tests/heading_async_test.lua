@@ -27,7 +27,8 @@ local ok, err = pcall(function()
     local image = require "md-render.image"
     image.supports_kitty = function() return true end
     image.get_cell_size = function() return { cell_w = 19, cell_h = 44 } end
-    image.transmit_png = function() return 1 end
+    image.png_status = function() return { supported = true } end
+    image.transmit_png = function(_, callback) callback(); return 1 end
     image.put_image = function() end
     image.delete_image = function() end
     image.clear_placements = function() end

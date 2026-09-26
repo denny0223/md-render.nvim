@@ -16,7 +16,11 @@ image.get_cell_size = function()
 end
 vim.api.nvim_ui_send = function() end
 local transmissions = 0
-image.transmit_png = function()
+image.png_status = function()
+  return { supported = true }
+end
+image.transmit_png = function(_, callback)
+  callback()
   transmissions = transmissions + 1
   return transmissions
 end
@@ -351,7 +355,8 @@ local ok, err = pcall(function()
     local image = require "md-render.image"
     image.supports_kitty = function() return true end
     image.get_cell_size = function() return { cell_w = 13, cell_h = 30 } end
-    image.transmit_png = function() return 1 end
+    image.png_status = function() return { supported = true } end
+    image.transmit_png = function(_, callback) callback(); return 1 end
     image.put_image = function() end
     image.clear_placements = function() end
     image.delete_image = function() end

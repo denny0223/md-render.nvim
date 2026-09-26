@@ -17,7 +17,8 @@ local ok, err = pcall(function()
     image.supports_kitty = function() return true end
     image.get_cell_size = function() return { cell_w = 19, cell_h = 44 } end
     local id = 0
-    image.transmit_png = function() id = id + 1; return id end
+    image.png_status = function() return { supported = true } end
+    image.transmit_png = function(_, callback) callback(); id = id + 1; return id end
     vim.system = function(_, opts, callback)
       local outputs = {}
       for index, request in ipairs(vim.json.decode(opts.stdin).requests) do

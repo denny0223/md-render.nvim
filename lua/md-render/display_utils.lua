@@ -163,7 +163,18 @@ end
 ---@param opts? { title_url?: string }
 function M.apply_content_to_buffer(buf, ns, content, opts)
   opts = opts or {}
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, content.lines)
+  -- Replacing unchanged rows would collapse native jump/mark positions into
+  -- the replaced range. Let Neovim adjust only the rows that actually changed.
+  local old = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local hunks = vim.text.diff(table.concat(old, "\n") .. "\n", table.concat(content.lines, "\n") .. "\n", {
+    result_type = "indices",
+  })
+  for i = #hunks, 1, -1 do
+    local first, removed, from, added = unpack(hunks[i])
+    local start = removed == 0 and first or first - 1
+    local replacement = added == 0 and {} or vim.list_slice(content.lines, from, from + added - 1)
+    vim.api.nvim_buf_set_lines(buf, start, start + removed, false, replacement)
+  end
   -- Clear 'modified' synchronously so callers (toggle/split render bufs
   -- with buftype=acwrite, telescope/snacks previewers, etc.) don't have
   -- a window where :qa would see the buffer as dirty before any

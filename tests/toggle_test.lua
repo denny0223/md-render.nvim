@@ -295,55 +295,31 @@ test("live rebuild fires after debounce when render is visible", function()
 end)
 
 -- ----------------------------------------------------------------------
--- Test 10: hidden render → edit only marks dirty (no rebuild, no timer)
+-- Test 10: hidden render text stays current for native jump marks.
 -- ----------------------------------------------------------------------
-test("hidden render → edit sets dirty without scheduling a rebuild", function()
+test("hidden render updates immediately without attaching images", function()
   local source = setup_md_buffer { "# Hello" }
-  local win = vim.api.nvim_get_current_win()
-
-  preview.toggle() -- → render
-  preview.toggle() -- → source (render now hidden)
+  preview.toggle()
+  preview.toggle()
 
   local session = preview._toggle_sessions[source]
-  assert_true(session ~= nil, "session should exist")
-  assert_eq(session.dirty, false, "dirty should be false after toggle-back")
-
   vim.api.nvim_buf_set_lines(source, -1, -1, false, { "", "new line" })
   preview._schedule_live_rebuild(session)
 
-  assert_eq(session.dirty, true, "dirty should be set immediately when render hidden")
-  assert_true(session._debounce_timer == nil, "no debounce timer should be running")
-
-  -- Wait past the debounce window to be extra sure nothing fires
-  vim.wait(250, function()
-    return false
-  end)
-  assert_true(session._debounce_timer == nil, "still no debounce timer after wait")
-
-  -- Re-toggle should consume dirty and rebuild
-  preview.toggle()
-  assert_eq(session.dirty, false, "dirty should be cleared after re-toggle rebuild")
-
-  local render_buf = vim.api.nvim_win_get_buf(win)
-  local lines = vim.api.nvim_buf_get_lines(render_buf, 0, -1, false)
-  local found = false
-  for _, l in ipairs(lines) do
-    if l:find("new line", 1, true) then
-      found = true
-      break
-    end
-  end
-  assert_true(found, "edited content should appear after re-toggle")
-
+  assert_eq(session.dirty, false, "hidden render content is already current")
+  assert_eq(session._debounce_timer, nil, "hidden repaint does not wait for a timer")
+  assert_eq(session.image_state, nil, "hidden repaint does not attach images")
+  local text = table.concat(vim.api.nvim_buf_get_lines(session.buf, 0, -1, false), "\n")
+  assert_true(text:find("new line", 1, true) ~= nil, "edited content is present before native return")
   cleanup_buffer(source)
 end)
 
 -- ----------------------------------------------------------------------
--- Test 10b: re-entering a dirty render buf without going through
+-- Test 10b: re-entering a stale render buf without going through
 -- MdRenderToggle (jumplist Ctrl-O / Ctrl-I, :buffer, :b#) refreshes
 -- the stale content. Regression test for issue #5.
 -- ----------------------------------------------------------------------
-test("re-entering dirty render buf via :buffer rebuilds stale content", function()
+test("re-entering render via :buffer picks up edits without TextChanged", function()
   local source = setup_md_buffer { "# Hello" }
   local win = vim.api.nvim_get_current_win()
 
@@ -355,14 +331,14 @@ test("re-entering dirty render buf via :buffer rebuilds stale content", function
   assert_true(session ~= nil, "session should exist")
 
   vim.api.nvim_buf_set_lines(source, -1, -1, false, { "", "fresh after hide" })
-  preview._schedule_live_rebuild(session)
-  assert_eq(session.dirty, true, "edit while hidden should mark dirty")
+  -- Direct API writes may not fire TextChanged. BufEnter still checks source
+  -- content as a fallback, independently of the live-update watcher.
 
   -- Swap to the render buf without using MdRenderToggle. This mirrors
   -- jumplist navigation (Ctrl-O / Ctrl-I), :buffer, etc.
   vim.api.nvim_win_set_buf(win, render_buf)
 
-  assert_eq(session.dirty, false, "BufEnter on dirty render buf should clear dirty")
+  assert_eq(session.dirty, false, "BufEnter leaves the render current")
 
   local lines = vim.api.nvim_buf_get_lines(render_buf, 0, -1, false)
   local found = false

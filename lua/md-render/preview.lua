@@ -1006,30 +1006,30 @@ local function auto_augroup(bufnr)
 end
 
 --- Schedule a debounced live rebuild of the render buffer.
---- When the render buffer is hidden, just mark dirty and return; the next
---- toggle back to render will rebuild in `get_or_create_toggle_session`.
+--- Hidden buffers update immediately: native jumps read their marks before
+--- BufEnter, so deferring their repaint until entry would use stale positions.
 ---@param session MdRender.Session
 local function schedule_live_rebuild(session)
   if not vim.api.nvim_buf_is_valid(session.source_bufnr) then return end
   if not vim.api.nvim_buf_is_valid(session.buf) then return end
 
+  if session._debounce_timer then
+    session._debounce_timer:stop()
+    session._debounce_timer = nil
+  end
   if not session:is_visible() then
-    session.dirty = true
+    session:refresh_source()
+    session:rebuild()
     return
   end
 
-  if session._debounce_timer then session._debounce_timer:stop() end
   session._debounce_timer = vim.defer_fn(function()
     session._debounce_timer = nil
     if not vim.api.nvim_buf_is_valid(session.source_bufnr) then return end
     if not vim.api.nvim_buf_is_valid(session.buf) then return end
-    if not session:is_visible() then
-      session.dirty = true
-      return
-    end
     session:refresh_source()
     session:rebuild()
-    session:refresh_images()
+    if session:is_visible() then session:refresh_images() end
   end, 150)
 end
 
@@ -1850,8 +1850,7 @@ local function install_render_buf_guards(session)
       -- Mirror the stale-content check from get_or_create_toggle_session
       -- so paths that swap to the render buf without going through
       -- MdPreview.toggle (jumplist Ctrl-O / Ctrl-I, :buffer, :b#, etc.)
-      -- still see fresh content. While the render buf is hidden,
-      -- schedule_live_rebuild only flips `dirty` and skips the rebuild.
+      -- still see fresh content, including edits made without TextChanged.
       if vim.api.nvim_buf_is_valid(session.source_bufnr) then
         local current = vim.api.nvim_buf_get_lines(session.source_bufnr, 0, -1, false)
         if session.dirty or not vim.deep_equal(current, session.source_lines) then

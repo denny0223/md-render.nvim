@@ -192,6 +192,7 @@ MdPreview.build_content = function(lines, opts)
     source_line_offset = body_start - 1,
     buf_dir = opts.buf_dir,
     text_scale = opts.text_scale,
+    heading_normal = opts.heading_normal,
     image_max_height = opts.image_max_height,
   })
 
@@ -216,7 +217,7 @@ end
 ---@field content MdRender.Content    -- current rendered content
 ---@field win? integer                -- bound render window (if any)
 ---@field image_state? MdRender.ImageState
----@field text_size_state? MdRender.TextSizeState
+---@field text_size_state? MdRender.TextSizeState|MdRender.HeadingImageState
 ---@field dirty boolean               -- true when source changed while render was hidden
 ---@field _debounce_timer? table      -- libuv timer handle for live-update debounce
 ---@field _update_footer? fun()       -- redraws the float footer (set by install_footer)
@@ -233,19 +234,52 @@ Session.__index = Session
 --- nothing else references is collected normally.
 MdPreview._sessions = setmetatable({}, { __mode = "v" })
 
+local deferred_rebuilds = {}
+
+--- Reflow replaces buffer lines. Keep native operations on their original
+--- text until they finish, including a held mouse press and its yank feedback.
+local function defer_rebuild(buf, callback, text_state)
+  local interacting = vim.api.nvim_get_current_buf() == buf and vim.api.nvim_get_mode().mode ~= "n"
+  -- Neovim 0.13 shares yank/put feedback in nvim.hl.events.
+  local namespaces = vim.api.nvim_get_namespaces()
+  local feedback_ns = namespaces["nvim.hl.events"] or namespaces["nvim.hlyank"]
+  local highlighting = feedback_ns and #vim.api.nvim_buf_get_extmarks(buf, feedback_ns, 0, -1, {}) > 0
+  if interacting or highlighting or (text_state and text_state.gesture) then
+    deferred_rebuilds[buf] = callback
+    return true
+  end
+  deferred_rebuilds[buf] = nil
+  return false
+end
+
+-- SafeState also runs when native yank feedback expires. Do not schedule from
+-- this callback: scheduling would keep waking the otherwise idle editor.
+vim.api.nvim_create_autocmd("SafeState", {
+  callback = function()
+    for buf, rebuild in pairs(deferred_rebuilds) do
+      deferred_rebuilds[buf] = nil
+      if vim.api.nvim_buf_is_valid(buf) and #vim.fn.win_findbuf(buf) > 0 then rebuild() end
+    end
+  end,
+})
+
 --- Rebuild and repaint every session currently shown in a window. Used by
 --- settings that change how content is *built* (e.g. `:MdRender textsize`),
 --- where re-applying highlights alone is not enough.
-function MdPreview.rebuild_visible()
+function MdPreview.rebuild_visible(layouts)
   for buf, session in pairs(MdPreview._sessions) do
-    if vim.api.nvim_buf_is_valid(buf) and #vim.fn.win_findbuf(buf) > 0 then
+    local affected = not layouts
+    for _, layout in ipairs(layouts or {}) do
+      if session.content.heading_layouts and session.content.heading_layouts[layout.key] then affected = true end
+    end
+    if affected and vim.api.nvim_buf_is_valid(buf) and #vim.fn.win_findbuf(buf) > 0 then
       session:rebuild()
       session:refresh_images()
     end
   end
   -- `show_demo` builds its own window rather than a Session; it registers a
   -- rebuild hook here so it is not left behind.
-  if MdPreview._demo_rebuild then pcall(MdPreview._demo_rebuild) end
+  if MdPreview._demo_rebuild then pcall(MdPreview._demo_rebuild, layouts) end
 end
 
 --- Build a fresh Session from a source buffer.
@@ -345,6 +379,13 @@ end
 --- Preserves the view (topline/cursor) of every window currently displaying
 --- the render buffer, since changing lines can otherwise reset topline.
 function Session:rebuild()
+  if defer_rebuild(self.buf, function()
+    self:rebuild()
+    self:refresh_images()
+  end, self.text_size_state) then
+    self.dirty = true
+    return
+  end
   self.opts.fold_state = self.fold_state
   self.opts.expand_state = self.expand_state
   local new_content = MdPreview.build_content(self.source_lines, self.opts)
@@ -368,9 +409,11 @@ function Session:rebuild()
   vim.bo[self.buf].modified = false
 
   for w, view in pairs(saved_views) do
-    if vim.api.nvim_win_is_valid(w) then vim.api.nvim_win_call(w, function()
-      vim.fn.winrestview(view)
-    end) end
+    if vim.api.nvim_win_is_valid(w) then
+      vim.api.nvim_win_call(w, function()
+        vim.fn.winrestview(display_utils.remap_view(view, self.content, new_content))
+      end)
+    end
   end
 
   if self.win and vim.api.nvim_win_is_valid(self.win) then
@@ -519,7 +562,11 @@ function Session:resize(win)
   local width = self._explicit_max_width and self.opts.max_width
     or math.min(usable_win_width(win), snacks and math.huge or DEFAULT_MAX_WIDTH)
   local height = snacks and math.max(1, vim.api.nvim_win_get_height(win) - 6) or nil
-  local changed = width ~= (self.opts.max_width or DEFAULT_MAX_WIDTH) or height ~= self.opts.image_max_height
+  local normal = vim.api.nvim_win_get_config(win).relative ~= "" and "NormalFloat" or "Normal"
+  local changed = width ~= (self.opts.max_width or DEFAULT_MAX_WIDTH)
+    or height ~= self.opts.image_max_height
+    or normal ~= self.opts.heading_normal
+  self.opts.heading_normal = normal
   self.opts.max_width, self.opts.image_max_height = width, height
   return changed
 end
@@ -556,14 +603,9 @@ function Session:bind_window(win, layout)
   })
   self.image_state = display_utils.setup_images(win, self.content, self.ns, {
     buf = self.buf,
-    build_content = function()
-      self.opts.fold_state = self.fold_state
-      self.opts.expand_state = self.expand_state
-      self.content = MdPreview.build_content(self.source_lines, self.opts)
-      return self.content
-    end,
-    on_content_applied = function(new_content)
-      self.text_size_state = require("md-render.text_size").refresh(self.text_size_state, self.win, new_content)
+    on_ready = function()
+      self:rebuild()
+      self:refresh_images()
     end,
   })
   self.text_size_state = require("md-render.text_size").attach(win, self.content)
@@ -578,6 +620,7 @@ end
 
 --- Update renderers after a rebuild, or bind a surviving preview window.
 function Session:refresh_images()
+  if deferred_rebuilds[self.buf] then return end
   if not self.win or not vim.api.nvim_win_is_valid(self.win) or vim.api.nvim_win_get_buf(self.win) ~= self.buf then
     self:cleanup_images()
     if not vim.api.nvim_buf_is_valid(self.buf) then return end
@@ -2951,7 +2994,7 @@ MdPreview.show_demo = function()
   local opts = { buf_dir = plugin_root }
   local image_state = nil
   local text_size = require "md-render.text_size"
-  ---@type MdRender.TextSizeState?
+  ---@type MdRender.TextSizeState|MdRender.HeadingImageState|nil
   local text_size_state = nil
 
   local buf = vim.api.nvim_create_buf(false, true)
@@ -2965,7 +3008,11 @@ MdPreview.show_demo = function()
   local content
   local win
 
+  opts.heading_normal = "NormalFloat"
   local function rebuild()
+    if not win or not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= buf then return end
+    if defer_rebuild(buf, rebuild, text_size_state) then return end
+    local view = vim.api.nvim_win_call(win, vim.fn.winsaveview)
     opts.fold_state = fold_state
     opts.expand_state = expand_state
     opts.autolinks = {
@@ -2984,6 +3031,9 @@ MdPreview.show_demo = function()
       end
     end
     vim.api.nvim_set_option_value("wrap", not any_expanded, { win = win })
+    vim.api.nvim_win_call(win, function()
+      vim.fn.winrestview(display_utils.remap_view(view, content, new_content))
+    end)
     content = new_content
     image_state = display_utils.update_images(image_state, win, content)
     text_size_state = text_size.refresh(text_size_state, win, content)
@@ -3006,26 +3056,19 @@ MdPreview.show_demo = function()
 
   image_state = display_utils.setup_images(win, content, ns, {
     buf = buf,
-    build_content = function()
-      opts.fold_state = fold_state
-      opts.expand_state = expand_state
-      opts.autolinks = {
-        { key_prefix = "JIRA-", url_template = "https://jira.example.com/browse/JIRA-<num>" },
-      }
-      content = MdPreview.build_content(demo_lines, opts)
-      return content
-    end,
-    on_content_applied = function(new_content)
-      text_size_state = text_size.refresh(text_size_state, win, new_content)
-    end,
+    on_ready = rebuild,
   })
   text_size_state = text_size.attach(win, content)
 
   -- The demo is not a Session, so `rebuild_visible` cannot find it the way it
   -- finds previews. Hand it a way in, or `:MdRender textsize` would leave the
   -- demo showing rows reserved for a scale it no longer uses.
-  MdPreview._demo_rebuild = function()
-    if win and vim.api.nvim_win_is_valid(win) then rebuild() end
+  MdPreview._demo_rebuild = function(layouts)
+    local affected = not layouts
+    for _, layout in ipairs(layouts or {}) do
+      if content.heading_layouts and content.heading_layouts[layout.key] then affected = true end
+    end
+    if affected and win and vim.api.nvim_win_is_valid(win) then rebuild() end
   end
 
   display_utils.setup_float_keymaps(buf, ns, win, content, demo_float_win, {

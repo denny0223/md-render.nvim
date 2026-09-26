@@ -13,6 +13,7 @@ local IS_LINUX = ffi.os == "Linux"
 
 local _tty_path = nil
 local _tty_detected = false
+local _kitty_version
 
 -- ============================================================================
 -- FFI declarations
@@ -245,10 +246,59 @@ function M.get_tty_path()
   return _tty_path
 end
 
+--- Ask the terminal directly, including over SSH without local environment hints.
+--- Returns nil when the terminal stays silent, which is treated as "no".
+---
+--- Implemented directly on `TermResponse` + `nvim_ui_send` rather than through
+--- `vim.tty.request`, which does not exist before Neovim 0.13 — on 0.12
+--- `vim.tty` only carries `query`. Depending on it made the whole feature a
+--- silent no-op on the oldest Neovim this plugin supports.
+---@return integer[]?
+function M.kitty_version()
+  if _kitty_version ~= nil then return _kitty_version or nil end
+  if #vim.api.nvim_list_uis() == 0 then return nil end
+  if type(vim.api.nvim_ui_send) ~= "function" then return nil end
+
+  local result = nil
+  local ok_au, id = pcall(vim.api.nvim_create_autocmd, "TermResponse", {
+    nested = true,
+    callback = function(ev)
+      -- `ev.data` is a table carrying `sequence` on 0.12 and 0.13; accept a
+      -- bare string too in case that ever changes back.
+      local resp = ev.data
+      if type(resp) == "table" then resp = resp.sequence end
+      if type(resp) ~= "string" then return end
+
+      local major, minor = resp:match "kitty%((%d+)%.(%d+)"
+      if major then
+        result = { tonumber(major), tonumber(minor) }
+        return true
+      end
+      -- Some other terminal answered XTVERSION. Do not retry, do not guess.
+      if resp:match "^\27P>|" then
+        result = false
+        return true
+      end
+      -- Anything else is an unrelated response (cursor position, colours, the
+      -- primary device attributes that follow); keep listening.
+    end,
+  })
+  if not ok_au then return nil end
+
+  vim.api.nvim_ui_send "\27[>0q"
+  vim.wait(1000, function()
+    return result ~= nil
+  end, 10)
+  pcall(vim.api.nvim_del_autocmd, id)
+  _kitty_version = result or false
+  return _kitty_version or nil
+end
+
 --- Clear cached state (e.g. after :restart or for testing).
 function M.reset()
   _tty_path = nil
   _tty_detected = false
+  _kitty_version = nil
 end
 
 return M

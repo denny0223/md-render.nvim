@@ -3,6 +3,7 @@ package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/in
 
 local preview = require "md-render.preview"
 local text_size = require "md-render.text_size"
+text_size.setup { backend = "native" }
 text_size.supports = function()
   return true
 end

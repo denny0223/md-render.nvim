@@ -120,17 +120,46 @@ end
 
 ---@class MdRender.TextSize.Config
 ---@field enabled boolean master switch (default true)
+---@field backend "auto"|"native"|"image" heading renderer (default auto)
+---@field image { font: string, font_size: number|"auto", python: string } Pango image options
 
 ---@type MdRender.TextSize.Config
 local config = {
   enabled = true,
+  backend = "auto",
+  image = { font = "Noto Sans Mono,Noto Sans Mono CJK TC", font_size = "auto", python = "python3" },
 }
 
 --- Configure text scaling.
 ---@param opts? MdRender.TextSize.Config
 function M.setup(opts)
   opts = opts or {}
+  if opts.backend ~= nil then
+    assert(
+      opts.backend == "auto" or opts.backend == "native" or opts.backend == "image",
+      "text_size.backend must be auto, native or image"
+    )
+  end
+  if opts.image then
+    local image_opts = vim.tbl_extend("force", config.image, opts.image)
+    assert(type(image_opts.font) == "string" and image_opts.font ~= "", "text_size.image.font must name a font")
+    assert(
+      type(image_opts.python) == "string" and image_opts.python ~= "",
+      "text_size.image.python must name an executable"
+    )
+    assert(
+      image_opts.font_size == "auto"
+        or (type(image_opts.font_size) == "number" and image_opts.font_size > 0 and image_opts.font_size < math.huge),
+      "text_size.image.font_size must be auto or a positive finite pixel size"
+    )
+    if not vim.deep_equal(config.image, image_opts) then
+      local layout = package.loaded["md-render.heading_layout"]
+      if layout then layout.retry_failed() end
+    end
+    config.image = image_opts
+  end
   if opts.enabled ~= nil then config.enabled = opts.enabled end
+  if opts.backend ~= nil then config.backend = opts.backend end
 end
 
 ---@return MdRender.TextSize.Config
@@ -144,20 +173,11 @@ end
 
 local _supported = nil
 
---- How long to wait for the terminal to identify itself.
----
---- Only paid in full by a terminal that never answers; a reply short-circuits
---- the wait. Kitty answers in ~120 ms on a warm desktop but was measured at
---- ~260 ms inside a container under Xvfb, so a tight bound silently disables
---- the feature on slow machines — which is indistinguishable, from the user's
---- side, from the terminal not supporting it.
-local PROBE_TIMEOUT_MS = 1000
-
 --- `$TERM_PROGRAM` values that are certainly not Kitty.
 ---
 --- Worth short-circuiting on now that the feature is on by default: the probe
 --- above is only cheap for a terminal that answers XTVERSION, and one that
---- answers nothing costs the full `PROBE_TIMEOUT_MS` on the first preview.
+--- answers nothing costs the one-second timeout on the first preview.
 --- Apple Terminal is exactly that case. This never turns Kitty *off* — none of
 --- these strings is one Kitty sets — so the strict "positive answer only" rule
 --- still stands.
@@ -173,51 +193,6 @@ local NOT_KITTY = {
   ["WezTerm"] = true,
 }
 
---- Ask the terminal to identify itself (XTVERSION) and accept only Kitty >= 0.40.
---- Returns nil when the terminal stays silent, which is treated as "no".
----
---- Implemented directly on `TermResponse` + `nvim_ui_send` rather than through
---- `vim.tty.request`, which does not exist before Neovim 0.13 — on 0.12
---- `vim.tty` only carries `query`. Depending on it made the whole feature a
---- silent no-op on the oldest Neovim this plugin supports.
----@return boolean?
-local function probe_xtversion()
-  if type(vim.api.nvim_ui_send) ~= "function" then return nil end
-
-  local result = nil
-  local ok_au, id = pcall(vim.api.nvim_create_autocmd, "TermResponse", {
-    nested = true,
-    callback = function(ev)
-      -- `ev.data` is a table carrying `sequence` on 0.12 and 0.13; accept a
-      -- bare string too in case that ever changes back.
-      local resp = ev.data
-      if type(resp) == "table" then resp = resp.sequence end
-      if type(resp) ~= "string" then return end
-
-      local major, minor = resp:match "kitty%((%d+)%.(%d+)"
-      if major then
-        result = (tonumber(major) > 0) or (tonumber(minor) >= 40)
-        return true
-      end
-      -- Some other terminal answered XTVERSION. Do not retry, do not guess.
-      if resp:match "^\27P>|" then
-        result = false
-        return true
-      end
-      -- Anything else is an unrelated response (cursor position, colours, the
-      -- primary device attributes that follow); keep listening.
-    end,
-  })
-  if not ok_au then return nil end
-
-  vim.api.nvim_ui_send "\27[>0q"
-  vim.wait(PROBE_TIMEOUT_MS, function()
-    return result ~= nil
-  end, 10)
-  pcall(vim.api.nvim_del_autocmd, id)
-  return result
-end
-
 --- True when the host terminal implements the text sizing protocol.
 ---@return boolean
 function M.supports()
@@ -229,17 +204,61 @@ function M.supports()
   end
   -- No UI attached (`--headless`, `-l`): nothing would receive the bytes, and
   -- the probe would sit out its whole timeout waiting for an answer.
-  if #vim.api.nvim_list_uis() == 0 or NOT_KITTY[vim.env.TERM_PROGRAM or ""] then
+  if #vim.api.nvim_list_uis() == 0 or vim.env.TMUX or NOT_KITTY[vim.env.TERM_PROGRAM or ""] then
     _supported = false
     return false
   end
-  _supported = probe_xtversion() == true
+  local version = require("md-render.tty").kitty_version()
+  _supported = version ~= nil and (version[1] > 0 or version[2] >= 40)
   return _supported
 end
 
 --- Clear the cached probe result (for tests, or after `:restart`).
 function M.reset_cache()
   _supported = nil
+  require("md-render.tty").reset()
+end
+
+vim.api.nvim_create_autocmd({ "UIEnter", "UILeave" }, { callback = M.reset_cache })
+
+--- Resolve the configured policy before reserving any heading rows.
+--- Pending work stays plain; confirmed environment failures may use native.
+---@return "image"|"native"|"plain" backend
+---@return string? reason
+function M.resolve_backend()
+  if not config.enabled then return "plain", "text sizing is off" end
+  if config.backend == "native" then
+    if M.supports() then return "native" end
+    return "plain", "terminal does not support native OSC 66 headings"
+  end
+  local layout = package.loaded["md-render.heading_layout"]
+  local reason = layout and layout.failure(config.image.python)
+  if not reason and not vim.o.termguicolors then reason = "image headings require termguicolors" end
+  if not reason then
+    local image = require "md-render.image"
+    local probe = image.png_status()
+    if probe.supported == nil then return "plain", probe.reason end
+    reason = probe.reason
+    if probe.supported then
+      local cell = image.get_cell_size(true)
+      if cell and cell.cell_w >= 1 and cell.cell_h >= 1 then return "image" end
+      reason = "terminal cell dimensions are unavailable"
+    end
+  end
+  if config.backend == "auto" and M.supports() then return "native", reason end
+  return "plain", reason
+end
+
+function M.status()
+  local backend, reason = M.resolve_backend()
+  return (config.enabled and config.backend or "off") .. " -> " .. backend .. (reason and (": " .. reason) or "")
+end
+
+function M.retry_image()
+  local image = package.loaded["md-render.image"]
+  if image then image.reset_png() end
+  local layout = package.loaded["md-render.heading_layout"]
+  if layout then layout.retry_failed() end
 end
 
 --- How a heading level is scaled, or nil when it must stay plain.
@@ -249,11 +268,12 @@ end
 --- that can never paint them must not get them reserved either.
 ---@param level integer 1-6
 ---@return MdRender.TextSize.Spec?
-function M.spec_for(level)
+function M.spec_for(level, backend)
   if not config.enabled then return nil end
   local spec = SPECS[level]
   if not spec then return nil end
-  if not M.supports() then return nil end
+  backend = backend or M.resolve_backend()
+  if backend == "plain" or (backend == "native" and not M.supports()) then return nil end
   return spec
 end
 
@@ -507,16 +527,21 @@ end
 ---@field line integer 0-indexed buffer line the scaled text is painted over
 ---@field col integer 0-indexed byte column where the scaled text starts
 ---@field text string the plain-size text underneath, used to verify the anchor
----@field runs { text: string, w: integer }[] `split_run` output for `text`
----@field width integer cells the painted runs cover
+---@field runs? { text: string, w: integer }[] native `split_run` output for `text`
+---@field width? integer cells the native painted runs cover
 ---@field scale integer cell scale passed as `s=`
 ---@field num integer? fractional numerator passed as `n=`
 ---@field den integer? fractional denominator passed as `d=`
 ---@field hl string highlight group the SGR prefix is derived from
+---@field normal? string base highlight group for image text overlays
+---@field raster? table shaped image and glyph positions
 ---@field icon string? level icon glyph, on the first line of a heading only
 ---@field icon_col integer? 0-indexed byte column the icon sits at
 
 ---@class MdRender.TextSizeState
+---@field buf integer
+---@field content MdRender.Content
+---@field image_headings? false
 ---@field placements MdRender.TextPlacement[]
 ---@field win integer
 ---@field redraw_timer any?
@@ -562,7 +587,7 @@ end
 ---@return integer? right
 ---@return integer? top
 ---@return integer? bottom
-local function text_area(win)
+function M.text_area(win)
   local wininfo = vim.fn.getwininfo(win)[1]
   if not wininfo then return nil end
 
@@ -604,10 +629,13 @@ end
 local function visible_placements(state)
   local win = state.win
   if not vim.api.nvim_win_is_valid(win) then return {} end
-  local left, right, top, bottom = text_area(win)
+  local left, right, top, bottom = M.text_area(win)
   if not left then return {} end
   local buf = vim.api.nvim_win_get_buf(win)
+  if buf ~= state.buf or vim.api.nvim_win_get_tabpage(win) ~= vim.api.nvim_get_current_tabpage() then return {} end
 
+  local all, protected = require("md-render.heading_feedback").protected(state, state.placements)
+  if all then return {} end
   local out = {}
   for _, p in ipairs(state.placements) do
     -- Guard against a layout that moved without us being told. Placements are
@@ -629,7 +657,11 @@ local function visible_placements(state)
       -- Partially visible placements are skipped rather than clipped: the
       -- plain-size text underneath stays on screen, which is the graceful
       -- fallback. OSC 66 has no source-rectangle crop like graphics do.
-      if fits_vertically and fits_horizontally then
+      local feedback = false
+      for row = p.line, p.line + p.scale - 1 do
+        feedback = feedback or protected[row]
+      end
+      if fits_vertically and fits_horizontally and not feedback then
         -- The icon sits to the left of the text on the same line, so it is
         -- inside the window whenever the text is — unless the window is
         -- scrolled horizontally, which `screenpos` reports by putting it on
@@ -1018,16 +1050,21 @@ end
 --- Start painting a content's text placements in a window.
 ---@param win integer
 ---@param content MdRender.Content
----@return MdRender.TextSizeState?
+---@return MdRender.TextSizeState|MdRender.HeadingImageState|nil
 function M.attach(win, content)
   if not config.enabled then return nil end
   if not content.text_placements or #content.text_placements == 0 then return nil end
-  if not M.supports() then return nil end
   if not vim.api.nvim_win_is_valid(win) then return nil end
+  local backend = content.heading_backend or M.resolve_backend()
+  if backend == "plain" then return nil end
+  if backend == "image" then return require("md-render.heading_image").attach(win, content) end
+  if not M.supports() then return nil end
 
   ---@type MdRender.TextSizeState
   local state = {
     placements = content.text_placements,
+    content = content,
+    buf = vim.api.nvim_win_get_buf(win),
     win = win,
     redraw_timer = nil,
     autocmd_ids = {},
@@ -1060,7 +1097,17 @@ function M.attach(win, content)
     WinNew = true,
     WinClosed = true,
   }
-  for _, event in ipairs { "WinScrolled", "WinResized", "WinNew", "WinClosed", "CursorMoved", "CursorMovedI" } do
+  for _, event in ipairs {
+    "WinScrolled",
+    "WinResized",
+    "WinNew",
+    "WinClosed",
+    "CursorMoved",
+    "CursorMovedI",
+    "ModeChanged",
+    "CmdlineChanged",
+    "TextYankPost",
+  } do
     -- Cursor movement leaves the runs where they are and needs no such thing.
     local destroys_runs = DESTROYS_RUNS[event]
     local id = vim.api.nvim_create_autocmd(event, {
@@ -1145,17 +1192,24 @@ function M.attach(win, content)
 end
 
 --- Swap in placements from a rebuilt content and repaint.
----@param state MdRender.TextSizeState?
+---@param state MdRender.TextSizeState|MdRender.HeadingImageState|nil
 ---@param win integer
 ---@param content MdRender.Content
----@return MdRender.TextSizeState?
+---@return MdRender.TextSizeState|MdRender.HeadingImageState|nil
 function M.refresh(state, win, content)
+  local backend = content.heading_backend or M.resolve_backend()
+  if state and (state.image_headings or backend ~= "native" or not config.enabled) then
+    M.detach(state)
+    return M.attach(win, content)
+  end
   if not state then return M.attach(win, content) end
   if not content.text_placements or #content.text_placements == 0 then
     M.detach(state)
     return nil
   end
   state.placements = content.text_placements
+  state.content, state.buf = content, vim.api.nvim_win_get_buf(win)
+  state.search_key = nil
   state.win = win
   -- Old blocks may sit where the new layout has none, so force the next paint
   -- through the invalidate path even if the positions happen to line up.
@@ -1165,9 +1219,10 @@ function M.refresh(state, win, content)
 end
 
 --- Stop painting and erase whatever is still on screen.
----@param state MdRender.TextSizeState?
+---@param state MdRender.TextSizeState|MdRender.HeadingImageState|nil
 function M.detach(state)
   if not state then return end
+  if state.image_headings then return require("md-render.heading_image").detach(state) end
   state.closed = true
   active[state.win] = nil
   stop_redraw_notification()

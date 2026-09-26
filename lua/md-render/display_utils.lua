@@ -4,6 +4,22 @@ local async = require "md-render.async"
 
 local M = {}
 
+--- Mouse coordinates shared by preview clicks and URL hover.
+function M.getmousepos(release)
+  local mouse = vim.fn.getmousepos()
+  local headings = package.loaded["md-render.heading_image"]
+  if headings then
+    local position, projected = headings.mouse_position(mouse)
+    if release and headings.release_mouse(mouse.winid) then
+      -- A drag must never become a link click, even if Neovim coalesced its
+      -- mouse coordinates and did not enter Visual mode.
+      position = vim.tbl_extend("force", position, { line = 0, column = 0 })
+    end
+    return position, projected
+  end
+  return mouse
+end
+
 local _osc8_supported = nil
 
 local function is_wezterm()
@@ -156,6 +172,72 @@ function M.apply_treesitter_highlights(buf, ns, content)
   end
 end
 
+--- Keep the same source passage and heading character when reflow changes rows.
+function M.remap_view(view, old, new)
+  local function row_at(row)
+    local source = old.source_line_map[row]
+    if not source then return math.min(row, #new.lines) end
+    local first = row
+    while first > 1 and old.source_line_map[first - 1] == source do
+      first = first - 1
+    end
+    local target, last
+    for index, value in ipairs(new.source_line_map) do
+      if value == source then
+        target, last = target or index, index
+      end
+    end
+    return target and math.min(target + row - first, last) or math.min(row, #new.lines)
+  end
+  local position = (old.heading_positions or {})[view.lnum]
+  local source = old.source_line_map[view.lnum]
+  view.lnum, view.topline = row_at(view.lnum), row_at(view.topline)
+  if position then
+    local byte = position.byte + math.max(0, view.col - position.col)
+    for row, point in pairs(new.heading_positions or {}) do
+      if new.source_line_map[row] == source and byte >= point.byte and byte < point.byte + point.length then
+        view.lnum, view.col = row, point.col + byte - point.byte
+        break
+      end
+    end
+  end
+  view.col = math.min(view.col, #(new.lines[view.lnum] or ""))
+  return view
+end
+
+--- Stack overlapping heading styles in document order, below user highlights.
+local function apply_heading_highlights(buf, ns, row, groups, length)
+  local boundaries = {}
+  for _, group in ipairs(groups) do
+    boundaries[#boundaries + 1] = group.col
+    boundaries[#boundaries + 1] = group.end_col == -1 and length or math.min(group.end_col, length)
+  end
+  table.sort(boundaries)
+  for i = 2, #boundaries do
+    local first, last = boundaries[i - 1], boundaries[i]
+    if first < last then
+      local stack, seen = {}, {}
+      for index = #groups, 1, -1 do
+        local group = groups[index]
+        local key = group.hl .. ":" .. tostring(group.hl_eol == true)
+        if not seen[key] and group.col <= first and (group.end_col == -1 or group.end_col >= last) then
+          table.insert(stack, 1, group)
+          seen[key] = true
+        end
+      end
+      -- Give every layer its own priority below user feedback.
+      for layer, group in ipairs(stack) do
+        vim.api.nvim_buf_set_extmark(buf, ns, row, first, {
+          end_col = last,
+          hl_group = group.hl,
+          hl_eol = group.hl_eol,
+          priority = vim.hl.priorities.treesitter + layer,
+        })
+      end
+    end
+  end
+end
+
 --- Apply highlights, link extmarks, and optional title extmark to a buffer
 ---@param buf integer
 ---@param ns integer
@@ -163,6 +245,7 @@ end
 ---@param opts? { title_url?: string }
 function M.apply_content_to_buffer(buf, ns, content, opts)
   opts = opts or {}
+  content.highlight_ns = ns
   -- Replacing unchanged rows would collapse native jump/mark positions into
   -- the replaced range. Let Neovim adjust only the rows that actually changed.
   local old = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
@@ -184,6 +267,10 @@ function M.apply_content_to_buffer(buf, ns, content, opts)
   for _, hl_info in ipairs(content.highlights) do
     local line_text = content.lines[hl_info.line + 1]
     if line_text then
+      if content.heading_lines and content.heading_lines[hl_info.line] then
+        apply_heading_highlights(buf, ns, hl_info.line, hl_info.groups, #line_text)
+        goto next_highlight
+      end
       for _, group in ipairs(hl_info.groups) do
         local end_col = group.end_col
         if end_col == -1 or end_col > #line_text then end_col = #line_text end
@@ -195,6 +282,7 @@ function M.apply_content_to_buffer(buf, ns, content, opts)
         vim.api.nvim_buf_set_extmark(buf, ns, hl_info.line, group.col, extmark_opts)
       end
     end
+    ::next_highlight::
   end
 
   for _, link in ipairs(content.link_metadata) do
@@ -204,17 +292,12 @@ function M.apply_content_to_buffer(buf, ns, content, opts)
       local col_end = link.col_end
       if col_start > #line_text then goto next_link end
       if col_end > #line_text then col_end = #line_text end
-      local hl
-      if link.url:match "^#" then
-        hl = "MdRenderLinkAnchor"
-      elseif link.url:match "^obsidian://" then
-        hl = "MdRenderLinkObsidian"
-      else
-        hl = "Underlined"
-      end
       vim.api.nvim_buf_set_extmark(buf, ns, link.line, col_start, {
         end_col = col_end,
-        hl_group = hl,
+        -- Image-heading links already belong to the ordered style stack.
+        hl_group = not (content.heading_lines and content.heading_lines[link.line])
+            and (link.url:match "^#" and "MdRenderLinkAnchor" or link.url:match "^obsidian://" and "MdRenderLinkObsidian" or "Underlined")
+          or nil,
         url = link.url,
       })
     end
@@ -511,8 +594,9 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
   end, { buffer = buf, noremap = true, silent = true })
 
   vim.keymap.set("n", "<LeftRelease>", function()
-    local mouse = vim.fn.getmousepos()
-    if mouse.winid == win then
+    local mouse, projected = M.getmousepos(true)
+    if mouse.winid == win and mouse.line > 0 then
+      if projected then vim.api.nvim_win_set_cursor(win, { mouse.line, mouse.column - 1 }) end
       if close_line_idx and close_handle and mouse.line == close_line_idx + 1 then
         close_handle:close_if_valid()
         return
@@ -640,7 +724,7 @@ end
 ---@param win integer
 ---@param content MdRender.Content
 ---@param ns integer?
----@param opts? { buf?: integer, build_content?: fun(): MdRender.Content, on_content_applied?: fun(content: MdRender.Content) }
+---@param opts? { buf?: integer, on_ready?: fun(), build_content?: fun(): MdRender.Content, on_content_applied?: fun(content: MdRender.Content) }
 ---@return MdRender.ImageState?
 function M.setup_images(win, content, ns, opts)
   if not content.image_placements or #content.image_placements == 0 then return nil end
@@ -666,11 +750,10 @@ function M.setup_images(win, content, ns, opts)
     autocmd_ids = {},
   }
 
-  -- When opts.buf and opts.build_content are provided, automatically rebuild
-  -- content after URL image downloads so that layout reflects actual image
-  -- dimensions. Debounced to avoid cascading rebuilds.
+  -- Let the owner publish new dimensions when native interactions are done.
+  -- Picker integrations can still supply the legacy content builder instead.
   local on_download
-  if opts and opts.buf and opts.build_content then
+  if opts and opts.buf and (opts.on_ready or opts.build_content) then
     on_download = function()
       if state._rebuild_timer then state._rebuild_timer:stop() end
       state._rebuild_timer = vim.defer_fn(function()
@@ -678,6 +761,10 @@ function M.setup_images(win, content, ns, opts)
         if state.closed or not vim.api.nvim_win_is_valid(win) then return end
         local buf = opts.buf
         if not vim.api.nvim_buf_is_valid(buf) then return end
+        if opts.on_ready then
+          opts.on_ready()
+          return
+        end
         local new_content = opts.build_content()
         local was_modifiable = vim.bo[buf].modifiable
         vim.bo[buf].modifiable = true

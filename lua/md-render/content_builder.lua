@@ -50,12 +50,17 @@
 ---@class MdRender.Content
 ---@field lines string[]
 ---@field highlights MdRender.LineHighlight[]
+---@field highlight_ns? integer namespace containing the rendered Markdown styles
 ---@field link_metadata MdRender.LinkMetadata[]
 ---@field code_blocks MdRender.CodeBlock[]
 ---@field callout_folds MdRender.CalloutFold[]
 ---@field expandable_regions MdRender.ExpandableRegion[]
 ---@field image_placements MdRender.ImagePlacement[]
 ---@field text_placements MdRender.TextPlacement[]
+---@field heading_layouts table<string, table> shared image layouts
+---@field heading_backend? "image"|"native"|"plain" renderer used to build this content
+---@field heading_lines table<integer, boolean> image-styled rows (0-indexed)
+---@field heading_positions table<integer, {byte: integer, col: integer, length: integer}> heading byte ranges (1-indexed rows)
 ---@field footnote_anchors table<string, integer> anchor name → 0-indexed line number
 ---@field heading_anchors table<string, integer> heading slug → 0-indexed line number
 ---@field source_line_map integer[] rendered line index (1-based) → source line number (1-based)
@@ -88,6 +93,9 @@ function ContentBuilder.new()
     expandable_regions = {},
     image_placements = {},
     text_placements = {},
+    heading_layouts = {},
+    heading_lines = {},
+    heading_positions = {},
     footnote_anchors = {},
     heading_anchors = {},
     source_line_map = {},
@@ -131,6 +139,10 @@ function ContentBuilder:result()
     expandable_regions = self.expandable_regions,
     image_placements = self.image_placements,
     text_placements = self.text_placements,
+    heading_layouts = self.heading_layouts,
+    heading_backend = self.heading_backend,
+    heading_lines = self.heading_lines,
+    heading_positions = self.heading_positions,
     footnote_anchors = self.footnote_anchors,
     heading_anchors = self.heading_anchors,
     source_line_map = self.source_line_map,
@@ -589,7 +601,7 @@ local function heading_scale_plan(source_text, indent, max_width)
   local level = heading_level_of(source_text)
   if not level then return nil end
 
-  local spec = require("md-render.text_size").spec_for(level)
+  local spec = require("md-render.text_size").spec_for(level, "native")
   if not spec then return nil end
 
   -- Scaling multiplies the width as well as the height, so the text has to wrap
@@ -721,6 +733,132 @@ function ContentBuilder:add_heading_text_scale(heading_line, indent, spec, level
   end
 end
 
+function ContentBuilder:heading_renderer()
+  if not self.heading_backend then
+    self.heading_backend = self.text_scale and require("md-render.text_size").resolve_backend() or "plain"
+  end
+  return self.heading_backend
+end
+
+--- Image headings wrap at Pango's measured byte boundaries. The same ranges
+--- populate the native buffer, highlights, links and image hit targets.
+function ContentBuilder:add_image_heading(text, highlights, links, indent, max_width, level)
+  -- Indexed terminal colors cannot be recovered from the RGB highlight values.
+  if not vim.o.termguicolors then return false end
+  local text_size = require "md-render.text_size"
+  local spec = text_size.spec_for(level, "image")
+  local cell = require("md-render.image").get_cell_size()
+  if not spec or not cell then return false end
+  local prefix = require("md-render.markdown").heading_icon_prefix(level)
+  local offset = #prefix
+  local width = max_width - vim.fn.strdisplaywidth(indent .. prefix)
+  if width < 2 then return false end
+  local normal = vim.api.nvim_get_hl(0, { name = self.heading_normal or "Normal", link = false })
+  local base = vim.api.nvim_get_hl(0, { name = "Normal", link = false })
+  local styles = {}
+  local supported =
+    { fg = true, bg = true, sp = true, bold = true, italic = true, underline = true, strikethrough = true }
+  local spans = highlights
+  -- Float attributes combine with heading styles; Normal supplies only the
+  -- default colors in an ordinary window.
+  if self.heading_normal == "NormalFloat" then
+    spans = vim.list_extend({ { col = offset, end_col = #text, hl = "NormalFloat" } }, highlights)
+  end
+  for _, span in ipairs(spans) do
+    local style = vim.api.nvim_get_hl(0, { name = span.hl, link = false })
+    style.default, style.cterm, style.ctermfg, style.ctermbg = nil, nil, nil, nil
+    if style.blend == 0 then style.blend = nil end
+    for key, value in pairs(style) do
+      if value and not supported[key] then return false end
+    end
+    style.start, style["end"] = math.max(0, span.col - offset), math.min(#text, span.end_col) - offset
+    if style.start < style["end"] then styles[#styles + 1] = style end
+  end
+  local opts = text_size.config().image
+  local entry = require("md-render.heading_layout").request({
+    font = opts.font,
+    font_pixels = opts.font_size,
+    cell_width = math.floor(cell.cell_w),
+    cell_height = math.floor(cell.cell_h),
+    entries = {
+      {
+        text = text:sub(offset + 1),
+        ratio = spec.ratio,
+        rows = spec.s,
+        max_cols = width,
+        fg = normal.fg or base.fg or 0xffffff,
+        bg = normal.bg or base.bg,
+        bold = false,
+        styles = styles,
+      },
+    },
+  }, opts.python)
+  self.heading_layouts[entry.key] = entry
+  if not entry.output then return false end
+  for _, line in ipairs(entry.output.lines) do
+    if line.fallback or vim.fn.strdisplaywidth(line.text) > width or vim.fn.strdisplaywidth(line.text) > line.cols then
+      return false
+    end
+    -- A narrow linked glyph can fall between terminal cell centers. Keep text
+    -- when any visible link fragment would have no projected mouse target.
+    for _, link in ipairs(links) do
+      local first = math.max(line.start, link.col_start - offset) - line.start
+      local last = math.min(line["end"], link.col_end - offset) - line.start
+      if first < last then
+        local clickable = false
+        for _, byte in ipairs(line.columns or {}) do
+          if byte and byte >= first and byte < last then
+            clickable = true
+            break
+          end
+        end
+        if not clickable then return false end
+      end
+    end
+  end
+  for index, line in ipairs(entry.output.lines) do
+    local pad = index == 1 and prefix or string.rep(" ", vim.fn.strdisplaywidth(prefix))
+    local line_indent = indent .. pad
+    local first, last = offset + line.start, offset + line["end"]
+    local row = #self.lines
+    local line_hls = {}
+    for _, span in ipairs(highlights) do
+      local a, b = math.max(first, span.col), math.min(last, span.end_col)
+      if a < b then
+        line_hls[#line_hls + 1] = {
+          col = index == 1 and span.col == 0 and #indent or #line_indent + a - first,
+          end_col = #line_indent + b - first,
+          hl = span.hl,
+        }
+      end
+    end
+    self:add_line(line_indent .. line.text, line_hls)
+    self.heading_lines[row] = true
+    for _, link in ipairs(links) do
+      local a, b = math.max(first, link.col_start), math.min(last, link.col_end)
+      if a < b then
+        self.link_metadata[#self.link_metadata + 1] =
+          { line = row, col_start = #line_indent + a - first, col_end = #line_indent + b - first, url = link.url }
+      end
+    end
+    self.text_placements[#self.text_placements + 1] = {
+      line = row,
+      col = #line_indent,
+      text = line.text,
+      scale = spec.s,
+      num = spec.n,
+      den = spec.d,
+      hl = "MdRenderH" .. level,
+      normal = self.heading_normal or "Normal",
+      raster = line,
+    }
+    for _ = 1, spec.s - 1 do
+      self:add_line ""
+    end
+  end
+  return true
+end
+
 --- Add a markdown-rendered line with wrapping support
 ---@param self MdRender.ContentBuilder
 ---@param text string
@@ -749,9 +887,11 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
   -- A scaled heading wraps at 1/ratio of the usual width and reserves
   -- `s - 1` rows under each of its lines for the taller glyphs.
   local spec, level, content_width
+  local backend = heading_content and self:heading_renderer() or "plain"
+  local image_heading = backend == "image"
   if heading_content then
     level = heading_level_of(text)
-    if self.text_scale then
+    if self.text_scale and backend == "native" then
       spec, content_width = heading_scale_plan(text, indent, max_width)
     end
   end
@@ -767,22 +907,28 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
   local wrap_max = content_width or math.max(1, max_width - indent_w)
 
   local lines_before_fn = #self.lines
-  if indent_w + vim.api.nvim_strwidth(rendered_text) > wrap_threshold then
-    self:add_wrapped_markdown(
-      rendered_text,
-      md_highlights,
-      md_links,
-      indent,
-      wrap_max - icon_pad_loss,
-      quote_prefix,
-      list_marker,
-      line_gap
-    )
-    if level then self:restore_heading_icon_pad(lines_before_fn, indent, level) end
-  else
-    self:add_simple_markdown(rendered_text, md_highlights, md_links, indent)
-    for _ = 1, line_gap do
-      self:add_line ""
+  local image_added = level
+    and self.text_scale
+    and image_heading
+    and self:add_image_heading(rendered_text, md_highlights, md_links, indent, max_width, level)
+  if not image_added then
+    if indent_w + vim.api.nvim_strwidth(rendered_text) > wrap_threshold then
+      self:add_wrapped_markdown(
+        rendered_text,
+        md_highlights,
+        md_links,
+        indent,
+        wrap_max - icon_pad_loss,
+        quote_prefix,
+        list_marker,
+        line_gap
+      )
+      if level then self:restore_heading_icon_pad(lines_before_fn, indent, level) end
+    else
+      self:add_simple_markdown(rendered_text, md_highlights, md_links, indent)
+      for _ = 1, line_gap do
+        self:add_line ""
+      end
     end
   end
 
@@ -791,6 +937,20 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
     local slug = markdown.heading_slug(heading_content)
     if slug ~= "" then self.heading_anchors[slug] = lines_before_fn end
     if spec then self:add_heading_text_scale(lines_before_fn, indent, spec, level, max_width) end
+    local offset = 0
+    for row = lines_before_fn, #self.lines - 1 do
+      local line = self.lines[row + 1]
+      if line ~= "" then
+        local prefix = row == lines_before_fn and (indent .. markdown.heading_icon_prefix(level))
+          or (line:match "^%s*" or "")
+        local fragment = line:sub(#prefix + 1)
+        local first = rendered_text:find(fragment, offset + 1, true)
+        if first then
+          self.heading_positions[row + 1] = { byte = first - 1, col = #prefix, length = #fragment }
+          offset = first - 1 + #fragment
+        end
+      end
+    end
   end
 
   -- Register footnote ref anchors (first occurrence per label)
@@ -1487,6 +1647,7 @@ function ContentBuilder:render_document(lines, opts)
   -- them (a picker preview, say) has to say so before the content is built or
   -- it gets a stray blank line under every heading.
   self.text_scale = opts.text_scale ~= false
+  self.heading_normal = opts.heading_normal
 
   local in_code_block = false
   local code_block_lang = nil
@@ -3084,8 +3245,15 @@ function ContentBuilder:render_document(lines, opts)
         end
 
         if not handled then
+          -- Details add their prefix and background after rendering. Leave
+          -- image headings as text until those transforms carry image geometry.
+          local text_scale = self.text_scale
+          if in_details and heading_level_of(line) and self:heading_renderer() == "image" then
+            self.text_scale = false
+          end
           local alert_type, fold_mod =
             self:add_markdown_line(line, indent, base_max_width, repo_base_url, autolinks, ref_links, footnote_map)
+          self.text_scale = text_scale
           local lines_after = #self.lines
           if alert_type then
             current_alert_type = alert_type

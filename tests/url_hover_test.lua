@@ -179,7 +179,7 @@ test("show_hover: updates existing window for new URL", function()
   internal.close_hover()
 end)
 
-test("attach: registers window for hover", function()
+test("attach: updates one registration and cleans up on close", function()
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "x" })
   local ns = vim.api.nvim_create_namespace "attach_test"
@@ -196,12 +196,32 @@ test("attach: registers window for hover", function()
   assert_eq(internal.registered[win].buf, buf, "buf stored")
   assert_eq(internal.registered[win].ns, ns, "ns stored")
 
+  local function close_handlers()
+    return #vim.api.nvim_get_autocmds {
+      group = "md_render_url_hover",
+      event = "WinClosed",
+      pattern = tostring(win),
+    }
+  end
+  assert_eq(close_handlers(), 1, "one close handler installed")
+  local next_buf, next_ns = make_buf_with_url("next", "https://example.org", 0, 4)
+  vim.api.nvim_win_set_buf(win, next_buf)
+  for _ = 1, 20 do
+    UrlHover.attach(next_buf, next_ns, win)
+  end
+  assert_eq(internal.registered[win], { buf = next_buf, ns = next_ns }, "reattach updates buffer and namespace")
+  assert_eq(close_handlers(), 1, "reattach does not accumulate close handlers")
+  internal.show_hover("https://example.org", win)
+  local hover_win = internal.state.hover_win
+
   vim.api.nvim_win_close(win, true)
   -- WinClosed autocmd should clear registration
   vim.wait(50, function()
     return internal.registered[win] == nil
   end)
   assert_eq(internal.registered[win], nil, "WinClosed cleared registration")
+  assert_eq(close_handlers(), 0, "WinClosed removes its handler")
+  assert_eq(vim.api.nvim_win_is_valid(hover_win), false, "WinClosed closes the hover")
 end)
 
 -- Summary

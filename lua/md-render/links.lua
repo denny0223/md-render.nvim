@@ -16,4 +16,22 @@ function M.at(buf, ns, row, col)
   end
 end
 
+--- Resolve an explicit local destination, without filename-search heuristics.
+function M.file_path(url, directory)
+  if url:match "^#" or url:match "^//" then return nil end
+  local path = url:match "^[^?#]*"
+  if path:match "^file:///" then
+    path = vim.uri_to_fname(path)
+  elseif path:match "^%a[%w+.-]*:" then
+    return nil
+  else
+    path = vim.uri_decode(path)
+  end
+  if path == "" or path:find("\0", 1, true) then return nil end
+  if path:sub(1, 1) ~= "/" then path = vim.fs.joinpath(directory, path) end
+  -- Let the filesystem resolve .. after symlinks; lexical normalization can
+  -- select a different file and would also strip a significant trailing slash.
+  return path
+end
+
 return M

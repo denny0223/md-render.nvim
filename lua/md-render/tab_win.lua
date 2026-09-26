@@ -17,7 +17,7 @@ function TabWin:setup(win)
       -- Only act if we're leaving the preview tab
       if vim.api.nvim_get_current_win() == self.win then
         vim.schedule(function()
-          self:close_if_valid()
+          if self.win == win then self:close_if_valid() end
         end)
       end
     end,
@@ -35,14 +35,18 @@ end
 ---@return boolean
 function TabWin:close_if_valid()
   if self.win and vim.api.nvim_win_is_valid(self.win) then
-    vim.api.nvim_win_close(self.win, true)
-    self.win = nil
-    pcall(vim.api.nvim_del_augroup_by_name, self.augroup)
+    local win = self.win
+    self:detach()
+    vim.api.nvim_win_close(win, true)
     return true
   end
+  self:detach()
+  return false
+end
+
+function TabWin:detach()
   self.win = nil
   pcall(vim.api.nvim_del_augroup_by_name, self.augroup)
-  return false
 end
 
 return TabWin

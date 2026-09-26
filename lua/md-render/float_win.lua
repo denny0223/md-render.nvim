@@ -31,11 +31,17 @@ end
 ---@return boolean
 function FloatWin:close_if_valid()
   if self.win and vim.api.nvim_win_is_valid(self.win) then
-    vim.api.nvim_win_close(self.win, true)
-    pcall(vim.api.nvim_del_augroup_by_name, self.augroup)
+    local win = self.win
+    self:detach()
+    vim.api.nvim_win_close(win, true)
     return true
   end
   return false
+end
+
+function FloatWin:detach()
+  self.win = nil
+  pcall(vim.api.nvim_del_augroup_by_name, self.augroup)
 end
 
 return FloatWin

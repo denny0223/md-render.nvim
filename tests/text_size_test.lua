@@ -5,7 +5,9 @@ package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/in
 
 local ContentBuilder = require("md-render.content_builder").ContentBuilder
 local text_size = require "md-render.text_size"
+text_size.setup { backend = "native" }
 local markdown = require "md-render.markdown"
+vim.o.termguicolors = true
 
 local pass_count = 0
 local fail_count = 0
@@ -49,8 +51,7 @@ end
 -- Gating
 -- ---------------------------------------------------------------------------
 
--- Test 0: on by default. Asserted before anything calls setup(), since every
--- later test sets `enabled` explicitly.
+-- Test 0: changing the renderer does not disable headings.
 do
   assert_eq(text_size.config().enabled, true, "enabled by default")
 end
@@ -931,6 +932,65 @@ do
   end)
   text_size.setup { enabled = false }
 end
+
+-- Native fallback must not paint over the feedback provided by Neovim.
+with_support(true, function()
+  text_size.setup { enabled = true }
+  local out = render { "# Feedback", "", "Body." }
+  local win, previous = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, out.lines)
+  vim.api.nvim_win_set_buf(win, buf)
+  local send = vim.api.nvim_ui_send
+  vim.api.nvim_ui_send = function() end
+  local state = text_size.attach(win, out)
+  local row = out.text_placements[1].line
+  vim.cmd "nohlsearch"
+  text_size.paint(state)
+  assert_eq(#state.drawn, 1, "native heading is initially visible")
+  vim.api.nvim_win_set_cursor(win, { row + 1, 0 })
+  vim.cmd "normal! v$"
+  text_size.paint(state)
+  assert_eq(#state.drawn, 0, "Visual selection reveals native text")
+  vim.cmd("normal! " .. vim.keycode "<Esc>")
+  local ns = vim.api.nvim_create_namespace "text-size-feedback-test"
+  vim.api.nvim_buf_set_extmark(buf, ns, row, 0, { end_row = row + 1, end_col = 0, hl_group = "IncSearch" })
+  text_size.paint(state)
+  assert_eq(#state.drawn, 0, "external yank feedback stays visible")
+  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+  local pattern, hlsearch = vim.fn.getreg "/", vim.v.hlsearch
+  vim.fn.setreg("/", "Feedback")
+  vim.v.hlsearch = 1
+  text_size.paint(state)
+  assert_eq(#state.drawn, 0, "search highlights stay visible")
+  vim.cmd "nohlsearch"
+  text_size.paint(state)
+  assert_eq(#state.drawn, 1, "scaled text returns after feedback")
+  local style = vim.api.nvim_get_hl(0, { name = "MdRenderH1", link = false })
+  vim.api.nvim_set_hl(0, "MdRenderH1", { fg = 0x123456 })
+  text_size.paint(state)
+  assert_true(state.drawn[1].sgr:find("38;2;18;52;86", 1, true), "native colors update after :highlight")
+  vim.api.nvim_set_hl(0, "MdRenderH1", { reverse = true })
+  text_size.paint(state)
+  assert_eq(#state.drawn, 0, "unsupported heading effects retain real Neovim styling")
+  vim.api.nvim_set_hl(0, "MdRenderH1", style)
+  vim.o.termguicolors = false
+  text_size.paint(state)
+  assert_eq(#state.drawn, 0, "indexed colors must not be replaced with RGB")
+  vim.o.termguicolors = true
+  local custom = vim.api.nvim_create_namespace "native-heading-theme-test"
+  vim.api.nvim_set_hl(custom, "MdRenderH1", { fg = 0x112233 })
+  vim.api.nvim_set_hl_ns(custom)
+  text_size.paint(state)
+  assert_eq(#state.drawn, 0, "global highlight namespace keeps native text")
+  vim.api.nvim_set_hl_ns(0)
+  vim.fn.setreg("/", pattern)
+  vim.v.hlsearch = hlsearch
+  text_size.detach(state)
+  vim.api.nvim_ui_send = send
+  vim.api.nvim_win_set_buf(win, previous)
+  vim.api.nvim_buf_delete(buf, { force = true })
+end)
 
 print(string.format("\ntext_size_test: %d passed, %d failed", pass_count, fail_count))
 if fail_count > 0 then os.exit(1) end

@@ -595,7 +595,8 @@ Limitations: ~
   would delete the heading rather than fall back to unscaled text.  Anywhere
   else the feature costs nothing and headings render as they always did.
 - Headings with inline formatting or links retain ordinary text so their
-  styles and link colors stay visible.
+  styles and link colors stay visible. Unsupported highlight effects,
+  indexed colors and custom highlight namespaces also retain ordinary text.
 - A heading whose second row would fall outside the window stays plain until
   it is scrolled into view.
 - A repaint by anything else (another plugin forcing a redraw, a message or

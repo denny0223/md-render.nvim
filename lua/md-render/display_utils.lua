@@ -724,7 +724,7 @@ end
 ---@param win integer
 ---@param content MdRender.Content
 ---@param ns integer?
----@param opts? { buf?: integer, build_content?: fun(): MdRender.Content, on_content_applied?: fun(content: MdRender.Content) }
+---@param opts? { buf?: integer, on_ready?: fun(), build_content?: fun(): MdRender.Content, on_content_applied?: fun(content: MdRender.Content) }
 ---@return MdRender.ImageState?
 function M.setup_images(win, content, ns, opts)
   if not content.image_placements or #content.image_placements == 0 then return nil end
@@ -750,11 +750,10 @@ function M.setup_images(win, content, ns, opts)
     autocmd_ids = {},
   }
 
-  -- When opts.buf and opts.build_content are provided, automatically rebuild
-  -- content after URL image downloads so that layout reflects actual image
-  -- dimensions. Debounced to avoid cascading rebuilds.
+  -- Let the owner publish new dimensions when native interactions are done.
+  -- Picker integrations can still supply the legacy content builder instead.
   local on_download
-  if opts and opts.buf and opts.build_content then
+  if opts and opts.buf and (opts.on_ready or opts.build_content) then
     on_download = function()
       if state._rebuild_timer then state._rebuild_timer:stop() end
       state._rebuild_timer = vim.defer_fn(function()
@@ -762,6 +761,10 @@ function M.setup_images(win, content, ns, opts)
         if state.closed or not vim.api.nvim_win_is_valid(win) then return end
         local buf = opts.buf
         if not vim.api.nvim_buf_is_valid(buf) then return end
+        if opts.on_ready then
+          opts.on_ready()
+          return
+        end
         local new_content = opts.build_content()
         local was_modifiable = vim.bo[buf].modifiable
         vim.bo[buf].modifiable = true

@@ -26,13 +26,7 @@ vim.api.nvim_set_hl(0, "MdRenderH2", { fg = 0xff9977, bold = false })
 require("md-render").setup_highlights()
 assert(vim.api.nvim_get_hl(0, { name = "MdRenderH1", link = false }).fg == 0xabcdef)
 assert(vim.api.nvim_get_hl(0, { name = "MdRenderH2", link = false }).fg == 0xff9977)
--- Exercise the internal image path before public setup enables it.
-size.config = function()
-  return {
-    backend = "image",
-    image = { font = "Noto Sans Mono,Noto Sans Mono CJK TC", font_size = "auto", python = "python3" },
-  }
-end
+size.setup { backend = "image" }
 local callbacks, requests = {}, {}
 local system = vim.system
 vim.system = function(_, opts, callback)
@@ -159,7 +153,7 @@ local screenpos = vim.fn.screenpos
 vim.fn.screenpos = function(_, line, col)
   return { row = line, col = col }
 end
-local state = assert(heading.attach(win, content))
+local state = assert(size.attach(win, content))
 assert(vim.wait(1000, function()
   return state.drawn == 2
 end))
@@ -267,7 +261,7 @@ vim.cmd "tabclose"
 paint()
 assert(state.drawn == 2)
 vim.api.nvim_win_close(other, true)
-heading.detach(state)
+size.detach(state)
 assert(state.closed and state.drawn == 0 and heading.mouse_position(mouse) == mouse)
 assert(#vim.api.nvim_buf_get_extmarks(0, state.mask_ns, 0, -1, {}) == 0, "detach restores every masked character")
 local float = vim.api.nvim_open_win(vim.api.nvim_get_current_buf(), true, {
@@ -278,7 +272,7 @@ local float = vim.api.nvim_open_win(vim.api.nvim_get_current_buf(), true, {
   height = 10,
   style = "minimal",
 })
-local floating = assert(heading.attach(float, content))
+local floating = assert(size.attach(float, content))
 assert(
   vim.wait(1000, function()
     return floating.drawn == 2
@@ -338,6 +332,8 @@ assert(vim.wait(1000, function()
 end))
 assert(warning:find "missing%-python", "failure includes actionable diagnostics")
 assert(#failed.text_placements == 1)
+assert(not pcall(size.setup, { image = { font_size = 0 } }))
+assert(not pcall(size.setup, { backend = "unknown" }))
 vim.system, vim.notify_once = system, notify
 
 -- A child editor reaches the real idle loop; vim.wait in this script does not.

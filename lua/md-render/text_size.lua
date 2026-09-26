@@ -120,17 +120,39 @@ end
 
 ---@class MdRender.TextSize.Config
 ---@field enabled boolean master switch (default true)
+---@field backend "native"|"image" heading renderer (default native)
+---@field image { font: string, font_size: number|"auto", python: string } Pango image options
 
 ---@type MdRender.TextSize.Config
 local config = {
   enabled = true,
+  backend = "native",
+  image = { font = "Noto Sans Mono,Noto Sans Mono CJK TC", font_size = "auto", python = "python3" },
 }
 
 --- Configure text scaling.
 ---@param opts? MdRender.TextSize.Config
 function M.setup(opts)
   opts = opts or {}
+  if opts.backend ~= nil then
+    assert(opts.backend == "native" or opts.backend == "image", "text_size.backend must be native or image")
+  end
+  if opts.image then
+    local image_opts = vim.tbl_extend("force", config.image, opts.image)
+    assert(type(image_opts.font) == "string" and image_opts.font ~= "", "text_size.image.font must name a font")
+    assert(
+      type(image_opts.python) == "string" and image_opts.python ~= "",
+      "text_size.image.python must name an executable"
+    )
+    assert(
+      image_opts.font_size == "auto"
+        or (type(image_opts.font_size) == "number" and image_opts.font_size > 0 and image_opts.font_size < math.huge),
+      "text_size.image.font_size must be auto or a positive finite pixel size"
+    )
+    config.image = image_opts
+  end
   if opts.enabled ~= nil then config.enabled = opts.enabled end
+  if opts.backend ~= nil then config.backend = opts.backend end
 end
 
 ---@return MdRender.TextSize.Config
@@ -969,12 +991,13 @@ end
 --- Start painting a content's text placements in a window.
 ---@param win integer
 ---@param content MdRender.Content
----@return MdRender.TextSizeState?
+---@return MdRender.TextSizeState|MdRender.HeadingImageState|nil
 function M.attach(win, content)
   if not config.enabled then return nil end
   if not content.text_placements or #content.text_placements == 0 then return nil end
   if not M.supports() then return nil end
   if not vim.api.nvim_win_is_valid(win) then return nil end
+  if config.backend == "image" then return require("md-render.heading_image").attach(win, content) end
 
   ---@type MdRender.TextSizeState
   local state = {
@@ -1096,11 +1119,15 @@ function M.attach(win, content)
 end
 
 --- Swap in placements from a rebuilt content and repaint.
----@param state MdRender.TextSizeState?
+---@param state MdRender.TextSizeState|MdRender.HeadingImageState|nil
 ---@param win integer
 ---@param content MdRender.Content
----@return MdRender.TextSizeState?
+---@return MdRender.TextSizeState|MdRender.HeadingImageState|nil
 function M.refresh(state, win, content)
+  if state and (state.image_headings or config.backend == "image" or not config.enabled) then
+    M.detach(state)
+    return M.attach(win, content)
+  end
   if not state then return M.attach(win, content) end
   if not content.text_placements or #content.text_placements == 0 then
     M.detach(state)
@@ -1116,9 +1143,10 @@ function M.refresh(state, win, content)
 end
 
 --- Stop painting and erase whatever is still on screen.
----@param state MdRender.TextSizeState?
+---@param state MdRender.TextSizeState|MdRender.HeadingImageState|nil
 function M.detach(state)
   if not state then return end
+  if state.image_headings then return require("md-render.heading_image").detach(state) end
   state.closed = true
   active[state.win] = nil
   stop_redraw_notification()

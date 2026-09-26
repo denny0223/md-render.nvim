@@ -455,16 +455,19 @@ end
 ---@field line integer 0-indexed buffer line the scaled text is painted over
 ---@field col integer 0-indexed byte column where the scaled text starts
 ---@field text string the plain-size text underneath, used to verify the anchor
----@field runs { text: string, w: integer }[] `split_run` output for `text`
----@field width integer cells the painted runs cover
+---@field runs? { text: string, w: integer }[] native `split_run` output for `text`
+---@field width? integer cells the native painted runs cover
 ---@field scale integer cell scale passed as `s=`
 ---@field num integer? fractional numerator passed as `n=`
 ---@field den integer? fractional denominator passed as `d=`
 ---@field hl string highlight group the SGR prefix is derived from
+---@field normal? string base highlight group for image text overlays
+---@field raster? table shaped image and glyph positions
 ---@field icon string? level icon glyph, on the first line of a heading only
 ---@field icon_col integer? 0-indexed byte column the icon sits at
 
 ---@class MdRender.TextSizeState
+---@field image_headings? false
 ---@field placements MdRender.TextPlacement[]
 ---@field win integer
 ---@field redraw_timer any?

@@ -27,6 +27,43 @@ local function test(name, fn)
   end
 end
 
+test("heading style stacks preserve line backgrounds", function()
+  local buf = vim.api.nvim_create_buf(false, true)
+  local ns = vim.api.nvim_create_namespace "heading_line_background_test"
+  display_utils.apply_content_to_buffer(buf, ns, {
+    lines = { "Heading" },
+    heading_lines = { [0] = true },
+    highlights = {
+      {
+        line = 0,
+        groups = {
+          { col = 0, end_col = -1, hl = "Normal" },
+          { col = 0, end_col = -1, hl = "WarningMsg", hl_eol = true },
+          { col = 0, end_col = 7, hl = "WarningMsg" },
+          { col = 2, end_col = 5, hl = "Underlined" },
+        },
+      },
+    },
+    link_metadata = {},
+    code_blocks = {},
+  })
+  local eol, inline = false, false
+  for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })) do
+    local details = mark[4]
+    if details.hl_group == "WarningMsg" and details.end_col == 7 then
+      if details.hl_eol then
+        eol = true
+      else
+        inline = true
+      end
+      assert_eq(details.priority < vim.hl.priorities.user, true, "line backgrounds stay below user feedback")
+    end
+  end
+  assert_eq(eol, true, "a repeated inline group must not discard the background through EOL")
+  assert_eq(inline, true, "the later inline layer keeps its original extent")
+  vim.api.nvim_buf_delete(buf, { force = true })
+end)
+
 test("repaint handles empty content, insertions, deletions, and disjoint changes", function()
   local buf = vim.api.nvim_create_buf(false, true)
   local ns = vim.api.nvim_create_namespace "repaint_test"

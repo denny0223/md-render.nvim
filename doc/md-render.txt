@@ -488,17 +488,76 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 
 							  *:MdRender-textsize*
 :MdRender textsize [on|off|toggle] ~
-	[EXPERIMENTAL] Draw headings larger than the base font size using the
-	Kitty text sizing protocol.  On by default wherever the terminal
-	supports it; see |md-render-text-size| for what the feature does and
-	does not do.
+	[EXPERIMENTAL] Toggle heading overlays using the configured backend.
+	Native OSC 66 remains the default; configure image headings below.
+	With no argument this toggles. `on` preserves the selected backend;
+	`off` shows ordinary text. Unsupported image or native requirements
+	leave usable ordinary text without changing the configured choice.
+	Switching rebuilds visible previews after selections, pending operators,
+	command-line input and yank feedback finish.
 
-	With no argument this toggles.  Turning it on when the terminal does
-	not implement the protocol prints a warning and changes nothing.
+Image headings (experimental)			*md-render-image-headings*
 
-	Because the extra rows a scaled heading needs are reserved while the
-	content is built, switching this rebuilds every preview currently on
-	screen.
+Configure `backend = "image"` before opening a normal preview. Requires
+Python 3, PyGObject, Pycairo, and Pango/PangoCairo and Cairo introspection data.
+Font and base pixel size can be configured with: >lua
+
+	require("md-render.text_size").setup {
+	  backend = "image",
+	  image = { font = "Noto Sans Mono,Noto Sans Mono CJK TC", font_size = "auto", python = "python3" },
+	}
+<
+The default "auto" calibrates the chosen font to the terminal cell size,
+preserving six distinct ratios. A positive pixel size overrides calibration.
+Pango measures wrapping; the same byte ranges define buffer text, styles and
+link targets. Layout work is asynchronous and reused by live previews.
+
+Hover keeps the image stable. Clicks resolve the visible glyph through the
+existing link handler, including the lower image row. Dragging reveals text
+and selects from the clicked character. Moving through the left heading margin
+keeps the image; entering its text area reveals only that rendered segment.
+Visual selection and user yank/highlight feedback reveal affected rows while
+other headings keep their images. Images return when the feedback expires.
+Only search-matching headings withdraw; the search pattern and highlighting
+state are preserved. Inactive previews remain readable.
+Reflow and backend switches retain the source passage and heading character.
+Background reflow waits for selections, pending operators, command-line input
+and yank feedback to finish.
+
+Images use MdRenderH1..MdRenderH6 and the existing inline highlight groups,
+with Normal/NormalFloat supplying base colors. Unset backgrounds remain
+transparent; a window-scoped overlay hides the underlying glyphs without
+changing buffer text or coordinates. Inline styles preserve Markdown order
+below user highlights such as vim.hl.on_yank(). Custom reverse, nocombine,
+blending, alternate underlines and window highlight overrides retain text,
+as do missing glyphs, oversized fonts, unrepresentable text/link targets and
+headings inside <details>. Colorscheme/terminal resize events refresh the
+layout; direct changes to rendered highlight groups withdraw stale images
+and rebuild them. Changing image options clears cached layout failures.
+Restart Neovim after repairing missing dependencies; renderer failures
+are reported in `:messages`.
+
+For terminal Shift-drag selection, return to the Markdown source. In an
+in-place preview, use |:MdRender-toggle|; toggle again to resume the preview
+with the same heading backend. Open internal anchors with an ordinary
+mouse click; use gf on local file links. External links support terminal
+OSC 8 modifier-clicks (Ctrl+Shift+click in Kitty) on both image rows.
+Their targets follow visible glyphs and use the terminal's configured
+URL handler. Image cells do not contain selectable labels.
+
+To select rendered text, `:MdRender textsize off` keeps
+the preview open with ordinary headings. Use `:MdRender textsize on` to
+restore the selected backend. The source buffer has no preview-generated
+OSC 8 links.
+
+Images require Neovim >= 0.12, confirmed PNG support and termguicolors
+(Kitty >= 0.28); native sizing requires Kitty >= 0.40. Tested on Linux with Kitty, directly
+and through a loopback SSH PTY to Linux. Python, Pango/Cairo and fonts run on the Neovim host;
+PNG bytes are streamed to the client, with no shared image files. Images are disabled on Windows and through tmux. Other OS
+and client combinations remain unverified.
+For assistive technology or tools needing text, use `textsize off` or the
+source buffer. Screen-reader compatibility has not been tested. Missing
+rendering dependencies retain ordinary text.
 
 							      *:MdRender-demo*
 :MdRender demo ~

@@ -52,14 +52,7 @@ local _, link_spans = require("md-render.markdown").render "[DOC](https://exampl
 assert(#link_spans == 1 and link_spans[1].hl == "MdRenderLink", "an explicit link style can remove its underline")
 vim.api.nvim_set_hl(0, "Underlined", underline)
 vim.api.nvim_set_hl(0, "MdRenderLink", link_style)
--- Exercise the internal image path before public setup enables it.
-size.config = function()
-  return {
-    enabled = true,
-    backend = "image",
-    image = { font = "Noto Sans Mono,Noto Sans Mono CJK TC", font_size = "auto", python = "python3" },
-  }
-end
+size.setup { backend = "image" }
 local callbacks, requests = {}, {}
 local system = vim.system
 vim.system = function(_, opts, callback)
@@ -198,7 +191,7 @@ local screenpos = vim.fn.screenpos
 vim.fn.screenpos = function(_, line, col)
   return { row = line, col = col }
 end
-local state = assert(heading.attach(win, content))
+local state = assert(size.attach(win, content))
 assert(vim.wait(1000, function()
   return state.drawn == 2
 end))
@@ -368,7 +361,7 @@ vim.api.nvim_set_hl(0, "MdRenderLinkAnchor", { fg = 0x771122 })
 paint()
 assert(state.drawn == 0 and not state.masked and state.force_text, "direct style edits withdraw cached pixels")
 vim.api.nvim_set_hl(0, "MdRenderLinkAnchor", anchor_style)
-heading.detach(state)
+size.detach(state)
 assert(state.closed and state.drawn == 0 and heading.mouse_position(mouse) == mouse)
 assert(#vim.api.nvim_buf_get_extmarks(0, state.mask_ns, 0, -1, {}) == 0, "detach restores every masked character")
 local float = vim.api.nvim_open_win(vim.api.nvim_get_current_buf(), true, {
@@ -379,7 +372,7 @@ local float = vim.api.nvim_open_win(vim.api.nvim_get_current_buf(), true, {
   height = 10,
   style = "minimal",
 })
-local floating = assert(heading.attach(float, content))
+local floating = assert(size.attach(float, content))
 assert(
   vim.wait(1000, function()
     return floating.drawn == 2
@@ -448,6 +441,8 @@ assert(vim.wait(1000, function()
 end))
 assert(warning:find "missing%-python", "failure includes actionable diagnostics")
 assert(#failed.text_placements == 1)
+assert(not pcall(size.setup, { image = { font_size = 0 } }))
+assert(not pcall(size.setup, { backend = "unknown" }))
 vim.system, vim.notify_once = system, notify
 
 -- A child editor reaches the real idle loop; vim.wait in this script does not.

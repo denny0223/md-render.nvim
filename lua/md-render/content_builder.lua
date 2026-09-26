@@ -59,6 +59,7 @@
 ---@field text_placements MdRender.TextPlacement[]
 ---@field heading_layouts table<string, table> shared image layouts
 ---@field heading_highlights table<string, table> resolved groups used by image layouts
+---@field heading_backend? "image"|"native"|"plain" renderer used to build this content
 ---@field heading_lines table<integer, boolean> heading rows with ordered styles (0-indexed)
 ---@field heading_positions table<integer, {byte: integer, col: integer, length: integer}> heading byte ranges (1-indexed rows)
 ---@field footnote_anchors table<string, integer> anchor name → 0-indexed line number
@@ -142,6 +143,7 @@ function ContentBuilder:result()
     text_placements = self.text_placements,
     heading_layouts = self.heading_layouts,
     heading_highlights = self.heading_highlights,
+    heading_backend = self.heading_backend,
     heading_lines = self.heading_lines,
     heading_positions = self.heading_positions,
     footnote_anchors = self.footnote_anchors,
@@ -602,7 +604,7 @@ local function heading_scale_plan(source_text, indent, max_width)
   local level = heading_level_of(source_text)
   if not level then return nil end
 
-  local spec = require("md-render.text_size").spec_for(level)
+  local spec = require("md-render.text_size").spec_for(level, "native")
   if not spec then return nil end
 
   -- Scaling multiplies the width as well as the height, so the text has to wrap
@@ -735,13 +737,20 @@ function ContentBuilder:add_heading_text_scale(heading_line, indent, spec, level
   end
 end
 
+function ContentBuilder:heading_renderer()
+  if not self.heading_backend then
+    self.heading_backend = self.text_scale and require("md-render.text_size").resolve_backend() or "plain"
+  end
+  return self.heading_backend
+end
+
 --- Image headings wrap at Pango's measured byte boundaries. The same ranges
 --- populate the native buffer, highlights, links and image hit targets.
 function ContentBuilder:add_image_heading(text, highlights, links, indent, max_width, level)
   -- Indexed terminal colors cannot be recovered from the RGB highlight values.
   if not vim.o.termguicolors then return false end
   local text_size = require "md-render.text_size"
-  local spec = text_size.spec_for(level)
+  local spec = text_size.spec_for(level, "image")
   local cell = require("md-render.image").get_cell_size()
   if not spec or not cell then return false end
   local prefix = require("md-render.markdown").heading_icon_prefix(level)
@@ -886,12 +895,13 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
   -- A scaled heading wraps at 1/ratio of the usual width and reserves
   -- `s - 1` rows under each of its lines for the taller glyphs.
   local spec, level, content_width
-  local image_heading = require("md-render.text_size").config().backend == "image"
+  local backend = heading_content and self:heading_renderer() or "plain"
+  local image_heading = backend == "image"
   if heading_content then
     level = heading_level_of(text)
     -- OSC 66 paints one style per heading; rich headings must retain their
     -- native inline colors and link feedback instead of losing them to scaling.
-    if self.text_scale and not image_heading and #md_highlights == 1 and #md_links == 0 then
+    if self.text_scale and backend == "native" and #md_highlights == 1 and #md_links == 0 then
       spec, content_width = heading_scale_plan(text, indent, max_width)
     end
   end
@@ -3249,7 +3259,9 @@ function ContentBuilder:render_document(lines, opts)
           -- Details add their prefix and background after rendering. Leave
           -- image headings as text until those transforms carry image geometry.
           local text_scale = self.text_scale
-          if in_details and require("md-render.text_size").config().backend == "image" then self.text_scale = false end
+          if in_details and heading_level_of(line) and self:heading_renderer() == "image" then
+            self.text_scale = false
+          end
           local alert_type, fold_mod =
             self:add_markdown_line(line, indent, base_max_width, repo_base_url, autolinks, ref_links, footnote_map)
           self.text_scale = text_scale

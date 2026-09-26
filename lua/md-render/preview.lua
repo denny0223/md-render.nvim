@@ -634,8 +634,13 @@ function Session:install_float_keymaps(close_handle, keymap_opts)
     end,
     on_image_open = function(row)
       if require("md-render.image").config().backend ~= "snacks" then return false end
+      local col = vim.fn.virtcol "." - 1
       for idx, p in ipairs(self.content.image_placements or {}) do
-        if row >= p.line - 1 and row < p.line + p.rows then
+        if
+          row >= p.line - 1
+          and row < p.line + p.rows
+          and (not p.cell_col or (col >= p.cell_col and col < p.cell_col + p.cell_cols))
+        then
           local object = self.image_state and self.image_state.objects[idx]
           if object and object:ready() then require("md-render.image_view").open(p.path or object.img.file) end
           return true

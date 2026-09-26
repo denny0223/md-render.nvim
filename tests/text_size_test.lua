@@ -221,18 +221,21 @@ do
   text_size.setup { enabled = false }
 end
 
--- Test 8: links inside a wrapped scaled heading keep pointing at the line
--- they were distributed to, despite the reserved rows shifting everything
+-- Test 8: rich headings keep their styles and links in ordinary text.
 do
   text_size.setup { enabled = true }
   with_support(true, function()
     local out = render({
       "# See [alpha](https://example.com/a) then [bravo](https://example.com/b) and more words here",
     }, { max_width = 60, indent = "  " })
+    assert_eq(#out.text_placements, 0, "OSC 66 must not cover inline link colors")
     assert_true(#out.link_metadata >= 2, "both links survive")
+    for _, line in ipairs(out.lines) do
+      assert_true(line ~= "", "rich headings reserve no scaled rows")
+    end
     for _, l in ipairs(out.link_metadata) do
       local line = out.lines[l.line + 1] or ""
-      assert_true(line ~= "", "link " .. l.url .. " does not land on a reserved blank row")
+      assert_eq(line:sub(l.col_start + 1, l.col_end), l.url:sub(-1) == "a" and "alpha" or "bravo", "link byte range")
     end
   end)
   text_size.setup { enabled = false }

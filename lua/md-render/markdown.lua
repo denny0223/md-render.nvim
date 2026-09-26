@@ -743,13 +743,21 @@ local function collapse_spaces(text)
   return table.concat(parts)
 end
 
+--- Keep destination colors in the inline stack, before nested emphasis/code.
+local function add_link_highlight(highlights, first, last, url)
+  local hl = require("md-render.links").highlight(url)
+  if hl ~= "MdRenderLink" then table.insert(highlights, { col = first, end_col = last, hl = "Underlined" }) end
+  table.insert(highlights, { col = first, end_col = last, hl = hl })
+end
+
 --- Process [text](url) links: remove markers and produce highlight/link entries
 --- Supports balanced brackets for image-in-link patterns like [![alt](img)](url)
 ---@param text string
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
+---@param escapes table[]
 ---@return string processed
-local function process_links(text, highlights, links)
+local function process_links(text, highlights, links, escapes)
   local pre_hl_count = #highlights
   local pre_link_count = #links
   local removals = {}
@@ -760,7 +768,7 @@ local function process_links(text, highlights, links)
       local j, paren_end = link_bounds(text, i)
       if paren_end then
         local link_text_raw = text:sub(i + 1, j - 2)
-        local url = link_destination(text:sub(j + 1, paren_end - 1))
+        local url = restore_backslashes(link_destination(text:sub(j + 1, paren_end - 1)), escapes)
 
         -- If link text is an image ![alt](img-url), use alt as display
         local alt = link_text_raw:match "^!%[(.-)%]%((.-)%)$"
@@ -768,7 +776,7 @@ local function process_links(text, highlights, links)
 
         local start_col = #processed
         processed = processed .. display_text
-        table.insert(highlights, { col = start_col, end_col = start_col + #display_text, hl = "Underlined" })
+        add_link_highlight(highlights, start_col, start_col + #display_text, url)
         table.insert(links, { col_start = start_col, col_end = start_col + #display_text, url = url })
         table.insert(removals, { start = i - 1, count = 1 }) -- opening [
         table.insert(removals, { start = j - 2, count = paren_end - j + 2 }) -- ](url)
@@ -815,7 +823,7 @@ local function process_reference_links(text, ref_links, highlights, links)
             if url then
               local start_col = #processed
               processed = processed .. label
-              table.insert(highlights, { col = start_col, end_col = start_col + #label, hl = "Underlined" })
+              add_link_highlight(highlights, start_col, start_col + #label, url)
               table.insert(links, { col_start = start_col, col_end = start_col + #label, url = url })
               table.insert(removals, { start = i - 1, count = 1 }) -- opening [
               table.insert(removals, { start = close - 1, count = close2 - close + 1 }) -- ][ref]
@@ -835,7 +843,7 @@ local function process_reference_links(text, ref_links, highlights, links)
             if url then
               local start_col = #processed
               processed = processed .. label
-              table.insert(highlights, { col = start_col, end_col = start_col + #label, hl = "Underlined" })
+              add_link_highlight(highlights, start_col, start_col + #label, url)
               table.insert(links, { col_start = start_col, col_end = start_col + #label, url = url })
               table.insert(removals, { start = i - 1, count = 1 }) -- opening [
               table.insert(removals, { start = close - 1, count = 1 }) -- closing ]
@@ -916,7 +924,7 @@ local function process_bare_urls(text, max_url_width, highlights, links)
             table.insert(adjustments, { input_pos = i + 1 + #captured, delta = 1 })
           end
           processed = processed .. display_url
-          table.insert(highlights, { col = start_col, end_col = start_col + #display_url, hl = "Underlined" })
+          add_link_highlight(highlights, start_col, start_col + #display_url, captured)
           table.insert(links, { col_start = start_col, col_end = start_col + #display_url, url = captured })
           i = lt_e + 1
         end
@@ -960,7 +968,7 @@ local function process_bare_urls(text, max_url_width, highlights, links)
           end
 
           processed = processed .. display_url
-          table.insert(highlights, { col = start_col, end_col = start_col + #display_url, hl = "Underlined" })
+          add_link_highlight(highlights, start_col, start_col + #display_url, url)
           table.insert(links, { col_start = start_col, col_end = start_col + #display_url, url = url })
           i = i + #url
         else
@@ -1018,7 +1026,7 @@ local function process_issue_refs(text, repo_base_url, highlights, links)
         local url = repo_base_url .. "/issues/" .. issue_num
         local start_col = #processed
         processed = processed .. issue_text
-        table.insert(highlights, { col = start_col, end_col = start_col + #issue_text, hl = "Underlined" })
+        add_link_highlight(highlights, start_col, start_col + #issue_text, url)
         table.insert(links, { col_start = start_col, col_end = start_col + #issue_text, url = url })
         i = e + 1
       else
@@ -1063,7 +1071,7 @@ local function process_autolink_refs(text, autolinks, highlights, links)
             local url = autolink.url_template:gsub("<num>", value)
             local start_col = #processed
             processed = processed .. ref_text
-            table.insert(highlights, { col = start_col, end_col = start_col + #ref_text, hl = "Underlined" })
+            add_link_highlight(highlights, start_col, start_col + #ref_text, url)
             table.insert(links, { col_start = start_col, col_end = start_col + #ref_text, url = url })
             i = i + #ref_text
             matched = true
@@ -1128,8 +1136,9 @@ local HTML_TAG_HIGHLIGHTS = {
 ---@param text string
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
+---@param escapes table[]
 ---@return string processed
-local function process_html_tags(text, highlights, links)
+local function process_html_tags(text, highlights, links, escapes)
   local pre_hl_count = #highlights
   local pre_link_count = #links
   local removals = {}
@@ -1151,12 +1160,13 @@ local function process_html_tags(text, highlights, links)
         local href = a_tag:match 'href="([^"]*)"' or a_tag:match "href='([^']*)'"
         local close_start, close_end = text:find("</a>", i + #a_tag, true)
         if href and close_start then
+          href = restore_backslashes(href, escapes)
           local content = text:sub(i + #a_tag, close_start - 1)
           table.insert(removals, { start = i - 1, count = #a_tag })
           table.insert(removals, { start = close_start - 1, count = 4 })
           local start_col = #processed
           processed = processed .. content
-          table.insert(highlights, { col = start_col, end_col = start_col + #content, hl = "Underlined" })
+          add_link_highlight(highlights, start_col, start_col + #content, href)
           table.insert(links, { col_start = start_col, col_end = start_col + #content, url = href })
           i = close_end + 1
           matched = true
@@ -1180,7 +1190,7 @@ local function process_html_tags(text, highlights, links)
             if img_icon_hl then
               table.insert(highlights, { col = start_col, end_col = start_col + #img_icon - 1, hl = img_icon_hl })
             end
-            table.insert(highlights, { col = start_col + #img_icon, end_col = start_col + #display, hl = "Underlined" })
+            add_link_highlight(highlights, start_col + #img_icon, start_col + #display, src)
             table.insert(links, { col_start = start_col, col_end = start_col + #display, url = src })
             i = i + #img_tag
             matched = true
@@ -1208,7 +1218,7 @@ local function process_html_tags(text, highlights, links)
             if icon_hl then
               table.insert(highlights, { col = start_col, end_col = start_col + #img_icon - 1, hl = icon_hl })
             end
-            table.insert(highlights, { col = start_col + #img_icon, end_col = start_col + #display, hl = "Underlined" })
+            add_link_highlight(highlights, start_col + #img_icon, start_col + #display, src)
             table.insert(links, { col_start = start_col, col_end = start_col + #display, url = src })
             i = i + #video_tag
             matched = true
@@ -1677,11 +1687,11 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   rendered_text = process_embeds(rendered_text, highlights, links)
   rendered_text = process_wikilinks(rendered_text, highlights, links)
   rendered_text = process_footnote_refs(rendered_text, footnote_map, highlights, links)
-  rendered_text = process_links(rendered_text, highlights, links)
+  rendered_text = process_links(rendered_text, highlights, links, backslash_escapes)
   rendered_text = process_reference_links(rendered_text, ref_links, highlights, links)
   repeat
     local prev = rendered_text
-    rendered_text = process_html_tags(rendered_text, highlights, links)
+    rendered_text = process_html_tags(rendered_text, highlights, links, backslash_escapes)
   until rendered_text == prev
   rendered_text = strip_html_tags(rendered_text, highlights)
   rendered_text = process_bare_urls(rendered_text, MAX_URL_DISPLAY_WIDTH, highlights, links)

@@ -50,12 +50,14 @@
 ---@class MdRender.Content
 ---@field lines string[]
 ---@field highlights MdRender.LineHighlight[]
+---@field highlight_ns? integer namespace containing the rendered Markdown styles
 ---@field link_metadata MdRender.LinkMetadata[]
 ---@field code_blocks MdRender.CodeBlock[]
 ---@field callout_folds MdRender.CalloutFold[]
 ---@field expandable_regions MdRender.ExpandableRegion[]
 ---@field image_placements MdRender.ImagePlacement[]
 ---@field text_placements MdRender.TextPlacement[]
+---@field heading_lines table<integer, boolean> heading rows with ordered styles (0-indexed)
 ---@field footnote_anchors table<string, integer> anchor name → 0-indexed line number
 ---@field heading_anchors table<string, integer> heading slug → 0-indexed line number
 ---@field source_line_map integer[] rendered line index (1-based) → source line number (1-based)
@@ -88,6 +90,7 @@ function ContentBuilder.new()
     expandable_regions = {},
     image_placements = {},
     text_placements = {},
+    heading_lines = {},
     footnote_anchors = {},
     heading_anchors = {},
     source_line_map = {},
@@ -131,6 +134,7 @@ function ContentBuilder:result()
     expandable_regions = self.expandable_regions,
     image_placements = self.image_placements,
     text_placements = self.text_placements,
+    heading_lines = self.heading_lines,
     footnote_anchors = self.footnote_anchors,
     heading_anchors = self.heading_anchors,
     source_line_map = self.source_line_map,
@@ -751,7 +755,9 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
   local spec, level, content_width
   if heading_content then
     level = heading_level_of(text)
-    if self.text_scale then
+    -- OSC 66 paints one style per heading; rich headings must retain their
+    -- native inline colors and link feedback instead of losing them to scaling.
+    if self.text_scale and #md_highlights == 1 and #md_links == 0 then
       spec, content_width = heading_scale_plan(text, indent, max_width)
     end
   end
@@ -791,6 +797,9 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
     local slug = markdown.heading_slug(heading_content)
     if slug ~= "" then self.heading_anchors[slug] = lines_before_fn end
     if spec then self:add_heading_text_scale(lines_before_fn, indent, spec, level, max_width) end
+    for row = lines_before_fn, #self.lines - 1 do
+      if self.lines[row + 1] ~= "" then self.heading_lines[row] = true end
+    end
   end
 
   -- Register footnote ref anchors (first occurrence per label)

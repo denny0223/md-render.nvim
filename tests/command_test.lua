@@ -54,6 +54,7 @@ local function with_preview_stub()
     auto_on = rec "auto_on",
     auto_off = rec "auto_off",
     auto_toggle = rec "auto_toggle",
+    rebuild_visible = rec "rebuild_visible",
   }
   local prev = package.loaded["md-render"]
   package.loaded["md-render"] = { preview = stub_preview }
@@ -202,6 +203,41 @@ end)
 -- ----------------------------------------------------------------------
 -- complete: two-level completion
 -- ----------------------------------------------------------------------
+test("textsize switches renderers, retains the choice through off/on, and rebuilds", function()
+  local cmd, calls, restore = with_preview_stub()
+  local _, restore_n = with_notify_stub()
+  local text_size = require "md-render.text_size"
+  local supports = text_size.supports
+  text_size.supports = function()
+    return true
+  end
+  for _, backend in ipairs { "image", "native" } do
+    cmd.dispatch { fargs = { "textsize", backend } }
+    assert_eq(text_size.config().backend, backend, "selected renderer")
+    assert_eq(text_size.config().enabled, true, "selecting a renderer enables it")
+    cmd.dispatch { fargs = { "textsize", "off" } }
+    assert_eq(text_size.config().enabled, false, "off disables scaling")
+    cmd.dispatch { fargs = { "textsize", "on" } }
+    assert_eq(text_size.config().backend, backend, "on retains the renderer")
+  end
+  assert_eq(#calls, 6, "every successful switch rebuilds previews")
+  text_size.supports = function()
+    return false
+  end
+  cmd.dispatch { fargs = { "textsize", "image" } }
+  assert_eq(text_size.config().backend, "native", "failed terminal probe leaves settings unchanged")
+  assert_eq(#calls, 6, "unsupported mode does not rebuild")
+  text_size.supports = supports
+  restore_n()
+  restore()
+end)
+
+test("textsize completes both renderers", function()
+  local cmd, _, restore = with_preview_stub()
+  assert_eq(cmd.complete("", "MdRender textsize ", 0), { "on", "off", "toggle", "image", "native" }, "textsize choices")
+  restore()
+end)
+
 test("complete first arg empty -> all subcommands", function()
   local cmd, _, restore = with_preview_stub()
   local out = cmd.complete("", "MdRender ", #"MdRender ")

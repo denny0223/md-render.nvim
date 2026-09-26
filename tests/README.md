@@ -61,6 +61,26 @@ The test prints the version of each tool it found; when the matrix goes red the 
 
 Spanning majors is the point. Ubuntu 24.04 still ships FFmpeg 6.1, so a job that ran `apt-get install ffmpeg` would have stayed green through the entire `-vsync` incident. The 8.x/9.x/master entries point at BtbN's rolling `latest` release, so the scheduled run picks up new point releases and reports drift; 6.1 and 7.1 come from a pinned older autobuild, because BtbN drops EOL branches from `latest` while keeping the release assets reachable.
 
+## Optional image heading tests
+
+The image heading Lua checks run in `make test` without optional packages. The additional raster integration test requires Python with PyGObject, Pango/PangoCairo, Pycairo and the configured fonts:
+
+```bash
+python3 tests/heading_raster_test.py
+```
+
+The Lua checks cover shared layout work, explicit highlight precedence, relevant search fallback, projected mouse targets, drag/yank, preview ownership and bounded idle scheduling. `heading_mouse_test.lua` exercises a child Neovim event loop; `image_transport_test.lua` verifies PNG chunks and shared terminal identity detection. The Python test measures six sizes across cell dimensions, wrapping/UTF-8 ranges and real decoration/background pixels. The Fedora CI job installs its dependencies and runs it alongside the Snacks integration tests. These checks do not replace terminal acceptance.
+
+For a visual check, load this checkout in Kitty and open [image_headings.md](fixtures/image_headings.md). Run `:MdRender textsize image`, then `:MdRender toggle`, and keep the cursor on the first body line:
+
+1. Check six sizes, Han/Latin spacing, complete glyphs, inline code, strikethrough and highlighted backgrounds in dark and light themes. Resize to 40 columns: short Han headings should fit, and wrapped continuation text should stay aligned.
+2. Move into a heading, select across headings/body text, yank, and search for `important`. Only matching headings should reveal search highlights. A body-only search must leave unrelated headings as images.
+3. Hover over the trailing part of image-rendered FIRST, then click without moving. The image must stay visible until the link action resolves FIRST. Repeat in the lower row and for SECOND. Drag from an image glyph into the revealed text and verify the copied characters.
+4. Switch among `native`, `off` and `image`; verify the reading passage, cursor character and search state. In `off`, independently test terminal Shift-drag selection and modifier-click destinations. Direct terminal interaction over images is not supported.
+5. Repeat with split/float/tab, inactive source editing, scrolling, floating overlap, tab/buffer changes and teardown. Retired work must never paint another document. Run through SSH with dependencies/fonts on the Neovim host and without copying generated image files to the client.
+
+Keep screenshots with the terminal/Neovim/Pango/Cairo versions, font, cell size and colorscheme. Inspect pixels and interaction results, not only buffer/terminal text. Custom reverse, nocombine, blending and alternate underlines deliberately use text fallback; unsupported fonts and renderer failures must leave usable text.
+
 ## Layer 3: Terminal tests
 
 `terminal_test.py` launches a real Kitty (under `xvfb-run` when present), runs Neovim with the plugin, and asserts on what the terminal ended up holding.

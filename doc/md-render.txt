@@ -319,13 +319,14 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 	  auto        - [EXPERIMENTAL] auto-toggle around Insert mode;
 	                takes a second arg `on` / `off` / `toggle`
 	                (defaults to `toggle`)
-	  textsize    - [EXPERIMENTAL] scale headings with the Kitty text
-	                sizing protocol (on by default); takes a second arg
-	                `on` / `off` / `toggle` (defaults to `toggle`)
+	  textsize    - [EXPERIMENTAL] scale headings in Kitty (on by default);
+	                takes `on` / `off` / `toggle` / `image` / `native`
+	                (defaults to `toggle`)
 	  demo        - show a demo window with every supported notation
 
 	Tab completion lists the subcommands for the first arg, and
 	`on` / `off` / `toggle` after `auto` and `textsize`.
+	`textsize` also completes `image` / `native`.
 
 	The per-subcommand sections below describe behaviour in detail.
 
@@ -487,11 +488,11 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 <
 
 							  *:MdRender-textsize*
-:MdRender textsize [on|off|toggle] ~
-	[EXPERIMENTAL] Draw headings larger than the base font size using the
-	Kitty text sizing protocol.  On by default wherever the terminal
-	supports it; see |md-render-text-size| for what the feature does and
-	does not do.
+:MdRender textsize [on|off|toggle|image|native] ~
+	[EXPERIMENTAL] Draw headings larger than the base font size in Kitty.
+	Native text sizing is on by default wherever the terminal supports
+	it; see |md-render-text-size|. Image headings are opt-in; see
+	|md-render-image-headings| for requirements and interaction limits.
 
 	With no argument this toggles.  Turning it on when the terminal does
 	not implement the protocol prints a warning and changes nothing.
@@ -499,6 +500,61 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 	Because the extra rows a scaled heading needs are reserved while the
 	content is built, switching this rebuilds every preview currently on
 	screen.
+
+	`image` enables experimental Pango/Cairo image headings; `native`
+	restores the default OSC 66 renderer. `on` retains the last renderer.
+	`off` removes all heading overlays. See |md-render-image-headings|.
+
+Image headings (experimental)			*md-render-image-headings*
+
+Use `:MdRender textsize image` before or during a normal preview. Requires
+Python 3, PyGObject, Pycairo, and Pango/PangoCairo and Cairo introspection data.
+Font and base pixel size can be configured with: >lua
+
+	require("md-render.text_size").setup {
+	  backend = "image",
+	  image = { font = "Noto Sans Mono,Noto Sans Mono CJK TC", font_size = "auto", python = "python3" },
+	}
+<
+The default "auto" calibrates the chosen font to the terminal cell size,
+preserving six distinct ratios. A positive pixel size overrides calibration.
+Pango measures wrapping; the same byte ranges define buffer text, styles and
+link targets. Layout work is asynchronous and reused by live previews.
+
+Hover keeps the image stable. Clicks resolve the visible glyph through the
+existing link handler, including the lower image row. Dragging reveals text
+and selects from the clicked character. Moving through the left heading margin
+keeps the image; entering its text area reveals only that rendered segment.
+Visual selection and user yank/highlight feedback reveal affected rows while
+other headings keep their images. Images return when the feedback expires.
+Only search-matching headings withdraw; the search pattern and highlighting
+state are preserved. Inactive previews remain readable.
+Reflow and backend switches retain the source passage and heading character.
+Background reflow waits for selections, pending operators, command-line input
+and yank feedback to finish.
+
+Images use MdRenderH1..MdRenderH6 and the existing inline highlight groups,
+with Normal/NormalFloat supplying base colors. Unset backgrounds remain
+transparent; a window-scoped overlay hides the underlying glyphs without
+changing buffer text or coordinates. Inline styles preserve Markdown order
+below user highlights such as vim.hl.on_yank(). Custom reverse, nocombine,
+blending, alternate underlines and window highlight overrides retain text,
+as do missing glyphs, oversized fonts, unrepresentable text/link targets and
+headings inside <details>. Colorscheme/terminal resize events refresh the layout. Use `:MdRender textsize image` after direct font/highlight
+changes or to retry a failed renderer. Errors are available in `:messages`.
+
+Before terminal Shift-drag selection or modifier-clicking OSC 8 links, use
+`:MdRender textsize off`. Terminal-owned actions use text-cell coordinates;
+direct terminal interaction over images is outside this backend's guarantee.
+Use `:MdRender textsize image` to resume reading without clearing search state.
+
+Requires Kitty >= 0.40, Neovim >= 0.12 and termguicolors. Indexed-color mode
+retains text. Tested on Linux, directly and through an SSH PTY to Linux. Python, Pango/Cairo and fonts run on the Neovim host;
+PNG bytes are streamed to the client, with no shared image files. Other OS
+and client combinations and tmux image headings are not yet validated.
+For assistive technology or tools needing text, use `textsize off` or the
+source buffer. Screen-reader compatibility has not been tested. Missing
+rendering dependencies retain ordinary text.
 
 							      *:MdRender-demo*
 :MdRender demo ~

@@ -1,0 +1,239 @@
+{
+  "active-probe": {
+    "seq": 1,
+    "command": {
+      "seq": 1,
+      "op": "probe"
+    },
+    "geometry": {
+      "left": "51",
+      "top": "17",
+      "width": "49",
+      "height": "15",
+      "status": "2",
+      "status_position": "top",
+      "terminal": "xterm-kitty"
+    },
+    "version_reply": "\u001bP>|kitty(0.48.2)\u001b\\",
+    "png_reply": "\u001b_Gi=42421;OK\u001b\\"
+  },
+  "local-coordinates": {
+    "seq": 2,
+    "command": {
+      "seq": 2,
+      "op": "paint",
+      "position": "local"
+    },
+    "geometry": {
+      "left": "51",
+      "top": "17",
+      "width": "49",
+      "height": "15",
+      "status": "2",
+      "status_position": "top",
+      "terminal": "xterm-kitty"
+    },
+    "upload_reply": "\u001b_Gi=42422;OK\u001b\\",
+    "outer_native_cell": {
+      "row": 3,
+      "col": 3
+    }
+  },
+  "local-coordinates-screen": {
+    "osc66_present": true,
+    "image_ink_pixels": 4524
+  },
+  "pane-coordinates": {
+    "seq": 3,
+    "command": {
+      "seq": 3,
+      "op": "paint",
+      "position": "pane"
+    },
+    "geometry": {
+      "left": "51",
+      "top": "17",
+      "width": "49",
+      "height": "15",
+      "status": "2",
+      "status_position": "top",
+      "terminal": "xterm-kitty"
+    },
+    "upload_reply": "\u001b_Gi=42422;OK\u001b\\",
+    "outer_native_cell": {
+      "row": 22,
+      "col": 54
+    }
+  },
+  "pane-coordinates-screen": {
+    "osc66_present": true,
+    "image_ink_pixels": 4524
+  },
+  "after-tmux-redraw": {
+    "osc66_present": false,
+    "image_ink_pixels": 4524
+  },
+  "repaint": {
+    "seq": 4,
+    "command": {
+      "seq": 4,
+      "op": "paint",
+      "position": "pane"
+    },
+    "geometry": {
+      "left": "51",
+      "top": "17",
+      "width": "49",
+      "height": "15",
+      "status": "2",
+      "status_position": "top",
+      "terminal": "xterm-kitty"
+    },
+    "upload_reply": "\u001b_Gi=42422;OK\u001b\\",
+    "outer_native_cell": {
+      "row": 22,
+      "col": 54
+    }
+  },
+  "other-window": {
+    "osc66_present": false,
+    "image_ink_pixels": 4524
+  },
+  "clear": {
+    "seq": 5,
+    "command": {
+      "seq": 5,
+      "op": "clear"
+    },
+    "geometry": {
+      "left": "51",
+      "top": "17",
+      "width": "49",
+      "height": "15",
+      "status": "2",
+      "status_position": "top",
+      "terminal": "xterm-kitty"
+    }
+  },
+  "after-clear": {
+    "osc66_present": false,
+    "image_ink_pixels": 0
+  },
+  "passthrough-off-probe": {
+    "seq": 6,
+    "command": {
+      "seq": 6,
+      "op": "probe"
+    },
+    "geometry": {
+      "left": "51",
+      "top": "17",
+      "width": "49",
+      "height": "15",
+      "status": "2",
+      "status_position": "top",
+      "terminal": "xterm-kitty"
+    },
+    "version_reply": "",
+    "png_reply": ""
+  },
+  "inactive-pane-probe": {
+    "seq": 7,
+    "command": {
+      "seq": 7,
+      "op": "probe"
+    },
+    "geometry": {
+      "left": "51",
+      "top": "17",
+      "width": "49",
+      "height": "15",
+      "status": "2",
+      "status_position": "top",
+      "terminal": "xterm-kitty"
+    },
+    "version_reply": "",
+    "png_reply": ""
+  },
+  "inactive-probe-receiver": {
+    "osc66_present": false,
+    "image_ink_pixels": 0
+  },
+  "inactive-replies-in-active-pane": "^[P>|kitty(0.48.2)^[\\^[_Gi=42421;OK^[\\\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+  "active-again-probe": {
+    "seq": 8,
+    "command": {
+      "seq": 8,
+      "op": "probe"
+    },
+    "geometry": {
+      "left": "51",
+      "top": "17",
+      "width": "49",
+      "height": "15",
+      "status": "2",
+      "status_position": "top",
+      "terminal": "xterm-kitty"
+    },
+    "version_reply": "\u001bP>|kitty(0.48.2)\u001b\\",
+    "png_reply": "\u001b_Gi=42421;OK\u001b\\"
+  },
+  "placeholder-upload": {
+    "seq": 9,
+    "command": {
+      "seq": 9,
+      "op": "paint",
+      "position": "pane"
+    },
+    "geometry": {
+      "left": "51",
+      "top": "17",
+      "width": "49",
+      "height": "15",
+      "status": "2",
+      "status_position": "top",
+      "terminal": "xterm-kitty"
+    },
+    "upload_reply": "\u001b_Gi=42422;OK\u001b\\",
+    "outer_native_cell": {
+      "row": 22,
+      "col": 54
+    }
+  },
+  "placeholder-placement": {
+    "seq": 10,
+    "command": {
+      "seq": 10,
+      "op": "placeholders"
+    },
+    "geometry": {
+      "left": "51",
+      "top": "17",
+      "width": "49",
+      "height": "15",
+      "status": "2",
+      "status_position": "top",
+      "terminal": "xterm-kitty"
+    }
+  },
+  "unicode-placeholders": {
+    "osc66_present": false,
+    "image_ink_pixels": 3562
+  },
+  "placeholders-after-redraw": {
+    "osc66_present": false,
+    "image_ink_pixels": 3362
+  },
+  "placeholders-other-window": {
+    "osc66_present": false,
+    "image_ink_pixels": 0
+  },
+  "placeholders-return": {
+    "osc66_present": false,
+    "image_ink_pixels": 3362
+  },
+  "versions": {
+    "kitty": "kitty 0.48.2 created by Kovid Goyal",
+    "tmux": "tmux 3.7c"
+  }
+}

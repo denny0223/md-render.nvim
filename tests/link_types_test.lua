@@ -117,6 +117,107 @@ test("standard link [text](https://...) has external URL", function()
   assert_match(links[1].url, "^https://", "external link: URL is https")
 end)
 
+test("local destinations retain spaces while display text and spans are normalized", function()
+  local refs = Markdown.parse_reference_links { '[ref]: <two  spaces.md> "Title"' }
+  for _, source in ipairs {
+    '  Before  [two  words](<two  spaces.md> "A ) title")  after  [next](next.md)',
+    "  Before  [two  words][ref]  after  [next](next.md)",
+  } do
+    local rendered, highlights, links = Markdown.render(source, nil, nil, refs)
+    assert_eq(rendered, "  Before two words after next", "surrounding text and label keep display spacing")
+    table.sort(links, function(a, b)
+      return a.col_start < b.col_start
+    end)
+    assert_eq(links[1].url, "two  spaces.md", "destination keeps both literal spaces")
+    assert_eq(links[2].url, "next.md", "following link keeps its destination")
+    for _, link in ipairs(links) do
+      local label = link.url == "next.md" and "next" or "two words"
+      assert_eq(rendered:sub(link.col_start + 1, link.col_end), label, "link span covers its label")
+      local underlined = false
+      for _, hl in ipairs(highlights) do
+        if hl.hl == "Underlined" and hl.col == link.col_start and hl.end_col == link.col_end then underlined = true end
+      end
+      assert_eq(underlined, true, "underline stays aligned with the link")
+    end
+  end
+end)
+
+test("link-looking code and escaped markup keep display whitespace behavior", function()
+  assert_eq(
+    Markdown.render "`[open](<two  spaces.md>)`  after",
+    "[open](<two spaces.md>) after",
+    "inline code keeps the existing space collapse"
+  )
+  assert_eq(
+    Markdown.render [[\[open](<two  spaces.md>)  after]],
+    "[open](<two spaces.md>) after",
+    "escaped markup is not a link"
+  )
+  local _, _, links = Markdown.render [[\[open](<two  spaces.md>)]]
+  assert_eq(#links, 0, "escaped opening bracket produces no link metadata")
+end)
+
+test("escaped inline and reference destinations restore literal punctuation", function()
+  local refs = Markdown.parse_reference_links { [=[[ref]: version\(1\).md]=] }
+  for _, source in ipairs { [[before [open](version\(1\).md) after]], "before [open][ref] after" } do
+    local rendered, _, links = Markdown.render(source, nil, nil, refs)
+    assert_eq(rendered, "before open after", "escaped destination stays hidden")
+    assert_eq(links[1].url, "version(1).md", "destination contains literal parentheses")
+    assert_eq(rendered:sub(links[1].col_start + 1, links[1].col_end), "open", "escaped destination keeps label span")
+  end
+end)
+
+test("destination entities decode once and escaped entities stay literal", function()
+  for _, case in ipairs {
+    { "a&amp;b.md", "a&b.md" },
+    { [[a\&amp;b.md]], "a&amp;b.md" },
+  } do
+    local refs = Markdown.parse_reference_links { "[ref]: " .. case[1] }
+    for _, source in ipairs { "[open](" .. case[1] .. ")", "[open][ref]" } do
+      local _, _, links = Markdown.render(source, nil, nil, refs)
+      assert_eq(links[1].url, case[2], "destination entity spelling")
+    end
+  end
+end)
+
+test("bare less-than destinations leave following links intact", function()
+  local rendered, _, links = Markdown.render "  Before  [open](a<b)  after [next](c>d.md)"
+  assert_eq(rendered, "  Before open after next", "bare delimiter does not consume following text")
+  assert_eq(#links, 2, "both links remain")
+  assert_eq(links[1].url, "a<b", "first destination ends at its own parenthesis")
+  assert_eq(links[2].url, "c>d.md", "second destination remains exact")
+  for _, link in ipairs(links) do
+    local label = link.url == "a<b" and "open" or "next"
+    assert_eq(rendered:sub(link.col_start + 1, link.col_end), label, "link span still covers its label")
+  end
+end)
+
+test("inline and reference destinations share escaped boundaries and titles", function()
+  for _, case in ipairs {
+    { [[<a\>b.md> "A > title"]], "a>b.md" },
+    { [[<a\>  b.md> 'A < title']], "a>  b.md" },
+    { [[version(1(2)).md "A ) title"]], "version(1(2)).md" },
+    { [[version\(1\).md (A \(title\))]], "version(1).md" },
+    { [[a<b.md (A < B "and ' title)]], "a<b.md" },
+    { [[<two  spaces.md> "A \"title\""]], "two  spaces.md" },
+    { [[<two  spaces.md> 'A \'title\'']], "two  spaces.md" },
+    { [[<a\\>]], [[a\]] },
+  } do
+    local refs = Markdown.parse_reference_links { "[ref]: " .. case[1] }
+    for _, source in ipairs { "[open](" .. case[1] .. ") after [next](next.md)", "[open][ref] after [next](next.md)" } do
+      local rendered, _, links = Markdown.render(source, nil, nil, refs)
+      assert_eq(rendered, "open after next", "destination and title stay hidden")
+      table.sort(links, function(a, b)
+        return a.col_start < b.col_start
+      end)
+      assert_eq(#links, 2, "following link remains")
+      assert_eq(links[1].url, case[2], "raw destination bounds preserve escaped delimiters")
+      assert_eq(links[2].url, "next.md", "following destination remains exact")
+      assert_eq(rendered:sub(links[1].col_start + 1, links[1].col_end), "open", "label span is unchanged")
+    end
+  end
+end)
+
 -- CommonMark autolink: <https://...>
 -- Angle brackets are delimiters and must not appear in rendered output.
 

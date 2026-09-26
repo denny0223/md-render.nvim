@@ -667,6 +667,82 @@ local function process_embeds(text, highlights, links)
   return processed
 end
 
+--- Inline and reference links share the same destination/title syntax.
+local function link_destination(text)
+  local escaped, escapes = escape_backslashes(text)
+  local destination = escaped:match "^%s*<([^>]*)>" or escaped:match "^%s*(%S+)" or escaped
+  return restore_backslashes(decode_html_entities(destination, {}, {}), escapes)
+end
+
+local function link_end(text, start)
+  local depth, delimiter, i = 1, nil, start + 1
+  local first = text:find("%S", i)
+  while i <= #text do
+    local c = text:sub(i, i)
+    if c == "\\" then
+      i = i + 1
+    elseif delimiter then
+      if c == delimiter then delimiter = nil end
+    elseif c == "<" and i == first then
+      delimiter = ">"
+    elseif depth == 1 and (c == '"' or c == "'") and text:sub(i - 1, i - 1):match "%s" then
+      delimiter = c
+    elseif c == "(" then
+      depth = depth + 1
+    elseif c == ")" then
+      depth = depth - 1
+      if depth == 0 then return i end
+    end
+    i = i + 1
+  end
+end
+
+--- Return the destination's parentheses, sharing the same boundaries with
+--- whitespace normalization before inline processing.
+local function link_bounds(text, start)
+  local depth, j = 1, start + 1
+  while j <= #text and depth > 0 do
+    local c = text:sub(j, j)
+    if c == "\\" then
+      j = j + 1
+    elseif c == "`" then
+      j = text:find("`", j + 1, true) or j
+    elseif c == "[" then
+      depth = depth + 1
+    elseif c == "]" then
+      depth = depth - 1
+    end
+    j = j + 1
+  end
+  if depth == 0 and text:sub(j, j) == "(" then return j, link_end(text, j) end
+end
+
+--- Collapse display spaces while keeping link destinations byte-for-byte.
+local function collapse_spaces(text)
+  if not text:find("  ", 1, true) then return text end
+  local leading = text:match "^(%s*)" or ""
+  if not text:find("](", 1, true) then return leading .. text:sub(#leading + 1):gsub("  +", " ") end
+  local parts, start, i = { leading }, #leading + 1, #leading + 1
+  while i <= #text do
+    local c = text:sub(i, i)
+    if c == "`" then
+      i = text:find("`", i + 1, true) or i
+    elseif c == "\\" and text:sub(i + 1, i + 1) ~= "`" then
+      i = i + 1
+    elseif c == "[" then
+      local first, last = link_bounds(text, i)
+      if last then
+        parts[#parts + 1] = text:sub(start, first):gsub("  +", " ")
+        parts[#parts + 1] = text:sub(first + 1, last)
+        start, i = last + 1, last
+      end
+    end
+    i = i + 1
+  end
+  parts[#parts + 1] = text:sub(start):gsub("  +", " ")
+  return table.concat(parts)
+end
+
 --- Process [text](url) links: remove markers and produce highlight/link entries
 --- Supports balanced brackets for image-in-link patterns like [![alt](img)](url)
 ---@param text string
@@ -681,40 +757,22 @@ local function process_links(text, highlights, links)
   local i = 1
   while i <= #text do
     if text:sub(i, i) == "[" then
-      -- Find matching ] with balanced bracket counting
-      local depth = 1
-      local j = i + 1
-      while j <= #text and depth > 0 do
-        local c = text:sub(j, j)
-        if c == "[" then
-          depth = depth + 1
-        elseif c == "]" then
-          depth = depth - 1
-        end
-        j = j + 1
-      end
-      -- j is now one past the matching ]
-      if depth == 0 and j <= #text and text:sub(j, j) == "(" then
-        local paren_end = text:find(")", j + 1, true)
-        if paren_end then
-          local link_text_raw = text:sub(i + 1, j - 2)
-          local url = text:sub(j + 1, paren_end - 1)
+      local j, paren_end = link_bounds(text, i)
+      if paren_end then
+        local link_text_raw = text:sub(i + 1, j - 2)
+        local url = link_destination(text:sub(j + 1, paren_end - 1))
 
-          -- If link text is an image ![alt](img-url), use alt as display
-          local alt = link_text_raw:match "^!%[(.-)%]%((.-)%)$"
-          local display_text = alt or link_text_raw
+        -- If link text is an image ![alt](img-url), use alt as display
+        local alt = link_text_raw:match "^!%[(.-)%]%((.-)%)$"
+        local display_text = alt or link_text_raw
 
-          local start_col = #processed
-          processed = processed .. display_text
-          table.insert(highlights, { col = start_col, end_col = start_col + #display_text, hl = "Underlined" })
-          table.insert(links, { col_start = start_col, col_end = start_col + #display_text, url = url })
-          table.insert(removals, { start = i - 1, count = 1 }) -- opening [
-          table.insert(removals, { start = j - 2, count = paren_end - j + 2 }) -- ](url)
-          i = paren_end + 1
-        else
-          processed = processed .. text:sub(i, i)
-          i = i + 1
-        end
+        local start_col = #processed
+        processed = processed .. display_text
+        table.insert(highlights, { col = start_col, end_col = start_col + #display_text, hl = "Underlined" })
+        table.insert(links, { col_start = start_col, col_end = start_col + #display_text, url = url })
+        table.insert(removals, { start = i - 1, count = 1 }) -- opening [
+        table.insert(removals, { start = j - 2, count = paren_end - j + 2 }) -- ](url)
+        i = paren_end + 1
       else
         processed = processed .. text:sub(i, i)
         i = i + 1
@@ -1484,9 +1542,7 @@ end
 ---@return string? alert_type Alert type (NOTE, TIP, etc.) if applicable
 Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_map)
   local rendered_text = text:gsub("\r", "")
-  -- Collapse multiple consecutive spaces (preserve leading whitespace)
-  local leading_ws = rendered_text:match "^(%s*)" or ""
-  rendered_text = leading_ws .. rendered_text:sub(#leading_ws + 1):gsub("  +", " ")
+  rendered_text = collapse_spaces(rendered_text)
   local highlights = {}
   local links = {}
 
@@ -1646,6 +1702,9 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
 
   -- Restore backslash-escaped characters (adjusts highlight/link positions)
   rendered_text = restore_backslashes(rendered_text, backslash_escapes, highlights, links)
+  for _, link in ipairs(links) do
+    link.url = restore_backslashes(link.url, backslash_escapes)
+  end
 
   -- Decode HTML character references (&amp; &#123; &#x1F; etc.)
   rendered_text = decode_html_entities(rendered_text, highlights, links)
@@ -1756,7 +1815,7 @@ Markdown.parse_reference_links = function(lines)
   for _, line in ipairs(lines) do
     local label, rest = line:match "^%[([^%]]+)%]:%s+(.+)$"
     if label then
-      local url = rest:match "^<(.+)>" or rest:match "^(%S+)" or rest
+      local url = link_destination(rest)
       refs[label:lower()] = url
     end
   end

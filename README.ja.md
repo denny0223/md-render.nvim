@@ -4,13 +4,22 @@
 
 この [delphinus/md-render.nvim](https://github.com/delphinus/md-render.nvim) のフォークは、Kitty/tmux 向けのオプションの Snacks 画像バックエンド、ウィンドウに合わせた画像サイズ調整、ズーム・パン可能な画像タブを追加しています。
 
-Neovim 用の Markdown レンダリングエンジンです。生の Markdown テキストをハイライト付きのインタラクティブなコンテンツに変換して、エディタ内で表示します。フローティングウィンドウ、タブ表示、コマンドラインからの `less` ライクなページャーモードに対応しています。
+Neovim 用の Markdown レンダリングエンジンです。生の Markdown テキストをハイライト付きのインタラクティブなコンテンツに変換して、エディタ内で表示します。スクロールが同期するライブプレビューを横に置いて編集でき、フローティングウィンドウやタブ、コマンドラインからの `less` ライクなページャーモードでも閲覧できます。
 
 ## はじめて使う
 
 1. [必要要件](#必要要件) を確認し、[インストール方法](#インストール) をひとつ選びます。
 2. このフォークの Kitty/tmux 対応、画像サイズ調整、ズーム・パンを使う場合は [Snacks 画像バックエンド](#snacks-画像バックエンド) を設定します。基本のインストールではネイティブバックエンドを使い、アニメーションや動画も扱えます。
-3. インストールと設定後に Neovim を再起動します。Markdown ファイルを開き、`:MdRender tab` でプレビュー、`q` で閉じます。Snacks と `magick` の設定後は、読み込み済みの画像上で Enter を押すと画像タブが開きます。`+` / `-` でズーム、`hjkl` でパン、`f` で全体表示、`q` で文書に戻ります。
+3. インストールと設定後に Neovim を再起動し、Markdown ファイルを開きます。ソースウィンドウで用途に合わせて選びます：
+
+| 用途 | コマンド | プレビューを閉じる |
+|---|---|---|
+| 右側でリアルタイムに確認しながら編集 | `:botright vert MdRender split` | プレビューウィンドウに移って `:q` |
+| タブで閲覧 | `:MdRender tab` | `q` |
+
+分割後もフォーカスはソースウィンドウに残るので、そのまま編集できます。保存しなくてもプレビューに反映されます。Normal モードの `<C-w>p`（Ctrl-w の後に p）は直前のウィンドウへ移動する操作で、分割直後はプレビューに移れます。[キーマップ例](#キーマップ)には任意で設定できる `<leader>ms` もあります。
+
+Snacks と `magick` の設定後は、プレビュー内の読み込み済みの画像上で Enter を押すと、ズーム・パンできる[画像タブ](#画像タブのキー)が開きます。
 
 詳しくは [キーマップ](#キーマップ)、[コマンド](#コマンド)、[トラブルシューティング](#faq--トラブルシューティング) を参照してください。
 
@@ -106,6 +115,7 @@ nvim +"MdRender pager" assets/showcase.md
     { "delphinus/budoux.lua", version = "*" }, -- optional: CJK phrase-level line breaking
   },
   keys = {
+    { "<leader>ms", "<cmd>botright vert MdRender split<CR>", desc = "Open Markdown preview on the right" },
     { "<leader>mp", "<Plug>(md-render-preview)",     desc = "Markdown preview (toggle)" },
     { "<leader>mt", "<Plug>(md-render-preview-tab)", desc = "Markdown preview in tab (toggle)" },
     { "<leader>md", "<Plug>(md-render-demo)",        desc = "Markdown render demo" },
@@ -171,6 +181,7 @@ lazy.nvim では、上記の基本的な md-render の spec を次の例に置�
     require("md-render.image").setup({ backend = "snacks" })
   end,
   keys = {
+    { "<leader>ms", "<cmd>botright vert MdRender split<CR>", desc = "Open Markdown preview on the right" },
     { "<leader>mp", "<Plug>(md-render-preview)",     desc = "Markdown preview (toggle)" },
     { "<leader>mt", "<Plug>(md-render-preview-tab)", desc = "Markdown preview in tab (toggle)" },
     { "<leader>md", "<Plug>(md-render-demo)",        desc = "Markdown render demo" },
@@ -221,10 +232,13 @@ md-render.nvim は、ターミナル内で完結する専用プレビューア�
 このプラグインは `<Plug>` マッピングを提供しますが、デフォルトのキーバインドは設定**しません**。自分でマッピングしてください：
 
 ```lua
+vim.keymap.set("n", "<leader>ms", "<cmd>botright vert MdRender split<CR>", { desc = "Open Markdown preview on the right" })
 vim.keymap.set("n", "<leader>mp", "<Plug>(md-render-preview)",     { desc = "Markdown preview (toggle)" })
 vim.keymap.set("n", "<leader>mt", "<Plug>(md-render-preview-tab)", { desc = "Markdown preview in tab (toggle)" })
 vim.keymap.set("n", "<leader>md", "<Plug>(md-render-demo)",        { desc = "Markdown render demo" })
 ```
+
+この例の `<leader>ms` は Markdown のソースウィンドウで使うと、右側にプレビューを開きます。呼び出すたびに新しいウィンドウが開きます。移動と閉じ方は[ソース/レンダーの分割表示](#ソースレンダーの分割表示)を参照してください。
 
 | `<Plug>` マッピング | 説明 |
 |---|---|
@@ -299,7 +313,7 @@ GIF / 動画タブには Kitty 0.31 以降が必要で、開くと自動再生�
 挙動:
 
 - レンダーバッファは**読み取り専用**で、トグル間で再利用されます(ソース1つにつきレンダーバッファ1つ)。
-- 同じソースが複数のウィンドウで表示されている場合、切替はそのウィンドウだけに作用し、他のウィンドウの編集は次に当該ウィンドウをレンダーモードにした時点で反映されます。
+- 同じソースが複数のウィンドウで表示されている場合、切替はそのウィンドウだけに作用します。他のウィンドウでの編集はプレビューに自動で反映されます。
 - カーソル位置は source line マップを介してソース ↔ レンダー間を往復します。
 - レンダーモードのウィンドウでは `number` / `relativenumber` / `list` が無効化されます。元の値はウィンドウに保存され、ソースに戻したときに復元されます。
 - レンダーモード中、`q` / `<Esc>` / `<C-c>` は閉じる動作に**割り当てられません**。ソースに戻すには再度 `:MdRender toggle` を呼びます。`<LeftMouse>` / `za` / `<CR>` は折りたたみ・展開を引き続き切り替えます(リンク open は `<LeftMouse>`)。Snacks バックエンドでは `<CR>` で画像も開けます。
@@ -383,15 +397,25 @@ require("md-render.text_size").setup { enabled = false }
   <figcaption><em>ソース/レンダーの分割表示 — 編集がインライン画像も含めてリアルタイムに反映される</em></figcaption>
 </figure>
 
-`:MdRender split` は、現在のウィンドウを分割してソースとレンダリング表示を並べます。分割方向は標準的な Vim のモディファイアに従います:
+Markdown を編集しながら右側でリアルタイムに確認するには、ソースウィンドウで実行します：
+
+```vim
+:botright vert MdRender split
+```
+
+既にほかの分割ウィンドウがある場合も、現在のタブの一番右にプレビューが開きます。フォーカスはソースウィンドウに残ります。保存しなくても編集が反映され、カーソルとスクロール位置も双方向に同期します。
+
+Normal モードの `<C-w>p` は直前のウィンドウへ移動します。分割直後はこの操作でプレビューへ移れます。プレビューを閉じるには、そのウィンドウに移って `:q` または `<C-w>c` を使います。このモードでは `q` だけでは閉じません。
+
+呼び出すたびに新しいウィンドウが開きます。ソースからはプレビューを、分割表示やその場トグルのプレビューからはソースを開きます。分割方向は標準的な Vim のモディファイアに従います：
 
 - `:MdRender split` — 水平分割
-- `:vert MdRender split` — 垂直分割(README とコードを並べる定番)
-- `:tab MdRender split` — 新しいタブ内で分割
+- `:vert MdRender split` — ソースとプレビューを左右に並べる。配置は `splitright` の設定に従う
+- `:tab MdRender split` — もう一方の表示を新しいタブで開く
 - `:topleft MdRender split` — 一番上に配置
 - `:botright MdRender split` — 一番下に配置
 
-ソースの編集はライブでもう一方のウィンドウに反映され、カーソル/スクロール位置も双方向に同期します。詳細な挙動とインライン画像の制限事項は `:help :MdRender-split` を参照してください。
+詳細な挙動とインライン画像の制限事項は `:help :MdRender-split` を参照してください。
 
 ### ページャーモード
 

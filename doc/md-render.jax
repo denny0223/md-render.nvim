@@ -41,6 +41,9 @@ md-render.nvim は Neovim 用の Markdown レンダリングエンジンです�
 替えるトグル(|:MdRender-toggle|)、コマンドラインからの `less` ライクなページャー
 モードに対応しています。
 
+編集時は |:MdRender-split| でソースとライブプレビューを左右に並べられます。
+スクロールも同期します。
+
 主な機能: ~
 
 - リッチなインライン書式（太字、取り消し線、インラインコード、リンク、Obsidian
@@ -102,6 +105,11 @@ lazy.nvim の場合: >lua
       { "delphinus/budoux.lua", version = "*" },
     },
     keys = {
+      {
+        "<leader>ms",
+        "<cmd>botright vert MdRender split<CR>",
+        desc = "Open Markdown preview on the right",
+      },
       {
         "<leader>mp",
         "<Plug>(md-render-preview)",
@@ -167,6 +175,7 @@ lazy.nvim では基本の md-render spec を次の例に置き換えます。ア
       require("md-render.image").setup({ backend = "snacks" })
     end,
     keys = {
+      { "<leader>ms", "<cmd>botright vert MdRender split<CR>" },
       { "<leader>mp", "<Plug>(md-render-preview)" },
       { "<leader>mt", "<Plug>(md-render-preview-tab)" },
       { "<leader>md", "<Plug>(md-render-demo)" },
@@ -216,10 +225,15 @@ Snacks を設定済みの場合は、その設定に image オプションを統
 このプラグインは `<Plug>` マッピングを提供しますが、デフォルトのキーバインドは設
 定しません。自分でマッピングしてください: >lua
 
+  vim.keymap.set("n", "<leader>ms",
+    "<cmd>botright vert MdRender split<CR>")
   vim.keymap.set("n", "<leader>mp", "<Plug>(md-render-preview)")
   vim.keymap.set("n", "<leader>mt", "<Plug>(md-render-preview-tab)")
   vim.keymap.set("n", "<leader>md", "<Plug>(md-render-demo)")
 <
+
+この例の <leader>ms は Markdown のソースウィンドウで使います。呼び出すたびに
+右側に新しいプレビューが開きます。移動と閉じ方は |:MdRender-split| を参照。
 
 						     *<Plug>(md-render-preview)*
 <Plug>(md-render-preview) ~
@@ -244,7 +258,7 @@ Snacks を設定済みの場合は、その設定に image オプションを統
 
 							    *<Plug>(md-render-split)*
 <Plug>(md-render-split) ~
-	[実験的] 現在の Markdown バッファのソースとレンダリング表示を横/縦に
+	現在の Markdown バッファのソースとレンダリング表示を上下に
 	並べたスプリットを開きます。 |:MdRender-split| を参照。
 
 							*<Plug>(md-render-demo)*
@@ -253,7 +267,7 @@ Snacks を設定済みの場合は、その設定に image オプションを統
 
 プレビューウィンドウ内では以下のキーが使えます:
 
-	`q` / `<Esc>` / `<C-c>`	プレビューウィンドウを閉じる
+	`q` / `<Esc>` / `<C-c>`	フローティング/タブのプレビューを閉じる
 	`za`		カーソル行のコールアウトの折りたたみ / 省略領域の
 			展開を切り替える (該当しない行では何もしない)
 	`<CR>`		カーソル上の画像を開く（Snacks バックエンド）、または
@@ -263,6 +277,8 @@ Snacks を設定済みの場合は、その設定に image オプションを統
 			フロートウィンドウに完全な URL を表示。
 			'mousemoveevent' が必要 (md-render はプレビュー
 			ウィンドウが開かれている間、自動で有効化する)。
+
+分割プレビューを閉じるには、そのウィンドウで `:q` または `<C-w>c` を使います。
 
 |:MdRender-toggle| で開かれたレンダーモードのバッファでは `q` / `<Esc>` /
 `<C-c>` は閉じる動作に**割り当てられません**。ソースに戻すには再度
@@ -330,8 +346,8 @@ Snacks を設定済みの場合は、その設定に image オプションを統
 	- レンダーバッファは読み取り専用で、トグル間で再利用されます(ソース
 	  バッファごとに1つキャッシュされます)。
 	- ソースバッファが複数のウィンドウで表示されている場合、切替は呼び出
-	  したウィンドウだけに作用します。他のウィンドウでの編集は、次にレン
-	  ダーモードへ切り替えた時点で反映されます。
+	  したウィンドウだけに作用します。他のウィンドウでの編集はプレビューに
+	  自動で反映されます。
 	- カーソル位置は往復します。レンダーモードでカーソルがある行に最も近
 	  いソース行が、ソースに戻したときのカーソル位置になります(逆方向も
 	  同様)。
@@ -403,16 +419,23 @@ Snacks を設定済みの場合は、その設定に image オプションを統
 
 							     *:MdRender-split*
 :MdRender split ~
-	[実験的] 新しく追加された機能で、UX が変わる可能性があります。問題や
-	違和感があればぜひお知らせください。
-
 	ソース Markdown バッファとレンダリング表示を同時に並べて表示するため
-	のスプリットを開きます。スプリット方向は標準の Vim モディファイアに
-	従います: >vim
+	のスプリットを開きます。右側でリアルタイムに確認しながら編集するには、
+	Markdown のソースウィンドウで実行します： >vim
+
+	  :botright vert MdRender split
+<
+	既にほかの分割ウィンドウがある場合も、現在のタブの一番右にプレビュー
+	が開きます。フォーカスはソースに残り、保存しなくても編集が反映されます。
+	Normal モードの <C-w>p（Ctrl-w の後に p）は直前のウィンドウへ移動します。
+	分割直後はこの操作でプレビューへ移れます。閉じるにはプレビューウィンドウ
+	に移って `:q` または `<C-w>c` を使います。`q` だけでは閉じません。
+
+	ほかの配置は標準の Vim モディファイアに従います： >vim
 
 	  :MdRender split          " 水平スプリット
 	  :vert MdRender split     " 垂直スプリット
-	  :tab MdRender split      " 新しいタブ内でスプリット
+	  :tab MdRender split      " もう一方の表示を新しいタブで開く
 	  :topleft MdRender split  " 一番上に配置
 	  :botright MdRender split " 一番下に配置
 <
@@ -420,10 +443,10 @@ Snacks を設定済みの場合は、その設定に image オプションを統
 
 	- ソースウィンドウから呼ぶと、新しいスプリットには render が表示
 	  されます。
-	- render ウィンドウ( |:MdRender-toggle| で作られたもの)から呼ぶ
-	  と、新しいスプリットには source が表示されます。
+	- |:MdRender-toggle| または |:MdRender-split| で作られた render
+	  ウィンドウから呼ぶと、新しいスプリットには source が表示されます。
 
-	どちらから呼んでも結果は source/render の横並びになります。
+	呼び出すたびに新しいウィンドウが開きます。
 
 	レンダーバッファは |:MdRender-toggle| のセッションキャッシュと共
 	有されます。後から |:MdRender-toggle| を呼んでも同じレンダーバッ
@@ -431,8 +454,8 @@ Snacks を設定済みの場合は、その設定に image オプションを統
 	ブ更新パスを通じて反映されます。
 
 	ソースとレンダーのカーソル/スクロール位置は自動で同期します。ど
-	ちらかでカーソル移動やスクロールをすると、もう一方も対応行へ追従
-	し、ウィンドウ内の同じ行位置に表示が揃います。
+	ちらかでカーソル移動やスクロールをすると、もう一方も対応する内容の
+	位置へ移動します。
 
 	既に対応する位置にあるカーソルは動かしません。折りたたまれた
 	<details> やテーブル、figure のように、ソースの複数行が 1 つのレ
@@ -446,7 +469,7 @@ Snacks を設定済みの場合は、その設定に image オプションを統
 	やスプリットに備えます。
 
 	制限事項: インライン画像はウィンドウに対して 1 つしかバインドで
-	きません。 |:MdRender-split| を 2 回呼ぶと render ウィンドウは 2
+	きません。ソースから |:MdRender-split| を 2 回呼ぶと render ウィンドウは 2
 	枚できますが、画像が出るのは最後に開いた方だけです(古い render
 	ウィンドウもテキスト内容のライブ更新は受けます)。
 

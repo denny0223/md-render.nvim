@@ -39,6 +39,8 @@ md-render.nvim 是 Neovim 的 Markdown 渲染引擎，能將 Markdown 原始文�
 視窗切換原始文字與預覽（|:MdRender-toggle|），以及從指令列啟動、類似 `less`
 的分頁閱讀模式。
 
+寫作時可用 |:MdRender-split| 將原始文字與即時預覽並排，兩側也會同步捲動。
+
 主要功能：~
 
 - 豐富的行內格式：粗體、刪除線、行內程式碼、連結、Obsidian `==highlight==`。
@@ -95,6 +97,11 @@ md-render.nvim 是 Neovim 的 Markdown 渲染引擎，能將 Markdown 原始文�
       { "delphinus/budoux.lua", version = "*" },
     },
     keys = {
+      {
+        "<leader>ms",
+        "<cmd>botright vert MdRender split<CR>",
+        desc = "在右側開啟 Markdown 預覽",
+      },
       {
         "<leader>mp",
         "<Plug>(md-render-preview)",
@@ -156,6 +163,7 @@ BudouX，請保留其選用相依項目： >lua
       require("md-render.image").setup({ backend = "snacks" })
     end,
     keys = {
+      { "<leader>ms", "<cmd>botright vert MdRender split<CR>" },
       { "<leader>mp", "<Plug>(md-render-preview)" },
       { "<leader>mt", "<Plug>(md-render-preview-tab)" },
       { "<leader>md", "<Plug>(md-render-demo)" },
@@ -203,10 +211,15 @@ setup()。停用 Snacks 的文件與數學式渲染，讓 md-render 負責預覽
 
 本外掛提供 `<Plug>` 對應，但不設定任何預設快捷鍵。請自行指定： >lua
 
+  vim.keymap.set("n", "<leader>ms",
+    "<cmd>botright vert MdRender split<CR>")
   vim.keymap.set("n", "<leader>mp", "<Plug>(md-render-preview)")
   vim.keymap.set("n", "<leader>mt", "<Plug>(md-render-preview-tab)")
   vim.keymap.set("n", "<leader>md", "<Plug>(md-render-demo)")
 <
+
+範例中的 <leader>ms 請在 Markdown 原始文字視窗使用，每次都會在右側新增
+預覽視窗。切換與關閉方式請見 |:MdRender-split|。
 
                                                    *<Plug>(md-render-preview)*
 <Plug>(md-render-preview) ~
@@ -228,7 +241,7 @@ setup()。停用 Snacks 的文件與數學式渲染，讓 md-render 負責預覽
 
                                                      *<Plug>(md-render-split)*
 <Plug>(md-render-split) ~
-	開啟分割視窗，同時顯示目前 Markdown 緩衝區的原始文字與預覽。
+	上下分割視窗，同時顯示目前 Markdown 緩衝區的原始文字與預覽。
 	請見 |:MdRender-split|。
 
                                                       *<Plug>(md-render-demo)*
@@ -237,7 +250,7 @@ setup()。停用 Snacks 的文件與數學式渲染，讓 md-render 負責預覽
 
 預覽視窗中可使用以下按鍵：
 
-	`q` / `<Esc>` / `<C-c>`  關閉預覽視窗。
+	`q` / `<Esc>` / `<C-c>`  關閉浮動／分頁預覽視窗。
 	`za`                    切換游標所在的提示區塊摺疊或可展開區域；
 	                        游標不在這些區域時，不執行任何動作。
 	`<CR>`                  開啟游標所在的圖片（Snacks 後端），或切換
@@ -248,6 +261,8 @@ setup()。停用 Snacks 的文件與數學式渲染，讓 md-render 負責預覽
 	`<MouseMove>`           滑鼠懸停在連結上時，在編輯器底部的小型浮動
 	                        視窗顯示完整網址。需要 'mousemoveevent'；
 	                        md-render 會在預覽開啟期間自動啟用。
+
+分割預覽請先切到預覽視窗，再用 `:q` 或 `<C-w>c` 關閉。
 
 使用 |:MdRender-toggle| 開啟的預覽緩衝區不會把 `q` / `<Esc>` / `<C-c>` 綁定
 為關閉操作；請再次執行 |:MdRender-toggle| 回到原始文字。`<LeftMouse>`、`za`
@@ -318,8 +333,8 @@ Markdown 目標沿用目前的預覽視窗；其他檔案在原始編輯視窗�
 	行為：
 
 	- 預覽緩衝區為唯讀，切換時會重複使用；每個來源緩衝區各自快取一個。
-	- 若多個視窗顯示同一份來源，只有執行指令的視窗會切換；其他視窗的編輯
-	  會在下次切換至預覽時反映。
+	- 若多個視窗顯示同一份來源，只有執行指令的視窗會切換。其他視窗的編輯
+	  會自動反映在預覽中。
 	- 來回切換會對應游標位置：從預覽回到原始文字時，游標會移至最接近的
 	  來源行；反向切換亦然。
 	- 預覽視窗會停用 'number'、'relativenumber' 與 'list'。原始設定會保留
@@ -384,28 +399,39 @@ Markdown 目標沿用目前的預覽視窗；其他檔案在原始編輯視窗�
 
                                                              *:MdRender-split*
 :MdRender split ~
-	開啟分割視窗，同時顯示 Markdown 原始文字與預覽。方向遵循 Vim 標準的
-	分割修飾詞： >vim
+	開啟分割視窗，同時顯示 Markdown 原始文字與預覽。若要一邊編輯、一邊
+	在右側即時預覽，請從 Markdown 原始文字視窗執行： >vim
+
+	  :botright vert MdRender split
+<
+	即使已有其他分割視窗，預覽仍會開在目前分頁的最右側。焦點會留在原始
+	文字視窗，編輯後不必存檔就會更新預覽。一般模式下，<C-w>p（先按
+	Ctrl-w 再按 p）會切到上一個視窗。剛開啟分割預覽後，可用它進入預覽。
+	要關閉預覽，請在預覽視窗執行 `:q` 或按 `<C-w>c`；這個模式不使用
+	單獨的 `q` 關閉。
+
+	其他排列方式遵循 Vim 標準的分割修飾詞： >vim
 
 	  :MdRender split          " 水平分割
 	  :vert MdRender split     " 垂直分割
-	  :tab MdRender split      " 在新分頁中分割
+	  :tab MdRender split      " 在新分頁開啟另一種檢視
 	  :topleft MdRender split  " 放在最上方
 	  :botright MdRender split " 放在最下方
 <
 	行為是對稱的：
 
 	- 從來源視窗執行時，新視窗顯示預覽。
-	- 從由 |:MdRender-toggle| 建立的預覽視窗執行時，新視窗顯示原始文字。
+	- 從由 |:MdRender-toggle| 或 |:MdRender-split| 建立的預覽視窗執行時，
+	  新視窗顯示原始文字。
 
-	不論從哪一側執行，都會在相鄰視窗中得到一組原始文字與預覽。
+	每次執行都會新增視窗。
 
 	預覽緩衝區與 |:MdRender-toggle| 共用工作階段快取，因此之後執行
 	|:MdRender-toggle| 時會重複使用同一個預覽緩衝區。編輯後也會透過相同的
 	即時更新流程，在 150 ms 的去彈跳等待後反映內容。
 
 	來源與預覽視窗會同步游標及捲動位置。在任一側移動或捲動時，另一側會
-	移至對應行，並讓游標維持在視窗中的相同行位置，使兩側對齊。
+	移至對應的內容位置。
 
 	若游標已與另一側對應，就保持原位。多個來源行可能對應到同一個預覽行，
 	例如收起的 <details>、表格或圖片；若直接反向對應，會把游標拉回區塊的
@@ -415,9 +441,9 @@ Markdown 目標沿用目前的預覽視窗；其他檔案在原始編輯視窗�
 	使用 `:q` 或 `<C-w>c` 關閉分割視窗不會銷毀預覽緩衝區；它會保留在來源
 	的快取中，供之後切換或分割使用。
 
-	限制：文件內的圖片一次只能綁定一個視窗。連續呼叫 |:MdRender-split|
-	兩次會產生兩個預覽視窗，但只有最新的視窗顯示圖片；較舊的視窗仍會即時
-	更新文字內容。
+	限制：文件內的圖片一次只能綁定一個視窗。從來源連續執行
+	|:MdRender-split| 兩次會產生兩個預覽視窗，但只有最新的視窗顯示圖片；
+	較舊的視窗仍會即時更新文字內容。
 
                                                              *:MdRender-pager*
 :MdRender pager ~

@@ -4,13 +4,22 @@
 
 這是 [delphinus/md-render.nvim](https://github.com/delphinus/md-render.nvim) 的 fork，新增可選用的 Snacks 圖片後端，支援 Kitty/tmux 中的靜態圖片與圖表、自動配合視窗大小，以及可縮放、平移的圖片分頁。也可以參考這份 [Neovim 設定](https://github.com/denny0223/.nvim)作為完整設定範例。
 
-這個 Neovim 外掛能將 Markdown 原始文字轉為有語法醒目提示、可互動的預覽，直接顯示在編輯器中。支援浮動視窗、分頁，以及從指令列啟動、類似 `less` 的分頁閱讀模式。
+這個 Neovim 外掛能將 Markdown 原始文字轉為有語法醒目提示、可互動的預覽，直接顯示在編輯器中。可以一邊編輯、一邊查看同步捲動的預覽，也能使用浮動視窗、分頁，或從指令列啟動、類似 `less` 的分頁閱讀模式。
 
 ## 第一次使用
 
 1. 先確認[系統需求](#系統需求)，再選擇一種[安裝方式](#安裝)。
 2. 如果要使用這個 fork 的 Kitty/tmux 支援、自動調整圖片大小、縮放與平移，請完成 [Snacks 圖片後端設定](#選用-snacks-圖片後端)。基本安裝仍使用原生後端，也能播放動畫與影片。
-3. 安裝並設定外掛後，重新啟動 Neovim。開啟 Markdown 檔案，執行 `:MdRender tab` 預覽，按 `q` 關閉預覽。設定好 Snacks 與 `magick` 後，在載入完成的圖片上按 Enter 可開啟圖片分頁；`+` / `-` 縮放、`hjkl` 平移、`f` 顯示完整圖片，`q` 回到文件。
+3. 安裝並設定外掛後，重新啟動 Neovim，再開啟 Markdown 檔案。從原始文字視窗依需求選擇：
+
+| 用途 | 指令 | 關閉預覽 |
+|---|---|---|
+| 一邊編輯，一邊在右側即時預覽 | `:botright vert MdRender split` | 先切到預覽視窗，再執行 `:q` |
+| 在分頁中閱讀 | `:MdRender tab` | 按 `q` |
+
+左右分割後，焦點會留在原始文字視窗，可以直接繼續編輯；不必存檔，預覽就會更新。剛開啟分割預覽時，在一般模式按 `<C-w>p`（先按 Ctrl-w，再按 p）即可進入預覽；這組按鍵的作用是切到上一個視窗。[按鍵設定範例](#按鍵設定)也提供可自行設定的 `<leader>ms` 快捷鍵。
+
+設定好 Snacks 與 `magick` 後，在預覽中對載入完成的圖片按 Enter，可開啟[圖片分頁](#圖片分頁按鍵)進行縮放與平移。
 
 完整的[按鍵說明](#按鍵設定)、[指令](#指令)與[疑難排解](#常見問題與疑難排解)請見下方。
 
@@ -105,6 +114,7 @@ nvim +"MdRender pager" assets/showcase.md
     { "delphinus/budoux.lua", version = "*" }, -- 選用：中日韓文字依詞組換行
   },
   keys = {
+    { "<leader>ms", "<cmd>botright vert MdRender split<CR>", desc = "在右側開啟 Markdown 預覽" },
     { "<leader>mp", "<Plug>(md-render-preview)",     desc = "切換 Markdown 浮動預覽" },
     { "<leader>mt", "<Plug>(md-render-preview-tab)", desc = "切換 Markdown 分頁預覽" },
     { "<leader>md", "<Plug>(md-render-demo)",        desc = "Markdown 功能展示" },
@@ -170,6 +180,7 @@ add({
     require("md-render.image").setup({ backend = "snacks" })
   end,
   keys = {
+    { "<leader>ms", "<cmd>botright vert MdRender split<CR>", desc = "在右側開啟 Markdown 預覽" },
     { "<leader>mp", "<Plug>(md-render-preview)",     desc = "切換 Markdown 浮動預覽" },
     { "<leader>mt", "<Plug>(md-render-preview-tab)", desc = "切換 Markdown 分頁預覽" },
     { "<leader>md", "<Plug>(md-render-demo)",        desc = "Markdown 功能展示" },
@@ -220,10 +231,13 @@ md-render 的目標是在終端機內提供獨立的 Markdown 預覽，兼顧豐
 外掛提供 `<Plug>` 對應，但**不會直接指定預設快捷鍵**。可自行設定：
 
 ```lua
+vim.keymap.set("n", "<leader>ms", "<cmd>botright vert MdRender split<CR>", { desc = "在右側開啟 Markdown 預覽" })
 vim.keymap.set("n", "<leader>mp", "<Plug>(md-render-preview)",     { desc = "切換 Markdown 浮動預覽" })
 vim.keymap.set("n", "<leader>mt", "<Plug>(md-render-preview-tab)", { desc = "切換 Markdown 分頁預覽" })
 vim.keymap.set("n", "<leader>md", "<Plug>(md-render-demo)",        { desc = "Markdown 功能展示" })
 ```
+
+範例中的 `<leader>ms` 請在 Markdown 原始文字視窗使用，會在右側開啟預覽。每次執行都會新增視窗；切換與關閉方式請見[分割原始文字與預覽](#分割原始文字與預覽)。
 
 | `<Plug>` 對應 | 說明 |
 |---|---|
@@ -296,7 +310,7 @@ GIF 與影片分頁需要 Kitty 0.31 以上版本，開啟後會自動播放，�
 行為如下：
 
 - 預覽緩衝區是**唯讀**的，同一份來源會重複使用同一個預覽緩衝區。
-- 同一份來源若同時出現在多個視窗，只會切換執行指令的視窗；其他視窗中的編輯，會在下次切換到預覽時反映。
+- 同一份來源若同時出現在多個視窗，只會切換執行指令的視窗。其他視窗中的編輯會自動反映在預覽中。
 - 游標透過來源行對應，在原始文字與預覽之間保留位置。
 - 預覽視窗會關閉 `number`、`relativenumber` 與 `list`，原本設定會保存在視窗中，切回原始文字時還原。
 - 在這種預覽模式中，`q` / `<Esc>` / `<C-c>` **不會用來關閉視窗**；請再次執行 `:MdRender toggle` 回到原始文字。`<LeftMouse>`、`za`、`<CR>` 仍能切換摺疊與展開，`<LeftMouse>` 也能開啟連結；Snacks 後端的 `<CR>` 還能開啟圖片。
@@ -409,15 +423,25 @@ Emoji 會獨立成段。對 Kitty 而言，宣告了寬度的一段文字是一�
   <figcaption><em>原始文字與預覽並排，編輯結果與行內圖片會即時更新</em></figcaption>
 </figure>
 
-`:MdRender split` 會分割視窗，同時顯示原始緩衝區與預覽。方向遵循 Vim 標準的視窗修飾指令：
+若要一邊編輯 Markdown、一邊在右側即時預覽，請從原始文字視窗執行：
+
+```vim
+:botright vert MdRender split
+```
+
+預覽會開在目前分頁的最右側，即使已經有其他分割視窗也是如此。焦點會留在原始文字視窗，編輯後不必存檔就會更新預覽，游標與捲動位置也會雙向同步。
+
+在一般模式按 `<C-w>p` 會切到上一個視窗。剛開啟分割預覽後，可用它進入預覽。要關閉預覽，請先切到預覽視窗，再執行 `:q` 或按 `<C-w>c`；這個模式不使用單獨的 `q` 關閉。
+
+每次執行都會新增視窗：從原始文字執行會開啟預覽，從分割或原地切換的預覽執行則會開啟原始文字。方向遵循 Vim 標準的視窗修飾指令：
 
 - `:MdRender split`：上下分割。
-- `:vert MdRender split`：左右分割，適合 README 與程式碼並排。
-- `:tab MdRender split`：在新分頁中分割。
+- `:vert MdRender split`：將原始文字與預覽左右並排，位置依 `splitright` 設定。
+- `:tab MdRender split`：在新分頁開啟另一種檢視。
 - `:topleft MdRender split`：放在頂端。
 - `:botright MdRender split`：放在底端。
 
-原始文字的編輯會即時反映，游標與捲動位置會雙向同步。完整行為與行內圖片限制，請見 `:help :MdRender-split`。
+完整行為與行內圖片限制，請見 `:help :MdRender-split`。
 
 ### 分頁閱讀模式
 

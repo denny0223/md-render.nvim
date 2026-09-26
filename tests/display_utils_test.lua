@@ -27,6 +27,40 @@ local function test(name, fn)
   end
 end
 
+test("repaint handles empty content, insertions, deletions, and disjoint changes", function()
+  local buf = vim.api.nvim_create_buf(false, true)
+  local ns = vim.api.nvim_create_namespace "repaint_test"
+  local examples = { {}, { "" }, { "a" }, { "a", "b" }, { "b", "a" }, { "a", "b", "c" }, { "x", "b", "y" } }
+  for _, old in ipairs(examples) do
+    for _, new in ipairs(examples) do
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, old)
+      display_utils.apply_content_to_buffer(buf, ns, { lines = new, highlights = {}, link_metadata = {} })
+      assert_eq(
+        vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), #new == 0 and { "" } or new),
+        true,
+        "repaint produces exact content"
+      )
+    end
+  end
+  vim.api.nvim_buf_delete(buf, { force = true })
+end)
+
+test("repaint preserves native marks in unchanged rows", function()
+  local buf = vim.api.nvim_create_buf(false, true)
+  local ns = vim.api.nvim_create_namespace "repaint_marks"
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "before", "kept", "after" })
+  vim.api.nvim_buf_set_mark(buf, "a", 2, 0, {})
+  for _, lines in ipairs {
+    { "changed before", "kept", "changed after" },
+    { "inserted", "changed before", "kept", "changed after" },
+    { "changed before", "kept", "changed after" },
+  } do
+    display_utils.apply_content_to_buffer(buf, ns, { lines = lines, highlights = {}, link_metadata = {} })
+    assert_eq(vim.api.nvim_buf_get_mark(buf, "a")[1], #lines - 1, "native mark follows its unchanged row")
+  end
+  vim.api.nvim_buf_delete(buf, { force = true })
+end)
+
 -- ============================================================================
 -- resolve_lang: map fenced info-string to treesitter parser name
 -- ============================================================================

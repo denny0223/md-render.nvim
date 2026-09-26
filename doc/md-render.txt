@@ -259,6 +259,8 @@ Inside the preview window, the following keys are available:
 			cursor (no-op when the cursor is not on one)
 	`<CR>`		Open the image under the cursor (Snacks backend), or
 			toggle the callout fold / expandable region
+	`gf`		Follow a local file link; Markdown targets stay rendered
+			(toggle, split, floating, and tab previews)
 	`<LeftMouse>`	Click links, toggle folds, expand regions
 	`<MouseMove>`	Hover a link to peek its full URL in a small floating
 			window at the bottom of the editor.  Requires
@@ -270,6 +272,29 @@ Inside a render-mode buffer opened with |:MdRender-toggle|, `q` / `<Esc>` /
 source mode.  `<LeftMouse>`, `za`, and `<CR>` still toggle folds and expand
 regions; `<CR>` also opens images with the Snacks backend. `<LeftMouse>`
 opens links, and `<MouseMove>` hover-peek also stays active.
+
+`gf` uses the exact link destination, resolved relative to the source file,
+independently of the working directory. Markdown targets keep the current
+preview window. Other files open for editing in the original source window;
+floating/tab previews close first. `Ctrl-O` returns to the preceding rendered
+document with its reading position and folds. After editing another file,
+the rendered return uses the source window. Outside links, native `gf` and
+counts such as `2gf` retain their usual behavior.
+
+Directories open in the original source window through the configured
+directory browser (such as netrw), closing floating/tab previews. The browser
+retains its own navigation and buffer lifecycle.
+
+`Ctrl-O` and `Ctrl-I` remain native Neovim commands. Each window has its own
+jumplist. After opening another file in the source editing window, only the
+immediately preceding rendered document is guaranteed on return. Earlier
+preview history is not merged into that window.
+
+Supported destinations are relative paths, POSIX absolute paths, and local
+`file:///` URLs, including encoded filenames, inline/reference links, and
+optional titles. Missing or unreadable targets leave the preview unchanged.
+Fragments do not yet select headings. Pager navigation and Windows/UNC paths
+are outside this feature's initial scope.
 
 ==============================================================================
 COMMANDS						    *md-render-commands*

@@ -1,4 +1,5 @@
 local UrlHover = require "md-render.url_hover"
+local Links = require "md-render.links"
 local async = require "md-render.async"
 
 local M = {}
@@ -162,7 +163,18 @@ end
 ---@param opts? { title_url?: string }
 function M.apply_content_to_buffer(buf, ns, content, opts)
   opts = opts or {}
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, content.lines)
+  -- Replacing unchanged rows would collapse native jump/mark positions into
+  -- the replaced range. Let Neovim adjust only the rows that actually changed.
+  local old = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  local hunks = vim.text.diff(table.concat(old, "\n") .. "\n", table.concat(content.lines, "\n") .. "\n", {
+    result_type = "indices",
+  })
+  for i = #hunks, 1, -1 do
+    local first, removed, from, added = unpack(hunks[i])
+    local start = removed == 0 and first or first - 1
+    local replacement = added == 0 and {} or vim.list_slice(content.lines, from, from + added - 1)
+    vim.api.nvim_buf_set_lines(buf, start, start + removed, false, replacement)
+  end
   -- Clear 'modified' synchronously so callers (toggle/split render bufs
   -- with buftype=acwrite, telescope/snacks previewers, etc.) don't have
   -- a window where :qa would see the buffer as dirty before any
@@ -512,52 +524,40 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
 
       -- Helper: check if click is on an internal anchor or URL extmark
       local function try_open_url()
-        local extmarks = vim.api.nvim_buf_get_extmarks(
-          buf,
-          ns,
-          { click_line, 0 },
-          { click_line + 1, 0 },
-          { details = true }
-        )
-        for _, mark in ipairs(extmarks) do
-          local _, _, start_col, details = unpack(mark)
-          if details.url then
-            local end_col = details.end_col or (start_col + 1)
-            if click_col >= start_col and click_col < end_col then
-              -- Handle internal anchor links by scrolling
-              local anchor = details.url:match "^#(.+)$"
-              if anchor then
-                -- Footnote anchors
-                if cur_content.footnote_anchors then
-                  local target_line = cur_content.footnote_anchors[anchor]
-                  if target_line then
-                    vim.api.nvim_win_set_cursor(win, { target_line + 1, 0 })
-                    return true
-                  end
-                end
-                -- Heading anchors
-                if cur_content.heading_anchors then
-                  local target_line = cur_content.heading_anchors[anchor]
-                  if target_line then
-                    vim.api.nvim_win_set_cursor(win, { target_line + 1, 0 })
-                    return true
-                  end
-                end
+        local url = Links.at(buf, ns, click_line, click_col)
+        if url then
+          -- Handle internal anchor links by scrolling
+          local anchor = url:match "^#(.+)$"
+          if anchor then
+            -- Footnote anchors
+            if cur_content.footnote_anchors then
+              local target_line = cur_content.footnote_anchors[anchor]
+              if target_line then
+                vim.api.nvim_win_set_cursor(win, { target_line + 1, 0 })
                 return true
               end
-              -- Obsidian links: always open via system handler
-              if details.url:match "^obsidian://" then
-                vim.notify("Opening: " .. details.url, vim.log.levels.INFO)
-                vim.ui.open(details.url)
-                return true
-              end
-              -- External URLs: skip if OSC8 terminal handles them natively
-              if M.supports_osc8() then return false end
-              vim.notify("Opening: " .. details.url, vim.log.levels.INFO)
-              vim.ui.open(details.url)
-              return true
             end
+            -- Heading anchors
+            if cur_content.heading_anchors then
+              local target_line = cur_content.heading_anchors[anchor]
+              if target_line then
+                vim.api.nvim_win_set_cursor(win, { target_line + 1, 0 })
+                return true
+              end
+            end
+            return true
           end
+          -- Obsidian links: always open via system handler
+          if url:match "^obsidian://" then
+            vim.notify("Opening: " .. url, vim.log.levels.INFO)
+            vim.ui.open(url)
+            return true
+          end
+          -- External URLs: skip if OSC8 terminal handles them natively
+          if M.supports_osc8() then return false end
+          vim.notify("Opening: " .. url, vim.log.levels.INFO)
+          vim.ui.open(url)
+          return true
         end
         return false
       end

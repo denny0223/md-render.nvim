@@ -21,6 +21,14 @@
 --- unscaled text.
 
 local M = {}
+local tmux = require "md-render.text_size_tmux"
+-- ponytail: assume foreground startup until a focus event arrives; starting
+-- under an existing tmux popup needs an initial focus query tmux does not expose.
+local tmux_focused = true
+
+local function in_tmux()
+  return tmux.active() and #vim.api.nvim_list_uis() > 0
+end
 
 -- ============================================================================
 -- Configuration
@@ -176,6 +184,21 @@ end
 -- ============================================================================
 
 local _supported = nil
+local tmux_supported, tmux_refresh_pending
+
+local function tmux_context()
+  local ctx = tmux.get()
+  if tmux_supported ~= nil and tmux_supported ~= ctx.supported and not tmux_refresh_pending then
+    tmux_refresh_pending = true
+    vim.schedule(function()
+      tmux_refresh_pending = false
+      local preview = package.loaded["md-render.preview"]
+      if preview and config.enabled and config.backend ~= "image" then preview.rebuild_visible() end
+    end)
+  end
+  tmux_supported = ctx.supported
+  return ctx
+end
 
 --- `$TERM_PROGRAM` values that are certainly not Kitty.
 ---
@@ -200,12 +223,12 @@ local NOT_KITTY = {
 --- True when the host terminal implements the text sizing protocol.
 ---@return boolean
 function M.supports()
-  if _supported ~= nil then return _supported end
-  -- The TUI must be able to receive raw bytes at all.
-  if type(vim.api.nvim_ui_send) ~= "function" then
-    _supported = false
-    return false
+  if type(vim.api.nvim_ui_send) ~= "function" then return false end
+  if in_tmux() then
+    local ctx = tmux_context()
+    return ctx.supported, ctx.reason
   end
+  if _supported ~= nil then return _supported end
   -- No UI attached (`--headless`, `-l`): nothing would receive the bytes, and
   -- the probe would sit out its whole timeout waiting for an answer.
   if #vim.api.nvim_list_uis() == 0 or vim.env.TMUX or NOT_KITTY[vim.env.TERM_PROGRAM or ""] then
@@ -220,6 +243,8 @@ end
 --- Clear the cached probe result (for tests, or after `:restart`).
 function M.reset_cache()
   _supported = nil
+  tmux_supported = nil
+  tmux.reset()
   require("md-render.tty").reset()
 end
 
@@ -232,8 +257,9 @@ vim.api.nvim_create_autocmd({ "UIEnter", "UILeave" }, { callback = M.reset_cache
 function M.resolve_backend()
   if not config.enabled then return "plain", "text sizing is off" end
   if config.backend == "native" then
-    if M.supports() then return "native" end
-    return "plain", "terminal does not support native OSC 66 headings"
+    local supported, reason = M.supports()
+    if supported then return "native" end
+    return "plain", reason or "terminal does not support native OSC 66 headings"
   end
   local layout = package.loaded["md-render.heading_layout"]
   local reason = layout and layout.failure(config.image.python)
@@ -249,7 +275,11 @@ function M.resolve_backend()
       reason = "terminal cell dimensions are unavailable"
     end
   end
-  if config.backend == "auto" and M.supports() then return "native", reason end
+  if config.backend == "auto" then
+    local supported, native_reason = M.supports()
+    if supported then return "native", reason end
+    if native_reason then reason = (reason and reason .. "; " or "") .. native_reason end
+  end
   return "plain", reason
 end
 
@@ -261,6 +291,7 @@ function M.status(content)
   if config.enabled and fallback then
     backend, reason = "plain", fallback
   end
+  if backend == "native" and in_tmux() and not tmux_focused then backend = backend .. " (paused: tmux focus)" end
   return (config.enabled and config.backend or "off") .. " -> " .. backend .. (reason and (": " .. reason) or "")
 end
 
@@ -757,11 +788,38 @@ end
 --- `invalidations` is the one that matters: each is a full-screen repaint.
 M._stats = { paints = 0, invalidations = 0, skipped = 0, keepalives = 0 }
 
+local function transport(state)
+  if not in_tmux() then return nil end
+  local ctx = tmux_context()
+  local key = ctx.key .. ":" .. tostring(tmux_focused)
+  if state.tmux and state.tmux_key ~= key then
+    if (state.last_drawn or 0) > 0 then tmux.redraw(state.tmux.client) end
+    state.drawn, state.last_layout, state.last_drawn, state.owes_invalidate = nil, nil, 0, false
+    state.gesture, state.press, state.dragged = nil, nil, nil
+  end
+  state.tmux, state.tmux_key = ctx, key
+  return ctx
+end
+
+local function can_draw(ctx)
+  return not ctx or (tmux_focused and ctx.drawable and ctx.width == vim.o.columns and ctx.height == vim.o.lines)
+end
+
+local function send(bytes, ctx)
+  vim.api.nvim_ui_send(ctx and tmux.wrap(bytes) or bytes)
+end
+
+local function position(row, col, ctx)
+  return string.format("\x1b[%d;%dH", row + (ctx and ctx.top or 0), col + (ctx and ctx.left or 0))
+end
+
 --- Write the runs for `drawn` where they currently sit.
 ---@param state MdRender.TextSizeState
 ---@param drawn { p: MdRender.TextPlacement, row: integer, col: integer, icon_col: integer? }[]
 local function write_runs(state, drawn)
   if state.closed then return end
+  local ctx = transport(state)
+  if state.closed or not can_draw(ctx) then return end
   state.drawn = drawn
   if #drawn == 0 then return end
   local out = {}
@@ -782,7 +840,7 @@ local function write_runs(state, drawn)
     -- cells `pad_icon` already reserves for it — and it fits.
     if d.p.icon and d.icon_col then
       local meta = string.format("s=%d:n=1:d=%d:w=1:v=%d", d.p.scale, d.p.scale, VERTICAL_ALIGN)
-      table.insert(out, string.format("\x1b[%d;%dH", d.row, d.icon_col))
+      table.insert(out, position(d.row, d.icon_col, ctx))
       table.insert(out, sgr)
       table.insert(out, string.format("\x1b]66;%s;%s\x1b\\", meta, d.p.icon))
 
@@ -807,7 +865,7 @@ local function write_runs(state, drawn)
       if gap > 0 then
         local blanks = string.rep(" ", gap)
         for row = d.row + 1, d.row + d.p.scale - 1 do
-          table.insert(out, string.format("\x1b[%d;%dH", row, d.icon_col + d.p.scale))
+          table.insert(out, position(row, d.icon_col + d.p.scale, ctx))
           table.insert(out, sgr)
           table.insert(out, blanks)
         end
@@ -821,7 +879,7 @@ local function write_runs(state, drawn)
     for index, run in ipairs(d.p.runs) do
       local meta = "s=" .. d.p.scale
       if d.p.num then meta = meta .. string.format(":n=%d:d=%d:w=%d:v=%d", d.p.num, d.p.den, run.w, VERTICAL_ALIGN) end
-      table.insert(out, string.format("\x1b[%d;%dH", d.row, col))
+      table.insert(out, position(d.row, col, ctx))
       table.insert(out, d.styles[index])
       -- OSC 8 belongs to the scaled cells, not the underlying buffer columns.
       if run.url then table.insert(out, "\x1b]8;;" .. require("md-render.links").osc8_url(run.url) .. "\x1b\\") end
@@ -832,7 +890,7 @@ local function write_runs(state, drawn)
   end
   -- DECSC/DECRC rather than CSI s/u: the cursor *and* the pending SGR state
   -- have to survive, since we change colors in between.
-  vim.api.nvim_ui_send("\x1b7" .. table.concat(out) .. "\x1b[0m\x1b8")
+  send("\x1b7" .. table.concat(out) .. "\x1b[0m\x1b8", ctx)
   M._stats.paints = M._stats.paints + 1
 end
 
@@ -851,7 +909,9 @@ end
 --- and the plain-size heading in between.
 ---@param state MdRender.TextSizeState
 function M.paint(state)
-  if not state or state.closed or not M.supports() then return end
+  if not state or state.closed then return end
+  local ctx = transport(state)
+  if state.closed or not can_draw(ctx) or not M.supports() then return end
 
   local drawn = visible_placements(state)
   local key = layout_key(drawn)
@@ -872,6 +932,7 @@ function M.paint(state)
   local cleanup = (moved or state.owes_invalidate) and (state.last_drawn or 0) > 0
   state.owes_invalidate = false
 
+  -- Let tmux manage synchronized output; bypassing it would nest Kitty's frame.
   if cleanup then vim.api.nvim_ui_send "\x1b[?2026h" end
   local ok, err = pcall(function()
     if cleanup then
@@ -965,6 +1026,7 @@ end
 ---@param forced? boolean skip the rate limit; the caller has already coalesced
 local function reassert(state, forced)
   if state.closed or not vim.api.nvim_win_is_valid(state.win) then return end
+  if not can_draw(transport(state)) then return end
   local now = vim.uv.now()
   if not forced and state.last_reassert_at and (now - state.last_reassert_at) < REASSERT_GAP_MS then return end
   state.last_reassert_at = now
@@ -1029,6 +1091,7 @@ end
 local function restore_runs_now(state)
   vim.schedule(function()
     if state.closed or not vim.api.nvim_win_is_valid(state.win) then return end
+    if not can_draw(transport(state)) then return end
     local drawn = visible_placements(state)
     write_runs(state, drawn)
     state.owes_invalidate = true
@@ -1083,6 +1146,19 @@ function M.release_mouse(win)
   return dragged
 end
 
+-- Passthrough bypasses tmux popup clipping. Stop both drawing and erasing as
+-- soon as focus is lost; tmux restores its own screen without stale coordinates.
+vim.api.nvim_create_autocmd({ "FocusLost", "FocusGained" }, {
+  callback = function(ev)
+    if not in_tmux() then return end
+    tmux_focused = ev.event == "FocusGained"
+    for _, state in pairs(active) do
+      transport(state)
+      if tmux_focused then schedule_paint(state) end
+    end
+  end,
+})
+
 local decoration_ns = nil
 local decoration_pending = false
 
@@ -1116,14 +1192,18 @@ local function ensure_redraw_notification()
       -- because a scroll may already have changed screenpos(). on_end restores
       -- them after the grid update. Keep the unscaled icon separator intact.
       local out = {}
+      local ctx
       for _, st in pairs(active) do
-        for _, d in ipairs(st.drawn or {}) do
-          table.insert(out, string.format("\x1b[%d;%dH\x1b[%dX", d.row, d.col, d.p.width))
-          if d.icon_col then table.insert(out, string.format("\x1b[%d;%dH\x1b[%dX", d.row, d.icon_col, d.p.scale)) end
+        ctx = transport(st)
+        for _, d in ipairs(not st.closed and can_draw(ctx) and st.drawn or {}) do
+          table.insert(out, position(d.row, d.col, ctx) .. string.format("\x1b[%dX", d.p.width))
+          if d.icon_col then
+            table.insert(out, position(d.row, d.icon_col, ctx) .. string.format("\x1b[%dX", d.p.scale))
+          end
         end
         st.drawn = nil
       end
-      if #out > 0 then vim.api.nvim_ui_send("\x1b7" .. table.concat(out) .. "\x1b8") end
+      if #out > 0 then send("\x1b7" .. table.concat(out) .. "\x1b8", ctx) end
     end,
     on_end = function()
       if decoration_pending or not next(active) then return end
@@ -1154,16 +1234,19 @@ end
 ---@return MdRender.TextSizeState|MdRender.HeadingImageState|nil
 function M.attach(win, content)
   if not config.enabled then return nil end
-  if not content.text_placements or #content.text_placements == 0 then return nil end
+  -- A plain fallback still watches its connection so attaching a supported
+  -- client or enabling passthrough can rebuild the preview without reopening it.
+  local watch_tmux = in_tmux() and config.backend ~= "image" and next(content.heading_anchors or {}) ~= nil
+  if (not content.text_placements or #content.text_placements == 0) and not watch_tmux then return nil end
   if not vim.api.nvim_win_is_valid(win) then return nil end
   local backend = content.heading_backend or M.resolve_backend()
-  if backend == "plain" then return nil end
+  if backend == "plain" and not watch_tmux then return nil end
   if backend == "image" then return require("md-render.heading_image").attach(win, content) end
-  if not M.supports() then return nil end
+  if not watch_tmux and not M.supports() then return nil end
 
   ---@type MdRender.TextSizeState
   local state = {
-    placements = content.text_placements,
+    placements = content.text_placements or {},
     content = content,
     buf = vim.api.nvim_win_get_buf(win),
     win = win,
@@ -1352,6 +1435,7 @@ function M.detach(state)
     state.augroup = nil
   end
   invalidate()
+  if state.tmux then tmux.redraw(state.tmux.client) end
 end
 
 return M

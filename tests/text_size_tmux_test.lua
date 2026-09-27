@@ -96,6 +96,12 @@ tmux.get()
 assert(#requests == 2)
 finish(2, 0, snapshot(nil, change(client, 4, "WezTerm")))
 assert(not tmux.get().supported, "reattachment must not reuse a previous terminal")
+vim.api.nvim_list_uis = function()
+  return { {} }
+end
+local size = require "md-render.text_size"
+size.setup { backend = "native" }
+assert(size.resolve_backend() == "plain" and size.status():find("tmux has not identified", 1, true))
 clock = clock + 60
 tmux.get()
 finish(3, 124, "")
@@ -110,6 +116,67 @@ tmux.get()
 finish(5, 0, snapshot())
 finish(4, 0, snapshot(nil, change(client, 4, "WezTerm")))
 assert(tmux.get().supported, "a stale completion cannot replace the current connection")
+assert(size.resolve_backend() == "native", "native policy uses tmux's positive terminal identification")
+size.setup { backend = "auto" }
+assert(size.resolve_backend() == "native", "auto may use native while image tmux support remains unavailable")
+size.setup { enabled = false }
+assert(size.resolve_backend() == "plain")
+
+-- Focus protects every output path, including queued scrolls and keepalive.
+vim.o.termguicolors = true
+local get, redraw, send = tmux.get, tmux.redraw, vim.api.nvim_ui_send
+ctx.width, ctx.height = vim.o.columns, vim.o.lines
+tmux.get = function()
+  return ctx
+end
+local writes, redraws = {}, 0
+tmux.redraw = function()
+  redraws = redraws + 1
+end
+vim.api.nvim_ui_send = function(bytes)
+  writes[#writes + 1] = bytes
+end
+size.setup { enabled = true, backend = "native" }
+local builder = require("md-render.content_builder").ContentBuilder.new()
+builder:render_document({ "Body.", "", "## Heading" }, { max_width = 60, indent = "" })
+local content = builder:result()
+local buf, win = vim.api.nvim_create_buf(false, true), vim.api.nvim_get_current_win()
+vim.api.nvim_buf_set_lines(buf, 0, -1, false, content.lines)
+vim.api.nvim_win_set_buf(win, buf)
+vim.cmd "redraw"
+local state = size.attach(win, content)
+assert(
+  vim.wait(500, function()
+    return #writes > 0
+  end, 10),
+  "foreground startup must not need an initial FocusGained"
+)
+vim.api.nvim_exec_autocmds("FocusLost", { modeline = false })
+assert(redraws == 1 and state.drawn == nil and state.last_drawn == 0, "tmux owns cleanup on focus loss")
+assert(
+  size.resolve_backend() == "native" and state.content == content,
+  "pausing must not rebuild or change the backend"
+)
+assert(size.status():find("paused", 1, true))
+local before = #writes
+vim.api.nvim_exec_autocmds("WinScrolled", { modeline = false })
+vim.api.nvim_exec_autocmds("SafeState", { modeline = false })
+vim.wait(650, function()
+  return #writes > before
+end, 10)
+assert(
+  #writes == before and state.drawn == nil and state.last_drawn == 0,
+  "paused output stays suppressed across keepalive"
+)
+vim.api.nvim_exec_autocmds("FocusGained", { modeline = false })
+assert(
+  vim.wait(500, function()
+    return #writes > before
+  end, 10),
+  "focus recovery repaints without reopening"
+)
+size.detach(state)
+tmux.get, tmux.redraw, vim.api.nvim_ui_send = get, redraw, send
 vim.system, vim.api.nvim_list_uis, vim.uv.hrtime = system, uis, hrtime
 vim.env.TMUX, vim.env.TMUX_PANE, vim.env.TERM_PROGRAM = unpack(env)
-print "tmux: capability, geometry, visibility, transport and reconnection checks passed"
+print "tmux: capability, geometry, visibility, transport, reconnection and policy checks passed"

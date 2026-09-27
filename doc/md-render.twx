@@ -506,6 +506,27 @@ Markdown 目標沿用目前的預覽視窗；其他檔案在原始編輯視窗�
 
 	require("md-render.text_size").setup { enabled = false }
 <
+Tmux ~
+
+native 標題支援單一 Kitty client，需設定：
+>
+  set -g allow-passthrough on
+  set -g focus-events on
+<
+也支援 Snacks 使用的 allow-passthrough=all。更改焦點回報設定後請重新 attach。
+外掛讀取 tmux 的終端辨識與 pane 座標，不改動設定，也不向 pane 輸入通道
+發送版本查詢。只有聚焦的 pane 會放大；popup、copy mode 與失焦時保留一般
+文字，返回後自動恢復，不切換 backend。外部重繪沿用既有的 500 ms 補繪計時器。
+
+請在前景啟動 Neovim 並維持焦點回報。既有 popup 底下的背景啟動、抑制
+FocusLost／FocusGained，以及 tmux 切換瞬間完全沒有暫態畫面，都不在保證範圍。
+多 client、跨 session 連結 window、巢狀 multiplexer 與被裁切的 window 保留
+一般文字；:MdRender textsize status 會說明降級或焦點暫停。
+
+已在 Linux、Kitty 0.48.2、tmux 3.7c、Neovim 0.12.5 驗證本機、loopback SSH PTY
+及一般 Snacks 圖片共存。圖片式標題的 tmux 支援仍由 #11 另外追蹤；auto 可改用
+已確認支援的 native 後端。
+
                                                        *md-render-eventignore*
 頻繁重繪 ~
 

@@ -100,6 +100,19 @@ A fractionally scaled heading goes out as several runs — `n=` / `d=` shrink th
 
 `.github/workflows/terminal.yml` runs it against Kitty **0.40.0** (the version that introduced the protocol, so the floor this can work on) and **latest**, crossed with Neovim **v0.12.0** and **nightly**, plus a weekly schedule.
 
+### Native headings through tmux
+
+`tests/tmux_terminal_test.py` creates its own tmux server and Kitty window with focus reporting enabled. It checks six heading levels, wrapped CJK text, pane borders, status rows, resize/zoom, scrolling, copy mode, search, Visual/yank, passthrough changes, policy switching, detach/reattach, multiple-client fallback and teardown. Fullscreen and partial popups must keep their keyboard input and remain clear across redraws and keepalive; repeated popup recovery also runs during synchronous plugin-style refreshes with `eventignore=all`. It never uses your existing tmux server. CI runs both passthrough modes under Xvfb:
+
+```sh
+xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_test.py
+xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_test.py --passthrough all
+```
+
+On Linux/X11, `--output /tmp/md-native-tmux-results` also saves terminal snapshots, state and screenshots using ImageMagick. `--ssh` repeats the checks through a temporary loopback OpenSSH server with a generated key and password authentication disabled; it requires `sshd` and `ssh-keygen`. The test removes its server, keys and terminal processes on exit. `--checkout /path/to/checkout` permits a before/after comparison with the same fixture and terminal settings.
+
+`--snacks /path/to/snacks.nvim` loads the real optional backend and adds an image beside the wrapped heading; Snacks sets passthrough to `all`. Inspect the captured image as well as the placeholder assertion, since placeholders alone do not prove PNG visibility. Use an isolated X display: desktop focus changes intentionally pause native output and can otherwise interfere with the checks. The temporary suppression test does not establish support for plugins that yield to the event loop while discarding focus events.
+
 Ubuntu's own kitty package is 0.32 — below the 0.40 the protocol needs — so the workflow takes the release tarball. Kitty then needs its runtime dependencies installed by hand: `fontconfig` plus a font, and the X client libraries it `dlopen`s (`libxcursor1`, `libxrandr2`, `libxi6`, `libxinerama1`, `libxkbcommon-x11-0`). A missing one is a startup failure, not a link error — without libXcursor kitty dies with `Failed to dlopen .../kitty.glfw-x11.so`.
 
 ## Layer 4: Visual regression tests

@@ -257,21 +257,22 @@ vim.api.nvim_win_set_cursor(win, { p.line + 1, 0 })
 paint()
 assert(state.drawn == 2, "moving through the heading margin keeps its image")
 vim.wo[win].cursorline = true
-paint()
-assert(state.drawn == 1, "CursorLine feedback also stays visible from the heading margin")
+for _, option in ipairs { "line", "screenline", "both", "number" } do
+  vim.wo[win].cursorlineopt = option
+  for row = p.line + 1, p.line + p.scale do
+    vim.api.nvim_win_set_cursor(win, { row, 0 })
+    paint()
+    assert(state.drawn == 2, "CursorLine must not replace images while navigating the heading margin")
+  end
+end
+vim.wo[win].cursorlineopt = "both"
+vim.api.nvim_win_set_cursor(win, { p.line + 1, p.col })
 state.gesture = state.entries[1]
 paint()
 assert(state.drawn == 2, "a held image press retains its visible target despite CursorLine")
 heading.release_mouse(win)
 paint()
-assert(state.drawn == 1, "release restores CursorLine feedback")
-vim.wo[win].cursorlineopt = "number"
-paint()
-assert(state.drawn == 2, "number-only cursorline leaves heading styles unchanged")
-vim.wo[win].cursorline, vim.wo[win].cursorlineopt = false, "both"
-vim.api.nvim_win_set_cursor(win, { p.line + 1, p.col })
-paint()
-assert(state.drawn == 1, "a cursor inside the image reveals native text")
+assert(state.drawn == 1, "release reveals text when the cursor is inside the heading")
 assert(#vim.api.nvim_buf_get_extmarks(0, state.mask_ns, 0, -1, {}) == 1, "revealed text is never masked")
 local columns = state.entries[1].cols
 state.entries[1].cols = 4

@@ -991,6 +991,11 @@ with_support(true, function()
   text_size.paint(state)
   assert_eq(#state.drawn, 1, "native heading is initially visible")
   vim.api.nvim_win_set_cursor(win, { row + 1, 0 })
+  local cursorline, cursorlineopt = vim.wo[win].cursorline, vim.wo[win].cursorlineopt
+  vim.wo[win].cursorline, vim.wo[win].cursorlineopt = true, "line"
+  text_size.paint(state)
+  assert_eq(#state.drawn, 0, "native scaled text still yields to CursorLine")
+  vim.wo[win].cursorline, vim.wo[win].cursorlineopt = cursorline, cursorlineopt
   vim.cmd "normal! v$"
   text_size.paint(state)
   assert_eq(#state.drawn, 0, "Visual selection reveals native text")

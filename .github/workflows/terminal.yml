@@ -59,7 +59,7 @@ jobs:
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            xvfb libgl1-mesa-dri xauth fontconfig fonts-dejavu-core fonts-noto-cjk \
+            xvfb tmux libgl1-mesa-dri xauth fontconfig fonts-dejavu-core fonts-noto-cjk \
             libxcursor1 libxrandr2 libxi6 libxinerama1 libxkbcommon-x11-0 libdbus-1-3
           version='${{ matrix.kitty }}'
           if [ "$version" = latest ]; then
@@ -80,6 +80,11 @@ jobs:
 
       - name: Run terminal tests
         run: python3 tests/terminal_test.py
+
+      - name: Run native headings through tmux
+        run: |
+          xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_test.py
+          xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_test.py --passthrough all
 
   notify:
     name: Open an issue on scheduled failure

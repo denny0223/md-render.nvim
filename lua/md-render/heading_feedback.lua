@@ -111,13 +111,9 @@ function M.protected(state, placements)
     or vim.fn.pumvisible() == 1
     or #vim.fn.getmatches(state.win) > 0
   local rows = interaction_rows(state, selecting)
-  -- Keep the pressed image in place until release resolves its visible target.
-  -- Dragging clears the gesture and restores native selection feedback.
-  if
-    vim.wo[state.win].cursorline
-    and vim.wo[state.win].cursorlineopt ~= "number"
-    and not (active and mode == "n" and state.gesture)
-  then
+  -- Keep image typography stable during navigation; CursorLine remains visible
+  -- around the image. Native scaled text still yields to the line's styling.
+  if not state.image_headings and vim.wo[state.win].cursorline and vim.wo[state.win].cursorlineopt ~= "number" then
     rows[vim.api.nvim_win_get_cursor(state.win)[1] - 1] = true
   end
   for row, matched in pairs(search_rows(state, placements)) do

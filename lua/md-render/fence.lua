@@ -11,13 +11,14 @@
 --- paragraph joining, footnote collection, the renderer itself) tracks fences
 --- through this module, so they all agree on where a block starts and ends.
 
+local references = require "md-render.character_references"
 local M = {}
 
 ---@class MdRender.Fence
 ---@field char string "`" or "~"
 ---@field len integer length of the fence run
 ---@field indent string whitespace in front of the fence
----@field info string info string, trimmed
+---@field info string decoded info string, trimmed
 ---@field lang string? first word of the info string
 
 --- Parse an opening fence.
@@ -33,7 +34,7 @@ function M.opening(line)
   -- A backtick fence's info string may not contain a backtick; ``` x ```
   -- is an inline code span, not a fence.
   if run:sub(1, 1) == "`" and info:find("`", 1, true) then return nil end
-  info = vim.trim(info)
+  info = vim.trim(references.decode(info))
   return {
     char = run:sub(1, 1),
     len = #run,

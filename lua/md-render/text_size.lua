@@ -932,8 +932,10 @@ function M.paint(state)
   local cleanup = (moved or state.owes_invalidate) and (state.last_drawn or 0) > 0
   state.owes_invalidate = false
 
-  -- Let tmux manage synchronized output; bypassing it would nest Kitty's frame.
-  if cleanup then vim.api.nvim_ui_send "\x1b[?2026h" end
+  -- tmux redraws its ordinary pane grid when a sync block ends, overwriting
+  -- passthrough headings. Its own terminal batching still applies without this.
+  local sync = cleanup and not ctx
+  if sync then vim.api.nvim_ui_send "\x1b[?2026h" end
   local ok, err = pcall(function()
     if cleanup then
       M._stats.invalidations = M._stats.invalidations + 1
@@ -947,7 +949,7 @@ function M.paint(state)
   end)
   -- Never leave synchronized output open: the terminal would freeze the frame
   -- until its own timeout.
-  if cleanup then vim.api.nvim_ui_send "\x1b[?2026l" end
+  if sync then vim.api.nvim_ui_send "\x1b[?2026l" end
   if not ok then error(err) end
 end
 
@@ -1145,6 +1147,37 @@ function M.release_mouse(win)
   schedule_paint(state)
   return dragged
 end
+
+-- Neovim's synchronized updates make tmux repaint the whole pane from its
+-- ordinary grid after our passthrough writes. Suspend them only while a native
+-- tmux preview is attached; tmux still batches its own terminal updates.
+local saved_termsync, native_tmux_active
+local function update_termsync()
+  local native = false
+  if in_tmux() then
+    for _, state in pairs(active) do
+      native = native or #state.placements > 0
+    end
+  end
+  if native and not native_tmux_active then
+    local previous = vim.o.termsync
+    vim.o.termsync = false
+    saved_termsync = previous
+  elseif not native and saved_termsync ~= nil then
+    local previous = saved_termsync
+    saved_termsync = nil
+    vim.o.termsync = previous
+  end
+  native_tmux_active = native
+end
+
+-- An explicit option change belongs to the user, not to our saved value.
+vim.api.nvim_create_autocmd("OptionSet", {
+  pattern = "termsync",
+  callback = function()
+    saved_termsync = nil
+  end,
+})
 
 -- Passthrough bypasses tmux popup clipping. Stop both drawing and erasing as
 -- soon as focus is lost; tmux restores its own screen without stale coordinates.
@@ -1373,6 +1406,7 @@ function M.attach(win, content)
     state.drawn, state.last_layout, state.last_drawn = nil, nil, 0
     invalidate()
   end)
+  update_termsync()
   ensure_redraw_notification()
 
   schedule_paint(state)
@@ -1403,6 +1437,7 @@ function M.refresh(state, win, content)
   -- Old blocks may sit where the new layout has none, so force the next paint
   -- through the invalidate path even if the positions happen to line up.
   state.last_layout = nil
+  update_termsync()
   schedule_paint(state)
   return state
 end
@@ -1416,6 +1451,7 @@ function M.detach(state)
   if state.key_ns then vim.on_key(nil, state.key_ns) end
   state.drawn = nil
   active[state.win] = nil
+  update_termsync()
   stop_redraw_notification()
   if state.redraw_timer then
     state.redraw_timer:stop()

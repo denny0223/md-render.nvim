@@ -147,7 +147,7 @@ end})
                 backend=s and s.content.heading_backend,
                 placements=s and #s.content.text_placements,
                 drawn=s and s.text_size_state and s.text_size_state.last_drawn,
-                focus_events=_G.focus_events, eventignore=vim.o.eventignore,
+                focus_events=_G.focus_events, eventignore=vim.o.eventignore, termsync=vim.o.termsync,
                 columns=vim.o.columns, rows=vim.o.lines, topline=vim.fn.line('w0'),
                 messages=vim.fn.execute('messages') })
             end)()'''))
@@ -228,6 +228,7 @@ end})
             except AssertionError:
                 print(json.dumps(state(), ensure_ascii=False, indent=2), flush=True)
                 raise
+            assert not state()["termsync"], "native headings disable pane-wide synchronized redraws"
             capture("01-split")
             wait_for(six_levels, "startup redraw restores six complete headings")
             tmux("select-pane", "-t", "headings:0.0")
@@ -279,13 +280,16 @@ end})
             wait_for(six_levels, "scaling returns after yank feedback and leaving the cursor line")
             tmux("set-option", "-p", "-t", pane, "allow-passthrough", "off")
             wait_for(lambda: state().get("backend") == "plain" and not scaled(), "passthrough off restores plain headings")
+            assert state()["termsync"], "plain fallback restores synchronized updates"
             capture("06-disabled-passthrough")
             tmux("set-option", "-p", "-t", pane, "allow-passthrough", options.passthrough)
             wait_for(lambda: state().get("backend") == "native" and six_levels(), "enabling passthrough recovers without reopening")
+            assert not state()["termsync"], "native recovery suspends synchronized updates again"
             lua("vim.cmd('MdRender textsize auto')")
             wait_for(lambda: state()["status"].startswith("auto -> native") and six_levels(), "auto selects verified native fallback")
             lua("vim.cmd('MdRender textsize off')")
             wait_for(lambda: not scaled(), "off clears all enlarged text")
+            assert state()["termsync"], "textsize off restores synchronized updates"
             lua("vim.cmd('MdRender textsize on')")
             wait_for(lambda: six_levels(), "on restores selected policy")
             capture("07-restored")
@@ -319,6 +323,7 @@ end})
             wait_for(six_levels, "removing grouped session restores native headings")
             lua("vim.cmd('MdRender toggle')")
             wait_for(lambda: not scaled(), "preview teardown clears enlarged text")
+            assert state()["termsync"], "closing the preview restores synchronized updates"
             time.sleep(.7)
             assert not scaled(), "a queued paint revived detached headings"
             lua("vim.cmd('MdRender toggle')")

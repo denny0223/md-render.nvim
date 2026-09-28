@@ -1791,6 +1791,7 @@ Markdown.parse_footnotes = function(lines)
   for _, line in ipairs(lines) do
     local is_fence
     open_fence, is_fence = fence_mod.step(open_fence, line)
+    if is_fence then flush() end
     if open_fence or is_fence then goto continue end
 
     local label, text = line:match "^%[%^([^%]]+)%]:%s+(.+)$"

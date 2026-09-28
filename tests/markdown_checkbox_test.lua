@@ -72,6 +72,23 @@ test("partial checkbox text", function()
   assert_eq(highlights[1].hl, "DiagnosticWarn", "partial: highlight should be DiagnosticWarn")
 end)
 
+test("checkbox padding remains outside adjacent text highlights", function()
+  local _, invalid_highlights = render "- [  ] todo"
+  assert_eq(invalid_highlights[1].hl, "Special", "space collapsing cannot turn an invalid marker into a checkbox")
+  for _, marker in ipairs { "[x]", "[X]", "[ ]", "[-]" } do
+    for _, case in ipairs {
+      { "**bold**   [label](/go)", "bold label" },
+      { "*台灣*   [中文](/go)", "台灣 中文" },
+    } do
+      local text, highlights, list_marker = render("- " .. marker .. "   " .. case[1])
+      local checkbox = highlights[1]
+      assert_eq(text:sub(1, #list_marker), list_marker, "rendered marker retains its padding")
+      assert_eq(text:sub(checkbox.col + 1, checkbox.end_col), list_marker, "checkbox span contains no body text")
+      assert_eq(text:sub(#list_marker + 1), case[2], "body spaces still collapse after the preserved marker")
+    end
+  end
+end)
+
 -- Normal list item (no checkbox) - bullet replaced with •
 test("normal list item bullet symbol", function()
   local text, highlights, list_marker = render "- normal item"

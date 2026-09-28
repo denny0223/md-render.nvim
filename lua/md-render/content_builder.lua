@@ -1085,6 +1085,68 @@ local HTML_VOID_ELEMENTS = {
   wbr = true,
 }
 
+--- Strip the display wrapper tags supported by the renderer.
+--- A nil result means a wrapper-only line with no display content.
+---@param line string
+---@return string?
+local function unwrap_html_wrapper(line)
+  -- Closing </div> or </span> on its own line
+  if line:match "^%s*</div>%s*$" or line:match "^%s*</span>%s*$" then return nil end
+  -- Opening <div>/<span> with no content on the same line
+  if
+    (line:match "^%s*<div>%s*$" or line:match "^%s*<div%s[^>]*>%s*$")
+    or (line:match "^%s*<span>%s*$" or line:match "^%s*<span%s[^>]*>%s*$")
+  then
+    return nil
+  end
+  -- Single-line <div>...</div>: extract inner content
+  local div_inner = line:match "^%s*<div[^>]*>%s*(.-)%s*</div>%s*$"
+  if div_inner and div_inner:match "%S" then
+    line = div_inner -- Fall through with extracted content
+  end
+  -- Single-line <span>...</span>: extract inner content
+  local span_inner = line:match "^%s*<span[^>]*>%s*(.-)%s*</span>%s*$"
+  if span_inner and span_inner:match "%S" then
+    line = span_inner -- Fall through with extracted content
+  end
+  -- Opening <div>/<span> with content after the tag (no closing on same line)
+  local div_rest = line:match "^%s*<div[^>]*>%s*(.+)$"
+  if div_rest and not line:match "</div>" then
+    line = div_rest -- Fall through with extracted content
+  end
+  local span_rest = line:match "^%s*<span[^>]*>%s*(.+)$"
+  if span_rest and not line:match "</span>" then
+    line = span_rest -- Fall through with extracted content
+  end
+  return line
+end
+
+--- Both comment syntaxes are opaque to every preprocessing pass. A type-2
+--- HTML block also owns the entire closing line, whose suffix remains literal.
+--- A nil suffix means this line is outside a comment; an empty one is hidden.
+---@param state? 'html'|'obsidian'
+---@param line string
+---@return 'html'|'obsidian'|nil state, string? suffix
+local function block_comment_step(state, line)
+  if state == "obsidian" then
+    local content = unwrap_html_wrapper(line)
+    if content and content:match "^%s*%%%%%s*$" then return nil, "" end
+    return state, ""
+  end
+  if not state then
+    line = unwrap_html_wrapper(line)
+    if not line then return nil, nil end
+    if line:match "^%s*%%%%%s*$" then return "obsidian", "" end
+    if not line:match "^%s*<!%-%-" then return nil, nil end
+  end
+  local _, close_end = line:find("-->", 1, true)
+  if not close_end then return "html", "" end
+  -- Other complete comments on the closing line are hidden too. The remaining
+  -- text is still HTML-block content, so callers must not parse it as Markdown.
+  local suffix = line:sub(close_end + 1):gsub("<!%-%-.-%-%->", "")
+  return nil, suffix
+end
+
 --- Convert accumulated HTML table lines into pipe-table format lines.
 --- Parses <tr>, <th>, <td> structure and extracts align attributes.
 ---@param html_lines string[] lines between <table> and </table> (inclusive)
@@ -1343,9 +1405,23 @@ local function strip_container_indent(lines)
   local result, indents, columns = {}, {}, {}
   local item_cols = {}
   local open_fence, fence_container = nil, 0
+  local comment_state
 
   for i, line in ipairs(lines) do
-    if open_fence then
+    local was_in_comment = comment_state ~= nil
+    local comment_suffix
+    if not open_fence then
+      comment_state, comment_suffix = block_comment_step(comment_state, line)
+    end
+    if comment_suffix ~= nil then
+      result[i] = line
+      local structural_line = expand_leading_tabs(line)
+      local ws = #structural_line:match "^ *"
+      -- The opening line can leave an item; hidden body lines cannot change it.
+      if not was_in_comment then list_container_column(structural_line, item_cols) end
+      local base = item_cols[#item_cols] or 0
+      if base > 0 and ws >= base then indents[i] = string.rep(" ", base) end
+    elseif open_fence then
       local _
       open_fence, _, result[i] =
         fence_mod.step(open_fence, strip_container_prefix(line, fence_container), fence_container)
@@ -1394,6 +1470,8 @@ end
 ---@param ref_links? table<string, string>
 ---@param source_columns? table<integer, integer> original columns after container prefixes
 ---@param fence_containers table<integer, integer> quote-local list columns at fence openings
+---@param comments table<integer, {suffix: string, prefix: string}> comment-owned source rows
+---@param quote_prefix? string display prefix of the current quote container
 ---@return string[] result, integer[] result_indices
 local function join_paragraph_continuations(
   lines,
@@ -1401,7 +1479,9 @@ local function join_paragraph_continuations(
   container_indents,
   ref_links,
   source_columns,
-  fence_containers
+  fence_containers,
+  comments,
+  quote_prefix
 )
   --- Container a quote line belongs to, as its display indent.
   local function quote_container(idx)
@@ -1414,7 +1494,8 @@ local function join_paragraph_continuations(
   local para_indices = {}
   local item_cols = {}
   local open_fence = nil
-  local in_html_comment = false
+  local comment_state
+  local comment_indent = 0
 
   local function flush_para()
     if #para == 0 then return end
@@ -1452,9 +1533,28 @@ local function join_paragraph_continuations(
     local consumed = 1
 
     do
+      local column = source_columns and source_columns[src] or 0
+      local was_in_comment = comment_state ~= nil
+      local comment_suffix
+      if not open_fence then
+        comment_state, comment_suffix = block_comment_step(comment_state, line)
+      end
+      if comment_suffix ~= nil then
+        if not was_in_comment then
+          comment_indent = list_container_column(expand_leading_tabs(line, column), item_cols, column)
+        end
+        comments[src] = {
+          suffix = comment_suffix,
+          prefix = quote_prefix and (quote_prefix .. string.rep(" ", comment_indent)) or "",
+        }
+        flush_para()
+        table.insert(result, line)
+        table.insert(result_indices, src)
+        goto next_line
+      end
+
       -- Quote contents can still carry a list prefix; retain its real column
       -- for the renderer rather than guessing from the opening fence's indent.
-      local column = source_columns and source_columns[src] or 0
       local base = 0
       if not open_fence and not line:match "^%s*$" then
         base = list_container_column(expand_leading_tabs(line, column), item_cols, column)
@@ -1463,25 +1563,6 @@ local function join_paragraph_continuations(
       open_fence, is_fence, line = fence_mod.step(open_fence, line, column, base)
       if is_fence and open_fence then fence_containers[src] = open_fence.container end
       local in_code = open_fence ~= nil
-
-      -- Track multi-line HTML comments
-      if not in_code then
-        if in_html_comment then
-          -- Flush paragraph, keep comment lines separate
-          flush_para()
-          table.insert(result, line)
-          table.insert(result_indices, src)
-          if line:match "%-%->" then in_html_comment = false end
-          goto next_line
-        end
-        if line:match "^%s*<!%-%-" and not line:match "%-%->%s*$" then
-          in_html_comment = true
-          flush_para()
-          table.insert(result, line)
-          table.insert(result_indices, src)
-          goto next_line
-        end
-      end
 
       -- A blockquote is a container of block content: strip one marker level
       -- off the whole run and recurse, so paragraphs (and list items) inside
@@ -1502,8 +1583,16 @@ local function join_paragraph_continuations(
           last = last + 1
         end
         consumed = last - idx
-        local joined, joined_src =
-          join_paragraph_continuations(inner, inner_src, container_indents, ref_links, inner_columns, fence_containers)
+        local joined, joined_src = join_paragraph_continuations(
+          inner,
+          inner_src,
+          container_indents,
+          ref_links,
+          inner_columns,
+          fence_containers,
+          comments,
+          (quote_prefix or "") .. "│ "
+        )
         for k, joined_line in ipairs(joined) do
           local marker = markers[joined_src[k]] or "> "
           -- A quote line with no content must not keep the marker's space.
@@ -1556,16 +1645,26 @@ end
 --- correct buffer position even after collapse.
 ---@param lines string[]
 ---@param src_indices integer[]  parallel original-line indices for `lines`
----@return string[] result, integer[] result_indices
+---@return string[] result, integer[] result_indices, table comments
 local function preprocess_multiline_html(lines, src_indices)
   local result = {}
   local result_indices = {}
   local accum = nil -- { tag: string, lines: string[], depth: integer, src: integer }
   local open_fence = nil
+  local comment_state
+  local comments = {}
 
   for idx, l in ipairs(lines) do
     local src = src_indices[idx]
-    if accum then
+    local comment_suffix
+    if not accum and not open_fence then
+      comment_state, comment_suffix = block_comment_step(comment_state, l)
+    end
+    if comment_suffix ~= nil then
+      comments[src] = { suffix = comment_suffix, prefix = "" }
+      table.insert(result, l)
+      table.insert(result_indices, src)
+    elseif accum then
       table.insert(accum.lines, l)
       local ll = l:lower()
       for _ in ll:gmatch("<" .. accum.tag .. "[%s>]") do
@@ -1634,7 +1733,17 @@ local function preprocess_multiline_html(lines, src_indices)
     end
   end
 
-  return result, result_indices
+  return result, result_indices, comments
+end
+
+-- Keep comment boundaries as blank rows so footnote continuations cannot join
+-- across them. Neither hidden contents nor a literal closing suffix is a definition.
+local function definition_lines(lines, src_indices, comments)
+  local result = {}
+  for i, line in ipairs(lines) do
+    result[i] = comments[src_indices[i]] and "" or line
+  end
+  return result
 end
 
 function ContentBuilder:render_document(lines, opts)
@@ -1653,15 +1762,23 @@ function ContentBuilder:render_document(lines, opts)
   -- can restore it on output.
   local container_indents, source_columns
   local fence_containers = {}
+  local comments
   lines, container_indents, source_columns = strip_container_indent(lines)
-  lines, src_indices = preprocess_multiline_html(lines, src_indices)
-  local ref_links = markdown.parse_reference_links(lines)
-  lines, src_indices =
-    join_paragraph_continuations(lines, src_indices, container_indents, ref_links, source_columns, fence_containers)
+  lines, src_indices, comments = preprocess_multiline_html(lines, src_indices)
+  local ref_links = markdown.parse_reference_links(definition_lines(lines, src_indices, comments))
+  lines, src_indices = join_paragraph_continuations(
+    lines,
+    src_indices,
+    container_indents,
+    ref_links,
+    source_columns,
+    fence_containers,
+    comments
+  )
   lines = markdown.renumber_ordered_lists(lines)
   -- renumber_ordered_lists rewrites text but keeps line count, so
   -- src_indices stays valid.
-  local footnote_defs, footnote_map = markdown.parse_footnotes(lines)
+  local footnote_defs, footnote_map = markdown.parse_footnotes(definition_lines(lines, src_indices, comments))
 
   local base_max_width = opts.max_width or 80
   local base_indent = opts.indent or "  "
@@ -1714,8 +1831,6 @@ function ContentBuilder:render_document(lines, opts)
   local callout_code_has_truncation = false
   local in_math_block = false
   local in_indented_code = false
-  local in_comment_block = false
-  local in_html_comment = false
   local skip_next_line = false
   local in_details = false
   local details_src_idx = nil
@@ -1926,43 +2041,73 @@ function ContentBuilder:render_document(lines, opts)
       goto continue
     end
 
+    -- Quote-local code and folds end when their container ends, even when the
+    -- next line is hidden. Qiita note markers are added later in this loop.
+    if not in_qiita_note and not line:match "^>" then
+      in_callout_code_block = false
+      callout_code_fence = nil
+      callout_code_lang = nil
+      skip_callout_body = false
+      current_alert_type = nil
+    end
+    if skip_callout_body then goto continue end
+
+    -- Consume comment-owned lines before definitions, tags, and Setext headings
+    -- can reinterpret them. Only the closing line may contain visible text.
+    local comment = comments[src_indices[src_idx]]
+    if comment and not in_code_block and not in_callout_code_block then
+      local comment_suffix = comment.suffix
+      if not skip_details_body and comment_suffix:match "%S" then
+        flush_table()
+        if lines_shown >= max_lines then
+          self:add_line(indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
+          truncated = true
+          break
+        end
+        local comment_lines_before = #self.lines
+        local comment_text = comment.prefix .. comment_suffix
+        local comment_highlights = {}
+        if comment.prefix ~= "" then
+          comment_highlights[1] = { col = 0, end_col = #comment.prefix, hl = "FloatBorder" }
+        end
+        local comment_width = base_max_width - vim.api.nvim_strwidth(indent)
+        if in_details and details_summary_rendered then
+          comment_width = comment_width - vim.fn.strdisplaywidth "│ "
+        end
+        comment_width = math.max(1, comment_width)
+        if vim.api.nvim_strwidth(comment_text) > comment_width then
+          self:add_wrapped_markdown(comment_text, comment_highlights, {}, indent, comment_width, comment.prefix)
+        else
+          self:add_simple_markdown(comment_text, comment_highlights, {}, indent)
+        end
+        if current_alert_type and comment.prefix ~= "" then
+          self:apply_alert_styling(comment_lines_before, #self.lines, current_alert_type, false)
+        end
+        if in_details and details_summary_rendered then apply_details_body_prefix(comment_lines_before, #self.lines) end
+        lines_shown = lines_shown + #self.lines - comment_lines_before
+        prev_was_heading = false
+        prev_was_hr = false
+        prev_rendered_blank = false
+        prev_list_marker_type = nil
+        if lines_shown >= max_lines then
+          self:add_line(indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
+          truncated = true
+          break
+        end
+      end
+      goto continue
+    end
+
     -- Skip reference link definition lines
     if not in_code_block and markdown.is_reference_link_def(line) then goto continue end
 
     -- Skip footnote definition lines (rendered in footnote section at end)
     if not in_code_block and markdown.is_footnote_def(line) then goto continue end
 
-    -- Handle <div>/<span> wrapper tags (outside code blocks)
-    -- Strip wrapper tags and let inner content fall through to normal processing.
+    -- Strip wrapper tags before ordinary block processing.
     if not in_code_block and not in_callout_code_block then
-      -- Closing </div> or </span> on its own line
-      if line:match "^%s*</div>%s*$" or line:match "^%s*</span>%s*$" then goto continue end
-      -- Opening <div>/<span> with no content on the same line
-      if
-        (line:match "^%s*<div>%s*$" or line:match "^%s*<div%s[^>]*>%s*$")
-        or (line:match "^%s*<span>%s*$" or line:match "^%s*<span%s[^>]*>%s*$")
-      then
-        goto continue
-      end
-      -- Single-line <div>...</div>: extract inner content
-      local div_inner = line:match "^%s*<div[^>]*>%s*(.-)%s*</div>%s*$"
-      if div_inner and div_inner:match "%S" then
-        line = div_inner -- Fall through with extracted content
-      end
-      -- Single-line <span>...</span>: extract inner content
-      local span_inner = line:match "^%s*<span[^>]*>%s*(.-)%s*</span>%s*$"
-      if span_inner and span_inner:match "%S" then
-        line = span_inner -- Fall through with extracted content
-      end
-      -- Opening <div>/<span> with content after the tag (no closing on same line)
-      local div_rest = line:match "^%s*<div[^>]*>%s*(.+)$"
-      if div_rest and not line:match "</div>" then
-        line = div_rest -- Fall through with extracted content
-      end
-      local span_rest = line:match "^%s*<span[^>]*>%s*(.+)$"
-      if span_rest and not line:match "</span>" then
-        line = span_rest -- Fall through with extracted content
-      end
+      line = unwrap_html_wrapper(line)
+      if not line then goto continue end
     end
 
     -- Detect setext heading: current non-blank line followed by === or ---
@@ -2013,38 +2158,6 @@ function ContentBuilder:render_document(lines, opts)
     local is_blank = line:match "^%s*$" ~= nil
     local is_heading = (not in_code_block) and line:match "^#+%s+" ~= nil
     local is_table_line = (not in_code_block) and line:match "^%s*|" ~= nil
-
-    -- Skip body lines of a collapsed foldable callout
-    if skip_callout_body then
-      if line:match "^>" then
-        goto continue
-      else
-        skip_callout_body = false
-        current_alert_type = nil
-      end
-    end
-
-    -- Toggle Obsidian block comment (outside code blocks)
-    if not in_code_block and line:match "^%s*%%%%%s*$" then
-      in_comment_block = not in_comment_block
-      goto continue
-    end
-    if in_comment_block then goto continue end
-
-    -- Handle HTML comments (<!-- ... -->) outside code blocks
-    if not in_code_block then
-      if in_html_comment then
-        if line:match "%-%->" then in_html_comment = false end
-        goto continue
-      end
-      -- Single-line HTML comment
-      if line:match "^%s*<!%-%-.*%-%->%s*$" then goto continue end
-      -- Multi-line HTML comment start
-      if line:match "^%s*<!%-%-" then
-        in_html_comment = true
-        goto continue
-      end
-    end
 
     -- Handle <details>/<summary> HTML blocks (outside code blocks)
     if not in_code_block and not in_callout_code_block then
@@ -3039,13 +3152,6 @@ function ContentBuilder:render_document(lines, opts)
       end
 
       if not handled then
-        -- Reset callout code block state if we leave the callout
-        if in_callout_code_block and not (line:match "^>") then
-          in_callout_code_block = false
-          callout_code_fence = nil
-          callout_code_lang = nil
-        end
-
         -- Detect image lines: ![alt](path), <img src="path">, ![[image]]
         local img_path, img_alt
         if not current_alert_type then

@@ -315,9 +315,7 @@ function M.attach(win, content)
         for _, link in ipairs(content.link_metadata or {}) do
           if byte and link.line == p.line and p.col + byte >= link.col_start and p.col + byte < link.col_end then
             -- URLs enter a terminal control sequence here, not just an API.
-            urls[column] = link.url:gsub("[%c]", function(c)
-              return string.format("%%%02X", c:byte())
-            end)
+            urls[column] = require("md-render.links").osc8_url(link.url)
             linked = true
             break
           end

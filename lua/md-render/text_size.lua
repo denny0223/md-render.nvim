@@ -489,11 +489,17 @@ local _sgr_cache = {}
 --- own cell attributes, so fg/bg have to be re-stated explicitly — including
 --- the background, or the scaled block would show the terminal's default
 --- background instead of the float's.
----@param hl_name string
+---@param hl_name string|string[]
 ---@param normal_name string
 ---@return string?
 local function sgr_for(hl_name, normal_name)
-  local hl = vim.api.nvim_get_hl(0, { name = hl_name, link = false })
+  local groups = type(hl_name) == "table" and hl_name or { hl_name }
+  local hl = {}
+  for _, name in ipairs(groups) do
+    local style = vim.api.nvim_get_hl(0, { name = name, link = false })
+    hl = style.nocombine and style or vim.tbl_extend("force", hl, style)
+  end
+  hl.nocombine = nil
   if normal_name == "NormalFloat" then
     hl = vim.tbl_extend("force", vim.api.nvim_get_hl(0, { name = normal_name, link = false }), hl)
   end
@@ -501,17 +507,28 @@ local function sgr_for(hl_name, normal_name)
   hl.fg, hl.bg = hl.fg or normal.fg, hl.bg or normal.bg
   hl.default, hl.cterm, hl.ctermfg, hl.ctermbg = nil, nil, nil, nil
   if hl.blend == 0 then hl.blend = nil end
-  local supported = { fg = true, bg = true, bold = true, italic = true }
+  local supported =
+    { fg = true, bg = true, sp = true, bold = true, italic = true, underline = true, strikethrough = true }
   for key, value in pairs(hl) do
     if value and not supported[key] then return nil end
   end
-  local key = hl_name .. ":" .. normal_name
+  local key = table.concat(groups, ",") .. ":" .. normal_name
   local cached = _sgr_cache[key]
   if cached and vim.deep_equal(cached.style, hl) then return cached.sgr end
 
   local parts = { "\x1b[0m" }
   if hl.bold then table.insert(parts, "\x1b[1m") end
   if hl.italic then table.insert(parts, "\x1b[3m") end
+  if hl.underline then table.insert(parts, "\x1b[4m") end
+  if hl.strikethrough then table.insert(parts, "\x1b[9m") end
+  if hl.sp then
+    parts[#parts + 1] = string.format(
+      "\x1b[58;2;%d;%d;%dm",
+      bit.rshift(hl.sp, 16),
+      bit.band(bit.rshift(hl.sp, 8), 255),
+      bit.band(hl.sp, 255)
+    )
+  end
   if hl.fg then
     table.insert(
       parts,
@@ -553,8 +570,9 @@ end
 ---@field line integer 0-indexed buffer line the scaled text is painted over
 ---@field col integer 0-indexed byte column where the scaled text starts
 ---@field text string the plain-size text underneath, used to verify the anchor
----@field runs? { text: string, w: integer }[] native `split_run` output for `text`
+---@field runs? { text: string, w: integer, hl?: string[], url?: string, byte?: integer, width?: integer }[] native runs
 ---@field width? integer cells the native painted runs cover
+---@field columns? table<integer, integer|false> native painted cells mapped to source bytes
 ---@field scale integer cell scale passed as `s=`
 ---@field num integer? fractional numerator passed as `n=`
 ---@field den integer? fractional denominator passed as `d=`
@@ -672,6 +690,14 @@ local function visible_placements(state)
   local out = {}
   for _, p in ipairs(state.placements) do
     local sgr = sgr_for(p.hl, p.normal or "Normal")
+    local styles = {}
+    for index, run in ipairs(p.runs) do
+      styles[index] = sgr_for(run.hl or p.hl, p.normal or "Normal")
+      if not styles[index] then
+        sgr = nil
+        break
+      end
+    end
     -- Guard against a layout that moved without us being told. Placements are
     -- anchored to rendered line numbers, and anything that rebuilds the content
     -- (an image finishing its download and changing height, a fold, a live
@@ -707,7 +733,7 @@ local function visible_placements(state)
           local ipos = vim.fn.screenpos(win, p.line + 1, p.icon_col + 1)
           if ipos.row == pos.row and ipos.col >= left then icon_col = ipos.col end
         end
-        table.insert(out, { p = p, row = pos.row, col = pos.col, icon_col = icon_col, sgr = sgr })
+        table.insert(out, { p = p, row = pos.row, col = pos.col, icon_col = icon_col, sgr = sgr, styles = styles })
       end
     end
   end
@@ -722,7 +748,7 @@ end
 local function layout_key(drawn)
   local parts = {}
   for _, d in ipairs(drawn) do
-    table.insert(parts, string.format("%d:%d:%d:%s", d.row, d.col, d.p.line, d.sgr))
+    table.insert(parts, string.format("%d:%d:%d:%s", d.row, d.col, d.p.line, table.concat(d.styles, "")))
   end
   return table.concat(parts, ";")
 end
@@ -792,12 +818,15 @@ local function write_runs(state, drawn)
     -- a reliable way to chain them: `w=` decides how wide a run lands, not
     -- the text in it.
     local col = d.col
-    for _, run in ipairs(d.p.runs) do
+    for index, run in ipairs(d.p.runs) do
       local meta = "s=" .. d.p.scale
       if d.p.num then meta = meta .. string.format(":n=%d:d=%d:w=%d:v=%d", d.p.num, d.p.den, run.w, VERTICAL_ALIGN) end
       table.insert(out, string.format("\x1b[%d;%dH", d.row, col))
-      table.insert(out, sgr)
+      table.insert(out, d.styles[index])
+      -- OSC 8 belongs to the scaled cells, not the underlying buffer columns.
+      if run.url then table.insert(out, "\x1b]8;;" .. require("md-render.links").osc8_url(run.url) .. "\x1b\\") end
       table.insert(out, string.format("\x1b]66;%s;%s\x1b\\", meta, run.text))
+      if run.url then table.insert(out, "\x1b]8;;\x1b\\") end
       col = col + d.p.scale * (run.w > 0 and run.w or vim.api.nvim_strwidth(run.text))
     end
   end
@@ -1016,6 +1045,44 @@ end
 ---@type table<integer, MdRender.TextSizeState>
 local active = {}
 
+--- Project only currently painted native cells, including their lower row.
+function M.mouse_position(mouse)
+  local state = active[mouse.winid]
+  if not state or state.closed then return mouse end
+  if not vim.api.nvim_win_is_valid(state.win) or vim.api.nvim_win_get_buf(state.win) ~= state.buf then return mouse end
+  local targets = state.gesture and { state.gesture } or state.drawn or {}
+  for _, drawn in ipairs(targets) do
+    local p = drawn.p
+    local column = mouse.screencol - drawn.col + 1
+    if
+      p.columns
+      and mouse.screenrow >= drawn.row
+      and mouse.screenrow < drawn.row + p.scale
+      and column >= 1
+      and column <= p.width
+    then
+      local byte = vim.list_contains(state.placements, p) and p.columns[column]
+      return vim.tbl_extend("force", mouse, {
+        line = byte and p.line + 1 or 0,
+        column = byte and p.col + byte + 1 or 0,
+        coladd = 0,
+      }),
+        true,
+        drawn
+    end
+  end
+  return mouse
+end
+
+function M.release_mouse(win)
+  local state = active[win]
+  if not state then return false end
+  local dragged = state.dragged
+  state.gesture, state.press, state.dragged = nil, nil, nil
+  schedule_paint(state)
+  return dragged
+end
+
 local decoration_ns = nil
 local decoration_pending = false
 
@@ -1219,6 +1286,10 @@ function M.attach(win, content)
   )
 
   active[win] = state
+  require("md-render.heading_mouse").attach(state, M.mouse_position, schedule_paint, function()
+    state.drawn, state.last_layout, state.last_drawn = nil, nil, 0
+    invalidate()
+  end)
   ensure_redraw_notification()
 
   schedule_paint(state)
@@ -1241,6 +1312,7 @@ function M.refresh(state, win, content)
     M.detach(state)
     return nil
   end
+  state.gesture, state.press, state.dragged = nil, nil, nil
   state.placements = content.text_placements
   state.content, state.buf = content, vim.api.nvim_win_get_buf(win)
   state.search_key = nil
@@ -1258,6 +1330,8 @@ function M.detach(state)
   if not state then return end
   if state.image_headings then return require("md-render.heading_image").detach(state) end
   state.closed = true
+  if state.key_ns then vim.on_key(nil, state.key_ns) end
+  state.drawn = nil
   active[state.win] = nil
   stop_redraw_notification()
   if state.redraw_timer then

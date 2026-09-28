@@ -360,7 +360,7 @@ Image headings are disabled on Windows and through tmux. Linux with direct Kitty
 
 #### Native text headings
 
-Select `:MdRender textsize native` for Kitty >= 0.40 without image dependencies. If a heading contains inline formatting, links, or has too little width for scaling, the whole document uses ordinary headings to keep its hierarchy consistent. Search, selection and unsupported highlights can still reveal individual headings as text.
+Select `:MdRender textsize native` for Kitty >= 0.40 without image dependencies. Native headings preserve inline styles and links, and wrap to their painted width. If the available width is too narrow for scaling, or a heading contains control characters such as tabs, the whole document uses ordinary headings to preserve its text and hierarchy. Search, selection and unsupported highlights can still reveal individual headings as text.
 
 Native headings reserve two rows per wrapped line. Scrolling or overlapping windows may briefly reveal plain text, and redraws can be more expensive. Telescope and Snacks picker previews do not use native scaling. See `:help md-render-text-size` for troubleshooting.
 

@@ -197,10 +197,10 @@ MdPreview.build_content = function(lines, opts)
   })
 
   if b.native_heading_fallback then
-    -- Rebuild once so rich/narrow native headings cannot invert the size
+    -- Rebuild once so unscalable native headings cannot invert the size
     -- hierarchy or leave wrapping and empty rows reserved for scaled text.
     local content = MdPreview.build_content(lines, vim.tbl_extend("force", opts, { text_scale = false }))
-    content.heading_fallback = "document contains headings that cannot use native scaling"
+    content.heading_fallback = b.native_heading_fallback
     return content
   end
   return b:result()

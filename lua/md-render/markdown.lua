@@ -15,7 +15,7 @@
 
 ---@class MdRender.Markdown.Removal
 ---@field start integer 0-indexed position in the input text
----@field count integer number of characters removed
+---@field count integer number of bytes removed
 
 ---@class MdRender.Markdown
 local Markdown = {}
@@ -53,6 +53,35 @@ end
 
 --- ASCII punctuation characters that can be backslash-escaped (CommonMark spec)
 local ESCAPABLE_CHARS = [[!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~]]
+
+--- Adjust highlight and link positions after byte removals
+---@param highlights MdRender.Markdown.Highlight[]
+---@param links MdRender.Markdown.Link[]
+---@param removals MdRender.Markdown.Removal[]
+---@param hl_count integer number of highlights to adjust (from the beginning)
+---@param link_count integer number of links to adjust (from the beginning)
+local function adjust_positions(highlights, links, removals, hl_count, link_count)
+  if #removals == 0 then return end
+  local function adjust(pos)
+    local shift = 0
+    for _, r in ipairs(removals) do
+      if pos >= r.start + r.count then
+        shift = shift + r.count
+      elseif pos > r.start then
+        shift = shift + (pos - r.start)
+      end
+    end
+    return pos - shift
+  end
+  for i = 1, hl_count do
+    highlights[i].col = adjust(highlights[i].col)
+    highlights[i].end_col = adjust(highlights[i].end_col)
+  end
+  for i = 1, link_count do
+    links[i].col_start = adjust(links[i].col_start)
+    links[i].col_end = adjust(links[i].col_end)
+  end
+end
 
 --- Protect code spans by replacing them with placeholders before inline processing.
 --- Code spans take precedence over almost all other inline constructs (CommonMark spec).
@@ -169,8 +198,7 @@ end
 local function restore_backslashes(text, escapes, highlights, links)
   if #escapes == 0 then return text end
   local result = {}
-  local byte_offset = 0 -- cumulative byte shift (3-byte placeholder → 1-byte char = -2 each)
-  local offsets = {} -- {pos_in_output, delta} for position adjustments
+  local removals = {} -- positions in the input, as used by existing ranges
   local i = 1
   while i <= #text do
     local b1 = text:byte(i)
@@ -178,10 +206,8 @@ local function restore_backslashes(text, escapes, highlights, links)
       local b3 = text:byte(i + 2)
       if b3 >= 0x80 then
         local orig_byte = b3 - 0x80
-        local out_pos = #table.concat(result)
-        table.insert(offsets, { pos = out_pos, delta = 2 })
+        table.insert(removals, { start = i, count = 2 })
         table.insert(result, string.char(orig_byte))
-        byte_offset = byte_offset + 2
         i = i + 3
       else
         table.insert(result, text:sub(i, i))
@@ -193,28 +219,7 @@ local function restore_backslashes(text, escapes, highlights, links)
     end
   end
 
-  if byte_offset > 0 and (highlights or links) then
-    local function adjust(pos)
-      local shift = 0
-      for _, o in ipairs(offsets) do
-        if pos > o.pos then shift = shift + o.delta end
-      end
-      return pos - shift
-    end
-    if highlights then
-      for _, hl in ipairs(highlights) do
-        hl.col = adjust(hl.col)
-        hl.end_col = adjust(hl.end_col)
-      end
-    end
-    if links then
-      for _, link in ipairs(links) do
-        link.col_start = adjust(link.col_start)
-        link.col_end = adjust(link.col_end)
-      end
-    end
-  end
-
+  adjust_positions(highlights or {}, links or {}, removals, #(highlights or {}), #(links or {}))
   return table.concat(result)
 end
 
@@ -291,69 +296,37 @@ end
 ---@return string
 local function decode_html_entities(text, highlights, links)
   local result = {}
-  local offsets = {}
+  local removals = {}
   local i = 1
   while i <= #text do
+    local reference, replacement
     if text:sub(i, i) == "&" then
-      -- Try numeric reference &#123; or &#x1F;
-      local num_match, num_end = text:match("^(&#(%d+);)", i)
-      if not num_match then
-        num_match, num_end = text:match("^(&#[xX](%x+);)", i)
-        if num_match then num_end = tonumber(num_end, 16) end
-      else
-        num_end = tonumber(num_end)
+      local digits
+      reference, digits = text:match("^(&#(%d+);)", i)
+      local base = 10
+      if not reference then
+        reference, digits = text:match("^(&#[xX](%x+);)", i)
+        base = 16
       end
-      if num_match and num_end then
-        local replacement = utf8_char(num_end)
-        local out_pos = #table.concat(result)
-        local delta = #num_match - #replacement
-        if delta ~= 0 then table.insert(offsets, { pos = out_pos, delta = delta }) end
-        table.insert(result, replacement)
-        i = i + #num_match
+      if reference then
+        replacement = utf8_char(tonumber(digits, base))
       else
-        -- Try named reference &amp;
-        local name, named_match = text:match("^&(%a+)(;)", i)
-        if name and named_match then
-          local replacement = HTML_ENTITIES[name] or HTML_ENTITIES[name:lower()]
-          if replacement then
-            local full = "&" .. name .. ";"
-            local out_pos = #table.concat(result)
-            local delta = #full - #replacement
-            if delta ~= 0 then table.insert(offsets, { pos = out_pos, delta = delta }) end
-            table.insert(result, replacement)
-            i = i + #full
-          else
-            table.insert(result, "&")
-            i = i + 1
-          end
-        else
-          table.insert(result, "&")
-          i = i + 1
-        end
+        local name
+        reference, name = text:match("^(&(%a+);)", i)
+        if name then replacement = HTML_ENTITIES[name] or HTML_ENTITIES[name:lower()] end
       end
+    end
+    if replacement then
+      table.insert(removals, { start = i - 1 + #replacement, count = #reference - #replacement })
+      table.insert(result, replacement)
+      i = i + #reference
     else
       table.insert(result, text:sub(i, i))
       i = i + 1
     end
   end
 
-  if #offsets > 0 then
-    local function adjust(pos)
-      local shift = 0
-      for _, o in ipairs(offsets) do
-        if pos > o.pos then shift = shift + o.delta end
-      end
-      return pos - shift
-    end
-    for _, hl in ipairs(highlights) do
-      hl.col = adjust(hl.col)
-      hl.end_col = adjust(hl.end_col)
-    end
-    for _, link in ipairs(links) do
-      link.col_start = adjust(link.col_start)
-      link.col_end = adjust(link.col_end)
-    end
-  end
+  adjust_positions(highlights, links, removals, #highlights, #links)
 
   return table.concat(result)
 end
@@ -414,35 +387,6 @@ local ALERT_TYPES = {
   QUOTE = { icon = "󱗝", label = "Quote" },
   CITE = { icon = "󱗝", label = "Cite", style = "QUOTE" },
 }
-
---- Adjust highlight and link positions after character removals
----@param highlights MdRender.Markdown.Highlight[]
----@param links MdRender.Markdown.Link[]
----@param removals MdRender.Markdown.Removal[]
----@param hl_count integer number of highlights to adjust (from the beginning)
----@param link_count integer number of links to adjust (from the beginning)
-local function adjust_positions(highlights, links, removals, hl_count, link_count)
-  if #removals == 0 then return end
-  local function adjust(pos)
-    local shift = 0
-    for _, r in ipairs(removals) do
-      if pos >= r.start + r.count then
-        shift = shift + r.count
-      elseif pos > r.start then
-        shift = shift + (pos - r.start)
-      end
-    end
-    return pos - shift
-  end
-  for i = 1, hl_count do
-    highlights[i].col = adjust(highlights[i].col)
-    highlights[i].end_col = adjust(highlights[i].end_col)
-  end
-  for i = 1, link_count do
-    links[i].col_start = adjust(links[i].col_start)
-    links[i].col_end = adjust(links[i].col_end)
-  end
-end
 
 --- Process paired markers (bold, strikethrough) by removing markers and adding highlights
 ---@param text string The input text

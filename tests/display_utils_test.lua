@@ -85,6 +85,43 @@ test("plain heading links retain nested inline style order", function()
   vim.api.nvim_buf_delete(buf, { force = true })
 end)
 
+test("entity decoding preserves literal code and inline positions", function()
+  local text, highlights, links =
+    require("md-render.markdown").render "&amp; `&#10; &amp;` \\&#10; **bold** [link](https://example.com/?a=1&amp;b=2)"
+  assert_eq(text, "& &#10; &amp; &#10; bold link", "code and escaped entities stay literal")
+  local spans = {}
+  for _, hl in ipairs(highlights) do
+    spans[hl.hl] = text:sub(hl.col + 1, hl.end_col)
+  end
+  assert_eq(spans.MdRenderInlineCode, "&#10; &amp;", "code highlight covers the literal text")
+  assert_eq(spans.Bold, "bold", "following bold span stays aligned")
+  assert_eq(#links, 1, "one link remains")
+  assert_eq(text:sub(links[1].col_start + 1, links[1].col_end), "link", "following link stays aligned")
+  assert_eq(links[1].url, "https://example.com/?a=1&b=2", "link destination entities still decode")
+end)
+
+test("code styling does not turn HTML content into a literal code span", function()
+  local markdown = require "md-render.markdown"
+  for _, case in ipairs {
+    { "<code>&amp;</code>", "&" },
+    { "<code>\\*</code>", "*" },
+    { "<code>\\_</code>", "_" },
+    { "<code>&#10; &#xF00A; \\*</code>", "  \u{F00A} *" },
+    { "`<code>&amp; \\*</code>`", "<code>&amp; \\*</code>" },
+    { "<code>&amp; `&amp; \\*` \\_</code>", "& &amp; \\* _", "&amp; \\*" },
+  } do
+    local text, highlights, links = markdown.render("&amp; \\* " .. case[1] .. " [LINK](https://example.com)")
+    assert_eq(text, "& * " .. case[2] .. " LINK", "code content: " .. case[1])
+    local code = {}
+    for _, hl in ipairs(highlights) do
+      if hl.hl == "MdRenderInlineCode" then code[#code + 1] = text:sub(hl.col + 1, hl.end_col) end
+    end
+    assert_eq(vim.deep_equal(code, case[3] and { case[2], case[3] } or { case[2] }), true, "code style ranges")
+    assert_eq(#links, 1, "one following link")
+    assert_eq(text:sub(links[1].col_start + 1, links[1].col_end), "LINK", "following link stays aligned")
+  end
+end)
+
 -- #12: compare the text addressed by ranges, not just whether they are in bounds.
 test("entities and escapes preserve ranges before, inside, and after replacements", function()
   local markdown = require "md-render.markdown"
@@ -94,6 +131,8 @@ test("entities and escapes preserve ranges before, inside, and after replacement
     { "\\* \\# ", "* # " },
     { "&amp; \\* ", "& * " },
     { "\\* &amp; ", "* & " },
+    { "\\&amp; ", "&amp; " },
+    { "`&amp;` ", "&amp; " },
     { "&#x4E2D; ", "中 " },
   }
   for _, prefix in ipairs(parts) do
@@ -101,6 +140,7 @@ test("entities and escapes preserve ranges before, inside, and after replacement
       for _, target in ipairs {
         { "**TARGET&amp;**", "TARGET&", "Bold" },
         { "*TARGET&#x1F600;*", "TARGET😀", "Italic" },
+        { "`TARGET&amp;`", "TARGET&amp;", "MdRenderInlineCode" },
         { "[TARGET&#x4E2D;END](https://example.com/?a=1&amp;b=2)", "TARGET中END", "MdRenderLink" },
       } do
         local text, highlights, links = markdown.render(prefix[1] .. target[1] .. " " .. suffix[1])
@@ -121,6 +161,132 @@ test("entities and escapes preserve ranges before, inside, and after replacement
       end
     end
   end
+end)
+
+test("decoded Unicode and code literals never become restoration instructions", function()
+  local markdown = require "md-render.markdown"
+  for _, case in ipairs {
+    { "&#xF00A; \\*", "\u{F00A} *" },
+    { "&#xF02A; \\*", "\u{F02A} *" },
+    { "&#xF1000;1&#xF1001; `SAFE`", "\u{F1000}1\u{F1001} SAFE" },
+    { "\\* `\u{F00A} \\* &amp;`", "* \u{F00A} \\* &amp;" },
+    { "&#42;literal&#42;", "*literal*" },
+    { "&#92;&#42;literal&#42;", "\\*literal*" },
+    { "&amp;#10;", "&#10;" },
+    { "&am`p;`", "&amp;" },
+    { "&amp\\;", "&amp;" },
+    { "&\\#65;", "&#65;" },
+  } do
+    local text = markdown.render(case[1])
+    assert_eq(text, case[2], "literal output: " .. case[1])
+  end
+end)
+
+test("entity line endings produce writable paragraphs and table cells", function()
+  local Builder = require("md-render.content_builder").ContentBuilder
+  local markdown = require "md-render.markdown"
+  local buf = vim.api.nvim_create_buf(false, true)
+  local ns = vim.api.nvim_create_namespace "entity_line_endings_test"
+  for _, entity in ipairs { "&#10;", "&#x0A;", "&#13;", "&#x0D;" } do
+    local input = "before" .. entity .. entity .. "after"
+    assert_eq(markdown.render(input), "before  after", "decoded line endings render as inline spaces")
+    for _, lines in ipairs {
+      { input },
+      { "| value |", "| --- |", "| " .. input .. " |", "| `" .. input .. "` |" },
+    } do
+      for _, expanded in ipairs { false, true } do
+        local builder = Builder.new()
+        builder:render_document(lines, { max_width = 30, text_scale = false, expand_state = { [1] = expanded } })
+        local content = builder:result()
+        display_utils.apply_content_to_buffer(buf, ns, content)
+        assert_eq(
+          vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), content.lines),
+          true,
+          "both collapsed and expanded content can be written exactly"
+        )
+        vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+      end
+    end
+  end
+  vim.api.nvim_buf_delete(buf, { force = true })
+end)
+
+test("public previews preserve entity text, ranges, and sources across table toggles", function()
+  local preview = require "md-render.preview"
+  local image = require "md-render.image"
+  local supports_kitty = image.supports_kitty
+  image.supports_kitty = function()
+    return false
+  end
+  for _, case in ipairs {
+    { lines = { "foo&#10;&#10;bar" }, expected = "  foo  bar" },
+    { lines = { "**&amp;** &amp; &amp;" }, expected = "  & & &", bold = true },
+    { lines = { "&#xF00A; \\*" }, expected = "  \u{F00A} *" },
+    { lines = { "&#xF1000;1&#xF1001; `SAFE`" }, expected = "  \u{F1000}1\u{F1001} SAFE" },
+    { lines = { "<code>&amp; \\* \\_</code> `&amp;`" }, expected = "  & * _ &amp;" },
+    {
+      lines = {
+        "| value | link |",
+        "| --- | --- |",
+        "| `&#10; &amp;` | [TARGET](https://example.com) |",
+        "| foo&#10;&#10;bar | **&amp;** &amp; &amp; |",
+      },
+    },
+  } do
+    local source = vim.api.nvim_create_buf(false, true)
+    vim.bo[source].filetype = "markdown"
+    vim.api.nvim_buf_set_lines(source, 0, -1, false, case.lines)
+    vim.api.nvim_set_current_buf(source)
+    local ok, err = pcall(function()
+      preview.toggle { text_scale = false, max_width = 25 }
+      local session = assert(preview._toggle_sessions[source], "preview session missing")
+      for step = 1, case.expected and 1 or 3 do
+        local content = session.content
+        assert_eq(
+          vim.deep_equal(vim.api.nvim_buf_get_lines(session.buf, 0, -1, false), content.lines),
+          true,
+          "actual preview buffer contains the full rendered content"
+        )
+        if case.expected then
+          assert_eq(#content.lines, 1, "entities remain in one paragraph")
+          assert_eq(content.lines[1], case.expected, "exact preview text")
+        end
+        local bold, code = {}, {}
+        for _, line_hl in ipairs(content.highlights) do
+          for _, hl in ipairs(line_hl.groups) do
+            local value = content.lines[line_hl.line + 1]:sub(hl.col + 1, hl.end_col)
+            if hl.hl == "Bold" and value == "&" then bold[#bold + 1] = value end
+            if hl.hl == "MdRenderInlineCode" then code[#code + 1] = value end
+          end
+        end
+        if case.bold or not case.expected then assert_eq(table.concat(bold), "&", "only the first entity is bold") end
+        if not case.expected then
+          assert_eq(table.concat(code), "&#10; &amp;", "table code preserves literal entities")
+          local labels = {}
+          for _, link in ipairs(content.link_metadata) do
+            labels[#labels + 1] = content.lines[link.line + 1]:sub(link.col_start + 1, link.col_end)
+            assert_eq(link.url, "https://example.com", "table link destination stays intact")
+          end
+          assert_eq(table.concat(labels), step == 2 and "TARGET" or "TARG", "expanded/collapsed link coverage")
+          if step < 3 then
+            local region = assert(content.expandable_regions[1], "expandable table missing")
+            vim.api.nvim_win_set_cursor(session.win, { region.start_line + 1, 0 })
+            vim.fn.maparg("<CR>", "n", false, true).callback()
+            assert_eq(session.expand_state[region.block_id], step == 1, "Enter toggles the actual table")
+          end
+        end
+      end
+    end)
+    if preview._toggle_sessions[source] then preview.toggle() end
+    assert_eq(ok, true, "public preview completes: " .. tostring(err))
+    assert_eq(
+      vim.deep_equal(vim.api.nvim_buf_get_lines(source, 0, -1, false), case.lines),
+      true,
+      "source remains unchanged after closing the preview"
+    )
+    vim.api.nvim_buf_delete(source, { force = true })
+  end
+  image.supports_kitty = supports_kitty
 end)
 
 test("repaint handles empty content, insertions, deletions, and disjoint changes", function()

@@ -122,6 +122,23 @@ test("code styling does not turn HTML content into a literal code span", functio
   end
 end)
 
+test("named references use exact names and retain official uppercase aliases", function()
+  local markdown = require "md-render.markdown"
+  for _, case in ipairs {
+    { "&amp;&AMP;&COPY;&GT;&LT;&QUOT;&REG;&TRADE;", '&&©><"®™' },
+    { "&frac14;&frac12;&frac34;", "¼½¾" },
+    { "&FRAC14;&Frac12;&fRaC34;&Amp;&CoPy;", "&FRAC14;&Frac12;&fRaC34;&Amp;&CoPy;" },
+  } do
+    local text, highlights, links = markdown.render("[**" .. case[1] .. "**](https://example.com/?q=" .. case[1] .. ")")
+    assert_eq(text, case[2], "exact named reference text")
+    for _, hl in ipairs(highlights) do
+      assert_eq(text:sub(hl.col + 1, hl.end_col), case[2], "named reference ranges remain aligned")
+    end
+    assert_eq(#links, 1, "one named reference link")
+    assert_eq(links[1].url, "https://example.com/?q=" .. case[2], "destinations use exact names too")
+  end
+end)
+
 -- #12: compare the text addressed by ranges, not just whether they are in bounds.
 test("entities and escapes preserve ranges before, inside, and after replacements", function()
   local markdown = require "md-render.markdown"
@@ -160,6 +177,32 @@ test("entities and escapes preserve ranges before, inside, and after replacement
         end
       end
     end
+  end
+end)
+
+test("numeric references retain invalid syntax and replace invalid codepoints", function()
+  local markdown = require "md-render.markdown"
+  for _, case in ipairs {
+    { "&#0;", "�" },
+    { "&#xD800;", "�" },
+    { "&#xDFFF;", "�" },
+    { "&#x110000;", "�" },
+    { "&#9999999;", "�" },
+    { "&#xD7FF;", "\u{D7FF}" },
+    { "&#xE000;", "\u{E000}" },
+    { "&#x10FFFF;", "\u{10FFFF}" },
+    { "&#0000065;", "A" },
+    { "&#x000041;", "A" },
+    { "&#87654321;", "&#87654321;" },
+    { "&#00000065;", "&#00000065;" },
+    { "&#x0000041;", "&#x0000041;" },
+    { "&#x;", "&#x;" },
+    { "&#65", "&#65" },
+    { "&frac34;", "¾" },
+  } do
+    local text, highlights = markdown.render("**" .. case[1] .. "** &amp; &amp;")
+    assert_eq(text, case[2] .. " & &", "reference spelling: " .. case[1])
+    assert_eq(text:sub(highlights[1].col + 1, highlights[1].end_col), case[2], "reference stays bold")
   end
 end)
 
@@ -224,6 +267,7 @@ test("public previews preserve entity text, ranges, and sources across table tog
     { lines = { "&#xF00A; \\*" }, expected = "  \u{F00A} *" },
     { lines = { "&#xF1000;1&#xF1001; `SAFE`" }, expected = "  \u{F1000}1\u{F1001} SAFE" },
     { lines = { "<code>&amp; \\* \\_</code> `&amp;`" }, expected = "  & * _ &amp;" },
+    { lines = { "&AMP; &frac14; &FRAC14;" }, expected = "  & ¼ &FRAC14;" },
     {
       lines = {
         "| value | link |",

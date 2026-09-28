@@ -3,13 +3,20 @@
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
 
 local preview = require "md-render.preview"
-local heading_prefix = require("md-render.markdown").heading_icon_prefix(2)
+local heading_prefix = "## "
 local text = string.rep("甲乙丙丁", 12)
 local cases = {
   { name = "paragraph", source = { text }, line = 1, prefix = "", continuation = "" },
   { name = "list", source = { "- " .. text }, line = 1, prefix = "• ", continuation = "  " },
   { name = "quote", source = { "> " .. text }, line = 1, prefix = "│ ", continuation = "│ " },
-  { name = "heading", source = { "## " .. text }, line = 1, prefix = heading_prefix, continuation = "" },
+  {
+    name = "heading",
+    source = { "## " .. text },
+    line = 1,
+    prefix = heading_prefix,
+    continuation = "",
+    heading = true,
+  },
   {
     name = "callout",
     source = { "> [!NOTE]", "> " .. text },
@@ -40,6 +47,7 @@ local cases = {
   },
   {
     name = "heading in list",
+    heading = true,
     source = { "1. 項目", "", "   ## " .. text },
     line = 3,
     prefix = "   " .. heading_prefix,
@@ -53,6 +61,16 @@ local cases = {
     continuation = "  ",
   },
 }
+for level = 1, 2 do
+  cases[#cases + 1] = {
+    name = "H" .. level .. " in details",
+    heading = true,
+    source = { "<details open>", "<summary>Details</summary>", string.rep("#", level) .. " " .. text, "</details>" },
+    line = 3,
+    prefix = "│ " .. string.rep("#", level) .. " ",
+    continuation = "│ ",
+  }
+end
 
 local checked = 0
 for _, case in ipairs(cases) do
@@ -65,7 +83,12 @@ for _, case in ipairs(cases) do
       local chunks = {}
       for i, line in ipairs(out.lines) do
         assert(vim.api.nvim_strwidth(line) <= width, case.name .. " overflows " .. width .. ": " .. line)
-        if out.source_line_map[i] == case.line and not line:match "^%s*$" then
+        -- H1/H2 separators share the source line but are not document text.
+        if
+          out.source_line_map[i] == case.line
+          and not line:match "^%s*$"
+          and (not case.heading or out.heading_lines[i - 1])
+        then
           local prefix = indent .. (#chunks == 0 and case.prefix or case.continuation)
           assert(line:sub(1, #prefix) == prefix, case.name .. " lost its indent")
           chunks[#chunks + 1] = line:sub(#prefix + 1)

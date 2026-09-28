@@ -588,7 +588,7 @@ end)
 
 test("html: <h1> renders as heading", function()
   local lines = render_doc { "<h1>Title</h1>" }
-  assert_eq(#lines, 1, "html h1: should have 1 line")
+  assert_eq(#lines, 2, "html h1: includes its separator")
   assert(lines[1]:find "Title", "html h1: should contain title text")
 end)
 

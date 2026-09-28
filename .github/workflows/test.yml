@@ -48,8 +48,10 @@ jobs:
           magick --version
           git -C "$MD_RENDER_SNACKS_PATH" rev-parse HEAD
           rpm -q python3-gobject python3-cairo pango gobject-introspection google-noto-sans-mono-vf-fonts google-noto-sans-cjk-vf-fonts
-      - name: Run heading raster integration test
-        run: python3 tests/heading_raster_test.py
+      - name: Run heading integration tests
+        run: |
+          python3 tests/heading_raster_test.py
+          nvim --headless -u NONE --noplugin -l tests/heading_typography_integration.lua
       - name: Run Snacks integration tests
         run: |
           for test in tests/snacks_*_test.lua tests/image_view_lifecycle_test.lua; do

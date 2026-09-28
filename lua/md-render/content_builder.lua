@@ -592,21 +592,6 @@ local function heading_level_of(source_text)
   return markers and math.min(#markers, 6) or nil
 end
 
---- How many cells of the level icon's padding wrapping would eat.
----
---- `heading_icon_prefix` puts the glyph in a two-cell box and one space after
---- it, but `wrap_words` reassembles segments with a single space between them,
---- so a heading long enough to wrap comes back with one space where it should
---- have two. `restore_heading_icon_pad` puts them back; this is what the wrap
---- has to hold in reserve so that the restored line is not a cell wider than
---- the width it was wrapped for.
----@param level integer 1-6
----@return integer
-local function heading_icon_pad_loss(level)
-  local markdown = require "md-render.markdown"
-  return #markdown.heading_icon_prefix(level) - #markdown.heading_icon(level) - 1
-end
-
 --- How to draw a source line's heading, and the width its text has to wrap to
 --- in order to fit once scaled. Returns nil when the heading must stay plain.
 ---@param source_text string raw source line (still carrying the `#` markers)
@@ -632,55 +617,6 @@ local function heading_scale_plan(source_text, indent, max_width)
   return spec, avail
 end
 
---- Put back the icon padding that wrapping collapsed on a heading's first line.
----
---- The padding is what gives the one-cell Nerd Font glyph its two cells, so a
---- heading that lost it sits a column left of every heading that did not. Under
---- `md-render.text_size` it is worse than uneven: the icon is painted as a run
---- two cells wide, and with only one space after the glyph that run ends where
---- the text begins, leaving no gap between them at all.
----
---- Restoring it here rather than teaching `wrap_words` to keep runs of spaces
---- keeps the change to the one place it is known to be wrong. Collapsing is
---- what prose wants everywhere else, and the icon is chrome this module added,
---- not text the document asked for.
----@param line integer 0-indexed rendered line the heading starts on
----@param indent string
----@param level integer 1-6
-function ContentBuilder:restore_heading_icon_pad(line, indent, level)
-  local markdown = require "md-render.markdown"
-  local text = self.lines[line + 1]
-  if not text then return end
-
-  local icon = markdown.heading_icon(level)
-  local icon_end = #indent + #icon
-  if text:sub(#indent + 1, icon_end) ~= icon then return end
-
-  local spaces = text:match("^ *", icon_end + 1) or ""
-  local at = icon_end + #spaces
-  local pad = (#markdown.heading_icon_prefix(level) - #icon) - #spaces
-  if pad <= 0 then return end
-
-  self.lines[line + 1] = text:sub(1, at) .. string.rep(" ", pad) .. text:sub(at + 1)
-  -- Everything at or past the insertion point moves right by that much. The
-  -- heading's own highlight starts where the indent ends and runs to the end of
-  -- the line, so it keeps the icon and grows to cover the new cells.
-  for _, entry in ipairs(self.highlights) do
-    if entry.line == line then
-      for _, group in ipairs(entry.groups) do
-        if group.col >= at then group.col = group.col + pad end
-        if group.end_col >= at then group.end_col = group.end_col + pad end
-      end
-    end
-  end
-  for _, link in ipairs(self.link_metadata) do
-    if link.line == line then
-      if link.col_start >= at then link.col_start = link.col_start + pad end
-      if link.col_end >= at then link.col_end = link.col_end + pad end
-    end
-  end
-end
-
 --- Register one scaled-text placement per rendered line of a heading.
 ---
 --- The heading lines themselves stay in the buffer at plain size; the scaled
@@ -697,40 +633,13 @@ end
 function ContentBuilder:add_heading_text_scale(heading_line, indent, spec, level, max_width)
   local text_size = require "md-render.text_size"
   local scale = spec.s
-  -- The level icon is left out of the scaled run and stays as Neovim drew it.
-  -- Kitty gives a scaled run exactly `scale` cells per source cell, and it
-  -- reports these Nerd Font glyphs as one cell wide even though they are drawn
-  -- wider (hence `pad_icon`). Inside a multicell group there is no neighbouring
-  -- cell to overflow into, so the glyph gets clipped to its box and `󰉬` renders
-  -- as a bare "H".
-  -- Match the glyph plus whatever spacing follows rather than the exact
-  -- prefix. `restore_heading_icon_pad` has already put back the space wrapping
-  -- collapsed, so the two agree — but this runs over lines the builder wrote,
-  -- and a placement pointed a column off would paint the heading over its own
-  -- icon.
-  local icon_pat = "^" .. vim.pesc(require("md-render.markdown").heading_icon(level)) .. "%s*"
-
   local segments = (#self.lines - heading_line) / scale
   for n = 0, segments - 1 do
     local line = heading_line + n * scale
     local col = #indent
     local content = (self.lines[line + 1] or ""):sub(col + 1)
-    -- Only the first line of a wrapped heading carries the icon.
-    local icon, icon_col
-    local prefix = content:match(icon_pat)
-    if prefix then
-      -- Kept so `text_size` can repaint it at plain size in the same block as
-      -- the heading: the scaled run is aligned inside a two-row block, and an
-      -- icon left as Neovim drew it would stay on the block's first row while
-      -- the text moved. The glyph alone, not the padding after it.
-      icon = require("md-render.markdown").heading_icon(level)
-      icon_col = col
-      col = col + #prefix
-      content = content:sub(#prefix + 1)
-    end
     if content ~= "" then
-      -- The runs start after the indent and, on the first line, after the
-      -- unscaled level icon; both come out of what they have to fit into.
+      -- The indent comes out of the scaled runs' available width.
       local budget = max_width - vim.api.nvim_strwidth((self.lines[line + 1] or ""):sub(1, col))
       local runs, width = text_size.split_run(content, spec, budget)
       table.insert(self.text_placements, {
@@ -744,8 +653,6 @@ function ContentBuilder:add_heading_text_scale(heading_line, indent, spec, level
         den = spec.d,
         hl = "MdRenderH" .. level,
         normal = self.heading_normal or "Normal",
-        icon = icon,
-        icon_col = icon_col,
       })
     end
   end
@@ -798,7 +705,7 @@ function ContentBuilder:add_image_heading(text, highlights, links, indent, max_w
     if style.start < style["end"] then styles[#styles + 1] = style end
   end
   local opts = text_size.config().image
-  local entry = require("md-render.heading_layout").request({
+  local request = {
     font = opts.font,
     font_pixels = opts.font_size,
     cell_width = math.floor(cell.cell_w),
@@ -808,20 +715,51 @@ function ContentBuilder:add_image_heading(text, highlights, links, indent, max_w
         text = text:sub(offset + 1),
         ratio = spec.ratio,
         rows = spec.s,
-        max_cols = width,
+        -- Keep the native fallback within the same window when shrinking text.
+        max_cols = math.max(1, math.floor(width * math.min(1, spec.ratio))),
         fg = normal.fg or base.fg or 0xffffff,
         bg = normal.bg or base.bg,
         bold = false,
         styles = styles,
       },
     },
-  }, opts.python)
-  self.heading_layouts[entry.key] = entry
-  if not entry.output then return false end
-  for _, line in ipairs(entry.output.lines) do
-    if line.fallback or vim.fn.strdisplaywidth(line.text) > width or vim.fn.strdisplaywidth(line.text) > line.cols then
-      return false
+  }
+  local entry
+  while true do
+    entry = require("md-render.heading_layout").request(request, opts.python)
+    self.heading_layouts[entry.key] = entry
+    if not entry.output then return false end
+    local limit = request.entries[1].max_cols
+    for _, line in ipairs(entry.output.lines) do
+      if line.fallback then return false end
+      local native_width = vim.fn.strdisplaywidth(line.text)
+      if native_width > width then
+        limit = math.min(limit, request.entries[1].max_cols - 1, math.floor(line.cols * width / native_width))
+      end
     end
+    if limit == request.entries[1].max_cols then break end
+    if limit < 1 then return false end
+    -- Font fallback can pack more CJK text than the native buffer can hold.
+    -- Tighten the measured wrap without mutating a cached layout request.
+    request = vim.deepcopy(request)
+    request.entries[1].max_cols = limit
+  end
+  -- An opaque image must cover the native text without replacing terminal
+  -- cells with spaces. Shape first so padding uses Neovim's exact line widths.
+  local native_cols, needs_padding = {}, false
+  for index, line in ipairs(entry.output.lines) do
+    native_cols[index] = vim.fn.strdisplaywidth(line.text)
+    needs_padding = needs_padding or (not line.transparent and line.cols < native_cols[index])
+  end
+  if needs_padding then
+    request = vim.deepcopy(request)
+    request.entries[1].native_cols = native_cols
+    entry = require("md-render.heading_layout").request(request, opts.python)
+    self.heading_layouts[entry.key] = entry
+    if not entry.output then return false end
+  end
+  for _, line in ipairs(entry.output.lines) do
+    if line.fallback or (not line.transparent and line.cols < vim.fn.strdisplaywidth(line.text)) then return false end
     -- A narrow linked glyph can fall between terminal cell centers. Keep text
     -- when any visible link fragment would have no projected mouse target.
     for _, link in ipairs(links) do
@@ -909,8 +847,10 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
   -- A scaled heading wraps at 1/ratio of the usual width and reserves
   -- `s - 1` rows under each of its lines for the taller glyphs.
   local spec, level, content_width
+  local heading_text, plain_prefix = rendered_text, ""
   local backend = heading_content and self:heading_renderer() or "plain"
   local image_heading = backend == "image"
+  local plain_heading = backend == "plain" or not self.text_scale
   if heading_content then
     level = heading_level_of(text)
     -- OSC 66 paints one style per heading; rich headings must retain their
@@ -919,12 +859,21 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
       spec, content_width = heading_scale_plan(text, indent, max_width)
     end
     if self.text_scale and backend == "native" and not spec then self.native_heading_fallback = true end
+    -- A stable plain layout keeps Markdown's rank markers. Paint-time image
+    -- or native feedback retains its existing layout instead of inserting text.
+    if plain_heading then
+      plain_prefix = string.rep("#", level) .. " "
+      rendered_text = plain_prefix .. rendered_text
+      for _, hl in ipairs(md_highlights) do
+        hl.col, hl.end_col = hl.col + #plain_prefix, hl.end_col + #plain_prefix
+      end
+      md_highlights[1].col = 0
+      for _, link in ipairs(md_links) do
+        link.col_start, link.col_end = link.col_start + #plain_prefix, link.col_end + #plain_prefix
+      end
+    end
   end
   local line_gap = spec and (spec.s - 1) or 0
-  -- Held back from the wrap and given back afterwards; see
-  -- `heading_icon_pad_loss`.
-  local icon_pad_loss = level and heading_icon_pad_loss(level) or 0
-
   -- The window budget includes indent; add_wrapped_markdown adds it after
   -- wrapping. Scaled headings already have it removed by heading_scale_plan.
   local indent_w = vim.api.nvim_strwidth(indent)
@@ -943,12 +892,11 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
         md_highlights,
         md_links,
         indent,
-        wrap_max - icon_pad_loss,
+        wrap_max,
         quote_prefix,
         list_marker,
         line_gap
       )
-      if level then self:restore_heading_icon_pad(lines_before_fn, indent, level) end
     else
       self:add_simple_markdown(rendered_text, md_highlights, md_links, indent)
       for _ = 1, line_gap do
@@ -973,15 +921,21 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
       local line = self.lines[row + 1]
       if line ~= "" then
         self.heading_lines[row] = true
-        local prefix = row == lines_before_fn and (indent .. markdown.heading_icon_prefix(level))
+        local prefix = row == lines_before_fn and (indent .. plain_prefix .. markdown.heading_icon_prefix(level))
           or (line:match "^%s*" or "")
         local fragment = line:sub(#prefix + 1)
-        local first = rendered_text:find(fragment, offset + 1, true)
-        if first then
+        local first = heading_text:find(fragment, offset + 1, true)
+        if first and fragment ~= "" then
           self.heading_positions[row + 1] = { byte = first - 1, col = #prefix, length = #fragment }
           offset = first - 1 + #fragment
         end
       end
+    end
+    if level <= 2 then
+      local char = plain_heading and level == 1 and "═" or "─"
+      local rule = indent
+        .. string.rep(char, math.max(0, math.floor((max_width - indent_w) / vim.fn.strdisplaywidth(char))))
+      self:add_line(rule, { { col = #indent, end_col = #rule, hl = "FloatBorder" } })
     end
   end
 
@@ -1841,6 +1795,8 @@ function ContentBuilder:render_document(lines, opts)
     for i = from_line + 1, to_line do
       local line_text = self.lines[i]
       self.lines[i] = line_text:sub(1, indent_len) .. prefix .. line_text:sub(indent_len + 1)
+      local position = self.heading_positions[i]
+      if position then position.col = position.col + prefix_len end
     end
 
     for _, hl_info in ipairs(self.highlights) do
@@ -3311,8 +3267,13 @@ function ContentBuilder:render_document(lines, opts)
           if in_details and heading_level_of(line) and self:heading_renderer() == "image" then
             self.text_scale = false
           end
+          -- Reserve the prefix that apply_details_body_prefix() adds later.
+          local text_width = base_max_width
+          if in_details and details_summary_rendered and not skip_details_body then
+            text_width = math.max(1, text_width - vim.fn.strdisplaywidth "│ ")
+          end
           local alert_type, fold_mod =
-            self:add_markdown_line(line, indent, base_max_width, repo_base_url, autolinks, ref_links, footnote_map)
+            self:add_markdown_line(line, indent, text_width, repo_base_url, autolinks, ref_links, footnote_map)
           self.text_scale = text_scale
           local lines_after = #self.lines
           if alert_type then

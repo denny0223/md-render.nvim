@@ -27,7 +27,7 @@ function M.mouse_position(mouse)
         mouse.screenrow >= pos.row
         and mouse.screenrow < pos.row + p.scale
         and column >= 1
-        and column <= entry.cols
+        and column <= math.max(entry.cols, vim.fn.strdisplaywidth(p.text))
       then
         local byte = entry.columns[column]
         return vim.tbl_extend("force", mouse, {

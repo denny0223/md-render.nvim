@@ -330,92 +330,45 @@ See `:help :MdRender-auto` for behavior details — the `i` / `I` / `a` / `A` / 
 
 ### Scaled headings (experimental)
 
-Headings default to `auto`: **image → native OSC 66 → ordinary text**. Images require a positive terminal PNG response, measured cell dimensions, `termguicolors` and a working Pango/Cairo renderer. If any environment requirement fails, `auto` tries native sizing; if that is unavailable too, headings stay ordinary text. Pending work also leaves text visible. In image mode, individual unsupported headings retain text without changing the backend for other headings.
+Headings default to `auto`: **image → native OSC 66 → ordinary text**. Use `:MdRender textsize status` to check the active backend and fallback reason. After fixing the environment, run `:MdRender textsize auto` to retry.
 
-`:MdRender textsize status` reports the selected policy, effective backend and fallback reason. PNG acknowledgement has a 1.5-second timeout; layout work has a 5-second timeout. Environment failures are cached for the session without repeated subprocesses or automatic warnings. Run `:MdRender textsize auto` to retry after fixing the environment. Source/render toggling and `off` / `on` retain your backend choice; `native` skips image detection and dependencies, while explicit `image` falls back only to ordinary text. Configure `backend = "auto"` in the setup below to retain automatic selection.
+| Mode | H1 | H2 | H3 | H4 | H5 | H6 |
+|---|---|---|---|---|---|---|
+| Image | 2× | 1.5× | 1.25× | 1× | 0.875× | 0.85× |
+| Native | 2× | 1.75× | 1.5× | 1.4× | 1.25× | 1.17× |
+
+Image and native layouts omit level icons and use a single rule below H1/H2. Ordinary-text layouts retain `#` through `######`, left-aligned within their container, with a double rule below H1 and a single rule below H2.
 
 #### Try image headings
 
-Run `:MdRender textsize image`, then open a preview as usual with `:MdRender toggle`. Existing previews update immediately. `:MdRender textsize native` restores OSC 66 headings; `:MdRender textsize off` shows ordinary text.
+Run `:MdRender textsize image`, then `:MdRender toggle` to open a preview. Images require Neovim >= 0.12, confirmed terminal PNG support (Kitty >= 0.28), `termguicolors`, Python 3, PyGObject, Pycairo and Pango/PangoCairo. Install the Python packages and fonts on the Neovim host. Explicit `image` mode uses ordinary text when unavailable.
 
-This experimental backend uses [Pango](https://www.pango.org/) and [Cairo](https://www.cairographics.org/) for natural glyph spacing at the six heading sizes. It requires Python 3, PyGObject, Pycairo, and introspection data for Pango/PangoCairo and Cairo. Missing dependencies leave headings as ordinary text. To configure the font and base size in pixels:
+To change the font or base size:
 
 ```lua
 require("md-render.text_size").setup {
-  backend = "image",
+  backend = "auto",
   image = { font = "Noto Sans Mono,Noto Sans Mono CJK TC", font_size = "auto", python = "python3" },
 }
 ```
 
-The default `font_size = "auto"` calibrates the configured font against the terminal cell dimensions and preserves six distinct heading ratios. A positive pixel size overrides it. Pango measures wrapping and glyph positions; those same byte ranges define the buffer text, inline styles and link targets. Layouts are produced asynchronously and reused while the preview is open.
+`font_size = "auto"` fits the font to the terminal cells; a positive pixel value overrides it. Images follow your heading and inline highlights. Unsupported glyphs/styles and headings inside `<details>` retain text. After changing fonts, run `:MdRender textsize image` to refresh.
 
-Hover keeps images in place. A click resolves the visible glyph, including the lower image row, through the existing internal-anchor handler. Moving through a heading's left margin keeps its image; moving the cursor into the image area reveals that rendered segment so the cursor stays accurate. Dragging selects from the clicked character, and Visual selection reveals only headings on the selected rows. User-provided yank/highlight feedback also reveals the affected rows for its own duration, then images return. Search matches remain visible without hiding unrelated headings or clearing the search state. Visible inactive previews retain their images, and reflow/backend changes preserve the source passage and heading character being read. Background reflow waits for selections, pending operators, command-line input and yank feedback to finish.
+Search, selection and cursor movement into a heading reveal the affected text without changing its layout or inserting markers. Internal anchors use ordinary clicks; external links also support the terminal shortcut (Ctrl+Shift+click in Kitty). For terminal text selection, use `:MdRender textsize off` or return to source with `:MdRender toggle`.
 
-Images use your `MdRenderH1`–`MdRenderH6` and inline highlight groups, with `Normal` or `NormalFloat` providing the base colors. Unset backgrounds stay transparent; a window-scoped text overlay prevents the underlying glyphs showing through without changing buffer text or coordinates. Colors, backgrounds, bold, italic, underlines and strikethrough retain their Markdown style order below user highlights such as `vim.hl.on_yank()`. Custom reverse, `nocombine`, blending, alternate underline styles or window highlight overrides use text fallback. Missing glyphs, oversized fonts, unrepresentable text/link targets and headings inside `<details>` also retain text. Colorscheme and terminal resize events refresh layouts; direct changes to rendered highlight groups withdraw stale images and rebuild them. After changing fonts, `:MdRender textsize image` refreshes manually and retries failed rendering. Use `:MdRender textsize status` for the fallback reason; explicit image mode also reports renderer errors in `:messages`.
-
-**Terminal interactions:** open external links with your terminal's OSC 8 shortcut (Ctrl+Shift+click in Kitty), including both rows of an image heading. URLs follow the visible glyphs and still open through the terminal's configured handler. Open internal anchors with an ordinary mouse click; use `gf` on local file links. For terminal Shift-drag selection, use `:MdRender textsize off` for rendered text, or `:MdRender toggle` to return to Markdown source; image cells do not contain selectable labels.
-
-**Compatibility:** image headings require Neovim >= 0.12, confirmed PNG support and `termguicolors` (Kitty >= 0.28); native sizing requires Kitty >= 0.40. Tested on Linux with direct Kitty and a loopback SSH PTY to Linux. Python, Pango/Cairo and the configured fonts belong on the Neovim host; PNG bytes travel through the terminal connection without shared image files. Image headings are disabled on Windows and through tmux. Other OS/client combinations remain unverified. For terminal tools or assistive technology that needs a text-only view, use `textsize off` or the source buffer; screen-reader compatibility has not been tested.
+Image headings are disabled on Windows and through tmux. Linux with direct Kitty and SSH to Linux has been tested; other OS/client combinations and screen readers remain unverified.
 
 #### Native text headings
 
-> **Experimental.** New and Kitty-only. The UX may change or the feature may be withdrawn. Please report issues or rough edges.
+Select `:MdRender textsize native` for Kitty >= 0.40 without image dependencies. If a heading contains inline formatting, links, or has too little width for scaling, the whole document uses ordinary headings to keep its hierarchy consistent. Search, selection and unsupported highlights can still reveal individual headings as text.
 
-Kitty 0.40 added the [text sizing protocol](https://sw.kovidgoyal.net/kitty/text-sizing-protocol/) (OSC 66), which draws text at a multiple of the base font size. md-render uses it to give every heading level its own size:
+Native headings reserve two rows per wrapped line. Scrolling or overlapping windows may briefly reveal plain text, and redraws can be more expensive. Telescope and Snacks picker previews do not use native scaling. See `:help md-render-text-size` for troubleshooting.
 
-| Level | `#` | `##` | `###` | `####` | `#####` | `######` |
-|---|---|---|---|---|---|---|
-| Size | 2.00x | 1.75x | 1.50x | 1.40x | 1.25x | 1.17x |
-
-Select this renderer with `:MdRender textsize native`; `auto` uses it when image requirements fail. Search, selection and user highlights temporarily reveal ordinary text. Turn scaling off with `:MdRender textsize off`, or permanently with:
+Use `:MdRender textsize off` to turn scaling off, or disable it in your configuration:
 
 ```lua
 require("md-render.text_size").setup { enabled = false }
 ```
-
-The ladder is fixed. Kitty's `s=` scale multiplies the *cells* a run occupies, not just the font, so every level stays at `s=2` — one extra rendered row, never more — and the sizes below 2x come from the protocol's fractional scale plus a `w=` width per run. The protocol caps `d` at 15 and `w` at 7, which is why the deepest level lands on 1.17x rather than something closer to plain.
-
-Headings wrap at `1 / size` of the usual width so that every level scales rather than only the ones that happen to fit, and each wrapped line gets its own two-row block.
-
-A fractionally scaled heading goes out as several runs, because each has to declare its width in whole cells while its text does not measure a whole number of them. That width is rounded up — Kitty drops characters that do not fit — and the runs are cut where the leftover cell disappears: at a boundary that comes out exact where there is one, and otherwise after a space, so the slack reads as a slightly wider word gap instead of a hole in a word.
-
-An emoji gets a run to itself. A run that declares a width is one multicell character to Kitty, and a multicell is shaped with a single font, so an emoji sharing a run with ordinary text takes the whole run down with it: measured on Kitty 0.48, every cell of the run turns into a missing-glyph box when the emoji sits in the middle of it, and the rest of the text is dropped when the emoji comes first. Alone in a run it renders correctly. The cost is the rounding that run carries of its own, which shows as slightly wider gaps either side of the emoji, and a heading that no longer fits is left plain. `#` is exempt: it scales with `s=` alone, so its run declares no width and Kitty splits the text into cells and picks a font per cell itself.
-
-The scaled text is written straight to the terminal, the same way inline images are, so Neovim knows nothing about it. The plain-size heading stays in the buffer underneath and the scaled text is painted over it — every terminal repaint degrades to the normal heading rather than to a blank line, and `y` / `/` / `:w` still see the real text.
-
-Known limitations:
-
-- **Kitty >= 0.40 only.** Support is detected by asking the terminal to identify itself (XTVERSION) and requires a positive answer. This is deliberately strict: some terminals swallow an OSC 66 sequence *together with its payload text*, which would delete the heading rather than fall back to unscaled text. Everywhere else the feature costs nothing and headings render as they always did.
-- If a native preview contains a heading with inline formatting, links, or too little width for scaling, all headings in the document use ordinary text. This preserves a consistent hierarchy, styles and links. `:MdRender textsize status` reports the reason. Unsupported highlight effects, indexed colors and custom highlight namespaces can still reveal ordinary text during painting without rebuilding the document.
-- Every level reserves a two-row block while only `#` fills it, so the rest are centered in theirs (`v=2`) instead of sitting against the top edge, which is the protocol's default. At `######` — 1.17x in a block twice as tall — the top edge left almost a whole row empty under the heading.
-- The level icon stays at normal size, but goes out as a run of its own rather than as the plain text underneath, so it is centered in the same block and stays level with the heading it labels (`n=1:d=2` against `s=2` cancels the cell scale exactly). Its own run is also what keeps it legible: Kitty gives a scaled run exactly `s` cells per source cell, and these Nerd Font glyphs report as one cell wide while being drawn wider, so sharing the heading's run would clip the icon — `󰉬` would render as a bare "H". Alone, `w=1` gives it the two-cell block the icon already occupies, and it fits.
-- A heading whose second row would fall outside the window stays plain until scrolled into view.
-- A repaint by anything else (another plugin forcing a redraw, a message or popup overlapping the window, the terminal shifting cells for a mouse scroll) drops the heading back to plain size, and there is no way to stop that happening. Recovery is on three signals, in order of how quickly they arrive: a scroll, resize, or window opening or closing repaints at once; any redraw at all is picked up from a decoration provider on the tick after it; and `SafeState` covers the rest, rate-limited, with a 500 ms timer behind it for a repaint that never settles. md-render's own repaints are handled properly rather than waited out — inline images and scaled headings both draw outside Neovim's grid and are both destroyed by a full repaint, so whichever of the two repaints announces it and the other puts itself back at once.
-- **A plugin that repaints inside `eventignore = "all"` costs a frame that cannot be recovered any sooner.** Autocmds are how everything above learns that anything happened, and that setting silences all of them. The decoration provider still fires — it is not an autocmd — so the heading comes back on the next tick, but it does go for that one frame. [nvim-scrollview](https://github.com/dstein64/nvim-scrollview) is the known case: it opens a float the size of the whole editor, moves a dozen small ones and closes them again, about twenty times a second while the mouse moves, all of it inside `eventignore = "all"`. Measured over fifteen seconds, 308 calls to `nvim_open_win` produced one `WinNew`. To turn it off while a preview is on screen, match on `b:md_render` (set on every buffer md-render renders into) rather than pairing open and close events — a preview can be opened more than once and split by hand, and asking "is one open" needs no bookkeeping:
-
-  ```lua
-  local off = false
-  vim.api.nvim_create_autocmd({ "WinNew", "WinClosed", "BufWinEnter" }, {
-    callback = vim.schedule_wrap(function()
-      local want = false
-      for _, w in ipairs(vim.api.nvim_list_wins()) do
-        if vim.b[vim.api.nvim_win_get_buf(w)].md_render then
-          want = true
-          break
-        end
-      end
-      if want ~= off then
-        off = want
-        vim.cmd(want and "ScrollViewDisable" or "ScrollViewEnable")
-      end
-    end),
-  })
-  ```
-
-- Each layout change costs a full-screen repaint to clear the previous scaled run, so scrolling is more expensive than usual. When the window also holds images the image redraw does that clearing, and the scaled text is simply written after it.
-- The Telescope and Snacks previewers opt out. They redraw on every cursor step, and a full-screen repaint per step is not something a picker can afford.
-
-See `:help md-render-text-size` for the full rationale.
 
 ### Source/render split
 

@@ -63,7 +63,7 @@ def render(request):
         layout.set_wrap(Pango.WrapMode.WORD_CHAR)
         text = entry["text"].encode("utf-8")
         result = {"index": index + 1, "font_pixels": pixels, "lines": []}
-        for line in layout.get_lines_readonly():
+        for line_index, line in enumerate(layout.get_lines_readonly()):
             ink, logical = line.get_pixel_extents()
             x = max(0, -ink.x)
             width = max(logical.width, ink.x + ink.width) + x
@@ -78,6 +78,10 @@ def render(request):
             elif ink.height > height:
                 output["fallback"] = "glyph exceeds reserved height"
             else:
+                native_cols = entry.get("native_cols", [])
+                if entry.get("bg") is not None and line_index < len(native_cols):
+                    cols = max(cols, native_cols[line_index])
+                    output["cols"] = cols
                 columns = []
                 for column in range(cols):
                     inside, byte, _ = line.x_to_index(round(((column + 0.5) * request["cell_width"] - x) * Pango.SCALE))

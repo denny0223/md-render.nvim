@@ -158,6 +158,14 @@ assert(vim.deep_equal(details.link_metadata, plain_details.link_metadata), "deta
 for i, line_text in ipairs(details.lines) do
   if details.source_line_map[i] <= 5 then
     assert(line_text == plain_details.lines[i], "details retain their native prefix, background and row spacing")
+    local point = details.heading_positions[i]
+    if point then
+      assert(
+        line_text:sub(point.col + 1, point.col + point.length)
+          == ("FIRST SECOND"):sub(point.byte + 1, point.byte + point.length),
+        "details heading character positions exclude the container prefix"
+      )
+    end
   end
 end
 local utils = require "md-render.display_utils"

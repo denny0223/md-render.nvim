@@ -104,7 +104,7 @@ do
   assert_eq(render { "~~~bash", "echo hi", "~~~" }, { "echo hi" }, "~~~ fence should render as code")
   assert_eq(langs { "~~~bash", "echo hi", "~~~" }, { "bash" }, "~~~ fence should record its language")
   assert_eq(
-    render({ "foo", "---", "~~~", "bar", "~~~", "# baz" })[2],
+    render({ "foo", "---", "~~~", "bar", "~~~", "# baz" })[3],
     "bar",
     "a ~~~ block after a setext heading should render as code"
   )

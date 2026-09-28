@@ -63,20 +63,21 @@ Spanning majors is the point. Ubuntu 24.04 still ships FFmpeg 6.1, so a job that
 
 ## Optional image heading tests
 
-The image heading Lua checks run in `make test` without optional packages. The additional raster integration test requires Python with PyGObject, Pango/PangoCairo, Pycairo and the configured fonts:
+The image heading checks in `make test` use mocks and need no optional packages. The separate integration checks require Python with PyGObject, Pango/PangoCairo, Pycairo and the configured fonts:
 
 ```bash
 python3 tests/heading_raster_test.py
+nvim --headless -u NONE --noplugin -l tests/heading_typography_integration.lua
 ```
 
-The Lua checks cover shared layout work, explicit highlight precedence, relevant search fallback, projected mouse targets, drag/yank, preview ownership and bounded idle scheduling. `heading_mouse_test.lua` exercises a child Neovim event loop; `image_transport_test.lua` verifies PNG chunks, acknowledgements, timeout/cancellation and independent terminal capabilities. `heading_auto_test.lua` covers policy selection, environment versus per-heading failures, cached errors and retry; `heading_async_test.lua` checks success and worker/transport failures during Visual, Select, pending operators, searches and yank feedback. The Python test measures six sizes across cell dimensions, wrapping/UTF-8 ranges and real decoration/background pixels. The Fedora CI job installs its dependencies and runs it alongside the Snacks integration tests. These checks do not replace terminal acceptance.
+The mock tests cover layout ownership, highlights, mouse targets, selection, transport and asynchronous fallback. The integration checks verify real raster pixels, six image sizes, wrapping, background coverage and click targets. Both integration checks run in the Fedora CI job with the required packages installed.
 
 For a visual check, load this checkout in Kitty and open [image_headings.md](fixtures/image_headings.md). Run `:MdRender textsize auto`, then `:MdRender toggle`, and keep the cursor on the first body line:
 
 1. Check six sizes, Han/Latin spacing, complete glyphs, inline code, strikethrough and highlighted backgrounds in dark and light themes. Compare external `[DOC](...)` with `<u>DOC</u>`: links need a distinct default color. Switch themes while the preview stays open; test a colored `Underlined`, an explicit `MdRenderLink` override and a live `:highlight MdRenderLink` edit. Resize to 40 columns: short Han headings should fit, and wrapped continuation text should stay aligned.
 2. Move into a heading, select across headings/body text, yank, and search for `important`. Only matching headings should reveal search highlights. A body-only search must leave unrelated headings as images.
 3. Hover over the trailing part of image-rendered FIRST, then click without moving. The image must stay visible until the link action resolves FIRST. Repeat in the lower row and for SECOND. Drag from an image glyph into the revealed text and verify the copied characters.
-4. Use Kitty Ctrl+Shift+click on both rows of external image links, including adjacent links and wrapped Han/Latin labels. Verify the terminal opens the exact URL once; gaps and padding must open nothing. Repeat with transparent and opaque backgrounds, checking the visible PNG glyphs as well as URL cells, then scroll, reveal native feedback and switch backends: retired image cells must retain no URL. Use `:MdRender toggle` to return to source for terminal Shift-drag selection, or `textsize off` to select rendered text. Separately switch among `native`, `off` and `image`; verify the reading passage, cursor character and search state. Rich headings stay ordinary text in native mode, preserving link colors and inline styles. The source buffer has no preview-generated OSC 8 links.
+4. Use Kitty Ctrl+Shift+click on both rows of external image links, including adjacent links and wrapped Han/Latin labels. Verify the terminal opens the exact URL once; gaps and padding must open nothing. Repeat with transparent and opaque backgrounds, checking the visible PNG glyphs as well as URL cells, then scroll, reveal native feedback and switch backends: retired image cells must retain no URL. Use `:MdRender toggle` to return to source for terminal Shift-drag selection, or `textsize off` to select rendered text. Separately switch among `native`, `off` and `image`; verify the reading passage, cursor character and search state. Native documents containing rich headings use ordinary headings throughout, preserving link colors and inline styles. The source buffer has no preview-generated OSC 8 links.
 5. Check `:MdRender textsize status`. A missing Python/Pango installation or rejected PNG should select native OSC 66 when supported, otherwise ordinary text. Repeated rebuilds must not restart failed work; restoring the environment and running `:MdRender textsize auto` must recover images. Explicit `native` must not start image work, and `off` must survive toggling back to the preview. Missing glyphs affect only their heading.
 6. Repeat with split/float/tab, inactive source editing, scrolling, floating overlap, tab/buffer changes and teardown. Retired work must never paint another document. Run through SSH with dependencies/fonts on the Neovim host and without copying generated image files to the client.
 
@@ -93,7 +94,7 @@ ESC ] 66 ; s=2 ; Level One Heading ESC \
 ESC ] 66 ; s=2:n=3:d=4:w=6 ; Level Th ESC \
 ```
 
-So "is this heading drawn at 1.5x" is an exact string match — no screenshot, no SSIM, and none of the font or timing sensitivity of comparing images. It asserts that each of `#` … `######` scales at the metadata its level is supposed to use, that no run asks for more than the 7 cells `w=` allows, that a long CJK heading is scaled end to end rather than only as far as it happened to fit, that the level icon stays out of the payload (it gets clipped inside a scaled run), and that nothing is scaled when the feature is off.
+The tests explicitly select native sizing and check all six scales, complete CJK text, protocol width limits, absence of level icons, cursor feedback and disabling scaling.
 
 A fractionally scaled heading goes out as several runs — `n=` / `d=` shrink the font but not the cells, so each run states its own width — which is why the assertions join a level's payloads back together before matching.
 

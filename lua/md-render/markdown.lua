@@ -250,9 +250,13 @@ end
 --- Common HTML named character references
 local HTML_ENTITIES = {
   amp = "&",
+  AMP = "&",
   lt = "<",
+  LT = "<",
   gt = ">",
+  GT = ">",
   quot = '"',
+  QUOT = '"',
   apos = "'",
   nbsp = "\194\160", -- U+00A0
   ndash = "–",
@@ -264,8 +268,11 @@ local HTML_ENTITIES = {
   bull = "•",
   hellip = "…",
   copy = "©",
+  COPY = "©",
   reg = "®",
+  REG = "®",
   trade = "™",
+  TRADE = "™",
   laquo = "«",
   raquo = "»",
   middot = "·",
@@ -295,6 +302,7 @@ local HTML_ENTITIES = {
 ---@param cp integer Unicode codepoint
 ---@return string
 local function utf8_char(cp)
+  if cp == 0 or cp > 0x10FFFF or (cp >= 0xD800 and cp <= 0xDFFF) then return "�" end
   if cp < 0x80 then
     return string.char(cp)
   elseif cp < 0x800 then
@@ -326,19 +334,20 @@ local function decode_html_entities(text, highlights, links, escaped_positions)
   while i <= #text do
     local reference, replacement
     if text:sub(i, i) == "&" then
+      -- Numeric references have a bounded number of digits, including leading zeros.
       local digits
       reference, digits = text:match("^(&#(%d+);)", i)
-      local base = 10
+      local base, max_digits = 10, 7
       if not reference then
         reference, digits = text:match("^(&#[xX](%x+);)", i)
-        base = 16
+        base, max_digits = 16, 6
       end
       if reference then
-        replacement = utf8_char(tonumber(digits, base))
+        if #digits <= max_digits then replacement = utf8_char(tonumber(digits, base)) end
       else
         local name
-        reference, name = text:match("^(&(%a+);)", i)
-        if name then replacement = HTML_ENTITIES[name] or HTML_ENTITIES[name:lower()] end
+        reference, name = text:match("^(&(%a%w*);)", i)
+        if name then replacement = HTML_ENTITIES[name] end
       end
     end
     -- Check the entire reference: restoring code/escapes can join text into a

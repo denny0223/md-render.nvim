@@ -123,6 +123,11 @@ local cases = {
   { "all spaces", "`   `", "   " },
   { "literal tabs", "`\tfoo\t`", "\tfoo\t" },
   { "nonbreaking spaces", "`\u{A0}foo\u{A0}`", "\u{A0}foo\u{A0}" },
+  { "multiline edge spaces", "``\nfoo \n``", "foo " },
+  { "multiline internal spaces", "`foo   bar \nbaz`", "foo   bar  baz" },
+  { "hard-break spaces inside code", "`code  \nspan`", "code   span" },
+  { "hard-break backslash inside code", "`code\\\nspan`", "code\\ span" },
+  { "CJK code line ending", "`中\n文`", "中 文" },
   { "HTML comment literal", "`<!-- keep -->`", "<!-- keep -->" },
   { "Obsidian comment literal", "`%% keep %%`", "%% keep %%" },
   { "literal inline syntax", "`**b** [x](/file) &amp; \\_ <i>`", "**b** [x](/file) &amp; \\_ <i>" },
@@ -210,6 +215,89 @@ test("headings and list items keep adjacent link ranges", function()
       { 0, #prefix + 15, #prefix + 21, "中文", "/right" },
     }, "links on both sides of code target complete labels")
   end
+end)
+
+test("hard breaks outside matched spans keep their source lines", function()
+  local content = build({ "before  ", "`a  ", "b`  ", "after" }, { source_line_offset = 10 })
+  assert_eq(content.lines, { "before", "a   b", "after" }, "only the newline inside matched code becomes a space")
+  assert_eq(spans(content, "MdRenderInlineCode"), { { 1, 0, 5, "a   b" } }, "code survives between two hard breaks")
+  assert_eq(content.source_line_map, { 11, 12, 14 }, "each hard-break chunk keeps its original first source line")
+
+  content = build { "`open  ", "next" }
+  assert_eq(content.lines, { "`open", "next" }, "an unmatched opener cannot suppress a hard break")
+  assert_eq(spans(content, "MdRenderInlineCode"), {}, "unmatched code is literal")
+  assert_eq(content.source_line_map, { 1, 2 }, "unmatched hard-break source map")
+  assert_eq(build({ "first\\\\", "next" }).lines, { "first\\ next" }, "an escaped trailing backslash is a soft break")
+end)
+
+test("real block boundaries cannot be consumed by code matching", function()
+  for _, middle in ipairs {
+    { "" },
+    { "# H" },
+    { "- item" },
+    { "```text", "x", "```" },
+    { "<!-- hidden -->" },
+    { "%%", "hidden", "%%" }, -- Existing Obsidian block-comment extension.
+  } do
+    local lines = { "`A" }
+    vim.list_extend(lines, middle)
+    lines[#lines + 1] = "B`"
+    local content = build(lines, { max_width = 40 })
+    assert_eq(spans(content, "MdRenderInlineCode"), {}, "backticks cannot pair across " .. middle[1])
+    assert_eq(content.lines[1], "`A", "the opening backtick remains visible")
+    assert_eq(
+      table.concat(content.lines, "\n"):find("B`", 1, true) ~= nil,
+      true,
+      "the closing backtick remains visible"
+    )
+  end
+end)
+
+test("continuation indentation is structural while internal whitespace is literal", function()
+  for _, continuation in ipairs { "\tb`", "  b`" } do
+    local content = build { "`a", continuation }
+    assert_eq(content.lines, { "a b" }, "paragraph continuation indentation is removed before code normalization")
+    assert_eq(spans(content, "MdRenderInlineCode"), { { 0, 0, 3, "a b" } }, "continuation code range")
+  end
+  for _, case in ipairs {
+    { { "- `a  ", "  b` [L](/left)" }, "• " },
+    { { "> `a  ", "> b` [L](/left)" }, "│ " },
+  } do
+    local content, prefix = build(case[1]), case[2]
+    assert_eq(content.lines, { prefix .. "a   b L" }, "container markers are removed before code normalization")
+    assert_eq(
+      spans(content, "MdRenderInlineCode"),
+      { { 0, #prefix, #prefix + 5, "a   b" } },
+      "multiline container code range"
+    )
+    assert_eq(link_spans(content), { { 0, #prefix + 6, #prefix + 7, "L", "/left" } }, "container's following link")
+    assert_eq(content.source_line_map, { 1 }, "multiline container retains its first source line")
+  end
+end)
+
+test("HTML consumers retain inline code spaces", function()
+  local content = build({ "<h2>`a  b`", "[L](/left)</h2>" }, { max_width = 40 })
+  assert_eq(content.lines, { "## a  b L", string.rep("─", 40) }, "multiline HTML heading preserves code spaces")
+  assert_eq(spans(content, "MdRenderInlineCode"), { { 0, 3, 7, "a  b" } }, "HTML heading code range")
+  assert_eq(link_spans(content), { { 0, 8, 9, "L", "/left" } }, "HTML heading link range")
+
+  content = build {
+    "<table>",
+    "<tr><th>C</th><th>L</th></tr>",
+    "<tr><td>`a  b`</td><td>[LEFT](/left)</td></tr>",
+    "</table>",
+  }
+  assert_eq(
+    content.lines,
+    { "│ C    │ L    │", "│──────│──────│", "│ a  b │ LEFT │" },
+    "HTML cells preserve code spaces"
+  )
+  assert_eq(spans(content, "MdRenderInlineCode"), { { 2, #"│ ", #"│ a  b", "a  b" } }, "HTML cell code range")
+  assert_eq(
+    link_spans(content),
+    { { 2, #"│ a  b │ ", #"│ a  b │ LEFT", "LEFT", "/left" } },
+    "HTML cell link range"
+  )
 end)
 
 test("bare URL truncation measures decoded text without exposing tokens", function()

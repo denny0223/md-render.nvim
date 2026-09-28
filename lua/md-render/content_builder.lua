@@ -219,6 +219,7 @@ local function to_superscript(n)
 end
 
 local wrap_mod = require "md-render.wrap"
+local inline = require "md-render.inline"
 local icons = require "md-render.icons"
 local fence_mod = require "md-render.fence"
 
@@ -1089,9 +1090,8 @@ local HTML_VOID_ELEMENTS = {
 ---@param html_lines string[] lines between <table> and </table> (inclusive)
 ---@return string[] pipe-table lines suitable for MarkdownTable.parse
 local function html_table_to_pipe(html_lines)
-  -- Join all lines and normalize whitespace
+  -- Inline rendering owns whitespace normalization inside each cell.
   local html = table.concat(html_lines, " ")
-  html = html:gsub("  +", " ")
 
   -- Extract rows from <tr>...</tr>
   local rows = {}
@@ -1226,7 +1226,8 @@ end
 ---@param line string
 ---@return boolean
 local function has_hard_break(line)
-  return line:match "%S  +$" ~= nil or line:match "%S\\$" ~= nil
+  local slashes = line:match "(\\+)$"
+  return line:match "  +$" ~= nil or (slashes ~= nil and #slashes % 2 == 1)
 end
 
 --- Remove up to `n` leading spaces from a line (CommonMark dedents fenced
@@ -1386,7 +1387,7 @@ end
 ---   strip_container_indent(); quote lines in different containers must not be
 ---   collected into the same blockquote.
 ---@return string[] result, integer[] result_indices
-local function join_paragraph_continuations(lines, src_indices, container_indents)
+local function join_paragraph_continuations(lines, src_indices, container_indents, ref_links)
   --- Container a quote line belongs to, as its display indent.
   local function quote_container(idx)
     return container_indents and container_indents[src_indices[idx]] or ""
@@ -1395,19 +1396,35 @@ local function join_paragraph_continuations(lines, src_indices, container_indent
   local result = {}
   local result_indices = {}
   local para = {}
-  local para_src = nil
+  local para_indices = {}
   local open_fence = nil
   local in_html_comment = false
 
   local function flush_para()
-    if #para > 0 then
-      -- join_soft_lines also drops the trailing-space form of the hard
-      -- break marker; the break itself is expressed by ending the line here.
-      table.insert(result, wrap_mod.join_soft_lines(para))
-      table.insert(result_indices, para_src)
-      para = {}
-      para_src = nil
+    if #para == 0 then return end
+    -- Only a matched code span can turn a would-be hard break into literal
+    -- whitespace. Collect the whole paragraph before deciding where to split.
+    for i = 2, #para do
+      para[i] = para[i]:gsub("^[ \t]+", "")
     end
+    local spans = inline.code_spans(table.concat(para, "\n"), ref_links)
+    local chunk, first, offset, span_index = {}, 1, 0, 1
+    for i, line in ipairs(para) do
+      chunk[#chunk + 1] = line
+      local newline = offset + #line + 1
+      while spans[span_index] and spans[span_index].finish < newline do
+        span_index = span_index + 1
+      end
+      local span = spans[span_index]
+      local in_code = span and span.start < newline and newline < span.finish
+      if i == #para or (has_hard_break(line) and not in_code) then
+        result[#result + 1] = wrap_mod.join_soft_lines(chunk, ref_links)
+        result_indices[#result_indices + 1] = para_indices[first]
+        chunk, first = {}, i + 1
+      end
+      offset = newline
+    end
+    para, para_indices = {}, {}
   end
 
   local idx = 1
@@ -1459,7 +1476,7 @@ local function join_paragraph_continuations(lines, src_indices, container_indent
           last = last + 1
         end
         consumed = last - idx
-        local joined, joined_src = join_paragraph_continuations(inner, inner_src, container_indents)
+        local joined, joined_src = join_paragraph_continuations(inner, inner_src, container_indents, ref_links)
         for k, joined_line in ipairs(joined) do
           local marker = markers[joined_src[k]] or "> "
           -- A quote line with no content must not keep the marker's space.
@@ -1488,11 +1505,8 @@ local function join_paragraph_continuations(lines, src_indices, container_indent
       else
         -- A new list item ends the previous paragraph rather than continuing it.
         if starts_list_item then flush_para() end
-        if #para == 0 then para_src = src end
         table.insert(para, line)
-        -- Hard line break: end the visual line here, but stay in the same
-        -- paragraph (the next line starts a new output line).
-        if has_hard_break(line) then flush_para() end
+        table.insert(para_indices, src)
       end
 
       ::next_line::
@@ -1536,7 +1550,6 @@ local function preprocess_multiline_html(lines, src_indices)
       if accum.depth <= 0 then
         -- Join all lines with spaces (HTML whitespace collapsing)
         local joined = wrap_mod.join_soft_lines(accum.lines)
-        joined = joined:gsub("  +", " ")
         table.insert(result, joined)
         table.insert(result_indices, accum.src)
         accum = nil
@@ -1615,11 +1628,11 @@ function ContentBuilder:render_document(lines, opts)
   lines = expand_leading_tabs(lines)
   lines, container_indents = strip_container_indent(lines)
   lines, src_indices = preprocess_multiline_html(lines, src_indices)
-  lines, src_indices = join_paragraph_continuations(lines, src_indices, container_indents)
+  local ref_links = markdown.parse_reference_links(lines)
+  lines, src_indices = join_paragraph_continuations(lines, src_indices, container_indents, ref_links)
   lines = markdown.renumber_ordered_lists(lines)
   -- renumber_ordered_lists rewrites text but keeps line count, so
   -- src_indices stays valid.
-  local ref_links = markdown.parse_reference_links(lines)
   local footnote_defs, footnote_map = markdown.parse_footnotes(lines)
 
   local base_max_width = opts.max_width or 80

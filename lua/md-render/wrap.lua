@@ -565,9 +565,15 @@ end
 --- that continuation paragraphs stay aligned with their list item.
 ---@param lines string[]
 ---@return string
-local function join_soft_lines(lines)
-  local text = ""
+local function join_soft_lines(lines, ref_links)
+  -- Continuation indentation belongs to the paragraph, not the code body.
+  local source = {}
   for i, line in ipairs(lines) do
+    source[i] = i == 1 and line or line:gsub("^[ \t]+", "")
+  end
+  local protected, spans = require("md-render.inline").protect_code(table.concat(source, "\n"), ref_links)
+  local text = ""
+  for i, line in ipairs(vim.split(protected, "\n", { plain = true })) do
     local trimmed = i == 1 and (line:gsub("%s+$", "")) or (line:gsub("^%s+", ""):gsub("%s+$", ""))
     if text == "" then
       text = trimmed
@@ -578,6 +584,11 @@ local function join_soft_lines(lines)
         text = text .. " " .. trimmed
       end
     end
+  end
+  for _, span in ipairs(spans) do
+    text = text:gsub(span.placeholder, function()
+      return span.raw
+    end, 1)
   end
   return text
 end

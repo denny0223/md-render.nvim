@@ -152,5 +152,193 @@ do
   assert_eq(defs, { { label = "n", text = "note" } }, "a fence terminates the preceding footnote")
 end
 
+-- Fence indentation is relative to its container, not its opening delimiter.
+-- Exercise the full rendering path, including the buffer API and source rows.
+local function assert_code_case(case)
+  local before = vim.deepcopy(case.lines)
+  local content = build(case.lines)
+  assert_eq(case.lines, before, case.name .. ": source stays unchanged")
+  assert_eq(#content.code_blocks, 1, case.name .. ": one code block")
+  local block = content.code_blocks[1]
+  if block then
+    assert_eq(block.source_lines, case.code, case.name .. ": literal code content")
+    assert_eq(block.prefix_len, case.prefix, case.name .. ": highlighting prefix")
+    local source_rows = {}
+    for row = block.start_line, block.end_line do
+      table.insert(source_rows, content.source_line_map[row + 1])
+    end
+    assert_eq(source_rows, case.sources, case.name .. ": code source rows")
+  end
+  if case.after then assert_eq(content.lines[#content.lines], "after", case.name .. ": final fence closes") end
+  local buf = vim.api.nvim_create_buf(false, true)
+  local ok, err = pcall(
+    require("md-render.display_utils").apply_content_to_buffer,
+    buf,
+    vim.api.nvim_create_namespace "code_fence_test",
+    content
+  )
+  assert_eq(ok, true, case.name .. ": buffer application " .. tostring(err or ""))
+  if ok then assert_eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), content.lines, case.name .. ": buffer text") end
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
+for _, case in ipairs {
+  {
+    name = "top-level indented opener",
+    lines = { " ```lua", " x", "    ```", " y", " ```" },
+    code = { "x", "   ```", "y" },
+    prefix = 1,
+    sources = { 2, 3, 4 },
+  },
+  {
+    name = "top-level tab non-closer",
+    lines = { "```lua", "x", "\t```", "y", "```" },
+    code = { "x", "\t```", "y" },
+    prefix = 0,
+    sources = { 2, 3, 4 },
+  },
+  {
+    name = "bullet container plus opener indent",
+    lines = { "- item", "", "   ```lua", "   x", "      ```", "   y", "  ```", "after" },
+    code = { "x", "   ```", "y" },
+    prefix = 3,
+    sources = { 4, 5, 6 },
+    after = true,
+  },
+  {
+    name = "wide ordered container plus opener indent",
+    lines = { "10. item", "", "     ```lua", "     x", "        ```", "     y", "    ```", "after" },
+    code = { "x", "   ```", "y" },
+    prefix = 5,
+    sources = { 4, 5, 6 },
+    after = true,
+  },
+  {
+    name = "tab stop after list prefix",
+    lines = { "- item", "", "  ```lua", "  x", "  \t```", "after" },
+    code = { "x" },
+    prefix = 2,
+    sources = { 4 },
+    after = true,
+  },
+  {
+    name = "tab partially consumed by list prefix",
+    lines = { "- item", "", "  ```lua", "\tx", "\t```", "after" },
+    code = { "  x" },
+    prefix = 2,
+    sources = { 4 },
+    after = true,
+  },
+  {
+    name = "tab non-closer retains literal payload",
+    lines = { "- item", "", "  ```lua", "  x", "  \t  ```", "  y", "  ```", "after" },
+    code = { "x", "\t  ```", "y" },
+    prefix = 2,
+    sources = { 4, 5, 6 },
+    after = true,
+  },
+  {
+    name = "quote container plus opener indent",
+    lines = { ">  ```lua", "> x", ">     ```", "> y", "> ```", "after" },
+    code = { "x", "    ```", "y" },
+    prefix = 4,
+    sources = { 2, 3, 4 },
+    after = true,
+  },
+  {
+    name = "tab stop after quote prefix",
+    lines = { "> ```lua", "> x", "> \t```", "after" },
+    code = { "x" },
+    prefix = 4,
+    sources = { 2 },
+    after = true,
+  },
+  {
+    name = "tab partially consumed by quote prefix",
+    lines = { ">```lua", ">\tx", ">\t```", "after" },
+    code = { "  x" },
+    prefix = 4,
+    sources = { 2 },
+    after = true,
+  },
+  {
+    name = "quote inside list keeps absolute tab origin",
+    lines = { "- item", "", "  > ```lua", "  > x", "  > \t```", "  > y", "  > ```", "after" },
+    code = { "x", "\t```", "y" },
+    prefix = 6,
+    sources = { 4, 5, 6 },
+    after = true,
+  },
+  {
+    name = "wide list inside quote retains its container",
+    lines = { "> 10. item", ">", ">     ```lua", ">     x", ">         ```", ">     y", ">     ```", "after" },
+    code = { "    x", "        ```", "    y" },
+    prefix = 4,
+    sources = { 4, 5, 6 },
+    after = true,
+  },
+  {
+    name = "quoted list rejects a tab reaching four extra columns",
+    lines = { "> - item", ">", ">   ```lua", ">   x", ">   \t```", ">   y", ">   ```", "after" },
+    code = { "  x", "  \t```", "  y" },
+    prefix = 4,
+    sources = { 4, 5, 6 },
+    after = true,
+  },
+  {
+    name = "closing line keeps its own quote origin",
+    lines = { "   > - item", ">", "   >   ```lua", "   >   x", ">   \t```", "   >   y", "   >   ```", "after" },
+    code = { "  x", "  \t```", "  y" },
+    prefix = 4,
+    sources = { 4, 5, 6 },
+    after = true,
+  },
+  {
+    name = "tab after ordered marker defines its container",
+    lines = { "10.\titem", "", "    ```lua", "    x", "    ```", "after" },
+    code = { "x" },
+    prefix = 4,
+    sources = { 4 },
+    after = true,
+  },
+  {
+    name = "quoted ordered marker tab uses the quote origin",
+    lines = { "> 10.\titem", ">", ">       ```lua", ">       x", ">       \t```", ">       y", ">       ```", "after" },
+    code = { "      x", "      \t```", "      y" },
+    prefix = 4,
+    sources = { 4, 5, 6 },
+    after = true,
+  },
+  {
+    name = "synthetic Qiita quote does not shift tab stops",
+    lines = { ":::note", "```lua", "x", "\t```", "y", "```", ":::", "after" },
+    code = { "x", "\t```", "y" },
+    prefix = 4,
+    sources = { 3, 4, 5 },
+    after = true,
+  },
+  {
+    name = "indented quote keeps absolute tab origin",
+    lines = { "   > ```lua", "   > x", "   > \t```", "after" },
+    code = { "x" },
+    prefix = 4,
+    sources = { 2 },
+    after = true,
+  },
+} do
+  assert_code_case(case)
+end
+
+local fence = require "md-render.fence"
+for count = 0, 4 do
+  assert_eq(
+    fence.closes(string.rep(" ", count) .. "```", fence.opening " ```lua"),
+    count < 4,
+    "closing fence at column " .. count
+  )
+end
+assert_eq(fence.closes("\t```", fence.opening "```lua"), false, "tab at column zero reaches four")
+assert_eq(fence.opening "\t```lua", nil, "a top-level tab-indented fence is indented code")
+
 print(string.format("\ncode_fence_test: %d passed, %d failed", pass_count, fail_count))
 if fail_count > 0 then os.exit(1) end

@@ -1199,7 +1199,6 @@ end
 local function is_block_start(line, in_paragraph)
   if line:match "^%s*$" then return true end
   if line:match "^#+%s" then return true end
-  if fence_mod.opening(line) then return true end
   if line:match "^%s*|" then return true end
   if line:match "^%s*[%-%*%+]%s" then return true end
   if line:match "^%s*%d+[%.)]%s" then return true end
@@ -1245,57 +1244,71 @@ end
 --- Only column 0 counts as a quote here, matching the rest of the renderer.
 --- strip_quote_indent() has already moved indented quotes to column 0.
 ---@param line string
----@return string? marker, string? content
-local function split_quote_marker(line)
-  return line:match "^(>%s?)(.*)$"
+---@param column? integer original column before the quote marker
+---@return string marker, string content, integer column
+local function split_quote_marker(line, column)
+  local marker, content = line:match "^(>%s?)(.*)$"
+  column = column or 0
+  if marker:sub(-1) == "\t" then
+    -- The optional space after > consumes only one column of a tab.
+    content = string.rep(" ", 3 - (column + 1) % 4) .. content
+    marker = "> "
+  end
+  return marker, content, column + #marker
 end
 
 --- Content column of a list item line: the column its text starts at, and
 --- therefore the one its continuation lines and nested blocks are indented
 --- to.
 ---@param line string
+---@param column? integer original column before the list marker
 ---@return integer? column nil when the line does not open a list item
-local function list_content_column(line)
-  local ws, marker, gap = line:match "^( *)([%-%*%+])( +)"
+local function list_content_column(line, column)
+  local ws, marker, gap = line:match "^( *)([%-%*%+])([ \t]+)"
   if not ws then
-    ws, marker, gap = line:match "^( *)(%d+[%.)])( +)"
+    ws, marker, gap = line:match "^( *)(%d+[%.)])([ \t]+)"
   end
   if not ws or is_thematic_break(line) then return nil end
-  -- Five or more spaces after the marker start an indented code block inside
-  -- the item, so the content column is the one right after the marker.
-  return #ws + #marker + (#gap <= 4 and #gap or 1)
+  local start = (column or 0) + #ws + #marker
+  local gap_width = fence_mod.indent_columns(gap, start)
+  -- Five or more columns after the marker start indented code inside the item.
+  return #ws + #marker + (gap_width <= 4 and gap_width or 1)
 end
 
---- Expand tabs in each line's leading whitespace to spaces, with tab stops
---- every four columns as CommonMark specifies.
----
---- Everything that measures indentation counts spaces, so a list item
---- indented with a tab was one column deep instead of four: its continuation
---- lines hung from the wrong column, and the tab itself reached the buffer,
---- where 'tabstop' decided how wide it was.  Fenced code is left alone, since
---- its tabs are content.
----@param lines string[]
----@return string[]
-local function expand_leading_tabs(lines)
-  local result = {}
-  local open_fence = nil
-  for i, line in ipairs(lines) do
-    result[i] = line
-    local was_open = open_fence
-    local is_fence
-    open_fence, is_fence = fence_mod.step(open_fence, line)
-    if not is_fence and not was_open then
-      local ws = line:match "^[ \t]*"
-      if ws:find("\t", 1, true) then
-        local col = 0
-        for c in ws:gmatch "." do
-          col = c == "\t" and (col + 4 - col % 4) or (col + 1)
-        end
-        result[i] = string.rep(" ", col) .. line:sub(#ws + 1)
-      end
-    end
+--- Track the real content columns of open list items, before inspecting fences.
+local function list_container_column(line, item_cols, column)
+  local ws = #line:match "^ *"
+  while #item_cols > 0 and ws < item_cols[#item_cols] do
+    table.remove(item_cols)
   end
-  return result
+  local base = item_cols[#item_cols] or 0
+  local col = list_content_column(line, column)
+  if col then table.insert(item_cols, col) end
+  return base, col, ws
+end
+
+--- Expand structural indentation; never call this on literal code content.
+local function expand_leading_tabs(line, column)
+  local ws = line:match "^[ \t]*"
+  if not ws:find("\t", 1, true) then return line end
+  return string.rep(" ", fence_mod.indent_columns(ws, column)) .. line:sub(#ws + 1)
+end
+
+--- Remove a container prefix in columns, retaining the unconsumed part of a tab.
+local function strip_container_prefix(line, width)
+  local pos, col = 1, 0
+  while col < width do
+    local c = line:sub(pos, pos)
+    if c == " " then
+      col = col + 1
+    elseif c == "\t" then
+      col = col + 4 - col % 4
+    else
+      break
+    end
+    pos = pos + 1
+  end
+  return string.rep(" ", math.max(0, col - width)) .. line:sub(pos)
 end
 
 --- Move the content of a block container to column 0 and report the indent
@@ -1321,54 +1334,46 @@ end
 --- in a list item renders under the item.  Two quote lines belong to the
 --- same blockquote only if they report the same column.
 ---
---- A list item's own marker line keeps its indentation, because the marker is
---- what the renderer measures the item's hanging indent from.  So does fenced
---- code, whose block renderer measures its own prefix and whose content lines
---- are not visited here at all — dedenting the fences alone would leave the
---- code behind.
+--- A list item's marker line keeps its indentation for hanging-indent layout.
+--- Fences and their content lose only the container prefix, which the renderer
+--- restores. Their remaining indentation is relative to that container.
 ---@param lines string[]
----@return string[] result, table<integer, string> indents
+---@return string[] result, table<integer, string> indents, table<integer, integer> columns
 local function strip_container_indent(lines)
-  local result = {}
-  local indents = {}
-  -- Content columns of the list items currently open, innermost last.
+  local result, indents, columns = {}, {}, {}
   local item_cols = {}
-  local open_fence = nil
+  local open_fence, fence_container = nil, 0
 
   for i, line in ipairs(lines) do
-    result[i] = line
-    local was_open = open_fence
-    local is_fence
-    open_fence, is_fence = fence_mod.step(open_fence, line)
-
-    -- Fenced code is left to its block renderer.  A blank line neither closes
-    -- a list item nor holds a quote marker.
-    if not was_open and not is_fence and not line:match "^%s*$" then
-      local ws = #line:match "^ *"
-      -- Anything indented less than the innermost item's content has left it.
-      while #item_cols > 0 and ws < item_cols[#item_cols] do
-        table.remove(item_cols)
-      end
-      local base = item_cols[#item_cols] or 0
-      if line:match "^ *>" and ws >= base and ws - base <= 3 then
-        if base > 0 then indents[i] = string.rep(" ", base) end
-        result[i] = line:sub(ws + 1)
-      else
-        local col = list_content_column(line)
-        if col then
-          table.insert(item_cols, col)
-        elseif base > 0 then
-          -- Block content of the innermost open item.  Only the item's own
-          -- column comes off; anything past it is the line's own indentation
-          -- and may still mean something (an indented code block, say).
+    if open_fence then
+      local _
+      open_fence, _, result[i] =
+        fence_mod.step(open_fence, strip_container_prefix(line, fence_container), fence_container)
+      columns[i] = fence_container
+      if fence_container > 0 then indents[i] = string.rep(" ", fence_container) end
+    else
+      line = expand_leading_tabs(line)
+      result[i] = line
+      if not line:match "^%s*$" then
+        local base, col, ws = list_container_column(line, item_cols)
+        local is_fence, normalized
+        open_fence, is_fence, normalized = fence_mod.step(nil, line:sub(base + 1), base)
+        if is_fence then
+          fence_container = base
+          result[i], columns[i] = normalized, base
+          if base > 0 then indents[i] = string.rep(" ", base) end
+        elseif line:match "^ *>" and ws >= base and ws - base <= 3 then
+          if base > 0 then indents[i] = string.rep(" ", base) end
+          result[i], columns[i] = line:sub(ws + 1), ws
+        elseif not col and base > 0 then
           indents[i] = string.rep(" ", base)
-          result[i] = line:sub(base + 1)
+          result[i], columns[i] = line:sub(base + 1), base
         end
       end
     end
   end
 
-  return result, indents
+  return result, indents, columns
 end
 
 --- Join paragraph continuation lines into single lines.
@@ -1386,8 +1391,18 @@ end
 ---@param container_indents? table<integer, string> per original line, from
 ---   strip_container_indent(); quote lines in different containers must not be
 ---   collected into the same blockquote.
+---@param ref_links? table<string, string>
+---@param source_columns? table<integer, integer> original columns after container prefixes
+---@param fence_containers table<integer, integer> quote-local list columns at fence openings
 ---@return string[] result, integer[] result_indices
-local function join_paragraph_continuations(lines, src_indices, container_indents, ref_links)
+local function join_paragraph_continuations(
+  lines,
+  src_indices,
+  container_indents,
+  ref_links,
+  source_columns,
+  fence_containers
+)
   --- Container a quote line belongs to, as its display indent.
   local function quote_container(idx)
     return container_indents and container_indents[src_indices[idx]] or ""
@@ -1397,6 +1412,7 @@ local function join_paragraph_continuations(lines, src_indices, container_indent
   local result_indices = {}
   local para = {}
   local para_indices = {}
+  local item_cols = {}
   local open_fence = nil
   local in_html_comment = false
 
@@ -1436,8 +1452,16 @@ local function join_paragraph_continuations(lines, src_indices, container_indent
     local consumed = 1
 
     do
-      -- Track code fences (the indent a list item adds is allowed)
-      open_fence = fence_mod.step(open_fence, line)
+      -- Quote contents can still carry a list prefix; retain its real column
+      -- for the renderer rather than guessing from the opening fence's indent.
+      local column = source_columns and source_columns[src] or 0
+      local base = 0
+      if not open_fence and not line:match "^%s*$" then
+        base = list_container_column(expand_leading_tabs(line, column), item_cols, column)
+      end
+      local is_fence
+      open_fence, is_fence, line = fence_mod.step(open_fence, line, column, base)
+      if is_fence and open_fence then fence_containers[src] = open_fence.container end
       local in_code = open_fence ~= nil
 
       -- Track multi-line HTML comments
@@ -1466,17 +1490,20 @@ local function join_paragraph_continuations(lines, src_indices, container_indent
       if not in_code and line:match "^>" then
         flush_para()
         local container = quote_container(idx)
-        local inner, inner_src, markers = {}, {}, {}
+        local inner, inner_src, markers, inner_columns = {}, {}, {}, {}
         local last = idx
         while last <= #lines and lines[last]:match "^>" and quote_container(last) == container do
-          local marker, content = split_quote_marker(lines[last])
+          local marker, content, quote_column =
+            split_quote_marker(lines[last], source_columns and source_columns[src_indices[last]] or 0)
+          inner_columns[src_indices[last]] = quote_column
           table.insert(inner, content)
           table.insert(inner_src, src_indices[last])
           markers[src_indices[last]] = marker
           last = last + 1
         end
         consumed = last - idx
-        local joined, joined_src = join_paragraph_continuations(inner, inner_src, container_indents, ref_links)
+        local joined, joined_src =
+          join_paragraph_continuations(inner, inner_src, container_indents, ref_links, inner_columns, fence_containers)
         for k, joined_line in ipairs(joined) do
           local marker = markers[joined_src[k]] or "> "
           -- A quote line with no content must not keep the marker's space.
@@ -1492,7 +1519,7 @@ local function join_paragraph_continuations(lines, src_indices, container_indent
       -- paragraph, so they must be joined onto the marker line.
       local starts_list_item = not in_code and is_list_item(line)
 
-      if in_code or (is_block_start(line, #para > 0) and not starts_list_item) then
+      if in_code or is_fence or (is_block_start(line, #para > 0) and not starts_list_item) then
         -- Flush accumulated paragraph
         flush_para()
         -- These lines always end their own output line, so a trailing hard
@@ -1624,12 +1651,13 @@ function ContentBuilder:render_document(lines, opts)
   -- The content of a blockquote or list item is moved to column 0 here;
   -- container_indents keeps the indent per *original* line so the loop below
   -- can restore it on output.
-  local container_indents
-  lines = expand_leading_tabs(lines)
-  lines, container_indents = strip_container_indent(lines)
+  local container_indents, source_columns
+  local fence_containers = {}
+  lines, container_indents, source_columns = strip_container_indent(lines)
   lines, src_indices = preprocess_multiline_html(lines, src_indices)
   local ref_links = markdown.parse_reference_links(lines)
-  lines, src_indices = join_paragraph_continuations(lines, src_indices, container_indents, ref_links)
+  lines, src_indices =
+    join_paragraph_continuations(lines, src_indices, container_indents, ref_links, source_columns, fence_containers)
   lines = markdown.renumber_ordered_lists(lines)
   -- renumber_ordered_lists rewrites text but keeps line count, so
   -- src_indices stays valid.
@@ -2905,13 +2933,19 @@ function ContentBuilder:render_document(lines, opts)
       -- Handle code blocks inside blockquotes (both plain blockquotes and callouts)
       if line:match "^>" then
         local stripped = line:gsub("^>%s?", "")
+        local quote_column = source_columns[src_indices[src_idx]] or 0
+        -- Use this line's origin, not the opener's. Qiita's > is synthetic.
+        if not in_qiita_note then quote_column = quote_column + #line - #stripped end
         if
-          (in_callout_code_block and fence_mod.closes(stripped, callout_code_fence))
-          or (not in_callout_code_block and fence_mod.opening(stripped))
+          (in_callout_code_block and fence_mod.closes(stripped, callout_code_fence, quote_column))
+          or (
+            not in_callout_code_block
+            and fence_mod.opening(stripped, quote_column, fence_containers[src_indices[src_idx]])
+          )
         then
           if not in_callout_code_block then
             in_callout_code_block = true
-            callout_code_fence = fence_mod.opening(stripped)
+            callout_code_fence = fence_mod.opening(stripped, quote_column, fence_containers[src_indices[src_idx]])
             local callout_info = callout_code_fence.lang
             callout_code_lang = callout_info
             -- Split lang:filename (Qiita-style)

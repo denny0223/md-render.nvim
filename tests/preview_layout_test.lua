@@ -82,4 +82,38 @@ check(session, 28, 14) -- Height must still respond when max_width was explicit.
 close(session, win)
 
 vim.fn.delete(path)
+-- Local native limitations must not make H5 larger than its plain H3 parent.
+local size = require "md-render.text_size"
+size.setup { enabled = true, backend = "native" }
+size.supports = function()
+  return true
+end
+local heading_buf = vim.api.nvim_create_buf(false, true)
+local heading_ns = vim.api.nvim_create_namespace "native_heading_fallback"
+for _, example in ipairs {
+  { lines = { "### [Parent](#child)", "##### Child", "Body" }, width = 80 },
+  { lines = { "##### Child", "### Parent with `code`", "Body" }, width = 80 },
+  { lines = { "# Parent", "##### Child", "Body" }, width = 20 },
+} do
+  local opts = { max_width = example.width, indent = "" }
+  local out = preview.build_content(example.lines, opts)
+  local plain = preview.build_content(example.lines, vim.tbl_extend("force", opts, { text_scale = false }))
+  assert(#out.text_placements == 0, "native previews use a consistent ordinary size when a heading cannot scale")
+  assert(vim.deep_equal(out.lines, plain.lines), "fallback recomputes wrapping without scaled empty rows")
+  assert(vim.deep_equal(out.link_metadata, plain.link_metadata), "fallback preserves clickable text")
+  assert(vim.deep_equal(out.source_line_map, plain.source_line_map), "fallback preserves source mapping")
+  assert(out.heading_fallback and out.heading_backend == "plain", "document fallback has an explicit reason")
+  assert(size.status(out):find("native -> plain", 1, true), "status describes document fallback")
+  display.apply_content_to_buffer(heading_buf, heading_ns, out)
+  assert(
+    vim.b[heading_buf].md_render_heading_fallback == out.heading_fallback,
+    "every render entry point publishes its fallback reason"
+  )
+end
+local simple = preview.build_content({ "### Parent", "##### Child" }, { max_width = 80 })
+assert(#simple.text_placements == 2, "fully supported native headings retain their scale")
+display.apply_content_to_buffer(heading_buf, heading_ns, simple)
+assert(vim.b[heading_buf].md_render_heading_fallback == nil, "successful rebuilds clear the old reason")
+vim.api.nvim_buf_delete(heading_buf, { force = true })
+
 print "Preview layout: native caps, Snacks width/height resize, and explicit width OK"

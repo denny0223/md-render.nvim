@@ -60,6 +60,7 @@
 ---@field heading_layouts table<string, table> shared image layouts
 ---@field heading_highlights table<string, table> resolved groups used by image layouts
 ---@field heading_backend? "image"|"native"|"plain" renderer used to build this content
+---@field heading_fallback? string document-level reason for ordinary headings
 ---@field heading_lines table<integer, boolean> heading rows with ordered styles (0-indexed)
 ---@field heading_positions table<integer, {byte: integer, col: integer, length: integer}> heading byte ranges (1-indexed rows)
 ---@field footnote_anchors table<string, integer> anchor name → 0-indexed line number
@@ -917,6 +918,7 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
     if self.text_scale and backend == "native" and #md_highlights == 1 and #md_links == 0 then
       spec, content_width = heading_scale_plan(text, indent, max_width)
     end
+    if self.text_scale and backend == "native" and not spec then self.native_heading_fallback = true end
   end
   local line_gap = spec and (spec.s - 1) or 0
   -- Held back from the wrap and given back afterwards; see

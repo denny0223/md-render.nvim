@@ -535,8 +535,8 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 	text visible. PNG replies time out after 1.5 seconds; layout work
 	times out after 5 seconds. Environment failures are cached for this
 	session without repeated subprocesses or automatic warnings. Fix the
-	environment, then run `:MdRender textsize auto` to retry. Local glyph,
-	style or link limitations leave only that heading as ordinary text.
+	environment, then run `:MdRender textsize auto` to retry. In image mode,
+	local glyph, style or link limitations leave only that heading as ordinary text.
 
 Image headings (experimental)			*md-render-image-headings*
 
@@ -696,9 +696,11 @@ Limitations: ~
   terminals swallow an OSC 66 sequence together with its payload text, which
   would delete the heading rather than fall back to unscaled text.  Anywhere
   else the feature costs nothing and headings render as they always did.
-- Headings with inline formatting or links retain ordinary text so their
-  styles and link colors stay visible. Unsupported highlight effects,
-  indexed colors and custom highlight namespaces also retain ordinary text.
+- If a native heading cannot scale because of inline styles, links or width,
+  all headings in the document use ordinary text to preserve the hierarchy,
+  styles and links. `:MdRender textsize status` reports the reason. Unsupported
+  highlight effects, indexed colors and custom highlight namespaces can still
+  reveal ordinary text during painting without rebuilding the document.
 - A heading whose second row would fall outside the window stays plain until
   it is scrolled into view.
 - A repaint by anything else (another plugin forcing a redraw, a message or

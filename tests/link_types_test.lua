@@ -135,7 +135,10 @@ test("link styles retain destination colors before nested inline styles", functi
       local rendered, highlights, links = Markdown.render(source, nil, nil, { ref = url, ["漢字"] = url })
       local groups = {}
       for _, hl in ipairs(highlights) do
-        if hl.col == links[1].col_start and hl.end_col == links[1].col_end then groups[#groups + 1] = hl.hl end
+        -- With no level prefix, the enclosing heading and link share a span.
+        if hl.hl ~= "MdRenderH2" and hl.col == links[1].col_start and hl.end_col == links[1].col_end then
+          groups[#groups + 1] = hl.hl
+        end
       end
       assert_eq(rendered:sub(links[1].col_start + 1, links[1].col_end), "漢字", "UTF-8 link span is preserved")
       assert_eq(groups, group == "MdRenderLink" and { group } or { "Underlined", group }, source)

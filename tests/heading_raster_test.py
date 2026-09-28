@@ -67,4 +67,21 @@ assert line["transparent"] and pixels[:4] == bytes(4), "unset backgrounds retain
 assert (0xff3b3600).to_bytes(4, sys.byteorder) in pixels, "explicit inline backgrounds remain opaque"
 request["font_pixels"] = 100
 assert "fallback" in renderer.render(request)[0]["lines"][0], "oversize fonts retain operable text"
+
+# Opaque padding covers native text cells without scaling or moving the glyphs.
+request["font_pixels"] = "auto"
+entry.update(text="中文小標題", ratio=.85, rows=1, bg=0x14161b, styles=[])
+original = renderer.render(request)[0]["lines"][0]
+entry["native_cols"] = [original["cols"] + 5]
+padded = renderer.render(request)[0]["lines"][0]
+assert padded["cols"] == original["cols"] + 5
+assert padded["columns"] == original["columns"] + [False] * 5, "padding has no hidden click targets"
+surfaces = [renderer.cairo.ImageSurface.create_from_png(io.BytesIO(base64.b64decode(line["data"])))
+            for line in (original, padded)]
+pixels = [bytes(surface.get_data()) for surface in surfaces]
+for row in range(original["height"]):
+    a, b = (row * surface.get_stride() for surface in surfaces)
+    width = original["width"] * 4
+    assert pixels[0][a:a + width] == pixels[1][b:b + width], "padding must not stretch the glyphs"
+    assert pixels[1][b + width:b + surfaces[1].get_stride()] == (0xff14161b).to_bytes(4, sys.byteorder) * (5 * 19)
 print("heading raster: six sizes, measured wrapping, UTF-8 targets and dark/light styles OK")

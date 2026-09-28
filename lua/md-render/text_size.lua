@@ -59,6 +59,10 @@ local LEVEL_SCALES = {
   [6] = { s = 2, n = 7, d = 12 }, -- 1.17x
 }
 
+-- Images support the exact browser-style sizes, including smaller headings.
+-- ponytail: OSC 66 cannot encode 0.85 exactly; native keeps its existing ladder.
+local IMAGE_RATIOS = { 2, 1.5, 1.25, 1, 0.875, 0.85 }
+
 --- Where a fractionally scaled run sits inside its `s`-row block (`v=`):
 --- 0 top, 1 bottom, 2 centered. Kitty ignores it unless `n < d`, so `#` — the
 --- one level with no fraction — is unaffected either way: it fills the block.
@@ -280,6 +284,10 @@ function M.spec_for(level, backend)
   if not spec then return nil end
   backend = backend or M.resolve_backend()
   if backend == "plain" or (backend == "native" and not M.supports()) then return nil end
+  if backend == "image" then
+    local ratio = IMAGE_RATIOS[level]
+    return { level = level, ratio = ratio, s = math.ceil(ratio) }
+  end
   return spec
 end
 

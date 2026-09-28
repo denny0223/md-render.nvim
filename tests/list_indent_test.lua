@@ -118,8 +118,9 @@ end
 -- Test 7: other blocks written at the content column belong to the item too
 do
   local out = render { "- 項目", "", "  ## 中の見出し" }
-  assert_eq(#out, 2, "a heading in an item should be one rendered line")
+  assert_eq(#out, 3, "a heading in an item includes its separator")
   assert_eq(out[2]:match "^%s*", "  ", "a heading in an item should be indented, not literal text")
+  assert_eq(out[3]:match "^%s*", "  ", "the separator stays inside the item")
 
   out = render { "- 項目", "", "  | a | b |", "  |---|---|", "  | 1 | 2 |" }
   assert_eq(out, {

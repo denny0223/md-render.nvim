@@ -82,6 +82,7 @@ check(session, 28, 14) -- Height must still respond when max_width was explicit.
 close(session, win)
 
 vim.fn.delete(path)
+
 -- Local native limitations must not make H5 larger than its plain H3 parent.
 local size = require "md-render.text_size"
 size.setup { enabled = true, backend = "native" }
@@ -116,4 +117,97 @@ display.apply_content_to_buffer(heading_buf, heading_ns, simple)
 assert(vim.b[heading_buf].md_render_heading_fallback == nil, "successful rebuilds clear the old reason")
 vim.api.nvim_buf_delete(heading_buf, { force = true })
 
+-- Plain headings retain their Markdown rank without level-based indentation.
+for level = 1, 6 do
+  local prefix = string.rep("#", level) .. " "
+  local out = preview.build_content({ prefix .. "共同標題", "正文" }, {
+    max_width = 32,
+    indent = "",
+    text_scale = false,
+  })
+  assert(out.lines[1] == prefix .. "共同標題", "plain H" .. level .. " keeps its rank at the left edge")
+  assert(
+    out.heading_positions[1].byte == 0 and out.heading_positions[1].col == #prefix,
+    "rank markers are excluded from heading character coordinates"
+  )
+  if level <= 2 then
+    assert(out.lines[2] == string.rep(level == 1 and "═" or "─", 32), "plain H1/H2 have distinct rules")
+    assert(not out.heading_lines[1], "the rule is not heading text")
+  else
+    assert(out.lines[2] == "正文", "H3-H6 have no additional indentation or rule")
+  end
+end
+
+local label = string.rep("中文連結", 8)
+local linked = preview.build_content({ "###### [" .. label .. "](https://example.com)" }, {
+  max_width = 20,
+  indent = "",
+  text_scale = false,
+})
+local fragments = {}
+for _, link in ipairs(linked.link_metadata) do
+  assert(link.url == "https://example.com", "plain heading link keeps its destination")
+  fragments[#fragments + 1] = linked.lines[link.line + 1]:sub(link.col_start + 1, link.col_end)
+end
+assert(table.concat(fragments) == label, "rank markers never enter link spans")
+for row, line in ipairs(linked.lines) do
+  assert(vim.fn.strdisplaywidth(line) <= 20, "rank markers count toward the wrap budget")
+  local point = linked.heading_positions[row]
+  assert(
+    point and line:sub(point.col + 1, point.col + point.length) == label:sub(point.byte + 1, point.byte + point.length),
+    "wrapped heading positions refer to title bytes, not rank markers"
+  )
+end
+
+local chars = { "###### 甲乙丙丁戊己庚辛壬癸" }
+local scaled = preview.build_content(chars, { max_width = 80, indent = "" })
+local plain = preview.build_content(chars, { max_width = 20, indent = "", text_scale = false })
+local view = display.remap_view({ lnum = 1, topline = 1, col = 18 }, scaled, plain)
+assert(
+  plain.lines[view.lnum]:sub(view.col + 1, view.col + 3) == "庚",
+  "native to plain keeps the same title character"
+)
+view = display.remap_view(view, plain, scaled)
+assert(
+  scaled.lines[view.lnum]:sub(view.col + 1, view.col + 3) == "庚",
+  "plain to native keeps the same title character"
+)
+
+local unbroken = preview.build_content({ "###### " .. string.rep("x", 60) }, {
+  max_width = 20,
+  indent = "",
+  text_scale = false,
+})
+assert(unbroken.heading_positions[1] == nil, "a marker-only row has no title characters to map")
+assert(unbroken.heading_positions[2].byte == 0, "the title still begins at byte zero after a marker-only row")
+
+local ambiwidth = vim.o.ambiwidth
+vim.o.ambiwidth = "double"
+for _, source in ipairs { "# A", "## B" } do
+  local out = preview.build_content({ source }, { max_width = 21, indent = "", text_scale = false })
+  assert(vim.fn.strdisplaywidth(out.lines[2]) <= 21, "rules respect terminal character widths")
+end
+-- The details bar is three cells wide with ambiwidth=double, not two.
+for level = 1, 2 do
+  for _, width in ipairs { 20, 40 } do
+    for _, text_scale in ipairs { false, true } do
+      local out = preview.build_content({
+        "<details open>",
+        "<summary>More</summary>",
+        string.rep("#", level) .. " [" .. string.rep("中", 30) .. "](#target)",
+        "</details>",
+      }, { max_width = width, indent = "", text_scale = text_scale })
+      if text_scale then
+        assert(out.heading_fallback and out.heading_backend == "plain", "linked native headings use document fallback")
+      end
+      for _, line in ipairs(out.lines) do
+        assert(
+          vim.fn.strdisplaywidth(line) <= width,
+          string.format("H%d details text and rule must fit %d columns", level, width)
+        )
+      end
+    end
+  end
+end
+vim.o.ambiwidth = ambiwidth
 print "Preview layout: native caps, Snacks width/height resize, and explicit width OK"

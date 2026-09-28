@@ -329,92 +329,45 @@ autocmd FileType markdown silent! MdRender auto on
 
 ### 放大標題
 
-標題預設使用 `auto`，依 **圖片 → native OSC 66 → 一般文字** 選擇。圖片需要終端確認支援 PNG、可取得實際文字格尺寸、啟用 `termguicolors`，以及可用的 Pango/Cairo 排版程序。環境條件不足時，`auto` 會嘗試 native 放大；仍不支援則保留一般文字。等待偵測或排版期間也可閱讀原文；圖片模式中，個別標題無法繪製時，只有該標題保留文字。
+標題預設使用 `auto`，依序選擇 **圖片 → 原生 OSC 66 → 一般文字**。`:MdRender textsize status` 可查看實際後端與回退原因；修正環境後，執行 `:MdRender textsize auto` 重試。
 
-`:MdRender textsize status` 會顯示選擇的策略、實際後端與降級原因。PNG 回覆最多等待 1.5 秒，排版程序最多等待 5 秒；環境失敗會在本次 Neovim 工作階段快取，不會反覆啟動程序或自動跳出警告。修正環境後，再執行 `:MdRender textsize auto` 即可重試。切換原文／預覽或 `off`／`on` 都會保留後端選擇；`native` 不做圖片偵測也不啟動排版程序，明確選擇 `image` 時則只會降級至一般文字。也可在下方設定中使用 `backend = "auto"`。
+| 模式 | H1 | H2 | H3 | H4 | H5 | H6 |
+|---|---|---|---|---|---|---|
+| 圖片 | 2 倍 | 1.5 倍 | 1.25 倍 | 1 倍 | 0.875 倍 | 0.85 倍 |
+| 原生 | 2 倍 | 1.75 倍 | 1.5 倍 | 1.4 倍 | 1.25 倍 | 1.17 倍 |
+
+圖片與原生布局不顯示層級圖示，H1／H2 下方使用單線。純文字布局保留 `#` 到 `######`，六級都在所屬容器內靠左，H1 下方使用雙線、H2 使用單線。
 
 #### 試用圖片標題
 
-執行 `:MdRender textsize image`，再照常用 `:MdRender toggle` 開啟預覽；已開啟的預覽會立即更新。`:MdRender textsize native` 恢復 OSC 66 標題，`:MdRender textsize off` 則顯示一般大小的文字。
+執行 `:MdRender textsize image`，再用 `:MdRender toggle` 開啟預覽。圖片需要 Neovim >= 0.12、終端確認 PNG 支援（Kitty >= 0.28）、`termguicolors`、Python 3、PyGObject、Pycairo 與 Pango/PangoCairo。Python 套件與字型需安裝於 Neovim 所在主機；明確選擇 `image` 後，環境不足時會使用一般文字。
 
-這個實驗後端以 [Pango](https://www.pango.org/)／[Cairo](https://www.cairographics.org/) 在六級字型大小下排出自然字距，需要 Python 3、PyGObject、Pycairo，以及 Pango/PangoCairo 與 Cairo 的 introspection 資料。缺少套件時保留一般文字。字型與基準像素大小可設定為：
+若要調整字型或基準大小：
 
 ```lua
 require("md-render.text_size").setup {
-  backend = "image",
+  backend = "auto",
   image = { font = "Noto Sans Mono,Noto Sans Mono CJK TC", font_size = "auto", python = "python3" },
 }
 ```
 
-預設 `font_size = "auto"` 會依終端格子的大小校準指定字型，保留六級不同的字級倍率；也可指定正的像素值。Pango 量測換行與字形位置，同一份位元組範圍會用於 buffer 文字、行內樣式與連結定位。排版在背景產生，預覽開啟期間會重用結果。
+`font_size = "auto"` 依終端格子大小校準字型，也可指定正的像素值。圖片沿用標題與行內高亮；不支援的字形、樣式及 `<details>` 內的標題保留文字。更換字型後，執行 `:MdRender textsize image` 更新。
 
-懸停時圖片保持原位。單擊依可見字形定位，包含圖片下半列，再交由既有內部錨點處理器操作。游標沿標題左側空白或圖示移動時保留圖片；進入圖片範圍時，該段顯示文字，確保游標位置正確。拖曳從按下時的字元開始選取，Visual 選取只讓選取經過的標題列顯示文字。使用者設定的 yank 或其他高亮也會讓涵蓋的列暫時顯示文字，依高亮原本的持續時間恢復圖片。搜尋命中的標題保留高亮，其他標題仍顯示圖片，也不會清除搜尋狀態。在其他視窗編輯時，可見預覽仍保留圖片；重新換行或切換後端時，會維持正在閱讀的原文段落與標題字元。背景重新排版會等到選取、待完成的操作指令、命令列輸入與 yank 高亮結束後才套用。
+搜尋、選取或將游標移入標題時，受影響的文字會顯示出來，維持原布局，不臨時插入標記。內部錨點可直接點擊；外部連結也支援終端快捷操作（Kitty 為 Ctrl＋Shift＋點擊）。若要用終端選取文字，先執行 `:MdRender textsize off`，或用 `:MdRender toggle` 回到原文。
 
-圖片沿用使用者的 `MdRenderH1`～`MdRenderH6` 與行內高亮群組，基本顏色來自 `Normal` 或 `NormalFloat`。未指定背景色時保留透明；只在顯示圖片的視窗遮住底下的字形，避免重影，buffer 文字與座標保持不變。顏色、背景、粗體、斜體、底線與刪除線保留 Markdown 樣式順序，並讓 `vim.hl.on_yank()` 等使用者高亮優先顯示。自訂反相、`nocombine`、透明混合、其他底線樣式或視窗專屬高亮會退回文字；缺字、字型尺寸過大、終端格線無法容納文字或連結目標，以及 `<details>` 內的標題，也保留文字。更換配色與終端尺寸時會更新排版；直接修改渲染高亮群組後，會先撤下舊圖片並重新繪製。調整字型後，可用 `:MdRender textsize image` 手動更新並重試失敗的繪圖。降級原因可用 `:MdRender textsize status` 檢視；明確使用 image 模式時，也會在 `:messages` 記錄繪圖錯誤。
-
-**終端操作：** 外部連結可用終端的 OSC 8 快捷操作開啟（Kitty 為 Ctrl＋Shift＋點擊），圖片標題的上下兩列皆可點擊。網址範圍對齊可見字形，仍由終端設定的程式開啟。內部錨點可用一般滑鼠點擊，本機檔案連結可用 `gf`。若要用終端 Shift＋拖曳選取，先執行 `:MdRender textsize off` 顯示渲染後文字，或用 `:MdRender toggle` 回到 Markdown 原文；圖片格子不含可選取的文字。
-
-**相容範圍：** 圖片標題需要 Neovim >= 0.12、終端確認 PNG 支援，以及 `termguicolors`（Kitty >= 0.28）；native 放大需要 Kitty >= 0.40。已在 Linux 上驗證直接執行 Kitty，以及透過本機 loopback SSH PTY 連入 Linux。Python、Pango/Cairo 與指定字型需安裝於 Neovim 所在主機；PNG 資料經終端連線傳送，不需共用圖片檔案。Windows 與 tmux 不啟用圖片標題；其他作業系統／客戶端組合尚未驗證。需要純文字畫面的終端工具或輔助科技可使用 `textsize off` 或原始 buffer；目前未進行螢幕閱讀器相容性實測。
+Windows 與 tmux 不啟用圖片標題。已驗證 Linux 直接使用 Kitty，以及 SSH 連入 Linux；其他作業系統／客戶端組合與螢幕閱讀器尚未驗證。
 
 #### 原生文字標題
 
-> **實驗性功能，僅支援 Kitty：** 操作方式可能改變，也可能移除此功能。歡迎回報問題或不順手的地方。
+Kitty >= 0.40 可用 `:MdRender textsize native`，不需圖片依賴。若標題含行內格式、連結，或可用寬度不足以縮放，整份文件會使用一般標題，維持一致的層級呈現。搜尋、選取及不支援的高亮仍可能讓個別標題顯示文字。
 
-Kitty 0.40 加入[文字大小協定](https://sw.kovidgoyal.net/kitty/text-sizing-protocol/)（OSC 66），可以依基本字型大小的倍率繪製文字。md-render 用它為各層級標題設定不同大小：
+原生標題換行後，每行占用兩列。捲動或視窗重疊時可能短暫顯示一般文字，重繪成本也較高；Telescope 與 Snacks 選取器預覽不使用原生縮放。疑難排解請見 `:help md-render-text-size`。
 
-| 層級 | `#` | `##` | `###` | `####` | `#####` | `######` |
-|---|---|---|---|---|---|---|
-| 大小 | 2.00 倍 | 1.75 倍 | 1.50 倍 | 1.40 倍 | 1.25 倍 | 1.17 倍 |
-
-使用 `:MdRender textsize native` 選擇此後端；`auto` 在圖片環境不足時也會使用它。搜尋、選取與使用者高亮會讓受影響的標題暫時顯示一般文字。可用 `:MdRender textsize off` 關閉，或在設定中永久停用：
+使用 `:MdRender textsize off` 關閉縮放，或在設定中停用：
 
 ```lua
 require("md-render.text_size").setup { enabled = false }
 ```
-
-這組倍率是固定的。Kitty 的 `s=` 會放大文字占用的終端機格子，不只是字型，因此所有層級都使用 `s=2`，固定多占一行。小於兩倍的大小則透過分數縮放及各段文字的 `w=` 寬度設定達成。協定限制 `d` 最大為 15、`w` 最大為 7，因此最深層標題使用 1.17 倍，無法任意接近一般文字大小。
-
-標題以一般寬度的 `1 / 倍率` 進行換行，讓各層級都能放大；換行後的每一行，各占用一個兩行高的區塊。
-
-分數倍率的標題會拆成數段送出，每段都必須以整數格宣告寬度，但實際文字寬度未必是整數。為避免 Kitty 丟棄放不下的字元，寬度一律無條件進位；分段時優先選擇剛好整除的位置，否則選在空白後，讓多出的空間成為稍寬的字距，而不是單字中間的缺口。
-
-Emoji 會獨立成段。對 Kitty 而言，宣告了寬度的一段文字是一個跨格字元，只使用一種字型繪製。如果 emoji 和一般文字放在同一段，可能連帶影響整段文字。原有測量在 Kitty 0.48 中發現：emoji 位於中間時，整段會變成缺字方框；位於開頭時，後方文字會被丟棄。獨立成段可正確顯示，但各段寬度的進位可能讓 emoji 兩側多一點空隙；如果標題因此放不下，就維持一般大小。`#` 層級只使用 `s=`，不宣告寬度，由 Kitty 自行拆分格子並逐格選擇字型，所以不受此限制。
-
-放大的文字和行內圖片一樣，直接繪製到終端機，Neovim 並不知道它的存在。緩衝區內仍保留原本大小的標題，放大文字覆蓋在上方；終端機重繪時會暫時回到一般標題，而不是變成空白。`y`、`/`、`:w` 操作的仍是真正的文字。
-
-已知限制：
-
-- **僅支援 Kitty >= 0.40。** 外掛會透過 XTVERSION 詢問終端機身分，收到明確回覆才啟用。某些終端機會把 OSC 66 連同附帶文字一起丟棄，因此這裡採取嚴格偵測，避免標題消失。其他環境仍以一般大小顯示，不啟用此功能。
-- 原生預覽若有標題因行內格式、連結或寬度不足而無法縮放，整份文件的標題會使用一般文字，維持一致層級並保留樣式與連結。`:MdRender textsize status` 會說明原因。不支援的高亮效果、索引色與自訂高亮 namespace 仍可能在繪製時讓出一般文字，不會重新排版整份文件。
-- 每個層級都預留兩行高，只有 `#` 會填滿。其他層級使用 `v=2` 垂直置中，避免沿用協定預設的靠上對齊；例如 `######` 只有 1.17 倍，靠上時下方幾乎會空出一整行。
-- 層級圖示維持一般大小，但會獨立成段並置中，與標題對齊。使用 `n=1:d=2` 抵銷 `s=2` 的格子縮放。這也能避免 Nerd Font 圖示被裁切：這些圖示回報為一格寬，實際圖形卻更寬，若跟標題共用同一段，`󰉬` 可能只剩下「H」。獨立一段並設定 `w=1`，就能使用原本預留的兩格寬度。
-- 如果標題的第二行超出視窗，會先維持一般大小，捲動進入可見範圍後才放大。
-- 其他外掛強制重繪、訊息或彈出視窗覆蓋畫面、終端機因滑鼠捲動而搬移格子，都可能讓標題暫時恢復一般大小。外掛會依序透過三種方式補繪：捲動、調整大小、開關視窗時立即補繪；其他重繪由 decoration provider 在下一輪事件迴圈處理；其餘狀況交由 `SafeState` 限速處理，另有 500 毫秒計時器處理持續重繪的情況。圖片與放大標題都畫在 Neovim 格線之外，完整重繪會同時清掉兩者，因此任一方重繪時，也會通知另一方立即補上。
-- **若其他外掛在 `eventignore = "all"` 的情況下重繪，至少會有一個畫面影格無法立即補回。** 這個設定會停用所有自動指令；decoration provider 不屬於自動指令，仍能在下一輪補繪，但中間會短暫恢復一般大小。已知例子是 [nvim-scrollview](https://github.com/dstein64/nvim-scrollview)：滑鼠移動時，它會在 `eventignore = "all"` 內反覆開啟、移動及關閉浮動視窗。原有測量在 15 秒內記錄到 308 次 `nvim_open_win`，卻只觸發一次 `WinNew`。若想在預覽期間停用它，可檢查 `b:md_render`；所有 md-render 預覽緩衝區都會設定這個標記。這種方式也能涵蓋多個預覽或使用者手動分割視窗的情況：
-
-  ```lua
-  local off = false
-  vim.api.nvim_create_autocmd({ "WinNew", "WinClosed", "BufWinEnter" }, {
-    callback = vim.schedule_wrap(function()
-      local want = false
-      for _, w in ipairs(vim.api.nvim_list_wins()) do
-        if vim.b[vim.api.nvim_win_get_buf(w)].md_render then
-          want = true
-          break
-        end
-      end
-      if want ~= off then
-        off = want
-        vim.cmd(want and "ScrollViewDisable" or "ScrollViewEnable")
-      end
-    end),
-  })
-  ```
-
-- 每次排版變動都需要完整畫面重繪，才能清除先前放大的文字，因此捲動成本會較高。視窗內也有圖片時，會利用圖片重繪清除舊畫面，再寫入放大的文字。
-- Telescope 與 Snacks 的選取器預覽不啟用這個功能，避免每次移動游標都造成完整畫面重繪。
-
-完整說明請見 `:help md-render-text-size`。
 
 ### 分割原始文字與預覽
 

@@ -62,7 +62,7 @@ do
   with_support(true, function()
     local out = render { "# Heading", "", "Body." }
     assert_eq(#out.text_placements, 0, "disabled: no text placements")
-    assert_eq(out.lines[2], "  Body.", "disabled: no row reserved under the heading")
+    assert_eq(out.lines[3], "  Body.", "disabled: body follows the separator without a reserved row")
   end)
 end
 
@@ -73,7 +73,7 @@ do
   with_support(false, function()
     local out = render { "# Heading", "", "Body." }
     assert_eq(#out.text_placements, 0, "unsupported terminal: no text placements")
-    assert_eq(out.lines[2], "  Body.", "unsupported terminal: no row reserved")
+    assert_eq(out.lines[3], "  Body.", "unsupported terminal: body follows the separator")
   end)
 end
 
@@ -169,14 +169,12 @@ do
     assert_eq(p.width, vim.api.nvim_strwidth(p.text) * 2, "h1 covers twice its plain width")
     assert_eq(p.hl, "MdRenderH1", "placement highlight group")
     assert_eq(out.lines[2], "", "one blank row reserved for the taller glyphs")
-    assert_eq(out.lines[3], "  Body.", "body follows the reserved row")
+    assert_eq(out.lines[4], "  Body.", "body follows the reserved row and separator")
   end)
   text_size.setup { enabled = false }
 end
 
--- Test 5: the level icon is excluded from the scaled run. Kitty clips a
--- scaled run to `scale` cells per source cell, and these glyphs report as one
--- cell while being drawn wider, so an included icon renders as a bare "H".
+-- Test 5: the reading experiment removes the icon from both text layers.
 do
   text_size.setup { enabled = true }
   with_support(true, function()
@@ -186,7 +184,7 @@ do
     local icon = markdown.heading_icon(2)
     assert_true(not p.text:find(icon, 1, true), "icon glyph absent from the payload")
     local line = out.lines[p.line + 1]
-    assert_true(line:find(icon, 1, true) ~= nil, "icon stays in the buffer line")
+    assert_true(line:find(icon, 1, true) == nil, "icon is absent from the buffer line")
     assert_eq(line:sub(p.col + 1, p.col + #p.text), p.text, "placement col points at the text")
   end)
   text_size.setup { enabled = false }
@@ -211,8 +209,8 @@ do
   text_size.setup { enabled = false }
 end
 
--- Details insert a multibyte prefix after heading layout. Text and icon
--- anchors must still point into the final buffer, including wrapped lines.
+-- Details insert a multibyte prefix after heading layout. Text anchors must
+-- still point into the final buffer, including wrapped lines.
 do
   text_size.setup { enabled = true }
   with_support(true, function()
@@ -222,7 +220,7 @@ do
         "<details open>",
         "<summary>Study</summary>",
         string.rep("#", level) .. " [共同研究](https://example.com/study)",
-        string.rep("#", level) .. " " .. string.rep("文字 ", 12),
+        string.rep("#", level) .. " " .. string.rep("文字 ", 20),
         "</details>",
         "# After",
       }
@@ -232,11 +230,9 @@ do
       for _, p in ipairs(out.text_placements) do
         local line = out.lines[p.line + 1]
         assert_eq(line:sub(p.col + 1, p.col + #p.text), p.text, "details text anchor matches the final buffer")
-        if p.icon then
-          assert_eq(line:sub(p.icon_col + 1, p.icon_col + #p.icon), p.icon, "details icon anchor matches")
-        end
+        assert_eq(p.icon, nil, "details heading has no level icon")
         if p.text == "Before" or p.text == "After" then
-          assert_eq(p.icon_col, #opts.indent, "details prefix does not move headings outside the block")
+          assert_eq(p.col, #opts.indent, "details prefix does not move headings outside the block")
         end
       end
       assert_eq(#out.link_metadata, 1, "details heading retains its link")
@@ -259,7 +255,7 @@ do
   with_support(true, function()
     local out = render({ "# Heading" }, { max_width = 16, indent = "  " })
     assert_eq(#out.text_placements, 0, "no scaling when the halved width is too narrow")
-    assert_eq(#out.lines, 1, "and no row is reserved")
+    assert_eq(#out.lines, 2, "only the heading and its separator remain")
   end)
   text_size.setup { enabled = false }
 end
@@ -379,7 +375,7 @@ do
   with_support(true, function()
     local out = render({ "# Heading", "", "Body." }, { max_width = 80, indent = "  ", text_scale = false })
     assert_eq(#out.text_placements, 0, "text_scale = false: no placements")
-    assert_eq(out.lines[2], "  Body.", "text_scale = false: no row reserved")
+    assert_eq(out.lines[3], "  Body.", "text_scale = false: body follows the separator")
   end)
   text_size.setup { enabled = false }
 end
@@ -489,33 +485,29 @@ do
   text_size.setup { enabled = false }
 end
 
--- Test 16: the level icon is carried on the placement so it can be repainted
--- at plain size alongside the scaled text. It is kept out of `text` — the
--- anchor check compares that against the buffer — and points at its own
--- column, which is where the indent ends.
+-- Test 16: every placement begins at the indent without an icon or padding.
 do
   text_size.setup { enabled = true }
   with_support(true, function()
     local out = render { "## Heading", "", "Body." }
     local p = out.text_placements[1]
-    assert_eq(p.icon, markdown.heading_icon(2), "the placement carries the level glyph")
-    assert_eq(p.icon_col, 2, "and the column it sits at, right after the indent")
-    assert_true(p.icon_col < p.col, "the icon comes before the scaled text")
-    assert_true(not p.text:find(p.icon, 1, true), "the glyph is still absent from the scaled payload")
+    assert_eq(p.icon, nil, "the placement carries no level glyph")
+    assert_eq(p.icon_col, nil, "the placement carries no icon column")
+    assert_eq(p.col, 2, "text starts right after the indent")
 
-    -- A wrapped heading only carries the icon on its first line.
     local wrapped = render({ "### " .. string.rep("word ", 40) }, { max_width = 40, indent = "  " })
     assert_true(#wrapped.text_placements > 1, "the long heading wraps into several placements")
-    assert_eq(wrapped.text_placements[1].icon, markdown.heading_icon(3), "first line carries the icon")
-    assert_eq(wrapped.text_placements[2].icon, nil, "continuation lines do not")
+    for _, placement in ipairs(wrapped.text_placements) do
+      assert_eq(placement.icon, nil, "wrapped lines carry no icon")
+      assert_eq(placement.col, 2, "wrapped text stays aligned")
+    end
   end)
   text_size.setup { enabled = false }
 end
 
 -- Test 17: what actually goes to the terminal. Every level reserves a block
 -- `s` rows tall while only `#` fills it, so the fractional levels are centered
--- inside it with `v=`, and the icon goes out as a run of its own at plain size
--- so that it lands in the same place as the text it labels.
+-- inside it with `v=`. No level icon is sent alongside the text.
 do
   text_size.setup { enabled = true }
   with_support(true, function()
@@ -544,28 +536,8 @@ do
       "h2 goes out at its fractional scale"
     )
     assert_true(sent:find(":v=2;", 1, true) ~= nil, "and centered inside its block")
-    assert_true(
-      sent:find("s=2:n=1:d=2:w=1:v=2;" .. markdown.heading_icon(2), 1, true) ~= nil,
-      "the icon is its own run: plain size, one cell, same alignment"
-    )
-
-    -- The separator between the icon's block and the text's is covered by
-    -- neither, and a block is always an even number of cells wide, so neither
-    -- can be widened to reach it. Left alone it shows the heading's background
-    -- on the reserved row's neighbour and the window's on the reserved row
-    -- itself — a seam. Plain spaces in the heading's colours close it.
-    -- In cells, not bytes: the icon is a four-byte glyph one cell wide, and
-    -- what has to be covered is the screen column between the two blocks.
-    local p = out.text_placements[1]
-    local prefix_w = vim.api.nvim_strwidth(markdown.heading_icon_prefix(2))
-    local gap = prefix_w - p.scale
-    assert_eq(gap, 1, "pad_icon's two cells plus one separator leave one cell over")
-    -- An SGR ends in `m`, and the heading text here has no spaces in it, so
-    -- "colours followed by exactly this many spaces" cannot match a run.
-    assert_true(
-      sent:find("m" .. string.rep(" ", gap) .. "\27", 1, true) ~= nil,
-      "the gap is filled with spaces in the heading's colours"
-    )
+    assert_true(sent:find(markdown.heading_icon(2), 1, true) == nil, "no icon run is sent to the terminal")
+    assert_eq(out.text_placements[1].col, 2, "the text needs no icon padding")
 
     vim.api.nvim_ui_send = real_send
     text_size.detach(state)
@@ -576,9 +548,7 @@ do
 end
 
 -- Test 18: `#` is the one level with no fraction, and Kitty ignores `v` unless
--- `n < d`. Sending it anyway would be noise, so the text run does without —
--- but the icon run has a fraction of its own (`n=1:d=s`, which is plain size)
--- and does carry it.
+-- `n < d`. The text run does without it, and there is no separate icon run.
 do
   text_size.setup { enabled = true }
   with_support(true, function()
@@ -602,10 +572,7 @@ do
     local sent = table.concat(writes)
 
     assert_true(sent:find("\27]66;s=2;Heading", 1, true) ~= nil, "h1 goes out as a bare s=2 run")
-    assert_true(
-      sent:find("s=2:n=1:d=2:w=1:v=2;" .. markdown.heading_icon(1), 1, true) ~= nil,
-      "its icon still centers in the block"
-    )
+    assert_true(sent:find(markdown.heading_icon(1), 1, true) == nil, "h1 sends no icon run")
 
     vim.api.nvim_ui_send = real_send
     text_size.detach(state)
@@ -853,47 +820,33 @@ do
   text_size.setup { enabled = false }
 end
 
--- Test 23: a heading that wraps keeps the icon's padding.
---
--- Wrapping reassembles segments with one space between them, so the second
--- cell `heading_icon_prefix` puts after the glyph used to disappear as soon as
--- a heading was long enough to wrap. Plain, that left the heading a column
--- left of every heading that fitted; scaled, the icon's own two-cell run then
--- ended exactly where the text began and the gap between them vanished.
+-- Test 23: plain headings retain rank markers; scaled headings have no icon padding.
 do
   local indent = "  "
   local long = "## Headings have a size now and this one is long enough to wrap"
   local prefix = markdown.heading_icon_prefix(2)
 
-  -- Plain first: the width is restored whether or not anything scales it.
+  assert_eq(prefix, "", "heading prefix is empty")
   text_size.setup { enabled = false }
   local plain = render({ long }, { max_width = 40, indent = indent })
   assert_true(#plain.lines > 1, "the heading wraps at this width")
-  assert_eq(plain.lines[1]:sub(#indent + 1, #indent + #prefix), prefix, "plain: the icon keeps both of its cells")
-  -- Both the restored cell and the indent must fit inside the window budget.
-  assert_true(
-    vim.api.nvim_strwidth(plain.lines[1]) <= 40,
-    "plain: and the cell put back was reserved, so the line is no wider for it"
-  )
+  assert_true(plain.lines[1]:sub(#indent + 1):match "^## Headings" ~= nil, "plain: rank markers begin at the indent")
+  assert_true(vim.api.nvim_strwidth(plain.lines[1]) <= 40, "plain: the wrapped line fits the window")
   local hl = plain.highlights[1]
   assert_eq(hl.line, 0, "plain: the heading highlight is on the first line")
-  assert_eq(hl.groups[1].col, #indent, "plain: it still starts at the icon")
-  assert_eq(hl.groups[1].end_col, #plain.lines[1], "plain: and grew with the line")
+  assert_eq(hl.groups[1].col, #indent, "plain: highlight begins at the text")
+  assert_eq(hl.groups[1].end_col, #plain.lines[1], "plain: highlight covers the line")
 
   text_size.setup { enabled = true }
   with_support(true, function()
     local out = render({ long }, { max_width = 40, indent = indent })
     local p = out.text_placements[1]
     assert_true(#out.text_placements > 1, "scaled: the heading wraps into several placements")
-    assert_eq(out.lines[1]:sub(#indent + 1, #indent + #prefix), prefix, "scaled: the icon keeps both of its cells")
-    assert_eq(p.icon_col, #indent, "scaled: the icon run starts where the indent ends")
-    assert_eq(p.col, #indent + #prefix, "scaled: and the text run after the whole prefix")
-    -- Same gap Test 17 asserts for a heading that did not wrap: the icon's
-    -- block is `scale` cells wide, and one cell is left between the two.
-    assert_eq(vim.api.nvim_strwidth(prefix) - p.scale, 1, "scaled: one cell is left between the two blocks")
+    assert_eq(p.icon_col, nil, "scaled: no icon column remains")
+    assert_eq(p.col, #indent, "scaled: text starts at the indent")
     assert_true(
       vim.api.nvim_strwidth(indent) + vim.api.nvim_strwidth(prefix) + p.width <= 40,
-      "scaled: the painted runs still fit beside the restored padding"
+      "scaled: the painted runs fit the window"
     )
   end)
   text_size.setup { enabled = false }

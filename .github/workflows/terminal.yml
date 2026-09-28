@@ -6,9 +6,10 @@ name: Terminal
 # than a screenshot comparison.
 #
 # This is the layer between the unit tests (the bytes md-render emits) and the
-# visual regression tests (pixels, macOS-local only). It catches the two things
-# that actually went wrong with scaled headings: the level icon leaking into a
-# scaled run and being clipped, and the terminal probe silently failing.
+# visual regression tests (pixels, macOS-local only). It explicitly selects
+# native OSC 66, checks all six sizes and plain Markdown ranks, and verifies
+# CursorLine feedback withdraws/restores a heading without moving body rows.
+# The driver clears inherited terminal/tmux hints and uses isolated configs.
 #
 # Same shape as the FFmpeg matrix: a pinned floor plus a version that follows
 # upstream, so both "we broke the oldest supported setup" and "upstream moved

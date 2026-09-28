@@ -144,7 +144,19 @@ local buf, win = vim.api.nvim_create_buf(false, true), vim.api.nvim_get_current_
 vim.api.nvim_buf_set_lines(buf, 0, -1, false, content.lines)
 vim.api.nvim_win_set_buf(win, buf)
 vim.cmd "redraw"
-local state = size.attach(win, content)
+local original_termsync = vim.o.termsync
+vim.o.termsync = true
+local empty = vim.deepcopy(content)
+empty.text_placements = {}
+local watcher = size.attach(win, empty)
+assert(watcher and vim.o.termsync, "a native watcher without enlarged headings must not change synchronized updates")
+size.detach(watcher)
+local plain = vim.deepcopy(content)
+plain.heading_backend, plain.text_placements = "plain", {}
+local state = size.attach(win, plain)
+assert(vim.o.termsync, "plain fallback must not change synchronized updates")
+state = size.refresh(state, win, content)
+assert(not vim.o.termsync, "native capability recovery disables pane-wide synchronized redraws")
 assert(
   vim.wait(500, function()
     return #writes > 0
@@ -175,7 +187,51 @@ assert(
   end, 10),
   "focus recovery repaints without reopening"
 )
+local other_win = vim.api.nvim_open_win(buf, false, {
+  relative = "editor",
+  row = 0,
+  col = 0,
+  width = 20,
+  height = 4,
+  style = "minimal",
+})
+local other = size.attach(other_win, content)
 size.detach(state)
+assert(not vim.o.termsync, "another native preview still needs passthrough-compatible redraws")
+size.detach(other)
+assert(vim.o.termsync, "closing the last native preview restores the original setting")
+
+local inferred = vim.deepcopy(content)
+inferred.heading_backend = nil
+state = size.attach(win, inferred)
+assert(not vim.o.termsync, "placements also acquire the setting when backend metadata is omitted")
+size.detach(state)
+
+vim.o.termsync = false
+state = size.attach(win, content)
+size.detach(state)
+assert(not vim.o.termsync, "an originally disabled setting remains disabled")
+
+vim.o.termsync = true
+state = size.attach(win, content)
+state = size.refresh(state, win, plain)
+assert(vim.o.termsync, "fallback restores synchronized updates before the watcher detaches")
+size.detach(state)
+
+for _, selected in ipairs { true, false } do
+  vim.o.termsync = true
+  state, other = size.attach(win, content), size.attach(other_win, content)
+  vim.o.termsync = selected
+  -- OptionSet is not emitted during nvim -l startup; emulate the user's :set.
+  vim.api.nvim_exec_autocmds("OptionSet", { pattern = "termsync", modeline = false })
+  size.detach(state)
+  assert(vim.o.termsync == selected, "closing one preview must respect an explicit option change")
+  size.detach(other)
+  assert(vim.o.termsync == selected, "closing the last preview must not overwrite the user's new setting")
+end
+vim.api.nvim_win_close(other_win, true)
+vim.o.termsync = original_termsync
+
 tmux.get, tmux.redraw, vim.api.nvim_ui_send = get, redraw, send
 vim.system, vim.api.nvim_list_uis, vim.uv.hrtime = system, uis, hrtime
 vim.env.TMUX, vim.env.TMUX_PANE, vim.env.TERM_PROGRAM = unpack(env)

@@ -7,6 +7,7 @@
 ---@field col integer 0-indexed start column
 ---@field end_col integer 0-indexed end column
 ---@field hl string highlight group name
+---@field _code_span? boolean internal literal provenance, removed before returning
 
 ---@class MdRender.Markdown.Link
 ---@field col_start integer 0-indexed start column
@@ -83,6 +84,19 @@ local function adjust_positions(highlights, links, removals, hl_count, link_coun
   end
 end
 
+--- Literal ranges stay in input coordinates until each transformation finishes.
+local function overlaps_literal(first, last, highlights, escaped_positions)
+  for _, hl in ipairs(highlights or {}) do
+    if hl._code_span and first < hl.end_col and last > hl.col then return true end
+  end
+  if escaped_positions then
+    for pos = first, last - 1 do
+      if escaped_positions[pos] then return true end
+    end
+  end
+  return false
+end
+
 --- Protect code spans by replacing them with placeholders before inline processing.
 --- Code spans take precedence over almost all other inline constructs (CommonMark spec).
 ---@param text string
@@ -152,7 +166,7 @@ local function restore_code_spans(text, spans, hl_group, highlights, links)
       end
       -- Add code highlight
       local col = start - 1 -- 0-indexed
-      table.insert(highlights, { col = col, end_col = col + content_len, hl = hl_group })
+      table.insert(highlights, { col = col, end_col = col + content_len, hl = hl_group, _code_span = true })
       text = text:sub(1, start - 1) .. span.content .. text:sub(finish + 1)
     end
   end
@@ -195,19 +209,29 @@ end
 ---@param highlights? MdRender.Markdown.Highlight[]
 ---@param links? MdRender.Markdown.Link[]
 ---@return string
+---@return table<integer, boolean> escaped_positions 0-indexed output positions
 local function restore_backslashes(text, escapes, highlights, links)
-  if #escapes == 0 then return text end
+  if #escapes == 0 then return text, {} end
   local result = {}
+  local escaped_positions = {}
+  local byte_offset = 0 -- cumulative byte shift (3-byte placeholder → 1-byte char = -2 each)
   local removals = {} -- positions in the input, as used by existing ranges
   local i = 1
   while i <= #text do
     local b1 = text:byte(i)
-    if b1 == 0xEF and i + 2 <= #text and text:byte(i + 1) == 0x80 then
+    if
+      b1 == 0xEF
+      and i + 2 <= #text
+      and text:byte(i + 1) == 0x80
+      and not overlaps_literal(i - 1, i + 2, highlights)
+    then
       local b3 = text:byte(i + 2)
       if b3 >= 0x80 then
         local orig_byte = b3 - 0x80
+        escaped_positions[i - 1 - byte_offset] = true
         table.insert(removals, { start = i, count = 2 })
         table.insert(result, string.char(orig_byte))
+        byte_offset = byte_offset + 2
         i = i + 3
       else
         table.insert(result, text:sub(i, i))
@@ -220,7 +244,7 @@ local function restore_backslashes(text, escapes, highlights, links)
   end
 
   adjust_positions(highlights or {}, links or {}, removals, #(highlights or {}), #(links or {}))
-  return table.concat(result)
+  return table.concat(result), escaped_positions
 end
 
 --- Common HTML named character references
@@ -293,8 +317,9 @@ end
 ---@param text string
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
+---@param escaped_positions? table<integer, boolean> literal escaped-character positions
 ---@return string
-local function decode_html_entities(text, highlights, links)
+local function decode_html_entities(text, highlights, links, escaped_positions)
   local result = {}
   local removals = {}
   local i = 1
@@ -316,7 +341,9 @@ local function decode_html_entities(text, highlights, links)
         if name then replacement = HTML_ENTITIES[name] or HTML_ENTITIES[name:lower()] end
       end
     end
-    if replacement then
+    -- Check the entire reference: restoring code/escapes can join text into a
+    -- reference that never existed, e.g. &am`p;` or &amp\;.
+    if replacement and not overlaps_literal(i - 1, i - 1 + #reference, highlights, escaped_positions) then
       table.insert(removals, { start = i - 1 + #replacement, count = #reference - #replacement })
       table.insert(result, replacement)
       i = i + #reference
@@ -1615,6 +1642,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   -- Declare locals before the fast-path goto so they are in scope at ::finalize::
   local code_spans
   local backslash_escapes
+  local escaped_positions
 
   if not needs_inline then goto finalize end
 
@@ -1648,17 +1676,19 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   rendered_text = process_paired_markers(rendered_text, "==([^=]+)==", "MdRenderHighlight", 2, highlights, links)
   rendered_text = process_inline_math(rendered_text, "MdRenderMath", highlights, links)
 
-  -- Restore code spans (adds MdRenderInlineCode highlight for each span)
+  -- Restore literal text first so decoded Unicode cannot become a placeholder.
   rendered_text = restore_code_spans(rendered_text, code_spans, "MdRenderInlineCode", highlights, links)
-
-  -- Restore backslash-escaped characters (adjusts highlight/link positions)
-  rendered_text = restore_backslashes(rendered_text, backslash_escapes, highlights, links)
+  rendered_text, escaped_positions = restore_backslashes(rendered_text, backslash_escapes, highlights, links)
   for _, link in ipairs(links) do
     link.url = restore_backslashes(link.url, backslash_escapes)
   end
 
-  -- Decode HTML character references (&amp; &#123; &#x1F; etc.)
-  rendered_text = decode_html_entities(rendered_text, highlights, links)
+  -- Decode eligible text, keeping code spans and escaped characters literal.
+  -- Entity line endings are inline whitespace, not new Markdown/buffer rows.
+  rendered_text = decode_html_entities(rendered_text, highlights, links, escaped_positions):gsub("[\r\n]", " ")
+  for _, hl in ipairs(highlights) do
+    hl._code_span = nil
+  end
 
   -- Close up the CJK gaps left behind by the removed markers.  Runs last so
   -- that every span boundary is final, and before the heading/list/blockquote

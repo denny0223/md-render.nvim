@@ -202,8 +202,8 @@ end)
 test("link-looking code and escaped markup keep display whitespace behavior", function()
   assert_eq(
     Markdown.render "`[open](<two  spaces.md>)`  after",
-    "[open](<two spaces.md>) after",
-    "inline code keeps the existing space collapse"
+    "[open](<two  spaces.md>) after",
+    "inline code preserves literal spaces while prose spaces collapse"
   )
   assert_eq(
     Markdown.render [[\[open](<two  spaces.md>)  after]],

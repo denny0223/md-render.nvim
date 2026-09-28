@@ -1,0 +1,297 @@
+local M = {}
+
+local ESCAPABLE = [[!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~]]
+
+local function escaped(text, pos)
+  return text:sub(pos, pos) == "\\" and pos < #text and ESCAPABLE:find(text:sub(pos + 1, pos + 1), 1, true)
+end
+
+local function skip_space(text, pos)
+  pos = text:match("^[ \t]*()", pos)
+  if text:sub(pos, pos) == "\r" then
+    pos = pos + 1
+    if text:sub(pos, pos) == "\n" then pos = pos + 1 end
+  elseif text:sub(pos, pos) == "\n" then
+    pos = pos + 1
+  end
+  return text:match("^[ \t]*()", pos)
+end
+
+--- End of a valid angle autolink, including its closing >.
+function M.autolink_end(text, start)
+  if text:sub(start, start) ~= "<" then return end
+  local finish = text:find(">", start + 1, true)
+  if not finish then return end
+  local value = text:sub(start + 1, finish - 1)
+  if value:find "[<>%z\1-\32]" then return end
+  local scheme = value:match "^([A-Za-z][A-Za-z0-9.+-]*):"
+  if scheme and #scheme >= 2 and #scheme <= 32 then return finish end
+  local domain = value:match "^[A-Za-z0-9.!#$%%&'*+/=?^_`{|}~%-]+@(.+)$"
+  if not domain or domain:find("..", 1, true) or domain:sub(-1) == "." then return end
+  for label in domain:gmatch "[^.]+" do
+    if #label > 63 or not label:match "^[A-Za-z0-9][A-Za-z0-9%-]*$" or not label:match "[A-Za-z0-9]$" then return end
+  end
+  if domain:sub(1, 1) ~= "." then return finish end
+end
+
+--- HTML and code have equal precedence: the first complete construct wins.
+local function html_end(text, start)
+  local rest = text:sub(start)
+  if rest:sub(1, 5) == "<!-->" then return start + 4 end
+  if rest:sub(1, 6) == "<!--->" then return start + 5 end
+  for _, pair in ipairs { { "<!--", "-->" }, { "<?", "?>" }, { "<![CDATA[", "]]>" } } do
+    if rest:sub(1, #pair[1]) == pair[1] then
+      local _, finish = text:find(pair[2], start + #pair[1], true)
+      return finish
+    end
+  end
+  local simple = rest:match "^<![A-Za-z]+[^>]*>"
+  if simple then return start + #simple - 1 end
+  local closing = text:match("^</[A-Za-z][A-Za-z0-9%-]*()", start)
+  if closing then
+    closing = skip_space(text, closing)
+    if text:sub(closing, closing) == ">" then return closing end
+    return
+  end
+  local pos = text:match("^<[A-Za-z][A-Za-z0-9%-]*()", start)
+  if not pos then return end
+  while pos <= #text do
+    local next_pos = skip_space(text, pos)
+    if text:sub(next_pos, next_pos) == ">" then return next_pos end
+    if text:sub(next_pos, next_pos + 1) == "/>" then return next_pos + 1 end
+    if next_pos == pos then return end
+    local name_end = text:match("^[A-Za-z_:][A-Za-z0-9:._%-]*()", next_pos)
+    if not name_end then return end
+    pos = skip_space(text, name_end)
+    if text:sub(pos, pos) == "=" then
+      pos = skip_space(text, pos + 1)
+      local quote = text:sub(pos, pos)
+      if quote == '"' or quote == "'" then
+        local finish = text:find(quote, pos + 1, true)
+        if not finish then return end
+        pos = finish + 1
+      else
+        local first = pos
+        while pos <= #text and text:byte(pos) > 32 and not text:sub(pos, pos):find "[\"'=<>`]" do
+          pos = pos + 1
+        end
+        if pos == first then return end
+      end
+    else
+      pos = name_end
+    end
+  end
+end
+
+--- Closing parenthesis of a valid inline link destination and optional title.
+function M.link_end(text, start)
+  if text:sub(start, start) ~= "(" then return end
+  local pos = skip_space(text, start + 1)
+  if text:sub(pos, pos) == "<" then
+    pos = pos + 1
+    while pos <= #text and text:sub(pos, pos) ~= ">" do
+      local c = text:sub(pos, pos)
+      if c == "<" or c == "\n" or c == "\r" or c == "\0" then return end
+      pos = pos + (escaped(text, pos) and 2 or 1)
+    end
+    if pos > #text then return end
+    pos = pos + 1
+  else
+    local depth = 0
+    while pos <= #text do
+      local c = text:sub(pos, pos)
+      if escaped(text, pos) then
+        pos = pos + 2
+      elseif c == "(" then
+        depth = depth + 1
+        pos = pos + 1
+      elseif c == ")" then
+        if depth == 0 then break end
+        depth = depth - 1
+        pos = pos + 1
+      elseif text:byte(pos) <= 32 then
+        break
+      else
+        pos = pos + 1
+      end
+    end
+    if depth ~= 0 then return end
+  end
+  local dest_end = pos
+  pos = skip_space(text, pos)
+  if text:sub(pos, pos) == ")" then return pos end
+  local delimiter = text:sub(pos, pos)
+  if pos == dest_end or not (delimiter == '"' or delimiter == "'" or delimiter == "(") then return end
+  local closing = delimiter == "(" and ")" or delimiter
+  pos = pos + 1
+  local title_start = pos
+  while pos <= #text and text:sub(pos, pos) ~= closing do
+    if delimiter == "(" and text:sub(pos, pos) == "(" then return end
+    pos = pos + (escaped(text, pos) and 2 or 1)
+  end
+  if pos > #text then return end
+  local title = text:sub(title_start, pos - 1):gsub("\r\n", "\n"):gsub("\r", "\n")
+  if title:find "\n[ \t]*\n" then return end
+  pos = skip_space(text, pos + 1)
+  if text:sub(pos, pos) == ")" then return pos end
+end
+
+local function index_runs(text, start)
+  local runs, pos = {}, start
+  while pos <= #text do
+    local first, last = text:find("`+", pos)
+    if not first then break end
+    local ticks = last - first + 1
+    runs[ticks] = runs[ticks] or { cursor = 1 }
+    local matches = runs[ticks]
+    matches[#matches + 1] = { start = first, finish = last }
+    pos = last + 1
+  end
+  return runs
+end
+
+local function code_end(text, start, runs)
+  local _, run_end = text:find("`+", start)
+  local ticks = run_end - start + 1
+  local matches = runs[ticks]
+  if matches then
+    -- Scan positions only move forward, so each candidate is visited once.
+    while matches[matches.cursor] and matches[matches.cursor].start <= run_end do
+      matches.cursor = matches.cursor + 1
+    end
+    local closing = matches[matches.cursor]
+    if closing then return closing.finish, ticks, run_end end
+  end
+  return nil, ticks, run_end
+end
+
+local function reference_end(text, start)
+  if text:sub(start, start) ~= "[" then return end
+  local pos = start + 1
+  while pos <= #text and pos - start <= 1000 do
+    local c = text:sub(pos, pos)
+    if escaped(text, pos) then
+      pos = pos + 2
+    elseif c == "]" then
+      return pos
+    elseif c == "[" then
+      return
+    else
+      pos = pos + 1
+    end
+  end
+end
+
+local function has_reference(refs, label)
+  if not refs then return false end
+  return refs[label:lower()] ~= nil or refs[(label:gsub("%s+", " "):gsub("^ ", ""):gsub(" $", ""):lower())] ~= nil
+end
+
+--- Scan one already-parsed paragraph; block boundaries are the caller's job.
+local function scan(text, refs, wanted_link)
+  local spans, brackets = {}, {}
+  local runs
+  local pos = wanted_link or 1
+  while pos <= #text do
+    local c = text:sub(pos, pos)
+    if escaped(text, pos) then
+      pos = pos + 2
+    elseif c == "`" then
+      runs = runs or index_runs(text, pos)
+      local finish, ticks, run_end = code_end(text, pos, runs)
+      if finish then spans[#spans + 1] = { start = pos, finish = finish, ticks = ticks } end
+      pos = (finish or run_end) + 1
+    elseif c == "<" then
+      local finish = M.autolink_end(text, pos) or html_end(text, pos)
+      pos = (finish or pos) + 1
+    elseif text:sub(pos, pos + 1) == "%%" then
+      -- Obsidian comments, like HTML comments, cannot open code spans.
+      local finish = text:find("%%", pos + 2, true)
+      pos = finish and finish + 2 or pos + 2
+    elseif c == "[" or text:sub(pos, pos + 1) == "![" then
+      for _, bracket in ipairs(brackets) do
+        bracket.nested = true
+      end
+      local image = c == "!"
+      brackets[#brackets + 1] = { start = pos + (image and 1 or 0), image = image, active = true }
+      pos = pos + (image and 2 or 1)
+    elseif c == "]" and #brackets > 0 then
+      local bracket = table.remove(brackets)
+      local finish = bracket.active and M.link_end(text, pos + 1) or nil
+      if wanted_link == bracket.start then return spans, finish and pos + 1, finish end
+      local matched = finish ~= nil
+      if bracket.active and not matched and refs then
+        local ref_end = reference_end(text, pos + 1)
+        local label = ref_end and text:sub(pos + 2, ref_end - 1)
+        if not label or label == "" then label = not bracket.nested and text:sub(bracket.start + 1, pos - 1) or nil end
+        matched = label and has_reference(refs, label)
+        if matched then finish = ref_end end
+      end
+      if matched and not bracket.image then
+        for _, previous in ipairs(brackets) do
+          if not previous.image then previous.active = false end
+        end
+      end
+      pos = (finish or pos) + 1
+    else
+      pos = pos + 1
+    end
+  end
+  return spans
+end
+
+--- Raw, matched code ranges: 1-based inclusive byte offsets and delimiter length.
+function M.code_spans(text, ref_links)
+  if not text:find("`", 1, true) then return {} end
+  local spans = scan(text, ref_links)
+  return spans
+end
+
+--- The same label/code boundaries used by whitespace and link rendering.
+function M.link_bounds(text, start)
+  local _, first, last = scan(text, nil, start)
+  return first, last
+end
+
+--- Pick a marker absent from the source, even after source fragments are joined.
+--- The common case requires only one search; collisions use a character set.
+function M.token_prefix(text, codepoint)
+  local marker = vim.fn.nr2char(codepoint)
+  if not text:find(marker, 1, true) then return marker end
+  local used = {}
+  for char in text:gmatch "[\240-\244][\128-\191]+" do
+    used[char] = true
+  end
+  for cp = codepoint + 1, 0x10FFFD do
+    if cp <= 0xFFFFD or cp >= 0x100000 then
+      marker = vim.fn.nr2char(cp)
+      if not used[marker] then return marker end
+    end
+  end
+  -- A source containing every remaining PUA character can still be protected:
+  -- it cannot contain or synthesize more copies than its total source count.
+  marker = vim.fn.nr2char(codepoint)
+  local _, count = text:gsub(marker, "")
+  return marker:rep(count + 1)
+end
+
+--- Protect code before display whitespace, comments, escapes, or entities change.
+function M.protect_code(text, ref_links)
+  if not text:find("`", 1, true) then return text, {} end
+  local spans, parts, pos = {}, {}, 1
+  local prefix = M.token_prefix(text, 0xF1000)
+  for _, range in ipairs(M.code_spans(text, ref_links)) do
+    local content = text:sub(range.start + range.ticks, range.finish - range.ticks)
+    content = content:gsub("\r\n", "\n"):gsub("[\r\n]", " ")
+    if content:sub(1, 1) == " " and content:sub(-1) == " " and content:find "[^ ]" then content = content:sub(2, -2) end
+    local placeholder = prefix .. (#spans + 1) .. "\u{F1001}"
+    spans[#spans + 1] = { placeholder = placeholder, content = content, raw = text:sub(range.start, range.finish) }
+    parts[#parts + 1] = text:sub(pos, range.start - 1)
+    parts[#parts + 1] = placeholder
+    pos = range.finish + 1
+  end
+  parts[#parts + 1] = text:sub(pos)
+  return table.concat(parts), spans
+end
+
+return M

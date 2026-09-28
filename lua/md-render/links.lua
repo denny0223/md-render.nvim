@@ -1,5 +1,12 @@
 local M = {}
 
+--- Escape terminal control bytes without changing the hyperlink destination.
+function M.osc8_url(url)
+  return (url:gsub("%c", function(c)
+    return string.format("%%%02X", c:byte())
+  end))
+end
+
 --- Shared by Markdown style spans and native link extmarks.
 function M.highlight(url)
   return url:match "^#" and "MdRenderLinkAnchor"

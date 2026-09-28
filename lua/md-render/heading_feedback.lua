@@ -113,7 +113,12 @@ function M.protected(state, placements)
   local rows = interaction_rows(state, selecting)
   -- Keep image typography stable during navigation; CursorLine remains visible
   -- around the image. Native scaled text still yields to the line's styling.
-  if not state.image_headings and vim.wo[state.win].cursorline and vim.wo[state.win].cursorlineopt ~= "number" then
+  if
+    not state.image_headings
+    and not state.gesture
+    and vim.wo[state.win].cursorline
+    and vim.wo[state.win].cursorlineopt ~= "number"
+  then
     rows[vim.api.nvim_win_get_cursor(state.win)[1] - 1] = true
   end
   for row, matched in pairs(search_rows(state, placements)) do

@@ -7,15 +7,16 @@ local M = {}
 --- Mouse coordinates shared by preview clicks and URL hover.
 function M.getmousepos(release)
   local mouse = vim.fn.getmousepos()
-  local headings = package.loaded["md-render.heading_image"]
-  if headings then
-    local position, projected = headings.mouse_position(mouse)
-    if release and headings.release_mouse(mouse.winid) then
-      -- A drag must never become a link click, even if Neovim coalesced its
-      -- mouse coordinates and did not enter Visual mode.
-      position = vim.tbl_extend("force", position, { line = 0, column = 0 })
+  for _, name in ipairs { "md-render.heading_image", "md-render.text_size" } do
+    local headings = package.loaded[name]
+    if headings and headings.mouse_position then
+      local position, projected = headings.mouse_position(mouse)
+      if release and headings.release_mouse(mouse.winid) then
+        -- A coalesced drag must never become a link click.
+        return vim.tbl_extend("force", position, { line = 0, column = 0 }), projected
+      end
+      if projected then return position, true end
     end
-    return position, projected
   end
   return mouse
 end

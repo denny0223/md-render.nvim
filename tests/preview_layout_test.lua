@@ -92,8 +92,6 @@ end
 local heading_buf = vim.api.nvim_create_buf(false, true)
 local heading_ns = vim.api.nvim_create_namespace "native_heading_fallback"
 for _, example in ipairs {
-  { lines = { "### [Parent](#child)", "##### Child", "Body" }, width = 80 },
-  { lines = { "##### Child", "### Parent with `code`", "Body" }, width = 80 },
   { lines = { "# Parent", "##### Child", "Body" }, width = 20 },
 } do
   local opts = { max_width = example.width, indent = "" }
@@ -198,7 +196,10 @@ for level = 1, 2 do
         "</details>",
       }, { max_width = width, indent = "", text_scale = text_scale })
       if text_scale then
-        assert(out.heading_fallback and out.heading_backend == "plain", "linked native headings use document fallback")
+        assert(
+          out.heading_backend == (width == 20 and "plain" or "native"),
+          "only narrow native headings need document fallback"
+        )
       end
       for _, line in ipairs(out.lines) do
         assert(

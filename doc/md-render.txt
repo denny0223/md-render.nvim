@@ -591,9 +591,11 @@ unavailable. Requires a confirmed Kitty >= 0.40 terminal; other terminals
 retain ordinary text. H1-H6 sizes are 2, 1.75, 1.5, 1.4, 1.25 and 1.17 times
 the base size, with two rows per rendered heading line.
 
-If inline formatting, links or insufficient width prevents a heading from
-scaling, the whole preview uses ordinary headings. This preserves their
-relative hierarchy. :MdRender textsize status reports the reason.
+Native headings preserve inline styles and links, including mouse targets on
+both rows. Wrapping accounts for each styled run's painted width. If the
+available width is too narrow, or a heading contains control characters such
+as tabs, the whole preview uses ordinary headings to preserve its text and
+hierarchy. :MdRender textsize status reports why.
 
 Unsupported highlights, indexed colors, custom highlight namespaces and
 partially visible headings can temporarily reveal text without rebuilding

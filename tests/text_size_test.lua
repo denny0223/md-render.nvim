@@ -260,17 +260,18 @@ do
   text_size.setup { enabled = false }
 end
 
--- Test 8: rich headings keep their styles and links in ordinary text.
+-- Test 8: rich headings retain link bytes while scaling and wrapping.
 do
   text_size.setup { enabled = true }
   with_support(true, function()
     local out = render({
       "# See [alpha](https://example.com/a) then [bravo](https://example.com/b) and more words here",
     }, { max_width = 60, indent = "  " })
-    assert_eq(#out.text_placements, 0, "OSC 66 must not cover inline link colors")
+    assert_true(#out.text_placements > 0, "linked headings retain native scaling")
     assert_true(#out.link_metadata >= 2, "both links survive")
-    for _, line in ipairs(out.lines) do
-      assert_true(line ~= "", "rich headings reserve no scaled rows")
+    for _, p in ipairs(out.text_placements) do
+      assert_eq(out.lines[p.line + 2], "", "rich headings reserve their scaled height")
+      assert_true(p.width <= 58, "wrapped styled runs fit the window")
     end
     for _, l in ipairs(out.link_metadata) do
       local line = out.lines[l.line + 1] or ""

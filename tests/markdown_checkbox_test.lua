@@ -72,6 +72,32 @@ test("partial checkbox text", function()
   assert_eq(highlights[1].hl, "DiagnosticWarn", "partial: highlight should be DiagnosticWarn")
 end)
 
+test("checkbox marker requires whitespace before content", function()
+  for _, marker in ipairs { "[x]", "[X]", "[ ]" } do
+    local text, highlights, list_marker = render("- " .. marker .. "done")
+    assert_eq(text, "• " .. marker .. "done", marker .. ": adjacent text keeps literal marker")
+    assert_eq(list_marker, "• ", marker .. ": ordinary bullet marker")
+    assert_eq(highlights[1].hl, "Special", marker .. ": ordinary bullet styling")
+  end
+end)
+
+test("checkbox separator and empty-marker behavior", function()
+  for marker, style in pairs {
+    ["[x]"] = "DiagnosticOk",
+    ["[X]"] = "DiagnosticOk",
+    ["[ ]"] = "Comment",
+    ["[-]"] = "DiagnosticWarn",
+  } do
+    local spaced_text, _, spaced_marker = render("- " .. marker .. " task")
+    local tabbed_text, tabbed_highlights = render("- " .. marker .. "\ttask")
+    assert_eq(tabbed_text, spaced_text, marker .. ": tab separator matches space")
+    assert_eq(tabbed_highlights[1].hl, style, marker .. ": task state survives tab separator")
+    local empty_text, empty_highlights = render("- " .. marker)
+    assert_eq(empty_text, spaced_marker, marker .. ": preserve existing empty task")
+    assert_eq(empty_highlights[1].hl, style, marker .. ": preserve empty task state")
+  end
+end)
+
 test("checkbox padding remains outside adjacent text highlights", function()
   local _, invalid_highlights = render "- [  ] todo"
   assert_eq(invalid_highlights[1].hl, "Special", "space collapsing cannot turn an invalid marker into a checkbox")
@@ -255,6 +281,68 @@ local function render_doc(input_lines, opts)
   builder:render_document(input_lines, opts or { max_width = 80, indent = "" })
   return builder.lines
 end
+
+test("task boundaries preserve buffer text, spans, and source ownership", function()
+  local input = {
+    "- [x]done",
+    "- [X]done",
+    "- [ ]todo",
+    "- [x] **bold** [link](https://example.com)",
+    "  - [ ]\ttodo",
+    "  - [X] done",
+    "- [-] in progress",
+    "- [x]**bold** [link](https://example.com)",
+  }
+  local source = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(source, 0, -1, false, input)
+  local source_tick = vim.api.nvim_buf_get_changedtick(source)
+  local builder = ContentBuilder.new()
+  builder:render_document(vim.api.nvim_buf_get_lines(source, 0, -1, false), {
+    max_width = 1000,
+    indent = "",
+    text_scale = false,
+  })
+  local content = builder:result()
+  assert_eq(vim.list_slice(content.lines, 1, 3), { "• [x]done", "• [X]done", "• [ ]todo" }, "invalid task text")
+  assert_eq(content.lines[8], "• [x]bold link", "invalid task keeps marker beside inline formatting")
+  assert_eq(content.source_line_map, { 1, 2, 3, 4, 5, 6, 7, 8 }, "task source-line ownership")
+  assert_eq(content.lines[5]:sub(1, 2), "  ", "nested unchecked task preserves indent")
+  assert_eq(content.lines[6]:sub(1, 2), "  ", "nested checked task preserves indent")
+  local styles, bold_lines = {}, {}
+  for _, info in ipairs(content.highlights) do
+    for _, hl in ipairs(info.groups) do
+      styles[info.line + 1] = styles[info.line + 1] or hl.hl
+      if hl.hl == "Bold" then
+        table.insert(bold_lines, info.line + 1)
+        assert_eq(content.lines[info.line + 1]:sub(hl.col + 1, hl.end_col), "bold", "task Bold span")
+      end
+    end
+  end
+  assert_eq(
+    styles,
+    { "Special", "Special", "Special", "DiagnosticOk", "Comment", "DiagnosticOk", "DiagnosticWarn", "Special" },
+    "task and ordinary-list styles"
+  )
+  assert_eq(bold_lines, { 4, 8 }, "valid and invalid tasks retain Bold")
+  assert_eq(#content.link_metadata, 2, "valid and invalid tasks retain links")
+  for _, link in ipairs(content.link_metadata) do
+    assert_eq(content.lines[link.line + 1]:sub(link.col_start + 1, link.col_end), "link", "task link label span")
+    assert_eq(link.url, "https://example.com", "task link destination")
+  end
+  local buffer = vim.api.nvim_create_buf(false, true)
+  local ok, err = pcall(
+    require("md-render.display_utils").apply_content_to_buffer,
+    buffer,
+    vim.api.nvim_create_namespace "task_marker_test",
+    content
+  )
+  assert_eq(ok, true, "task buffer application: " .. tostring(err))
+  assert_eq(vim.api.nvim_buf_get_lines(buffer, 0, -1, false), content.lines, "applied task buffer text")
+  assert_eq(vim.api.nvim_buf_get_lines(source, 0, -1, false), input, "task source buffer unchanged")
+  assert_eq(vim.api.nvim_buf_get_changedtick(source), source_tick, "task source buffer not modified")
+  vim.api.nvim_buf_delete(buffer, { force = true })
+  vim.api.nvim_buf_delete(source, { force = true })
+end)
 
 test("loose list: blank lines between same-type items are collapsed", function()
   local lines = render_doc {

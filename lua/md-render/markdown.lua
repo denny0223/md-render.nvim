@@ -1346,7 +1346,8 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   local checkbox_hl = nil
   if list_marker then
     local after_marker = rendered_text:sub(#list_marker + 1)
-    local cb_match, cb_char = after_marker:match "^(%[([xX %-])%]%s?)"
+    -- Preserve empty tasks; following text needs separating whitespace.
+    local cb_match, cb_char = after_marker:match "^(%[([xX %-])%]%f[%s%z]%s?)"
     if cb_match then
       local icon
       if cb_char == " " then

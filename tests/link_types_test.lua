@@ -397,6 +397,43 @@ test("content_builder heading anchor line is correct", function()
   assert_eq(result.heading_anchors["second-heading"], 1, "heading anchor points to correct line")
 end)
 
+test("repeated heading anchors preserve natural names and distinct targets", function()
+  local b = require("md-render.content_builder").ContentBuilder.new()
+  for _, heading in ipairs { "A", "A", "A 1", "A", "A-1", "A 1" } do
+    b:add_markdown_line("### " .. heading, "", 80)
+  end
+  local expected = { a = 0, ["a-1"] = 2, ["a-2"] = 1, ["a-3"] = 3, a1 = 4, ["a-1-1"] = 5 }
+  assert_eq(b:result().heading_anchors, expected, "aliases cannot steal a natural heading name")
+  assert_eq(b:result().heading_anchors, expected, "reading the result twice does not renumber anchors")
+end)
+
+test("heading aliases only target rendered occurrences", function()
+  local Builder = require("md-render.content_builder").ContentBuilder
+  local lines = { "<details>", "<summary>More</summary>", "### Repeat", "</details>", "### Repeat" }
+  for _, closed in ipairs { true, false } do
+    local b = Builder.new()
+    b:render_document(lines, { text_scale = false, indent = "", fold_state = { [1] = closed } })
+    local out = b:result()
+    assert_eq(
+      out.source_line_map[out.heading_anchors["repeat"] + 1],
+      closed and 5 or 3,
+      "natural anchor targets first visible occurrence"
+    )
+    if closed then
+      assert_eq(out.heading_anchors["repeat-1"], nil, "hidden occurrences do not create false targets")
+    else
+      assert_eq(
+        out.source_line_map[out.heading_anchors["repeat-1"] + 1],
+        5,
+        "duplicate alias targets the next visible occurrence"
+      )
+    end
+  end
+  local b = Builder.new()
+  b:render_document({ "### Repeat", "### Repeat" }, { text_scale = false, indent = "", max_lines = 1 })
+  assert_eq(b:result().heading_anchors, { ["repeat"] = 0 }, "truncation does not expose unrendered anchors")
+end)
+
 -- Summary
 print(string.format("\n%d passed, %d failed", pass_count, fail_count))
 if fail_count > 0 then os.exit(1) end

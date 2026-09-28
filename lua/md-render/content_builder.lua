@@ -100,6 +100,7 @@ function ContentBuilder.new()
     heading_positions = {},
     footnote_anchors = {},
     heading_anchors = {},
+    heading_duplicates = {},
     source_line_map = {},
     text_scale = true,
     _current_source_line = 0,
@@ -132,6 +133,17 @@ end
 
 ---@return MdRender.Content
 function ContentBuilder:result()
+  -- Natural heading names take precedence over aliases for repeated headings.
+  local heading_anchors = vim.tbl_extend("force", {}, self.heading_anchors)
+  for _, heading in ipairs(self.heading_duplicates) do
+    local slug
+    local suffix = 0
+    repeat
+      suffix = suffix + 1
+      slug = heading.slug .. "-" .. suffix
+    until heading_anchors[slug] == nil
+    heading_anchors[slug] = heading.line
+  end
   return {
     lines = self.lines,
     highlights = self.highlights,
@@ -147,7 +159,7 @@ function ContentBuilder:result()
     heading_lines = self.heading_lines,
     heading_positions = self.heading_positions,
     footnote_anchors = self.footnote_anchors,
-    heading_anchors = self.heading_anchors,
+    heading_anchors = heading_anchors,
     source_line_map = self.source_line_map,
   }
 end
@@ -946,7 +958,13 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
   -- Register heading anchor (slug → rendered line)
   if heading_content then
     local slug = markdown.heading_slug(heading_content)
-    if slug ~= "" then self.heading_anchors[slug] = lines_before_fn end
+    if slug ~= "" then
+      if self.heading_anchors[slug] ~= nil then
+        table.insert(self.heading_duplicates, { slug = slug, line = lines_before_fn })
+      else
+        self.heading_anchors[slug] = lines_before_fn
+      end
+    end
     if spec then self:add_heading_text_scale(lines_before_fn, indent, spec, level, max_width) end
     local offset = 0
     for row = lines_before_fn, #self.lines - 1 do

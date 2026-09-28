@@ -85,6 +85,44 @@ test("plain heading links retain nested inline style order", function()
   vim.api.nvim_buf_delete(buf, { force = true })
 end)
 
+-- #12: compare the text addressed by ranges, not just whether they are in bounds.
+test("entities and escapes preserve ranges before, inside, and after replacements", function()
+  local markdown = require "md-render.markdown"
+  local parts = {
+    { "", "" },
+    { "&amp; &amp; ", "& & " },
+    { "\\* \\# ", "* # " },
+    { "&amp; \\* ", "& * " },
+    { "\\* &amp; ", "* & " },
+    { "&#x4E2D; ", "中 " },
+  }
+  for _, prefix in ipairs(parts) do
+    for _, suffix in ipairs(parts) do
+      for _, target in ipairs {
+        { "**TARGET&amp;**", "TARGET&", "Bold" },
+        { "*TARGET&#x1F600;*", "TARGET😀", "Italic" },
+        { "[TARGET&#x4E2D;END](https://example.com/?a=1&amp;b=2)", "TARGET中END", "MdRenderLink" },
+      } do
+        local text, highlights, links = markdown.render(prefix[1] .. target[1] .. " " .. suffix[1])
+        assert_eq(text, prefix[2] .. target[2] .. " " .. suffix[2], "exact rendered text")
+        local found = false
+        for _, hl in ipairs(highlights) do
+          if hl.hl == target[3] and hl.col == #prefix[2] then
+            assert_eq(text:sub(hl.col + 1, hl.end_col), target[2], "complete styled substring")
+            found = true
+          end
+        end
+        assert_eq(found, true, "target style starts at the correct byte")
+        if target[3] == "MdRenderLink" then
+          assert_eq(#links, 1, "one link")
+          assert_eq(text:sub(links[1].col_start + 1, links[1].col_end), target[2], "complete link label")
+          assert_eq(links[1].url, "https://example.com/?a=1&b=2", "complete link destination")
+        end
+      end
+    end
+  end
+end)
+
 test("repaint handles empty content, insertions, deletions, and disjoint changes", function()
   local buf = vim.api.nvim_create_buf(false, true)
   local ns = vim.api.nvim_create_namespace "repaint_test"

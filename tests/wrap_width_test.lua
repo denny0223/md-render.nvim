@@ -126,4 +126,23 @@ end
 assert(table.concat(bold) == label, "bold spans lost text after wrapping")
 assert(table.concat(links) == label, "link spans lost text after wrapping")
 
+-- Wrapping receives rendered text: whitespace is content, and each emitted
+-- row must be an exact source slice for highlight/link byte offsets to work.
+local wrap = require "md-render.wrap"
+for _, case in ipairs {
+  { "alpha foo   bar omega tail", 18, { "alpha foo   bar", "omega tail" } },
+  { "alpha foo   bar omega tail", 14, { "alpha foo", "bar omega tail" } },
+  { "alpha 中   文 omega tail", 14, { "alpha 中   文", "omega tail" } },
+  { "  foo   bar  ", 20, { "  foo   bar  " } },
+  { "foo\tbar tail", 20, { "foo\tbar tail" } },
+  { "   ", 10, { "   " } },
+  { "", 10, {} },
+} do
+  local lines, starts = wrap.wrap_words(case[1], case[2])
+  assert(vim.deep_equal(lines, case[3]), "rendered whitespace changed: " .. vim.inspect { case[1], lines })
+  for i, line in ipairs(lines) do
+    assert(line == case[1]:sub(starts[i] + 1, starts[i] + #line), "wrapped row is not its indexed source slice")
+  end
+end
+
 print(string.format("Wrap width: %d layout cases and formatting/link offsets passed", checked))

@@ -785,7 +785,6 @@ function M.wrap_words(text, max_width)
 
   -- For kinsoku 追い出し: track state before the last segment was appended
   local prev_current = ""
-  local last_seg_text = ""
   local last_seg_pos = 0
 
   local segments = split_segments(text)
@@ -803,7 +802,8 @@ function M.wrap_words(text, max_width)
 
   for i, seg in ipairs(segments) do
     local seg_width = vim.api.nvim_strwidth(seg.text)
-    local space_width = (seg.has_leading_space and current ~= "") and 1 or 0
+    local gap = text:sub(current_start + #current + 1, seg.byte_pos)
+    local space_width = vim.api.nvim_strwidth(gap)
 
     if current_width + space_width + seg_width > max_width and current ~= "" then
       -- Kinsoku 追い出し: if this segment starts with a no-break-start char,
@@ -828,23 +828,20 @@ function M.wrap_words(text, max_width)
       if is_no_break_start and prev_current ~= "" and not prev_ends_no_break_end then
         table.insert(wrapped_lines, prev_current)
         table.insert(line_starts, current_start)
-        local sep = seg.has_leading_space and " " or ""
-        current = last_seg_text .. sep .. seg.text
         current_start = last_seg_pos
+        current = text:sub(current_start + 1, seg.byte_pos + #seg.text)
         current_width = vim.api.nvim_strwidth(current)
       elseif is_no_break_start then
         -- Kinsoku 追い込み fallback: keep the char on the current line
         -- even if it exceeds max_width, to avoid it starting a new line
-        local sep = (seg.has_leading_space and current ~= "") and " " or ""
-        current = current .. sep .. seg.text
-        current_width = current_width + #sep + seg_width
+        current = text:sub(current_start + 1, seg.byte_pos + #seg.text)
+        current_width = current_width + space_width + seg_width
       elseif ends_no_break_end(current, current_start) then
         -- Kinsoku: current ends with a NO_BREAK_END char (e.g. "(", "「").
         -- Pushing it now would strand the opener at line end. Append seg
         -- (overflowing the line) so the opener stays bonded to its content.
-        local sep = (seg.has_leading_space and current ~= "") and " " or ""
-        current = current .. sep .. seg.text
-        current_width = current_width + #sep + seg_width
+        current = text:sub(current_start + 1, seg.byte_pos + #seg.text)
+        current_width = current_width + space_width + seg_width
       else
         table.insert(wrapped_lines, current)
         table.insert(line_starts, current_start)
@@ -853,7 +850,6 @@ function M.wrap_words(text, max_width)
         current_width = seg_width
       end
       prev_current = ""
-      last_seg_text = ""
       last_seg_pos = 0
     else
       -- Kinsoku: if this segment ends with a no-break-end char at the end of a full line,
@@ -870,7 +866,6 @@ function M.wrap_words(text, max_width)
           current_start = seg.byte_pos
           current_width = seg_width
           prev_current = ""
-          last_seg_text = ""
           last_seg_pos = 0
           goto continue
         end
@@ -878,26 +873,16 @@ function M.wrap_words(text, max_width)
 
       -- Save state before appending (for potential 追い出し on the next segment)
       prev_current = current
-      last_seg_text = seg.text
       last_seg_pos = seg.byte_pos
 
-      if current ~= "" then
-        if space_width > 0 then
-          current = current .. " " .. seg.text
-          current_width = current_width + 1 + seg_width
-        else
-          current = current .. seg.text
-          current_width = current_width + seg_width
-        end
-      else
-        current = seg.text
-        current_start = seg.byte_pos
-        current_width = seg_width
-      end
+      current = text:sub(current_start + 1, seg.byte_pos + #seg.text)
+      current_width = current_width + space_width + seg_width
     end
     ::continue::
   end
 
+  -- Preserve trailing whitespace and all-space literal text as source bytes.
+  current = text:sub(current_start + 1)
   if current ~= "" then
     table.insert(wrapped_lines, current)
     table.insert(line_starts, current_start)

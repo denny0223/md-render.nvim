@@ -140,5 +140,17 @@ do
   assert_eq(out, { "• item", "  echo hi", "  after" }, "~~~ nested in a list keeps the item's indent")
 end
 
+-- A fence ends a footnote definition; later indented code cannot continue it.
+do
+  local defs = require("md-render.markdown").parse_footnotes {
+    "[^n]: note",
+    "```lua",
+    "print(1)",
+    "```",
+    "    unrelated code",
+  }
+  assert_eq(defs, { { label = "n", text = "note" } }, "a fence terminates the preceding footnote")
+end
+
 print(string.format("\ncode_fence_test: %d passed, %d failed", pass_count, fail_count))
 if fail_count > 0 then os.exit(1) end

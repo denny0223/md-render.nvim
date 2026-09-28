@@ -1380,7 +1380,14 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   -- Establish code boundaries before whitespace or comment transformations.
   local code_spans
   rendered_text, code_spans = inline.protect_code(rendered_text, ref_links)
-  rendered_text = collapse_spaces((rendered_text:gsub("\r", "")))
+  rendered_text = rendered_text:gsub("\r", "")
+  if checkbox_hl then
+    -- Normalize source spaces without collapsing the generated icon padding.
+    local body = rendered_text:sub(#list_marker + 1):gsub("^ +", "")
+    rendered_text = list_marker .. collapse_spaces(body)
+  else
+    rendered_text = collapse_spaces(rendered_text)
+  end
 
   -- A trailing unescaped backslash is a hard break outside literal code.
   rendered_text = rendered_text:gsub("(\\+)%s*$", function(slashes)

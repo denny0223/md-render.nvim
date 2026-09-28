@@ -249,8 +249,14 @@ function M.resolve_backend()
   return "plain", reason
 end
 
-function M.status()
+---@param content? MdRender.Content
+function M.status(content)
   local backend, reason = M.resolve_backend()
+  local fallback = content and content.heading_fallback
+  if not content then fallback = vim.b.md_render_heading_fallback end
+  if config.enabled and fallback then
+    backend, reason = "plain", fallback
+  end
   return (config.enabled and config.backend or "off") .. " -> " .. backend .. (reason and (": " .. reason) or "")
 end
 

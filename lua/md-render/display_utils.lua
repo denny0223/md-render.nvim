@@ -246,6 +246,7 @@ end
 function M.apply_content_to_buffer(buf, ns, content, opts)
   opts = opts or {}
   content.highlight_ns = ns
+  vim.b[buf].md_render_heading_fallback = content.heading_fallback
   -- Replacing unchanged rows would collapse native jump/mark positions into
   -- the replaced range. Let Neovim adjust only the rows that actually changed.
   local old = vim.api.nvim_buf_get_lines(buf, 0, -1, false)

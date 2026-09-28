@@ -205,7 +205,7 @@ end)
 -- ----------------------------------------------------------------------
 test("textsize switches renderers, retains the choice through off/on, and rebuilds", function()
   local cmd, calls, restore = with_preview_stub()
-  local _, restore_n = with_notify_stub()
+  local notifications, restore_n = with_notify_stub()
   local text_size = require "md-render.text_size"
   local supports = text_size.supports
   text_size.supports = function()
@@ -233,8 +233,14 @@ test("textsize switches renderers, retains the choice through off/on, and rebuil
   assert_eq(text_size.config().backend, "image", "image does not depend on OSC 66")
   cmd.dispatch { fargs = { "textsize", "auto" } }
   assert_eq(text_size.config().backend, "auto", "auto can degrade without native support")
+  vim.b.md_render_heading_fallback = "document requires ordinary headings"
   cmd.dispatch { fargs = { "textsize", "status" } }
   assert_eq(#calls, 12, "status does not rebuild previews")
+  assert_true(
+    notifications[#notifications].msg:find("document requires ordinary headings", 1, true),
+    "status reports the current document's reason"
+  )
+  vim.b.md_render_heading_fallback = nil
   text_size.supports = supports
   restore_n()
   restore()

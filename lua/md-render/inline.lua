@@ -34,6 +34,22 @@ function M.autolink_end(text, start)
   if domain:sub(1, 1) ~= "." then return finish end
 end
 
+--- GFM URL punctuation is excluded only at the end; interior parentheses stay.
+function M.trim_autolink(url)
+  local previous
+  repeat
+    previous = url
+    url = url:gsub("[?!.,:*_~]+$", ""):gsub("&[A-Za-z0-9]+;$", "")
+    if url:sub(-1) == ")" then
+      local _, opening = url:gsub("%(", "")
+      local _, closing = url:gsub("%)", "")
+      local excess = math.min(closing - opening, #(url:match "%)%)*$"))
+      if excess > 0 then url = url:sub(1, #url - excess) end
+    end
+  until previous == url
+  return url
+end
+
 --- HTML and code have equal precedence: the first complete construct wins.
 function M.html_end(text, start)
   local rest = text:sub(start)

@@ -45,6 +45,8 @@ scrolling using |:MdRender-split|.
 
 Features: ~
 
+- Bare HTTP(S) URLs retain balanced parentheses and exclude trailing
+  punctuation. Shortened labels keep their complete destinations.
 - Rich inline formatting (bold, strikethrough, inline code, links,
   Obsidian`==highlight==`)
 - Tables with box-drawing borders, column alignment, and proportional sizing

@@ -598,6 +598,25 @@ local function truncate_url(url, max_width, literals)
   return url, #url
 end
 
+--- Keep the established HTTP boundary for decoded tokens and Unicode symbols.
+local function trim_autolink(url, literals)
+  local previous
+  repeat
+    previous = url
+    url = inline.trim_autolink(url)
+    -- Preserve the existing display boundary for trailing Unicode symbols.
+    local protected = false
+    for _, spans in ipairs(literals) do
+      if #spans > 0 and url:match(spans[1].placeholder:gsub("%d+", "%%d+") .. "$") then protected = true end
+    end
+    if not protected then
+      local last = vim.fn.strcharpart(url, vim.fn.strchars(url) - 1, 1)
+      if #last > 1 and vim.fn.charclass(last) <= 1 then url = url:sub(1, #url - #last) end
+    end
+  until previous == url
+  return url
+end
+
 --- Process bare URLs: detect standalone URLs, truncate for display, add link metadata with full URL
 ---@param text string
 ---@param max_url_width integer
@@ -634,7 +653,7 @@ local function process_bare_urls(text, max_url_width, highlights, links, literal
       end
     end
     if not handled_autolink then
-      local s, e = text:find('https?://[^%s%)<>"`]+', i)
+      local s, e = text:find('https?://[^%s<>"`]+', i)
       if s == i then
         local url_match = text:sub(s, e)
         -- Code spans terminate a bare URL; their private tokens are never URLs.
@@ -642,26 +661,7 @@ local function process_bare_urls(text, max_url_width, highlights, links, literal
           local code_start = url_match:find(code_spans[1].placeholder:gsub("%d+", "%%d+"))
           if code_start then url_match = url_match:sub(1, code_start - 1) end
         end
-        -- Strip trailing punctuation (including markdown markers)
-        local url = url_match:gsub("[.,;:!?*~]+$", "")
-        -- Strip trailing non-ASCII symbols (e.g. ⏎, →) that are not valid in URLs.
-        -- charclass returns 1 for punctuation/symbols, >=2 for letters/digits.
-        while #url > 0 do
-          local token_suffix = false
-          for _, spans in ipairs(literals) do
-            if #spans > 0 and url:match(spans[1].placeholder:gsub("%d+", "%%d+") .. "$") then
-              token_suffix = true
-              break
-            end
-          end
-          if token_suffix then break end
-          local last_char = vim.fn.strcharpart(url, vim.fn.strchars(url) - 1, 1)
-          if #last_char > 1 and vim.fn.charclass(last_char) <= 1 then
-            url = url:sub(1, #url - #last_char)
-          else
-            break
-          end
-        end
+        local url = trim_autolink(url_match, literals)
         local start_col = #processed
         local display_url, byte_pos = truncate_url(url, max_url_width, literals)
         if byte_pos < #url then

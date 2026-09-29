@@ -48,7 +48,8 @@ md-render.nvim 是 Neovim 的 Markdown 渲染引擎，能將 Markdown 原始文�
 - 提示區塊與摺疊：支援 GitHub / Obsidian 的提示類型、彩色框線與圖示，可用滑鼠
   點擊或 `za` / `<CR>` 切換摺疊。
 - 程式碼區塊：Treesitter 語法醒目提示；內容被截短時，可用滑鼠點擊或
-  `za` / `<CR>` 展開。
+  `za` / `<CR>` 展開。圍欄區塊內保留原始清單編號，其中的參照連結定義不會影響
+  文件連結。
 - 圖片：透過終端機圖形協定在文件中顯示 PNG、JPEG、WebP、GIF 與 GIF 動畫。
 - 影片：將 MP4、WebM、MOV、AVI、MKV、M4V 轉為動畫影格，在文件中播放。
 - Mermaid 圖表：轉為圖片，直接顯示在文件中。

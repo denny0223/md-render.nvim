@@ -1606,15 +1606,18 @@ end
 --- The first item's number determines the start; subsequent items are
 --- numbered sequentially regardless of their source numbers.
 ---@param lines string[]
+---@param excluded_lines? table<integer, boolean> literal source rows
+---@param src_indices? integer[] original source row for each input line
 ---@return string[]
-Markdown.renumber_ordered_lists = function(lines)
+Markdown.renumber_ordered_lists = function(lines, excluded_lines, src_indices)
   local result = {}
   -- Stack of { prefix = string, counter = integer } for nested lists
   local stack = {}
 
-  for _, line in ipairs(lines) do
+  for i, line in ipairs(lines) do
+    local excluded = excluded_lines and excluded_lines[src_indices and src_indices[i] or i]
     local prefix, num, rest = line:match "^(%s*>?%s*)(%d+)(%.%s.*)$"
-    if prefix and num then
+    if prefix and num and not excluded then
       -- Pop stack entries deeper than current prefix
       while #stack > 0 and #stack[#stack].prefix > #prefix do
         table.remove(stack)

@@ -1723,12 +1723,88 @@ local function preprocess_multiline_html(lines, src_indices)
   return result, result_indices, comments
 end
 
--- Keep comment boundaries as blank rows so footnote continuations cannot join
--- across them. Neither hidden contents nor a literal closing suffix is a definition.
-local function definition_lines(lines, src_indices, comments)
+-- Collect literal ownership before references can affect paragraph code-span
+-- scanning, including comments inside quotes. Keep original source rows so
+-- later joins cannot move the boundary.
+local function fenced_code_lines(
+  lines,
+  src_indices,
+  container_indents,
+  source_columns,
+  comments,
+  code_lines,
+  quote_prefix
+)
+  code_lines = code_lines or {}
+  local open_fence, comment_state
+  local in_math_block = false
+  local comment_indent = 0
+  local item_cols = {}
+  local idx = 1
+  while idx <= #lines do
+    local line, src = lines[idx], src_indices[idx]
+    local column = source_columns[src] or 0
+    local was_in_comment = comment_state ~= nil
+    local comment_suffix
+    local math_delimiter = not quote_prefix and not open_fence and not comment_state and line:match "^%$%$$"
+    if math_delimiter then in_math_block = not in_math_block end
+    if in_math_block or math_delimiter then goto next_line end
+    if not open_fence then
+      comment_state, comment_suffix = block_comment_step(comment_state, line)
+    end
+    if comment_suffix ~= nil then
+      if not was_in_comment then
+        comment_indent = list_container_column(expand_leading_tabs(line, column), item_cols, column)
+      end
+      comments[src] = {
+        suffix = comment_suffix,
+        prefix = quote_prefix and (quote_prefix .. string.rep(" ", comment_indent)) or "",
+      }
+    else
+      local base = 0
+      if not open_fence and not line:match "^%s*$" then
+        base = list_container_column(expand_leading_tabs(line, column), item_cols, column)
+      end
+      local is_fence
+      open_fence, is_fence = fence_mod.step(open_fence, line, column, base)
+      if open_fence or is_fence then
+        code_lines[src] = true
+      elseif line:match "^>" then
+        local container = container_indents[src] or ""
+        local inner, inner_src, inner_columns = {}, {}, {}
+        local last = idx
+        while last <= #lines and lines[last]:match "^>" and (container_indents[src_indices[last]] or "") == container do
+          local _, content, quote_column = split_quote_marker(lines[last], source_columns[src_indices[last]] or 0)
+          inner_columns[src_indices[last]] = quote_column
+          table.insert(inner, content)
+          table.insert(inner_src, src_indices[last])
+          last = last + 1
+        end
+        fenced_code_lines(
+          inner,
+          inner_src,
+          container_indents,
+          inner_columns,
+          comments,
+          code_lines,
+          (quote_prefix or "") .. "│ "
+        )
+        idx = last - 1
+      end
+    end
+    ::next_line::
+    idx = idx + 1
+  end
+  return code_lines
+end
+
+-- Keep literal boundaries as blank rows so definitions cannot continue across
+-- them. Neither fenced code nor comment content is a document definition.
+local function definition_lines(lines, src_indices, comments, code_lines)
   local result = {}
   for i, line in ipairs(lines) do
-    result[i] = comments[src_indices[i]] and "" or line
+    local src = src_indices[i]
+    result[i] = (comments[src] or code_lines[src]) and "" or line
   end
   return result
 end
@@ -1752,7 +1828,8 @@ function ContentBuilder:render_document(lines, opts)
   local comments
   lines, container_indents, source_columns = strip_container_indent(lines)
   lines, src_indices, comments = preprocess_multiline_html(lines, src_indices)
-  local ref_links = markdown.parse_reference_links(definition_lines(lines, src_indices, comments))
+  local code_lines = fenced_code_lines(lines, src_indices, container_indents, source_columns, comments)
+  local ref_links = markdown.parse_reference_links(definition_lines(lines, src_indices, comments, code_lines))
   lines, src_indices = join_paragraph_continuations(
     lines,
     src_indices,
@@ -1762,10 +1839,11 @@ function ContentBuilder:render_document(lines, opts)
     fence_containers,
     comments
   )
-  lines = markdown.renumber_ordered_lists(lines)
+  lines = markdown.renumber_ordered_lists(lines, code_lines, src_indices)
   -- renumber_ordered_lists rewrites text but keeps line count, so
   -- src_indices stays valid.
-  local footnote_defs, footnote_map = markdown.parse_footnotes(definition_lines(lines, src_indices, comments))
+  local footnote_defs, footnote_map =
+    markdown.parse_footnotes(definition_lines(lines, src_indices, comments, code_lines))
 
   local base_max_width = opts.max_width or 80
   local base_indent = opts.indent or "  "

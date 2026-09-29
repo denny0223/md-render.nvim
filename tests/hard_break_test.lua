@@ -7,6 +7,9 @@
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
 
 local ContentBuilder = require("md-render.content_builder").ContentBuilder
+local markdown = require "md-render.markdown"
+local display = require "md-render.display_utils"
+local Links = require "md-render.links"
 
 local pass_count = 0
 local fail_count = 0
@@ -203,6 +206,394 @@ do
   local out = render { "ｱｲｳ", "ｴｵ" }
   assert_eq(out, { "ｱｲｳ ｴｵ" }, "half-width katakana should keep the space")
 end
+
+local function test(name, fn)
+  local ok, err = pcall(fn)
+  if not ok then
+    fail_count = fail_count + 1
+    print("ERROR: " .. name .. ": " .. tostring(err))
+  end
+end
+
+local function spans(content, group)
+  local found = {}
+  for _, row in ipairs(content.highlights) do
+    for _, hl in ipairs(row.groups) do
+      if hl.hl == group then
+        found[#found + 1] = { row.line, hl.col, hl.end_col, content.lines[row.line + 1]:sub(hl.col + 1, hl.end_col) }
+      end
+    end
+  end
+  return found
+end
+
+local function link_spans(content)
+  local found = {}
+  for _, link in ipairs(content.link_metadata) do
+    found[#found + 1] = {
+      link.line,
+      link.col_start,
+      link.col_end,
+      content.lines[link.line + 1]:sub(link.col_start + 1, link.col_end),
+      link.url,
+    }
+  end
+  return found
+end
+
+local function check_buffer(buf, ns, content)
+  assert_eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), content.lines, "real buffer contains exact rows")
+  for _, row in ipairs(content.highlights) do
+    local line = content.lines[row.line + 1]
+    for _, hl in ipairs(row.groups) do
+      assert(hl.col >= 0 and hl.end_col > hl.col and hl.end_col <= #line, "style has a nonempty byte range")
+    end
+  end
+  for _, link in ipairs(content.link_metadata) do
+    assert(
+      link.col_start >= 0 and link.col_end > link.col_start and link.col_end <= #content.lines[link.line + 1],
+      "link has a nonempty byte range"
+    )
+    assert_eq(Links.at(buf, ns, link.line, link.col_start), link.url, "first label byte activates exact target")
+    assert_eq(Links.at(buf, ns, link.line, link.col_end - 1), link.url, "last label byte activates exact target")
+  end
+end
+
+local function build(lines, opts)
+  local snapshot = vim.deepcopy(lines)
+  local b = ContentBuilder.new()
+  b:render_document(lines, vim.tbl_extend("force", { max_width = 1000, indent = "", text_scale = false }, opts or {}))
+  local content = b:result()
+  assert_eq(lines, snapshot, "paragraph processing preserves source bytes")
+  local buf = vim.api.nvim_create_buf(false, true)
+  local ns = vim.api.nvim_create_namespace "hard_break_test"
+  local ok, err = pcall(function()
+    display.apply_content_to_buffer(buf, ns, content)
+    check_buffer(buf, ns, content)
+  end)
+  vim.api.nvim_buf_delete(buf, { force = true })
+  assert(ok, err)
+  return content
+end
+
+local rich_source = { "*[one two three  ", "four five six](/target)* [Z](/next)" }
+local rich_rows = { "one two", "three", "four five", "six Z" }
+local rich_italic = { { 0, 0, 7, "one two" }, { 1, 0, 5, "three" }, { 2, 0, 9, "four five" }, { 3, 0, 3, "six" } }
+local rich_links = {
+  { 0, 0, 7, "one two", "/target" },
+  { 1, 0, 5, "three", "/target" },
+  { 2, 0, 9, "four five", "/target" },
+  { 3, 0, 3, "six", "/target" },
+  { 3, 4, 5, "Z", "/next" },
+}
+
+-- CommonMark 633-647: an explicit break remains inside the same inline parse.
+-- Exact byte spans also check the existing quote/list and CJK presentation.
+local cases = {
+  {
+    "CM638",
+    { "*foo  ", "bar*" },
+    { "foo", "bar" },
+    { 1, 2 },
+    italic = { { 0, 0, 3, "foo" }, { 1, 0, 3, "bar" } },
+  },
+  {
+    "CM639",
+    { "*foo\\", "bar*" },
+    { "foo", "bar" },
+    { 1, 2 },
+    italic = { { 0, 0, 3, "foo" }, { 1, 0, 3, "bar" } },
+  },
+  {
+    "nested strong and strike",
+    { "**~foo\\", "bar~**" },
+    { "foo", "bar" },
+    { 1, 2 },
+    bold = { { 0, 0, 3, "foo" }, { 1, 0, 3, "bar" } },
+    strike = { { 0, 0, 3, "foo" }, { 1, 0, 3, "bar" } },
+  },
+  {
+    "empty mandatory segment",
+    { "*[a\\", "\\", "b](/target)*" },
+    { "a", "", "b" },
+    { 1, 2, 3 },
+    italic = { { 0, 0, 1, "a" }, { 2, 0, 1, "b" } },
+    links = { { 0, 0, 1, "a", "/target" }, { 2, 0, 1, "b", "/target" } },
+  },
+  {
+    "soft and hard source rows",
+    { "*one", "two  ", "three", "four*" },
+    { "one two", "three four" },
+    { 1, 3 },
+    italic = { { 0, 0, 7, "one two" }, { 1, 0, 10, "three four" } },
+  },
+  {
+    "UTF-8 link and neighbor",
+    { "*[左方  ", "RIGHT](/target)* [NEXT](/next)" },
+    { "左方", "RIGHT NEXT" },
+    { 1, 2 },
+    italic = { { 0, 0, 6, "左方" }, { 1, 0, 5, "RIGHT" } },
+    links = { { 0, 0, 6, "左方", "/target" }, { 1, 0, 5, "RIGHT", "/target" }, { 1, 6, 10, "NEXT", "/next" } },
+  },
+  {
+    "wrapped link with source offset",
+    rich_source,
+    rich_rows,
+    { 21, 21, 22, 22 },
+    opts = { max_width = 10, source_line_offset = 20 },
+    italic = rich_italic,
+    links = rich_links,
+  },
+  {
+    "quote list prefixes",
+    { "> - *[foo\\", ">   bar](/target)*" },
+    { "│ • foo", "│   bar" },
+    { 1, 2 },
+    italic = { { 0, 8, 11, "foo" }, { 1, 6, 9, "bar" } },
+    links = { { 0, 8, 11, "foo", "/target" }, { 1, 6, 9, "bar", "/target" } },
+  },
+  {
+    "CJK hard break",
+    { "*中  ", "文*" },
+    { "中", "文" },
+    { 1, 2 },
+    italic = { { 0, 0, 3, "中" }, { 1, 0, 3, "文" } },
+  },
+  {
+    "code source row accounting",
+    { "*before  ", "`a  ", "b`  ", "after*" },
+    { "before", "a   b", "after" },
+    { 1, 2, 4 },
+    italic = { { 0, 0, 6, "before" }, { 1, 0, 5, "a   b" }, { 2, 0, 5, "after" } },
+    code = { { 1, 0, 5, "a   b" } },
+  },
+  {
+    "hidden title source row accounting",
+    { '*[x](/dest "title\\', 'continued")  ', "bar*" },
+    { "x", "bar" },
+    { 1, 3 },
+    italic = { { 0, 0, 1, "x" }, { 1, 0, 3, "bar" } },
+    links = { { 0, 0, 1, "x", "/dest" } },
+  },
+  {
+    "hidden comment source row accounting",
+    { "*a<!-- hidden\\", "comment -->b  ", "c*" },
+    { "ab", "c" },
+    { 1, 3 },
+    italic = { { 0, 0, 2, "ab" }, { 1, 0, 1, "c" } },
+  },
+  {
+    "HTML accumulated rows",
+    { "<b>*a  ", "b*  ", "c</b>" },
+    { "a", "b", "c" },
+    { 1, 2, 3 },
+    italic = { { 0, 0, 1, "a" }, { 1, 0, 1, "b" } },
+    bold = { { 0, 0, 1, "a" }, { 1, 0, 1, "b" }, { 2, 0, 1, "c" } },
+  },
+  {
+    "invalid source destination",
+    { "[bad](foo  ", "bar) [ok](/ok)" },
+    { "[bad](foo", "bar) ok" },
+    { 1, 2 },
+    links = { { 1, 5, 7, "ok", "/ok" } },
+  },
+  { "blank boundary", { "*foo  ", "", "bar*" }, { "*foo", "", "bar*" }, { 1, 2, 3 } },
+  { "heading boundary", { "*foo  ", "### bar*" }, { "*foo", "", "### bar*" }, { 1, 2, 2 } },
+  {
+    "entity LF is inline",
+    { "*foo&#10;bar  ", "baz*" },
+    { "foo bar", "baz" },
+    { 1, 2 },
+    italic = { { 0, 0, 7, "foo bar" }, { 1, 0, 3, "baz" } },
+  },
+  { "entity markers stay literal", { "&#42;foo  ", "bar&#42;" }, { "*foo", "bar*" }, { 1, 2 } },
+  {
+    "even backslashes are soft",
+    { "*foo\\\\", "bar*" },
+    { "foo\\ bar" },
+    { 1 },
+    italic = { { 0, 0, 8, "foo\\ bar" } },
+  },
+  {
+    "odd backslashes are hard",
+    { "*foo\\\\\\", "bar*" },
+    { "foo\\", "bar" },
+    { 1, 2 },
+    italic = { { 0, 0, 4, "foo\\" }, { 1, 0, 3, "bar" } },
+  },
+  { "CM644 terminal backslash", { "foo\\" }, { "foo\\" }, { 1 } },
+}
+
+for _, case in ipairs(cases) do
+  test(case[1], function()
+    local content = build(case[2], case.opts)
+    assert_eq(content.lines, case[3], case[1] .. ": exact paragraph rows")
+    assert_eq(content.source_line_map, case[4], case[1] .. ": physical source rows")
+    assert_eq(spans(content, "Italic"), case.italic or {}, case[1] .. ": exact italic byte ranges")
+    assert_eq(spans(content, "Bold"), case.bold or {}, case[1] .. ": exact bold byte ranges")
+    assert_eq(spans(content, "DiagnosticDeprecated"), case.strike or {}, case[1] .. ": exact strike byte ranges")
+    assert_eq(spans(content, "MdRenderInlineCode"), case.code or {}, case[1] .. ": exact code byte ranges")
+    assert_eq(link_spans(content), case.links or {}, case[1] .. ": exact links and visible labels")
+  end)
+end
+
+test("ninth return separates source breaks from decoded LF and protected code", function()
+  local _
+  local text, highlights, links, kind, marker, alert, fold, heading, breaks = markdown.render "*[foo  \nbar](/target)*"
+  assert_eq(text, "foo bar", "first return remains newline-free")
+  assert_eq(highlights, {
+    { col = 0, end_col = 7, hl = "MdRenderLink" },
+    { col = 0, end_col = 7, hl = "Italic" },
+  }, "first eight returns retain the complete inline ranges")
+  assert_eq(links, { { col_start = 0, col_end = 7, url = "/target" } }, "direct target is exact")
+  assert_eq({ kind, marker, alert, fold, heading }, {}, "paragraph block metadata stays absent")
+  assert_eq(breaks, { { col = 3, source_line = 2 } }, "separator byte and following physical source ordinal")
+  text, _, _, _, _, _, _, _, breaks = markdown.render("&#10;`a  \nb`  \nc", nil, nil, nil, nil, true)
+  assert_eq(text, " a   b c", "entity and code LF remain inline spaces")
+  assert_eq(breaks, { { col = 6, source_line = 3 } }, "code LF counts toward source ordinal; entity LF does not")
+  text, _, _, kind, _, _, _, _, breaks = markdown.render("# *foo  \nbar*", nil, nil, nil, nil, true)
+  assert_eq(text, "# foo bar", "sixth inline-only argument retains block markers")
+  assert_eq(kind, nil, "inline-only context does not invent a heading")
+  assert_eq(breaks, { { col = 5, source_line = 2 } }, "inline-only hard-break coordinate")
+  text, _, _, kind, _, alert, _, _, breaks = markdown.render "> [!NOTE] custom\ncontinued"
+  assert_eq(text:find "[\r\n]", nil, "early callout return is also newline-free")
+  assert_eq({ kind, alert, breaks }, { "blockquote", "NOTE", {} }, "early callout block metadata remains compatible")
+end)
+
+test("reference labels restore source markers before lookup", function()
+  for _, case in ipairs { { "foo  ", "foo bar" }, { "foo\\", "foo\\ bar" } } do
+    local source = { "*[" .. case[1], "bar]*", "", "[" .. case[2] .. "]: /target" }
+    local content = build(source)
+    assert_eq(content.lines, { "foo", "bar", "" }, "multiline shortcut label resolves as one link")
+    assert_eq(
+      link_spans(content),
+      { { 0, 0, 3, "foo", "/target" }, { 1, 0, 3, "bar", "/target" } },
+      "source label normalization preserves escaped spelling"
+    )
+  end
+end)
+
+test("literal and entity-produced hard-break token lookalikes remain text", function()
+  local literal = "\t\u{F100A}1\u{F100B}\t"
+  for _, token in ipairs { literal, "&#9;&#987146;1&#987147;&#9;" } do
+    local content = build { "*a" .. token .. "  ", "b*" }
+    assert_eq(content.lines, { "a" .. literal, "b" }, "token lookalike preserves literal bytes")
+    assert_eq(content.source_line_map, { 1, 2 }, "token collision cannot invent or move a source break")
+    assert_eq(
+      spans(content, "Italic"),
+      { { 0, 0, 12, "a" .. literal }, { 1, 0, 1, "b" } },
+      "restoration keeps UTF-8 style coordinates"
+    )
+  end
+end)
+
+test("URL ownership distinguishes its slash from a link-label break", function()
+  for _, url in ipairs { "https://example.com", "www.example.com" } do
+    local target = url:match "^www" and "http://" .. url or url
+    local content = build { url .. "\\", "bar" }
+    assert_eq(content.lines, { url .. "\\ bar" }, "URL's final slash stays inside its target")
+    assert_eq(link_spans(content), { { 0, 0, #url + 1, url .. "\\", target .. "\\" } }, "complete URL target")
+    content = build { "[" .. url .. "\\", "bar](/target)" }
+    assert_eq(content.lines, { url, "bar" }, "resolved label is ordinary inline content")
+    assert_eq(
+      link_spans(content),
+      { { 0, 0, #url, url, "/target" }, { 1, 0, 3, "bar", "/target" } },
+      "resolved label keeps its explicit target on both rows"
+    )
+    content = build { url .. "  ", "bar" }
+    assert_eq(content.lines, { url, "bar" }, "spaces following a URL form a real hard break")
+  end
+end)
+
+test("wiki and embed targets restore source breaks without leaking placeholders", function()
+  local text, _, links, _, _, _, _, _, breaks = markdown.render "[[foo  \nbar|link]]"
+  assert_eq(text, "link", "hidden wiki target creates no display separator")
+  assert_eq(breaks, {}, "URL restoration cannot create a phantom visible break")
+  assert_eq(
+    links,
+    { { col_start = 0, col_end = 4, url = "obsidian://advanced-uri?filepath=foo  \nbar" } },
+    "wiki target retains its original source spelling"
+  )
+  text, _, links, _, _, _, _, _, breaks = markdown.render "![[foo\\\nbar.md]]"
+  assert_eq(text, "📎 foo bar.md", "embed display stays newline-free")
+  assert_eq(breaks, { { col = #"📎 foo", source_line = 2 } }, "embed display reports its visible break")
+  assert_eq(
+    links,
+    { { col_start = 0, col_end = #text, url = "obsidian://advanced-uri?filepath=foo\\\nbar.md" } },
+    "embed target contains source bytes, never a placeholder"
+  )
+  local content = build { "[[target|*foo  ", "bar*]]" }
+  assert_eq(link_spans(content), {
+    { 0, 0, 3, "foo", "obsidian://advanced-uri?filepath=target" },
+    { 1, 0, 3, "bar", "obsidian://advanced-uri?filepath=target" },
+  }, "wiki alias label distributes the same destination")
+end)
+
+test("public preview rebuild and source toggle preserve rows, links and source bytes", function()
+  local preview = require "md-render.preview"
+  local image = require "md-render.image"
+  local source = vim.api.nvim_create_buf(false, true)
+  vim.bo[source].filetype = "markdown"
+  vim.api.nvim_buf_set_lines(source, 0, -1, false, rich_source)
+  vim.api.nvim_set_current_buf(source)
+  local tick = vim.api.nvim_buf_get_changedtick(source)
+  local supports, mouse, osc8, open = image.supports_kitty, display.getmousepos, display.supports_osc8, vim.ui.open
+  image.supports_kitty, display.supports_osc8 = function()
+    return false
+  end, function()
+    return false
+  end
+  local ok, err = pcall(function()
+    local function check(session)
+      local content = session.content
+      assert_eq(content.lines, { "  one two", "  three", "  four five", "  six Z" }, "preview exact wrapped rows")
+      assert_eq(content.source_line_map, { 1, 1, 2, 2 }, "preview physical source ownership")
+      local italic, links = vim.deepcopy(rich_italic), vim.deepcopy(rich_links)
+      for _, span in ipairs(italic) do
+        span[2], span[3] = span[2] + 2, span[3] + 2
+      end
+      for _, span in ipairs(links) do
+        span[2], span[3] = span[2] + 2, span[3] + 2
+      end
+      assert_eq(spans(content, "Italic"), italic, "preview exact italic byte ranges")
+      assert_eq(link_spans(content), links, "preview exact link ranges")
+      check_buffer(session.buf, session.ns, content)
+      local opened = {}
+      vim.ui.open = function(url)
+        opened[#opened + 1] = url
+      end
+      local click = vim.fn.maparg("<LeftRelease>", "n", false, true).callback
+      for _, link in ipairs(content.link_metadata) do
+        display.getmousepos = function()
+          return { winid = vim.api.nvim_get_current_win(), line = link.line + 1, column = link.col_start + 1 }
+        end
+        click()
+      end
+      assert_eq(opened, { "/target", "/target", "/target", "/target", "/next" }, "public clicks activate exact targets")
+      assert_eq(Links.at(session.buf, session.ns, 0, 0), nil, "preview indent is not a link")
+      assert_eq(vim.api.nvim_buf_get_changedtick(source), tick, "preview does not modify source changedtick")
+    end
+    preview.toggle { text_scale = false, max_width = 12 }
+    local session = assert(preview._toggle_sessions[source], "preview session exists")
+    check(session)
+    session:rebuild()
+    check(session)
+    preview.toggle()
+    assert_eq(vim.api.nvim_get_current_buf(), source, "source toggle restores the original buffer")
+    preview.toggle { text_scale = false, max_width = 12 }
+    check(assert(preview._toggle_sessions[source]))
+  end)
+  image.supports_kitty, display.getmousepos, display.supports_osc8, vim.ui.open = supports, mouse, osc8, open
+  if preview._toggle_sessions[source] then preview.toggle() end
+  assert_eq(
+    vim.api.nvim_buf_get_lines(source, 0, -1, false),
+    rich_source,
+    "source bytes remain unchanged after closing"
+  )
+  assert_eq(vim.api.nvim_buf_get_changedtick(source), tick, "source changedtick remains unchanged after closing")
+  vim.api.nvim_buf_delete(source, { force = true })
+  assert(ok, err)
+end)
 
 print(string.format("\nhard_break_test: %d passed, %d failed", pass_count, fail_count))
 if fail_count > 0 then os.exit(1) end

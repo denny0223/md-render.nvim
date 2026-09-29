@@ -273,9 +273,10 @@ function M.reference_definition(text, start)
 end
 
 --- Scan one already-parsed paragraph; block boundaries are the caller's job.
-local function scan(text, refs, wanted_link, source_label)
-  local spans, brackets, autolinks, invalid_destinations = {}, {}, {}, {}
+local function scan(text, refs, wanted_link, source_label, bare_url)
+  local spans, brackets, autolinks, invalid_destinations, hard_breaks = {}, {}, {}, {}, {}
   local runs
+  local autolink_finish = 0
   local has_angle_link = false
   local function note_angle_link()
     if #brackets > 0 then
@@ -302,8 +303,10 @@ local function scan(text, refs, wanted_link, source_label)
       end
       finish = finish or M.html_end(text, pos)
       pos = (finish or pos) + 1
-    elseif not wanted_link and text:sub(pos, pos + 3) == "www." then
-      local finish = www_end(text, pos, source_label)
+    elseif not wanted_link and (text:sub(pos, pos + 3) == "www." or (bare_url and text:match("^https?://", pos))) then
+      -- Hard-break ownership reuses Markdown's established HTTP matcher.
+      local url = bare_url and text:match("^https?://", pos) and bare_url(pos)
+      local finish = url and pos + #url - 1 or www_end(text, pos, source_label)
       -- Autolinks apply to text nodes, never a resolved link/image label.
       -- Reuse the same bracket scanner; lookahead disables www recognition.
       if finish then
@@ -321,12 +324,31 @@ local function scan(text, refs, wanted_link, source_label)
           end
         end
       end
-      if finish then autolinks[#autolinks + 1] = { start = pos, finish = finish } end
+      if finish then
+        autolink_finish = finish
+        if not url then autolinks[#autolinks + 1] = { start = pos, finish = finish } end
+      end
       pos = (finish or pos) + 1
     elseif text:sub(pos, pos + 1) == "%%" then
       -- Obsidian comments, like HTML comments, cannot open code spans.
       local finish = text:find("%%", pos + 2, true)
       pos = finish and finish + 2 or pos + 2
+    elseif c == "\n" then
+      local first = pos
+      while text:sub(first - 1, first - 1) == " " and first > 1 do
+        first = first - 1
+      end
+      if pos - first < 2 then
+        local slash = pos
+        while text:sub(slash - 1, slash - 1) == "\\" and slash > 1 do
+          slash = slash - 1
+        end
+        first = (pos - slash) % 2 == 1 and pos - 1 or pos
+      end
+      if first > autolink_finish and first < pos and pos < #text then
+        hard_breaks[#hard_breaks + 1] = { start = first, finish = pos }
+      end
+      pos = pos + 1
     elseif c == "[" or text:sub(pos, pos + 1) == "![" then
       for _, bracket in ipairs(brackets) do
         bracket.nested = true
@@ -386,8 +408,15 @@ local function scan(text, refs, wanted_link, source_label)
     code_spans = spans,
     autolinks = autolinks,
     invalid_destinations = invalid_destinations,
+    hard_breaks = hard_breaks,
     has_angle_link = has_angle_link,
   }
+end
+
+--- Hard breaks belong to text nodes, never code, HTML or valid link suffixes.
+function M.hard_breaks(text, ref_links, source_label, bare_url)
+  if not text:find("\n", 1, true) then return {} end
+  return scan(text, ref_links, nil, source_label, bare_url).hard_breaks
 end
 
 --- Source-literal autolinks follow the shared escape, code, comment and link precedence.

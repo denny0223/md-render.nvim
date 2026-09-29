@@ -1139,6 +1139,39 @@ local function char_starting_at(text, pos)
   return text:sub(pos, last)
 end
 
+local function span_boundaries(highlights, links)
+  local starts, ends = {}, {}
+  for _, hl in ipairs(highlights) do
+    starts[hl.col], ends[hl.end_col] = true, true
+  end
+  for _, link in ipairs(links) do
+    starts[link.col_start], ends[link.col_end] = true, true
+  end
+  return starts, ends
+end
+
+--- Fold source soft breaks only after syntax recognition; CJK gaps disappear.
+local function display_soft_breaks(text, highlights, links)
+  if not text:find("\n", 1, true) then return text end
+  local starts, ends = span_boundaries(highlights, links)
+  local removals = {}
+  local rendered = text:gsub("()(\n+)", function(pos, breaks)
+    local replacement = " "
+    if
+      not (ends[pos - 1] and starts[pos + #breaks - 1])
+      and wrap_mod.is_east_asian_wide(char_ending_at(text, pos - 1))
+      and wrap_mod.is_east_asian_wide(char_starting_at(text, pos + #breaks))
+    then
+      replacement = ""
+    end
+    local removed = #breaks - #replacement
+    if removed > 0 then removals[#removals + 1] = { start = pos - 1 + #replacement, count = removed } end
+    return replacement
+  end)
+  adjust_positions(highlights, links, removals, #highlights, #links)
+  return rendered
+end
+
 --- Drop the spaces a Japanese author puts around an inline marker only so that
 --- a lenient parser recognises it.
 ---
@@ -1147,7 +1180,7 @@ end
 --- (`これは**強調**です。` emphasises just fine), so once the markers are gone
 --- those spaces are pure markup and read as unwanted gaps.  They are dropped
 --- when the characters on both sides are East Asian wide — the same rule
---- `wrap.join_soft_lines()` applies to the space CommonMark inserts at a soft
+--- `display_soft_breaks()` applies to the space CommonMark inserts at a soft
 --- line break, and the same rule Japanese typography uses for the space
 --- between a wide and a narrow character.  `これは **API** です。` therefore
 --- keeps its spaces, because `API` is narrow and the gap belongs there.
@@ -1163,15 +1196,7 @@ local function drop_marker_spaces(text, highlights, links)
   if not text:find(" ", 1, true) then return text end
 
   -- Span boundaries are the record of where the removed markers used to be.
-  local span_starts, span_ends = {}, {}
-  for _, hl in ipairs(highlights) do
-    span_starts[hl.col] = true
-    span_ends[hl.end_col] = true
-  end
-  for _, link in ipairs(links) do
-    span_starts[link.col_start] = true
-    span_ends[link.col_end] = true
-  end
+  local span_starts, span_ends = span_boundaries(highlights, links)
 
   local removals = {}
   local pos = text:find(" ", 1, true)
@@ -1317,9 +1342,12 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   end
 
   -- Establish code boundaries before whitespace or comment transformations.
-  local code_spans
+  local code_spans, invalid_destinations
   rendered_text, code_spans = inline.protect_code(rendered_text, ref_links)
-  rendered_text = rendered_text:gsub("\r", "")
+  rendered_text, invalid_destinations = inline.protect_invalid_destinations(rendered_text, ref_links, function(label)
+    return restore_source(label, code_spans)
+  end)
+  rendered_text = rendered_text:gsub("\r\n", "\n"):gsub("\r", "\n")
   if checkbox_hl then rendered_text = list_marker .. rendered_text:sub(#list_marker + 1):gsub("^ +", "") end
 
   -- A trailing unescaped backslash is a hard break outside literal code.
@@ -1340,6 +1368,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   local decode_url, source_label
 
   if not needs_inline and #code_spans == 0 then
+    rendered_text = display_soft_breaks(rendered_text, highlights, links)
     rendered_text = collapse_spaces(rendered_text, highlights, links, checkbox_hl and #list_marker or 0)
     goto finalize
   end
@@ -1356,7 +1385,10 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     return restore_spans(restore_spans(url, backslash_escapes), entity_spans)
   end
   source_label = function(label)
-    return restore_source(restore_source(restore_source(label, entity_spans), backslash_escapes), code_spans)
+    return restore_source(
+      restore_source(restore_source(restore_source(label, entity_spans), backslash_escapes), code_spans),
+      invalid_destinations
+    )
   end
 
   -- Process inline elements (embeds and wikilinks before standard links)
@@ -1364,6 +1396,8 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   rendered_text = process_wikilinks(rendered_text, highlights, links)
   rendered_text = process_footnote_refs(rendered_text, footnote_map, highlights, links, source_label)
   rendered_text = process_links(rendered_text, highlights, links, source_label, ref_links)
+  -- Explicit/reference validity is settled; later autolinks need real parentheses.
+  rendered_text = restore_spans(rendered_text, invalid_destinations, nil, highlights, links)
   repeat
     local prev = rendered_text
     rendered_text = process_html_tags(rendered_text, highlights, links, decode_url)
@@ -1395,6 +1429,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     if not link._decoded then link.url = decode_url(link.url) end
     link._decoded = nil
   end
+  rendered_text = display_soft_breaks(rendered_text, highlights, links)
   -- Validate labels in their original spelling before display-space collapse.
   -- Code and entities remain protected, and generated checkbox padding stays.
   rendered_text = collapse_spaces(rendered_text, highlights, links, checkbox_hl and #list_marker or 0)
@@ -1464,7 +1499,7 @@ Markdown.parse_footnotes = function(lines)
   local function flush()
     if current_label then
       if not label_to_num[current_label] then
-        table.insert(defs, { label = current_label, text = wrap_mod.join_soft_lines(current_parts) })
+        table.insert(defs, { label = current_label, text = wrap_mod.join_source_lines(current_parts) })
         label_to_num[current_label] = #defs
       end
       current_label = nil

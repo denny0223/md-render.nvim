@@ -555,36 +555,24 @@ local function is_east_asian_wide(char)
   return result
 end
 
---- Join soft-wrapped source lines into a single line.
----
---- CommonMark turns a soft line break into a space, which is right for
---- Latin text but inserts an unwanted gap in CJK text.  The space is
---- therefore dropped when the characters on both sides of the break are
---- East Asian wide.  Leading whitespace of the continuation lines is
---- removed, as CommonMark does; the first line keeps its indentation so
---- that continuation paragraphs stay aligned with their list item.
+--- Join paragraph source while retaining line endings for inline parsing.
+--- Folding them before parsing can turn an invalid destination into a link.
+--- Continuation indentation and trailing spaces outside code are display
+--- whitespace; matched code spans retain their original source bytes.
 ---@param lines string[]
 ---@return string
-local function join_soft_lines(lines, ref_links)
+local function join_source_lines(lines, ref_links)
   -- Continuation indentation belongs to the paragraph, not the code body.
   local source = {}
   for i, line in ipairs(lines) do
     source[i] = i == 1 and line or line:gsub("^[ \t]+", "")
   end
   local protected, spans = require("md-render.inline").protect_code(table.concat(source, "\n"), ref_links)
-  local text = ""
+  local parts = {}
   for i, line in ipairs(vim.split(protected, "\n", { plain = true })) do
-    local trimmed = i == 1 and (line:gsub("%s+$", "")) or (line:gsub("^%s+", ""):gsub("%s+$", ""))
-    if text == "" then
-      text = trimmed
-    elseif trimmed ~= "" then
-      if is_east_asian_wide(last_char(text)) and is_east_asian_wide(first_char(trimmed)) then
-        text = text .. trimmed
-      else
-        text = text .. " " .. trimmed
-      end
-    end
+    parts[i] = i == 1 and (line:gsub("%s+$", "")) or (line:gsub("^%s+", ""):gsub("%s+$", ""))
   end
+  local text = table.concat(parts, "\n")
   for _, span in ipairs(spans) do
     text = text:gsub(span.placeholder, function()
       return span.raw
@@ -918,7 +906,7 @@ M.classify_quotes = classify_quotes
 M.split_segments = split_segments
 M.is_cjk_or_kinsoku = is_cjk_or_kinsoku
 M.is_east_asian_wide = is_east_asian_wide
-M.join_soft_lines = join_soft_lines
+M.join_source_lines = join_source_lines
 M.first_char = first_char
 M.last_char = last_char
 M.split_by_script = split_by_script

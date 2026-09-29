@@ -1142,7 +1142,7 @@ end
 ---@return string[] pipe-table lines suitable for MarkdownTable.parse
 local function html_table_to_pipe(html_lines)
   -- Inline rendering owns whitespace normalization inside each cell.
-  local html = table.concat(html_lines, " ")
+  local html = table.concat(html_lines, "\n")
 
   -- Extract rows from <tr>...</tr>
   local rows = {}
@@ -1415,7 +1415,7 @@ local function strip_container_indent(lines)
   return result, indents, columns
 end
 
---- Join paragraph continuation lines into single lines.
+--- Join paragraph continuation rows into source strings, retaining soft breaks.
 --- In CommonMark, consecutive lines that don't start block-level constructs
 --- form a single paragraph. This is needed for inline constructs (like links)
 --- that span multiple source lines.  Lines ending in a hard line break
@@ -1481,7 +1481,7 @@ local function join_paragraph_continuations(
       local span = spans[span_index]
       local in_code = span and span.start < newline and newline < span.finish
       if i == #para or (has_hard_break(line) and not in_code) then
-        result[#result + 1] = wrap_mod.join_soft_lines(chunk, ref_links)
+        result[#result + 1] = wrap_mod.join_source_lines(chunk, ref_links)
         result_indices[#result_indices + 1] = para_indices[first]
         chunk, first = {}, i + 1
       end
@@ -1615,7 +1615,7 @@ local function join_paragraph_continuations(
   return result, result_indices
 end
 
---- Preprocess multi-line HTML constructs into single result lines.
+--- Preprocess multi-line HTML constructs into single entries with source breaks.
 ---
 --- `src_indices` is a parallel array giving the original buffer line
 --- number for each input line. The returned `result_indices` carries the
@@ -1630,6 +1630,7 @@ local function preprocess_multiline_html(lines, src_indices)
   local result_indices = {}
   local accum = nil -- { tag: string, lines: string[], depth: integer, src: integer }
   local open_fence = nil
+  local in_math = false
   local comment_state
   local comments = {}
   -- A definition's angle destination is not an opening HTML tag. This pass
@@ -1639,10 +1640,17 @@ local function preprocess_multiline_html(lines, src_indices)
   for idx, l in ipairs(lines) do
     local src = src_indices[idx]
     local comment_suffix
-    if not accum and not open_fence then
+    local math_boundary = not accum and not open_fence and not comment_state and l:match "^%$%$$"
+    if math_boundary then in_math = not in_math end
+    -- These rows bypass inline rendering, so keep their original row boundaries.
+    local literal = not accum and not comment_state and (in_math or math_boundary or l:match "^    ")
+    if not literal and not accum and not open_fence then
       comment_state, comment_suffix = block_comment_step(comment_state, l)
     end
-    if comment_suffix ~= nil then
+    if literal then
+      table.insert(result, l)
+      table.insert(result_indices, src)
+    elseif comment_suffix ~= nil then
       comments[src] = { suffix = comment_suffix, prefix = "" }
       table.insert(result, l)
       table.insert(result_indices, src)
@@ -1656,8 +1664,8 @@ local function preprocess_multiline_html(lines, src_indices)
         accum.depth = accum.depth - 1
       end
       if accum.depth <= 0 then
-        -- Join all lines with spaces (HTML whitespace collapsing)
-        local joined = wrap_mod.join_soft_lines(accum.lines)
+        -- Keep source line endings until the inline syntax is recognized.
+        local joined = wrap_mod.join_source_lines(accum.lines)
         table.insert(result, joined)
         table.insert(result_indices, accum.src)
         accum = nil
@@ -2279,7 +2287,7 @@ function ContentBuilder:render_document(lines, opts)
           if before then
             if before ~= "" then table.insert(details_summary_parts, before) end
             in_details_summary = false
-            local joined = wrap_mod.join_soft_lines(details_summary_parts)
+            local joined = wrap_mod.join_source_lines(details_summary_parts)
             render_details_summary(joined ~= "" and joined or "Details")
             goto continue
           end

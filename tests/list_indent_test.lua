@@ -93,7 +93,7 @@ end
 -- paragraph, indented or not
 do
   -- No space at the join: a soft break between two wide characters is not a
-  -- word gap.  See wrap.join_soft_lines.
+  -- word gap. See markdown's soft-break display policy.
   local out = render { "1. 最初の行", "   同じ段落の続き", "2. 次の項目" }
   assert_eq(
     out,

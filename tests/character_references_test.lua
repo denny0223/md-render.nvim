@@ -325,13 +325,15 @@ test("removing markup cannot turn original PUA text into restoration tokens", fu
     local text, highlights = markdown.render(case[1] .. "**" .. case[1] .. "1" .. case[2] .. "** " .. case[3])
     eq(text, literal .. " " .. case[4], "style-joined PUA text")
     eq(highlights, { { col = #case[1], end_col = #literal, hl = "Bold" } }, "literal PUA style range")
-    local _, _, links = markdown.render(
+    local link_text, _, links = markdown.render(
       "[X](https://example.invalid/" .. case[1] .. "<!-- -->" .. case[1] .. "1" .. case[2] .. case[3] .. ")"
     )
+    local url = "https://example.invalid/" .. literal .. case[4]
+    eq(link_text, "[X](" .. url .. ")", "a comment cannot synthesize a valid explicit destination")
     eq(
       links,
-      { { col_start = 0, col_end = 1, url = "https://example.invalid/" .. literal .. case[4] } },
-      "comment-joined PUA destination"
+      { { col_start = 4, col_end = 4 + #url, url = url } },
+      "only the visible bare URL is linked after comment removal"
     )
   end
 end)

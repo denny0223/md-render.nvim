@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Native heading acceptance in an isolated real Kitty/tmux session.
+"""Heading acceptance in an isolated real Kitty/tmux session.
 
-Run under X11 or xvfb-run. Requires Kitty >= 0.40, tmux and Neovim >= 0.12.
+Run under X11 or xvfb-run. Requires Kitty >= 0.40 and Neovim >= 0.12.
+Requires tmux >= 3.6 unless checking older versions with --expect-plain.
 Optional --output DIR retains terminal snapshots and screenshots (ImageMagick).
+--images additionally requires image-heading Python dependencies, Pillow and ImageMagick.
 """
 import argparse
 from contextlib import ExitStack
@@ -52,7 +54,10 @@ def main():
     parser.add_argument("--passthrough", choices=("on", "all"), default="on")
     parser.add_argument("--snacks", type=Path, help="installed Snacks checkout for image coexistence checks")
     parser.add_argument("--expect-plain", action="store_true", help="verify fallback for tmux older than 3.6")
+    parser.add_argument("--images", action="store_true", help="check image pixels, links and auto fallback; requires --passthrough all")
     options = parser.parse_args()
+    if options.images and (options.passthrough != "all" or options.expect_plain):
+        parser.error("--images requires --passthrough all and cannot use --expect-plain")
     output = options.output
     if output:
         output.mkdir(parents=True, exist_ok=True)
@@ -100,8 +105,14 @@ def main():
         cleanups.callback(subprocess.run, ["tmux", "-S", socket, "kill-server"], env=env, capture_output=True)
         fixture = root / "headings.md"
         fixture.write_text("Body.\n\n" + "\n\n".join("#" * level + f" 共同 H{level}" for level in range(1, 7)) + "\n\n" + "Body after headings.\n\n" * 60)
+        if options.images:
+            fixture.write_text("Body.\n\n" + "\n\n".join("#" * level + f" 共同 H{level}"
+                + (" [REF][doc]" if level == 2 else " <https://a.test/x>" if level == 3 else "")
+                for level in range(1, 7)) + "\n\n[doc]: https://example.invalid/reference\n")
         config = root / "tmux.conf"
         config.write_text(f'set -g default-terminal tmux-256color\nset -g allow-passthrough {options.passthrough}\nset -g focus-events on\nset -g status 2\nset -g status-position top\nset -g status-interval 0\nset -g status-format[0] "Native headings | #{{window_name}}"\nset -g status-format[1] "pane #{{pane_index}}"\n')
+        with config.open("a") as stream:
+            stream.write('set -as terminal-features ",xterm-kitty:RGB:hyperlinks"\n')
         init = root / "init.lua"
         snacks_setup = ""
         if options.snacks:
@@ -127,12 +138,15 @@ end})
 vim.api.nvim_create_autocmd("TextYankPost", {callback=function() vim.hl.on_yank({timeout=500}) end})
 vim.api.nvim_create_autocmd("VimEnter", {once=true, callback=function()
   vim.schedule(function()
-    vim.cmd "MdRender textsize native"
+    %s
+    vim.cmd "MdRender textsize %s"
     vim.cmd "MdRender toggle"
     vim.cmd "normal! gg0"
   end)
 end})
-''' % (json.dumps(str(options.checkout.resolve())), snacks_setup))
+''' % (json.dumps(str(options.checkout.resolve())), snacks_setup,
+       'vim.api.nvim_set_hl(0,"Normal",{fg=0xd8dee9,bg=0x161c28})' if options.images else "",
+       "auto" if options.images else "native"))
 
         def tmux(*args):
             return run(["tmux", "-S", socket, *args])
@@ -228,8 +242,128 @@ end})
             nvim = shlex.join(["nvim", "-u", str(init), "-i", "NONE", "--listen", server, str(fixture)])
             pane = tmux("split-window", "-v", "-t", "headings:0.1", "-P", "-F", "#{pane_id}", nvim).strip()
             wait_for(lambda: Path(server).exists(), "Neovim started")
+            if options.images:
+                import base64
+                import io
+                from PIL import Image
+
+                def image_state():
+                    return json.loads(lua('''(function()
+                      local s=require('md-render.preview')._sessions[vim.api.nvim_get_current_buf()]
+                      if not s or s.content.heading_backend~='image' then return '{}' end
+                      local result={entries={},links=s.content.link_metadata}
+                      for _,e in ipairs(s.text_size_state and s.text_size_state.entries or {}) do
+                        local p=e.placement
+                        local colors={}
+                        for _,name in ipairs({p.hl,'Normal','MdRenderLink','Underlined'}) do
+                          local fg=vim.api.nvim_get_hl(0,{name=name,link=false}).fg
+                          if fg then table.insert(colors,fg) end
+                        end
+                        table.insert(result.entries,{text=p.text,data=e.data,visible=e.visible,
+                          rows=p.scale,line=p.line,byte=p.col,columns=e.columns,colors=colors,
+                          screen=vim.fn.screenpos(s.win,p.line+1,p.col+1)})
+                      end
+                      return vim.json.encode(result)
+                    end)()'''))
+
+                def image_frame(name):
+                    def six_images():
+                        info = image_state()
+                        entries = info.get("entries", [])
+                        return info if len(entries) == 6 and all(e.get("visible") for e in entries) else None
+
+                    info = wait_for(six_images, name + ": six image placements ready")
+                    left, top = map(int, tmux("display-message", "-p", "-t", pane, "#{pane_left} #{pane_top}").split())
+                    cols, rows, cell_w, cell_h = map(int, tmux("list-clients", "-F",
+                        "#{client_width} #{client_height} #{client_cell_width} #{client_cell_height}").split())
+                    masks = []
+                    for level, entry in enumerate(info["entries"], 1):
+                        assert entry["text"].startswith(f"共同 H{level}"), entry["text"]
+                        assert entry["rows"] == (2 if level <= 3 else 1), entry
+                        raster = Image.open(io.BytesIO(base64.b64decode(entry["data"]))).convert("RGBA")
+                        colors = [tuple((color >> shift) & 255 for shift in (16, 8, 0)) for color in entry["colors"]]
+                        mask = [(x, y, raster.getpixel((x, y))[:3]) for y in range(raster.height) for x in range(raster.width)
+                            if raster.getpixel((x, y))[3] >= 254 and any(
+                                max(abs(a-b) for a, b in zip(raster.getpixel((x, y))[:3], color)) < 12 for color in colors)]
+                        assert mask, ("no opaque glyph pixels", entry["text"])
+                        masks.append(mask)
+                    window = str(json.loads(kitty("ls"))[0]["platform_window_id"])
+                    path = (output or root) / (name + ".png")
+
+                    def painted_pixels():
+                        run(["magick", "import", "-window", window, str(path)])
+                        matched = []
+                        with Image.open(path).convert("RGB") as screen:
+                            # Kitty puts an odd spare pixel on the far edge.
+                            pad_x = (screen.width - cols * cell_w) // 2
+                            pad_y = (screen.height - rows * cell_h) // 2
+                            for entry, mask in zip(info["entries"], masks):
+                                x = (entry["screen"]["col"] - 1 + left) * cell_w + pad_x
+                                y = (entry["screen"]["row"] - 1 + top + 2) * cell_h + pad_y
+                                matched.append(sum(max(abs(a-b) for a, b in zip(screen.getpixel((x+dx, y+dy)), color)) < 12
+                                    for dx, dy, color in mask) / len(mask))
+                        if output:
+                            (output / (name + ".pixels.json")).write_text(json.dumps(matched) + "\n")
+                        return all(ratio >= .90 for ratio in matched)
+
+                    wait_for(painted_pixels, name + ": all six PNG glyph masks match actual pixels")
+
+                    def painted_links():
+                        text = kitty("get-text", "--ansi")
+                        pattern = re.compile(r"\x1b\]8;[^;]*;(.*?)(?:\x1b\\|\x07)|\x1b\[[0-?]*[ -/]*[@-~]")
+                        grid, row, url, end = [], [], None, 0
+                        for match in list(pattern.finditer(text)) + [None]:
+                            for char in text[end:match.start() if match else len(text)]:
+                                if char == "\n":
+                                    grid.append(row)
+                                    row = []
+                                elif char != "\r":
+                                    row.extend([url] * cell_width(char))
+                            if match:
+                                if match[1] is not None:
+                                    url = match[1] or None
+                                end = match.end()
+                        grid.append(row)
+                        covered = set()
+                        for entry in info["entries"]:
+                            for col, byte in enumerate(entry["columns"]):
+                                expected = None if byte is False else next((link["url"] for link in info["links"]
+                                    if link["line"] == entry["line"] and link["col_start"] <= entry["byte"] + byte < link["col_end"]), None)
+                                if expected:
+                                    covered.add(expected)
+                                x = entry["screen"]["col"] - 1 + left + col
+                                y = entry["screen"]["row"] - 1 + top + 2
+                                for offset in range(entry["rows"]):
+                                    if y + offset >= len(grid) or x >= len(grid[y+offset]) or grid[y+offset][x] != expected:
+                                        return False
+                        return covered == {"https://example.invalid/reference", "https://a.test/x"}
+
+                    wait_for(painted_links, name + ": reference and angle URLs match painted cells on both rows")
+                    capture(name)
+
+                image_frame("image-initial")
+                assert state()["status"].startswith("auto -> image"), state()
+                lua("vim.cmd('MdRender toggle')")
+                wait_for(lambda: not state().get("backend") and "\U0010eeee" not in kitty("get-text"),
+                         "source toggle removes image placeholders")
+                assert json.loads(lua("vim.json.encode(vim.api.nvim_buf_get_lines(0,0,-1,false))")) == fixture.read_text().splitlines()
+                lua("vim.cmd('MdRender toggle')")
+                image_frame("image-reopened")
+                tmux("set-option", "-p", "-t", pane, "allow-passthrough", "on")
+                wait_for(lambda: state()["status"].startswith("auto -> native") and bool(scaled())
+                         and "\U0010eeee" not in kitty("get-text"), "auto falls back to native when image passthrough is unavailable")
+                tmux("set-option", "-p", "-t", pane, "allow-passthrough", "off")
+                wait_for(lambda: state()["status"].startswith("auto -> plain") and not scaled()
+                         and "\U0010eeee" not in kitty("get-text"), "auto keeps readable text when passthrough is off")
+                assert all(f"共同 H{level}" in kitty("get-text") for level in range(1, 7))
+                tmux("set-option", "-p", "-t", pane, "allow-passthrough", "all")
+                image_frame("image-recovered")
+                print(f"tmux image terminal: {len(checks)} checks passed", flush=True)
+                return
             if options.expect_plain:
                 for policy in ("native", "auto"):
+                    if policy == "auto":
+                        tmux("set-option", "-p", "-t", pane, "allow-passthrough", "on")
                     lua(f"vim.cmd('MdRender textsize {policy}')")
                     wait_for(lambda: state().get("backend") == "plain" and "tmux >= 3.6" in state()["status"],
                              f"{policy} explains unsupported popup focus events")
@@ -329,8 +463,11 @@ end})
             tmux("set-option", "-p", "-t", pane, "allow-passthrough", options.passthrough)
             wait_for(lambda: state().get("backend") == "native" and six_levels(), "enabling passthrough recovers without reopening")
             assert not state()["termsync"], "native recovery suspends synchronized updates again"
+            tmux("set-option", "-p", "-t", pane, "allow-passthrough", "on")
             lua("vim.cmd('MdRender textsize auto')")
             wait_for(lambda: state()["status"].startswith("auto -> native") and six_levels(), "auto selects verified native fallback")
+            lua("vim.cmd('MdRender textsize native')")
+            tmux("set-option", "-p", "-t", pane, "allow-passthrough", options.passthrough)
             lua("vim.cmd('MdRender textsize off')")
             wait_for(lambda: not scaled(), "off clears all enlarged text")
             assert state()["termsync"], "textsize off restores synchronized updates"
@@ -485,8 +622,8 @@ end})
                 wait_for(rich_visible, "rich headings return after link activation")
 
             open_preview(options.checkout / "README.zh-TW.md")
-            wait_for(lambda: state()["status"].startswith("auto -> native") and bool(scaled()),
-                     "the complete README stays native under auto")
+            wait_for(lambda: state()["status"].startswith("native -> native") and bool(scaled()),
+                     "the complete README stays native under the selected policy")
             capture("17-readme")
             lua("(function() local s=require('md-render.preview')._sessions[vim.api.nvim_get_current_buf()]; for _,p in ipairs(s.content.text_placements) do if p.text:find(':Telescope',1,true) then vim.api.nvim_win_set_cursor(0,{p.line,0}); vim.cmd('normal! zt'); break end end end)()")
             wait_for(lambda: ":Telescope" in "".join(text for _,text in scaled()),
@@ -495,7 +632,7 @@ end})
             controls = root / "controls.md"
             controls.write_text("Body.\n\n### `a\tb` X\n\n### [a&#9;b](#destination)\n\n## Destination\n")
             open_preview(controls)
-            wait_for(lambda: state()["status"].startswith("auto -> plain: native heading text contains control characters")
+            wait_for(lambda: state()["status"].startswith("native -> plain: native heading text contains control characters")
                      and not scaled(), "control-character headings retain ordinary text")
             assert re.search(r"a[ \t]+b", kitty("get-text")), "heading tab spacing was lost"
             capture("19-control-fallback")

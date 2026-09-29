@@ -100,7 +100,7 @@ for _, width in ipairs { 100, 56 } do
     local entry = state.entries[level]
     local p = entry.placement
     local native_width = vim.fn.strdisplaywidth(p.text)
-    assert(entry.cols >= native_width and not entry.mask_id, "opaque images cover text without erasing terminal cells")
+    assert(entry.cols >= native_width and not entry.mask_ids, "opaque images cover text without erasing terminal cells")
     local pos = vim.fn.screenpos(state.win, p.line + 1, p.col + 1)
     local mouse, projected = heading.mouse_position {
       winid = state.win,

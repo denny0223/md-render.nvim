@@ -211,8 +211,8 @@ After loading the plugins, run :checkhealth snacks and check: >vim
   :lua print(require("md-render.image").config().backend)
 <
 Expect 1 and "snacks", respectively. Inside tmux,
-`tmux show-options -gv allow-passthrough` should print "on". Finally, open
-a Markdown file containing a local PNG in Kitty and run :MdRender tab. Wait
+`tmux show-options -gv allow-passthrough` should print "on" or "all". Finally,
+open a Markdown file containing a local PNG in Kitty and run :MdRender tab. Wait
 for the image, place the cursor on it or its title, and press Enter to verify
 that its image tab opens. Tool availability alone does not verify display.
 
@@ -546,12 +546,13 @@ Image headings (experimental)			*md-render-image-headings*
 
 Use :MdRender textsize image before or during a preview. Requirements:
 
-- Neovim >= 0.12, confirmed terminal PNG support, measured cell dimensions
-  and 'termguicolors' (Kitty >= 0.28).
+- Neovim >= 0.12, Kitty >= 0.28, measured cell dimensions and
+  'termguicolors'. Direct connections confirm PNG uploads before masking text.
 - Python 3, PyGObject, Pycairo, Pango/PangoCairo and Cairo introspection data,
   plus the configured fonts, on the Neovim host.
 - Linux with direct Kitty or a loopback SSH PTY has been tested. Windows
-  and tmux disable image headings; other OS/client combinations are unverified.
+  disables image headings; other OS/client combinations are unverified.
+  For tmux requirements and recovery, see |md-render-tmux-image-headings|.
 
 H1-H6 sizes are 2, 1.5, 1.25, 1, 0.875 and 0.85 times the base size.
 Image headings omit level prefixes; H1 and H2 have a single rule.
@@ -584,6 +585,32 @@ External links use the terminal's OSC 8 shortcut (Ctrl+Shift+click in Kitty).
 For terminal Shift-drag copying, use :MdRender textsize off to select rendered
 text, or |:MdRender-toggle| to return to source. Text-only tools can use either
 view; screen-reader compatibility has not been tested.
+
+Tmux image headings (experimental)              *md-render-tmux-image-headings*
+
+Inside tmux, auto selects image headings when these checks pass; otherwise
+it tries native, then ordinary text. Pending checks retain ordinary text.
+One attached Kitty client, known cell dimensions, RGB and hyperlinks are
+required. Add these lines to your tmux configuration: >
+
+  set -g allow-passthrough all
+  set -as terminal-features ',xterm-kitty:RGB:hyperlinks'
+<
+The preview pane must be active, outside copy mode, and the whole tmux window
+must fit the client viewport. Suspended clients wait until resumed. Nested
+tmux and multiple clients are unsupported.
+
+The all setting also permits output from hidden panes; on can drop uploads
+during redraw. The plugin never changes it. Uploads exceeding the tmux input
+buffer limit retain text.
+
+Uploads use quiet mode without acknowledgements: terminal replies must not
+enter another pane or popup. Detectable capability/layout/output errors retain
+text, but silently lost or rejected images can leave blank headings. Use
+|:MdRender-toggle| to read the source, or :MdRender textsize off for rendered
+text. Fix the environment and retry with :MdRender textsize image; status
+reports that quiet uploads are unacknowledged. Ordinary images and native
+OSC 66 headings have separate capability checks.
 
 							      *:MdRender-demo*
 :MdRender demo ~
@@ -646,8 +673,9 @@ clients, linked windows, nested multiplexers and cropped windows stay plain.
 
 Tested on Linux with Kitty 0.48.2, tmux 3.7c and Neovim 0.12.5, locally and
 through a loopback SSH PTY, including regular Snacks image coexistence.
-Image-rendered headings through tmux remain separate work (#11); auto can
-use verified native support instead.
+Image headings use the separate quiet transport in
+|md-render-tmux-image-headings|. auto tries native support when image
+requirements are not met.
 
 Native fractional sizing can leave gaps between text runs, including CJK
 headings, even without tmux. Tracked in upstream #65:

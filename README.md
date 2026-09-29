@@ -208,7 +208,7 @@ If you already configure Snacks, merge these `image` options into its existing c
 After loading the plugins, check the setup:
 
 1. Run `:checkhealth snacks`. Check that `:echo executable('magick')` returns `1` and `:lua print(require("md-render.image").config().backend)` prints `snacks`.
-2. Inside tmux, `tmux show-options -gv allow-passthrough` should print `on`.
+2. Inside tmux, `tmux show-options -gv allow-passthrough` should print `on` or `all`.
 3. In Kitty, open a Markdown file containing a local PNG and run `:MdRender tab`. Wait for the image to appear, place the cursor on it or its title, and press Enter to verify that its image tab opens. Tool availability alone does not verify terminal display.
 
 Both backends play animated GIFs and videos. The Snacks backend uses Kitty animation support, including inside tmux; video frame extraction requires `ffmpeg`. The Snacks backend prepares images throughout the document, including off-screen images; diagram rendering, downloads, and frame extraction share a two-job limit across previews, and work already running may finish into the cache after closing a preview. Image-heavy documents therefore do more work up front.
@@ -344,7 +344,7 @@ Image and native layouts omit level icons and use a single rule below H1/H2. Ord
 
 #### Try image headings
 
-Run `:MdRender textsize image`, then `:MdRender toggle` to open a preview. Images require Neovim >= 0.12, confirmed terminal PNG support (Kitty >= 0.28), `termguicolors`, Python 3, PyGObject, Pycairo and Pango/PangoCairo. Install the Python packages and fonts on the Neovim host. Explicit `image` mode uses ordinary text when unavailable.
+Run `:MdRender textsize image`, then `:MdRender toggle` to open a preview. Images require Neovim >= 0.12, Kitty >= 0.28, `termguicolors`, Python 3, PyGObject, Pycairo and Pango/PangoCairo. Install the Python packages and fonts on the Neovim host. Explicit `image` mode uses ordinary text when unavailable.
 
 To change the font or base size:
 
@@ -359,7 +359,16 @@ require("md-render.text_size").setup {
 
 Search, selection and cursor movement into a heading reveal the affected text without changing its layout or inserting markers. Internal anchors use ordinary clicks; external links also support the terminal shortcut (Ctrl+Shift+click in Kitty). For terminal text selection, use `:MdRender textsize off` or return to source with `:MdRender toggle`.
 
-Image headings are disabled on Windows and through tmux. Linux with direct Kitty and SSH to Linux has been tested; other OS/client combinations and screen readers remain unverified.
+Inside tmux, `auto` selects image headings when the following checks pass; otherwise it tries native headings, then ordinary text. Pending checks retain ordinary text. This requires one attached Kitty client with measured cell dimensions, RGB and hyperlink support, and an active pane outside copy mode. Suspended clients wait until resumed. The tmux window must fit the client viewport; nested tmux and multiple clients are unsupported. Configure tmux with:
+
+```tmux
+set -g allow-passthrough all
+set -as terminal-features ',xterm-kitty:RGB:hyperlinks'
+```
+
+`all` allows uploads during tmux redraws and from hidden panes; the plugin never changes this setting. Oversized uploads fall back to text instead of exceeding tmux’s `input-buffer-size`. Tmux image uploads are **quiet and unacknowledged** so replies cannot enter another pane or popup. Detectable capability/renderer errors keep text; silently lost or rejected uploads can leave blank headings. Use `:MdRender toggle` to read the source, or `:MdRender textsize off` for rendered text. After fixing the environment, retry with `:MdRender textsize image`. Direct Kitty still confirms uploads before hiding text.
+
+Image headings are disabled on Windows. Linux with direct Kitty and SSH to Linux has been tested; tmux acceptance and its limits are described in the [tests](tests/README.md#tmux-image-headings). Other OS/client combinations and screen readers remain unverified.
 
 #### Native text headings
 
@@ -375,7 +384,7 @@ To prevent cursor movement from flashing ordinary headings, native tmux previews
 
 Start Neovim in the foreground and keep focus reporting enabled. Starting underneath an existing popup, suppressing `FocusLost`/`FocusGained`, and guaranteeing zero transient frames during tmux transitions are outside this support boundary. Multiple clients, linked windows, nested multiplexers and cropped windows retain ordinary text; `:MdRender textsize status` explains fallback or a focus pause.
 
-Tested on Linux with Kitty 0.48.2, tmux 3.7c and Neovim 0.12.5, locally and through a loopback SSH PTY. Native headings can coexist with regular Snacks images; image-rendered headings through tmux remain separate work in [#11](https://github.com/denny0223/md-render.nvim/issues/11). `auto` can use the verified native backend instead.
+Tested on Linux with Kitty 0.48.2, tmux 3.7c and Neovim 0.12.5, locally and through a loopback SSH PTY. Native headings can coexist with regular Snacks images. Image headings use the separate quiet transport described above; `auto` tries native support when image requirements are not met.
 
 Native fractional sizing can leave visible gaps between text runs, including CJK headings; this also occurs without tmux and is tracked in [upstream #65](https://github.com/delphinus/md-render.nvim/issues/65).
 

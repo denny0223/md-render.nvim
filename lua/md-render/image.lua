@@ -158,6 +158,7 @@ local TIOCGWINSZ = (vim.fn.has "mac" == 1 or vim.fn.has "bsd" == 1) and 0x400874
 ---@return { cell_w: number, cell_h: number }?
 function M.get_cell_size(exact)
   if M._test_cell_size then return M._test_cell_size end
+  if exact and vim.env.TMUX then return require("md-render.heading_tmux").status().cell end
   if IS_WINDOWS then return nil end
   ensure_ffi()
   local sz = ffi.new "winsize"
@@ -1488,8 +1489,8 @@ function M.fail_png(reason)
   refresh_headings()
 end
 
---- Positive PNG acknowledgement, independent of native OSC 66 support.
---- While the bounded query is pending, callers keep ordinary buffer text.
+--- Direct terminals confirm PNG support. Tmux uses inspected client capability
+--- and quiet output: replies cannot be routed safely across pane/popup changes.
 function M.png_status()
   if IS_WINDOWS then return { supported = false, reason = "image transport is unavailable on Windows" } end
   if #vim.api.nvim_list_uis() == 0 or type(vim.api.nvim_ui_send) ~= "function" then
@@ -1498,7 +1499,12 @@ function M.png_status()
   if not vim.env.TMUX and vim.env.TERM_PROGRAM == "tmux" then
     return { supported = false, reason = "tmux connection information is unavailable" }
   end
-  if vim.env.TMUX then return { supported = false, reason = "image headings are not supported through tmux" } end
+  if vim.env.TMUX then
+    local connection = require("md-render.heading_tmux").status()
+    if connection.pending then return { reason = connection.reason } end
+    if not connection.key then return { supported = false, reason = connection.reason } end
+    return png_probe or { supported = true, reason = "tmux quiet transport; uploads are not acknowledged" }
+  end
   if vim.env.TERM_PROGRAM == "Apple_Terminal" then
     return { supported = false, reason = "terminal does not support PNG graphics" }
   end

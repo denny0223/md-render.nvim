@@ -3,6 +3,11 @@ local M = {}
 local image = require "md-render.image"
 ---@type table<integer, MdRender.HeadingImageState>
 local states = {}
+local PLACEHOLDER = vim.fn.nr2char(0x10EEEE)
+
+local function placeholder_origin(row)
+  return PLACEHOLDER .. vim.fn.nr2char(row == 1 and 0x0305 or 0x030D) .. vim.fn.nr2char(0x0305)
+end
 
 --- Only visible images have projected targets; hovering never changes layout.
 ---@return table mouse
@@ -57,6 +62,13 @@ local function clear_links(state)
   return true
 end
 
+local function clear_mask(state, entry)
+  for _, id in ipairs(entry.mask_ids or {}) do
+    vim.api.nvim_buf_del_extmark(state.buf, state.mask_ns, id)
+  end
+  entry.mask_ids = nil
+end
+
 local function erase(state, free, keep_masks)
   if not keep_masks then
     if state.masked and vim.api.nvim_buf_is_valid(state.buf) then
@@ -65,11 +77,11 @@ local function erase(state, free, keep_masks)
     state.masked = false
   end
   for _, entry in ipairs(state.entries) do
-    if not keep_masks then entry.mask_id = nil end
+    if not keep_masks then entry.mask_ids = nil end
     if entry.id and (free or entry.visible) then
       if free then
         image.delete_image(entry.id)
-      else
+      elseif not state.tmux then
         image.clear_placements(entry.id)
       end
       entry.visible = false
@@ -98,17 +110,38 @@ local function paint_links(state, visible)
             bit.band(bg, 255)
           )
       end
-      for row = pos.row, pos.row + p.scale - 1 do
-        out[#out + 1] = string.format("\x1b[%d;%dH", row, pos.col) .. sgr .. entry.links
+      if state.tmux then
+        sgr = sgr
+          .. string.format(
+            "\x1b[38;2;%d;%d;%dm",
+            bit.rshift(entry.id, 16),
+            bit.band(bit.rshift(entry.id, 8), 255),
+            bit.band(entry.id, 255)
+          )
+      end
+      for row = 1, p.scale do
+        out[#out + 1] = string.format("\x1b[%d;%dH", pos.row + row - 1, pos.col) .. sgr .. entry.links[row]
       end
     end
   end
   if #out > 0 then
     -- OSC 8 on virtual text cannot cover cells beyond the native buffer text.
     -- Use the same measured cells as mouse_position, leaving opening to Kitty.
-    vim.api.nvim_ui_send("\x1b7" .. table.concat(out) .. "\x1b[0m\x1b8")
+    -- In tmux these are pane-relative placeholder cells, not passthrough writes.
+    local data = "\x1b7" .. table.concat(out) .. "\x1b[0m\x1b8"
+    -- Tmux must redraw complete cells: incremental combining-character writes
+    -- can lose placeholder row marks in offset panes (including linked rows).
+    if state.tmux then data = "\x1b[?2026h" .. data .. "\x1b[?2026l" end
+    local ok, err = pcall(vim.api.nvim_ui_send, data)
+    if not ok then
+      state.failed = true
+      erase(state)
+      image.fail_png(tostring(err))
+      return false
+    end
     state.linked = true
   end
+  return true
 end
 
 local function paint(state)
@@ -143,6 +176,7 @@ local function paint(state)
     or custom_highlights
     or vim.wo[state.win].winblend > 0
     or feedback
+    or (state.tmux and require("md-render.heading_tmux").status().key ~= state.connection)
   local overlays = {}
   for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
     local cfg = vim.api.nvim_win_get_config(win)
@@ -199,7 +233,7 @@ local function paint(state)
     then
       table.insert(visible, entry)
       table.insert(layout, table.concat({ entry.id, pos.row, pos.col }, ":"))
-      if entry.transparent then masks[entry] = true end
+      if entry.transparent or state.tmux then masks[entry] = true end
     end
   end
   local key = table.concat(layout, "/")
@@ -211,17 +245,36 @@ local function paint(state)
   -- another Neovim redraw, which in turn requests another graphics repaint.
   for _, entry in ipairs(state.entries) do
     local p = entry.placement
-    if masks[entry] and not entry.mask_id then
+    local mask_col = state.tmux and entry.col - (vim.fn.getwininfo(state.win)[1].leftcol or 0)
+    if entry.mask_ids and state.tmux and entry.mask_col ~= mask_col then clear_mask(state, entry) end
+    if masks[entry] and not entry.mask_ids then
       -- Blank only the displayed glyphs: transparent PNGs must not expose a
       -- second copy of the text. Overlay text leaves buffer coordinates intact.
-      entry.mask_id = vim.api.nvim_buf_set_extmark(state.buf, state.mask_ns, p.line, p.col, {
-        virt_text = { { string.rep(" ", vim.fn.strdisplaywidth(p.text)), p.normal or "Normal" } },
-        virt_text_pos = "overlay",
-        priority = vim.hl.priorities.user + 1,
-      })
-    elseif not masks[entry] and entry.mask_id then
-      vim.api.nvim_buf_del_extmark(state.buf, state.mask_ns, entry.mask_id)
-      entry.mask_id = nil
+      entry.mask_ids = {}
+      entry.mask_col = mask_col
+      if state.tmux then
+        local normal = vim.api.nvim_get_hl(0, { name = p.normal or "Normal", link = false })
+        vim.api.nvim_set_hl(0, entry.hl, { fg = entry.id, bg = normal.bg, nocombine = true })
+        -- The first cell encodes (row, 0) for each reserved row;
+        -- Kitty infers following columns. paint() admits only full rectangles.
+        for row = 1, p.scale do
+          local text = placeholder_origin(row) .. string.rep(PLACEHOLDER, entry.cols - 1)
+          local tail = row == 1 and math.max(0, vim.fn.strdisplaywidth(p.text) - entry.cols) or 0
+          entry.mask_ids[row] = vim.api.nvim_buf_set_extmark(state.buf, state.mask_ns, p.line + row - 1, 0, {
+            virt_text = { { text, entry.hl }, { string.rep(" ", tail), p.normal or "Normal" } },
+            virt_text_win_col = mask_col,
+            priority = vim.hl.priorities.user + 1,
+          })
+        end
+      else
+        entry.mask_ids[1] = vim.api.nvim_buf_set_extmark(state.buf, state.mask_ns, p.line, p.col, {
+          virt_text = { { string.rep(" ", vim.fn.strdisplaywidth(p.text)), p.normal or "Normal" } },
+          virt_text_pos = "overlay",
+          priority = vim.hl.priorities.user + 1,
+        })
+      end
+    elseif not masks[entry] and entry.mask_ids then
+      clear_mask(state, entry)
     end
   end
   state.masked = next(masks) ~= nil
@@ -229,17 +282,21 @@ local function paint(state)
   -- afterwards. :mode performs its own synchronized update.
   if clear_links(state) then return paint(state) end
   -- Finish raw cell writes before opening the synchronized graphics batch.
-  paint_links(state, visible)
-  image.begin_sync_update()
+  if not paint_links(state, visible) then return end
+  if not state.tmux then image.begin_sync_update() end
   erase(state, false, true)
-  image.begin_batch()
+  if not state.tmux then image.begin_batch() end
   for _, entry in ipairs(visible) do
     local p = entry.placement
-    image.put_image(entry.id, state.win, p.line, entry.col, entry.cols, p.scale, nil, entry.width, entry.height)
+    if not state.tmux then
+      image.put_image(entry.id, state.win, p.line, entry.col, entry.cols, p.scale, nil, entry.width, entry.height)
+    end
     entry.visible = true
   end
-  image.end_sync_update()
-  image.flush_batch()
+  if not state.tmux then
+    image.end_sync_update()
+    image.flush_batch()
+  end
   state.drawn, state.last_layout = #visible, key
 end
 
@@ -277,8 +334,11 @@ end
 ---@return MdRender.HeadingImageState?
 function M.attach(win, content)
   if win == 0 then win = vim.api.nvim_get_current_win() end
-  local cell = image.get_cell_size()
-  if not cell or not image.supports_kitty() then return nil end
+  local connection = vim.env.TMUX and require("md-render.heading_tmux").status()
+  local cell = image.get_cell_size(true)
+  if not cell or (connection and not connection.key) or (not connection and not image.supports_kitty()) then
+    return nil
+  end
   ---@class MdRender.HeadingImageState
   ---@field image_headings true
   ---@field win integer
@@ -295,6 +355,8 @@ function M.attach(win, content)
     content = content,
     entries = {},
     drawn = 0,
+    tmux = connection ~= nil,
+    connection = connection and connection.key,
     group = vim.api.nvim_create_augroup("md_render_heading_image_" .. win, { clear = true }),
     key_ns = vim.api.nvim_create_namespace("md_render_heading_image_keys_" .. win),
     mask_ns = vim.api.nvim_create_namespace("md_render_heading_image_mask_" .. win),
@@ -308,6 +370,7 @@ function M.attach(win, content)
       local entry = vim.tbl_extend("force", {}, raster, {
         placement = p,
         col = vim.fn.strdisplaywidth(content.lines[p.line + 1]:sub(1, p.col)),
+        hl = "MdRenderHeadingImage_" .. win .. "_" .. (#state.entries + 1),
       })
       local urls, linked = {}, false
       for column, byte in ipairs(entry.columns or {}) do
@@ -322,18 +385,22 @@ function M.attach(win, content)
         end
       end
       if linked then
-        local runs, previous = {}, nil
-        for _, url in ipairs(urls) do
-          if url ~= previous then
-            runs[#runs + 1] = "\x1b]8;;" .. url .. "\x1b\\"
-            previous = url
+        entry.links = {}
+        for row = 1, p.scale do
+          local runs, previous = {}, nil
+          for column, url in ipairs(urls) do
+            if url ~= previous then
+              runs[#runs + 1] = "\x1b]8;;" .. url .. "\x1b\\"
+              previous = url
+            end
+            runs[#runs + 1] = state.tmux and (column == 1 and placeholder_origin(row) or PLACEHOLDER) or " "
           end
-          runs[#runs + 1] = " "
+          entry.links[row] = table.concat(runs) .. "\x1b]8;;\x1b\\"
         end
-        entry.links = table.concat(runs) .. "\x1b]8;;\x1b\\"
       end
       state.entries[#state.entries + 1] = entry
-      entry.id = image.transmit_png(raster.data, function(err)
+      local failure
+      entry.id, failure = image.transmit_png(raster.data, function(err)
         if state.closed then return end
         if err then
           state.failed = true
@@ -343,14 +410,24 @@ function M.attach(win, content)
           entry.ready = true
           repaint(state)
         end
-      end)
+      end, entry.cols, p.scale)
       if not entry.id then
         state.failed = true
-        image.fail_png "terminal PNG transmission is unavailable"
+        image.fail_png(failure or "terminal PNG transmission is unavailable")
       end
     end
   end
   repaint(state)
+  if state.tmux then
+    vim.api.nvim_create_autocmd("User", {
+      group = state.group,
+      pattern = require("md-render.heading_tmux").EVENT,
+      callback = function()
+        erase(state)
+        repaint(state)
+      end,
+    })
+  end
   vim.api.nvim_create_autocmd({
     "CursorMoved",
     "ModeChanged",

@@ -1050,7 +1050,7 @@ Markdown.parse_footnotes({lines}) ~
 					      *Markdown.parse_reference_links()*
 Markdown.parse_reference_links({lines}) ~
 	Parse reference definitions; the first valid definition wins. Labels use
-	normalized spaces, tabs and line endings.
+	Unicode case folding and normalized spaces, tabs and line endings.
 	Returns the label-to-URL map and a set of consumed 1-based input rows.
 	Multiline and quoted definitions are consumed even when unused; invalid
 	definitions remain Markdown.

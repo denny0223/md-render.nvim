@@ -4,3 +4,4 @@
 lua/md-render/vendor/** linguist-vendored
 
 lua/md-render/html_entities.lua linguist-generated=true
+lua/md-render/casefold.lua linguist-generated=true

@@ -269,7 +269,7 @@ Directories open in the original source window through the configured directory 
 
 Local links support relative paths, POSIX absolute paths, and `file:///` URLs, including encoded filenames, inline/reference links, and optional titles. Missing or unreadable files leave the preview unchanged. Fragments do not yet select a heading; pager navigation and Windows/UNC paths are outside this feature's initial scope.
 
-Reference links use the first valid definition and match labels with normalized whitespace. Valid definitions, including multiline and quoted definitions, are hidden even when unused; malformed definitions remain ordinary Markdown.
+Reference links use the first valid definition and match labels with Unicode case folding and normalized whitespace. Valid definitions, including multiline and quoted definitions, are hidden even when unused; malformed definitions remain ordinary Markdown.
 
 ### Image tab keys
 

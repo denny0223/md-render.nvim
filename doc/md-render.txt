@@ -613,7 +613,8 @@ Use :MdRender textsize off to disable sizing, or make it permanent: >lua
 <
 Tmux ~
 
-Native headings support one attached Kitty client with:
+Native headings require tmux >= 3.6 for popup focus events. Older servers
+retain ordinary text. They support one attached Kitty client with:
 >
   set -g allow-passthrough on
   set -g focus-events on

@@ -119,6 +119,7 @@ local function restore_spans(text, spans, hl_group, highlights, links)
     local span = by_token[token]
     if not span then return token end
     local col = first - 1 + shift
+    span.col = col
     local count = #token - #span.content
     removals[#removals + 1] = { start = first - 1 + #span.content, count = count }
     if hl_group then highlights[#highlights + 1] = { col = col, end_col = col + #span.content, hl = hl_group } end
@@ -249,7 +250,7 @@ local ALERT_TYPES = {
   CITE = { icon = "󱗝", label = "Cite", style = "QUOTE" },
 }
 
---- Process paired markers (bold, strikethrough) by removing markers and adding highlights
+--- Process Obsidian highlight markers by removing markers and adding highlights
 ---@param text string The input text
 ---@param pattern string The Lua pattern to match (e.g., "%*%*([^*]+)%*%*")
 ---@param hl_group string The highlight group to apply
@@ -282,62 +283,33 @@ local function process_paired_markers(text, pattern, hl_group, marker_len, highl
   return processed
 end
 
---- Process _underscore_ emphasis with word-boundary checking (CommonMark rules).
---- Only matches when _ is at a word boundary to avoid false positives with snake_case.
+--- The UTF-8 character whose last byte sits at `pos` (1-indexed).
 ---@param text string
----@param hl_group string
----@param highlights MdRender.Markdown.Highlight[]
----@param links MdRender.Markdown.Link[]
----@return string processed
-local function process_underscore_emphasis(text, hl_group, highlights, links, source_text)
-  local pre_hl_count = #highlights
-  local pre_link_count = #links
-  local removals = {}
-  local processed = ""
-  local i = 1
-  while i <= #text do
-    if text:sub(i, i) == "_" then
-      local prev_char = i > 1 and text:sub(i - 1, i - 1) or ""
-      if prev_char ~= "" and prev_char:byte() >= 128 then prev_char = source_text(text:sub(1, i - 1)):sub(-1) end
-      local at_word_boundary = prev_char == "" or prev_char:match "[%s%p]"
-      if at_word_boundary then
-        local e = text:find("_", i + 1)
-        if e then
-          local next_char = e < #text and text:sub(e + 1, e + 1) or ""
-          if next_char ~= "" and next_char:byte() >= 128 then next_char = source_text(text:sub(e + 1)):sub(1, 1) end
-          local end_boundary = next_char == "" or next_char:match "[%s%p]"
-          if end_boundary then
-            local content = text:sub(i + 1, e - 1)
-            if #content > 0 then
-              table.insert(removals, { start = i - 1, count = 1 })
-              table.insert(removals, { start = e - 1, count = 1 })
-              local start_col = #processed
-              processed = processed .. content
-              table.insert(highlights, { col = start_col, end_col = start_col + #content, hl = hl_group })
-              i = e + 1
-            else
-              processed = processed .. "_"
-              i = i + 1
-            end
-          else
-            processed = processed .. "_"
-            i = i + 1
-          end
-        else
-          processed = processed .. "_"
-          i = i + 1
-        end
-      else
-        processed = processed .. "_"
-        i = i + 1
-      end
-    else
-      processed = processed .. text:sub(i, i)
-      i = i + 1
-    end
+---@param pos integer
+---@return string char empty when `pos` is before the start of `text`
+local function char_ending_at(text, pos)
+  if pos < 1 then return "" end
+  local first = pos
+  while first > 1 do
+    local b = text:byte(first)
+    if b < 0x80 or b > 0xBF then break end
+    first = first - 1
   end
-  adjust_positions(highlights, links, removals, pre_hl_count, pre_link_count)
-  return processed
+  return text:sub(first, pos)
+end
+
+--- The UTF-8 character whose first byte sits at `pos` (1-indexed).
+---@param text string
+---@param pos integer
+---@return string char empty when `pos` is past the end of `text`
+local function char_starting_at(text, pos)
+  local last = pos
+  while last < #text do
+    local b = text:byte(last + 1)
+    if b < 0x80 or b > 0xBF then break end
+    last = last + 1
+  end
+  return text:sub(pos, last)
 end
 
 --- Process [[wikilinks]]: display as link text with highlight
@@ -345,7 +317,8 @@ end
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
 ---@return string processed
-local function process_wikilinks(text, highlights, links)
+local function process_wikilinks(text, highlights, links, emphasis_spans)
+  if not text:find("[[", 1, true) then return text end
   local processed = ""
   local i = 1
 
@@ -375,6 +348,8 @@ local function process_wikilinks(text, highlights, links)
           end
         end
 
+        -- Targets keep their original spelling while labels render inline styles.
+        target = restore_source(target, emphasis_spans)
         -- Determine URL and highlight based on link type
         local url, hl
         local anchor_heading = target:match "^#(.+)$"
@@ -422,7 +397,8 @@ local IMAGE_EXTENSIONS = { png = true, jpg = true, jpeg = true, gif = true, svg 
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
 ---@return string processed
-local function process_embeds(text, highlights, links)
+local function process_embeds(text, highlights, links, emphasis_spans)
+  if not text:find("![[", 1, true) then return text end
   local processed = ""
   local i = 1
 
@@ -432,11 +408,12 @@ local function process_embeds(text, highlights, links)
       if close then
         local inner = text:sub(i + 3, close - 1)
         local target = inner:match "^([^|#]+)" or inner
-        local ext = target:match "%.(%w+)$"
+        local source_target = restore_source(target, emphasis_spans)
+        local ext = source_target:match "%.(%w+)$"
         local icons_mod = require "md-render.icons"
         local raw_icon, embed_icon_hl
         if ext and IMAGE_EXTENSIONS[ext:lower()] then
-          raw_icon, embed_icon_hl = icons_mod.get_image_icon(target)
+          raw_icon, embed_icon_hl = icons_mod.get_image_icon(source_target)
         else
           raw_icon = "📎"
         end
@@ -455,7 +432,7 @@ local function process_embeds(text, highlights, links)
         table.insert(links, {
           col_start = start_col,
           col_end = start_col + #display,
-          url = "obsidian://advanced-uri?filepath=" .. target,
+          url = "obsidian://advanced-uri?filepath=" .. source_target,
         })
         i = close + 2
       else
@@ -569,6 +546,7 @@ end
 ---@param links MdRender.Markdown.Link[]
 ---@return string processed
 local function process_links(text, highlights, links, source_label, ref_links)
+  if not text:find("[", 1, true) then return text end
   local pre_hl_count = #highlights
   local pre_link_count = #links
   local removals = {}
@@ -656,13 +634,13 @@ local function trim_autolink(url, literals)
   return url
 end
 
-local function bare_autolink(text, start, literals, code_spans, angle_spans)
+local function bare_autolink(text, start, literals, code_spans, angle_spans, emphasis_spans)
   local previous = text:sub(start - 1, start - 1)
   -- Retain existing HTTP(S) support for single-label hosts and adjacent prose.
   local scheme = text:match("^(https?://)", start)
   if scheme then
     local url = text:match('^[^%s<>"`]+', start)
-    for _, spans in ipairs { code_spans, angle_spans } do
+    for _, spans in ipairs { code_spans, angle_spans, emphasis_spans or {} } do
       if #spans > 0 then
         local first = url:find(spans[1].placeholder:gsub("%d+", "%%d+"))
         if first then url = url:sub(1, first - 1) end
@@ -693,13 +671,210 @@ local function bare_autolink(text, start, literals, code_spans, angle_spans)
   return label, protocol == "" and "mailto:" .. address or label
 end
 
+--- CommonMark flanking uses source characters, not decoded/display text.
+local function delimiter_char(char)
+  local cp = char ~= "" and wrap_mod.utf8_codepoint(char) or nil
+  local space = char == ""
+    or char:find "^[ \t\n\r\f]$" ~= nil
+    or cp == 0xA0
+    or cp == 0x1680
+    or (cp and cp >= 0x2000 and cp <= 0x200A)
+    or cp == 0x202F
+    or cp == 0x205F
+    or cp == 0x3000
+  if not cp or cp < 128 then return space, char:find "^%p$" ~= nil end
+  -- Neovim's word-motion classes differ from Unicode P/S (e.g. × and 々).
+  local ranges = require "md-render.unicode_punctuation"
+  local first, last = 1, #ranges
+  while first <= last do
+    local mid = math.floor((first + last) / 2)
+    local range = ranges[mid]
+    if cp < range[1] then
+      last = mid - 1
+    elseif cp > range[2] then
+      first = mid + 1
+    else
+      return space, true
+    end
+  end
+  return space, false
+end
+
+--- Resolve runs before presentation removes link brackets, comments or URLs.
+--- Keep matched markers as source-restorable tokens until link ownership is set.
+local function protect_emphasis(text, source, refs, footnotes, code_spans, autolink_spans, source_label)
+  if not text:find "[*_~]" then return text, {}, {} end
+  local pairs = {}
+  local function resolve(first, last, in_label)
+    local openers, lower = {}, {}
+    local pos = first
+    while pos <= last do
+      local char = text:sub(pos, pos)
+      local suffix, link_end
+      if char == "[" then
+        suffix, link_end = inline.link_bounds(text, pos, refs, source_label)
+      end
+      local wiki_start = text:sub(pos, pos + 1) == "[[" and pos or text:sub(pos, pos + 2) == "![[" and pos + 1
+      local wiki_end = wiki_start and text:find("]]", wiki_start + 2, true)
+      local note, note_end = text:match("^%[%^([^%]]+)%]()", pos)
+      local literal_end = char == "<" and inline.html_end(text, pos)
+      local comment_end = text:sub(pos, pos + 1) == "%%" and text:find("%%", pos + 2, true)
+      local url = not in_label and bare_autolink(text, pos, {}, code_spans, autolink_spans)
+      if char == "\\" and ESCAPABLE_CHARS:find(text:sub(pos + 1, pos + 1), 1, true) then
+        pos = pos + 2
+      elseif literal_end or comment_end then
+        pos = literal_end and literal_end + 1 or comment_end + 2
+      elseif note and footnotes and footnotes[source_label(note)] then
+        pos = note_end
+      elseif wiki_end then
+        local label_first, label_last = wiki_start + 2, wiki_end - 1
+        if char == "!" then
+          local separator = text:find("[|#]", label_first)
+          if separator and separator > label_first and separator < wiki_end then label_last = separator - 1 end
+        else
+          local pipe = text:find("|", label_first, true)
+          if pipe and pipe < wiki_end then label_first = pipe + 1 end
+        end
+        resolve(label_first, label_last, true)
+        pos = wiki_end + 2
+      elseif link_end then
+        resolve(pos + 1, suffix - 2, true)
+        pos = link_end + 1
+      elseif url then
+        pos = pos + #url
+      elseif char == "*" or char == "_" or char == "~" then
+        local finish = pos
+        while finish < last and text:sub(finish + 1, finish + 1) == char do
+          finish = finish + 1
+        end
+        local before_pos, after_pos = pos - 1, finish + 1
+        -- GFM's core emphasis scanner skips adjacent extension markers (~).
+        -- Its strikethrough scanner still uses the ordinary source flanking.
+        if char ~= "~" then
+          while text:sub(before_pos, before_pos) == "~" and before_pos > 0 do
+            before_pos = before_pos - 1
+          end
+          while text:sub(after_pos, after_pos) == "~" do
+            after_pos = after_pos + 1
+          end
+        end
+        local before, after = char_ending_at(text, before_pos), char_starting_at(text, after_pos)
+        if #before > 1 then
+          local original = source_label(text:sub(1, before_pos))
+          before = char_ending_at(original, #original)
+        end
+        if #after > 1 then after = char_starting_at(source_label(text:sub(after_pos)), 1) end
+        local before_space, before_punct = delimiter_char(before)
+        local after_space, after_punct = delimiter_char(after)
+        local left = not after_space and (not after_punct or before_space or before_punct)
+        local right = not before_space and (not before_punct or after_space or after_punct)
+        local run = {
+          char = char,
+          start = pos,
+          length = finish - pos + 1,
+          remaining = finish - pos + 1,
+          can_open = left and (char ~= "_" or not right or before_punct),
+          can_close = right and (char ~= "_" or not left or after_punct),
+        }
+        -- GFM accepts matching single/double tildes, never a slice of a longer run.
+        if char ~= "~" or run.length <= 2 then
+          local key = char .. (run.can_open and "open" or "close") .. run.length % 3
+          while run.can_close and run.remaining > 0 do
+            local index = #openers
+            while index > 0 do
+              local opener = openers[index]
+              if opener.start < (lower[key] or first) then break end
+              local compatible = char == "~" and opener.length == run.length
+                or (
+                  char ~= "~"
+                  and (
+                    not (opener.can_close or run.can_open)
+                    or (opener.length + run.length) % 3 ~= 0
+                    or (opener.length % 3 == 0 and run.length % 3 == 0)
+                  )
+                )
+              if opener.char == char and compatible then break end
+              index = index - 1
+            end
+            local opener = openers[index]
+            if not opener or opener.start < (lower[key] or first) then
+              lower[key] = run.start
+              break
+            end
+            local count = char == "~" and run.length or math.min(2, opener.remaining, run.remaining)
+            pairs[#pairs + 1] = {
+              first = opener.start + opener.remaining - count,
+              last = run.start + run.length - run.remaining,
+              count = count,
+              hl = char == "~" and "DiagnosticDeprecated" or count == 2 and "Bold" or "Italic",
+            }
+            opener.remaining, run.remaining = opener.remaining - count, run.remaining - count
+            -- Paired spans nest; unmatched interior openers cannot cross a closer.
+            for i = #openers, index + (opener.remaining > 0 and 1 or 0), -1 do
+              openers[i] = nil
+            end
+          end
+          if run.can_open and run.remaining > 0 then
+            run.start = finish - run.remaining + 1
+            openers[#openers + 1] = run
+          end
+        end
+        pos = finish + 1
+      else
+        pos = pos + 1
+      end
+    end
+  end
+  resolve(1, #text, false)
+  local spans, boundaries, parts, pos = {}, {}, {}, 1
+  local prefix = inline.token_prefix(source .. text, 0xF1008)
+  for _, pair in ipairs(pairs) do
+    for _, field in ipairs { "first", "last" } do
+      local start = pair[field]
+      local token = prefix .. (#spans + 1) .. "\u{F1009}"
+      local span = { placeholder = token, raw = text:sub(start, start + pair.count - 1), content = "" }
+      spans[#spans + 1] = span
+      boundaries[#boundaries + 1] = { start = start, count = pair.count, token = token }
+      pair[field] = span
+    end
+  end
+  table.sort(boundaries, function(a, b)
+    return a.start < b.start
+  end)
+  for _, boundary in ipairs(boundaries) do
+    parts[#parts + 1] = text:sub(pos, boundary.start - 1) .. boundary.token
+    pos = boundary.start + boundary.count
+  end
+  parts[#parts + 1] = text:sub(pos)
+  return table.concat(parts), spans, pairs
+end
+
+local function restore_emphasis(text, spans, pairs, highlights, links)
+  text = restore_spans(text, spans, nil, highlights, links)
+  for _, pair in ipairs(pairs) do
+    local first, last = pair.first.col, pair.last.col
+    if first and last then highlights[#highlights + 1] = { col = first, end_col = last, hl = pair.hl } end
+  end
+  return text
+end
+
 --- Recognize autolinks once, preserving their labels through later formatting.
 ---@param text string
 ---@param max_url_width integer
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
 ---@return string processed
-local function process_bare_urls(text, max_url_width, highlights, links, literals, code_spans, spans, source)
+local function process_bare_urls(
+  text,
+  max_url_width,
+  highlights,
+  links,
+  literals,
+  code_spans,
+  spans,
+  emphasis_spans,
+  source
+)
   local pre_hl_count = #highlights
   local pre_link_count = #links
   local existing_links = vim.list_slice(links)
@@ -724,7 +899,7 @@ local function process_bare_urls(text, max_url_width, highlights, links, literal
     if literal then
       label, url = literal.label, literal.url
     else
-      label, url = bare_autolink(text, i, literals, code_spans, spans)
+      label, url = bare_autolink(text, i, literals, code_spans, spans, emphasis_spans)
     end
     local length = token and #token or label and #label
     if label and not overlaps_link(existing_links, i - 1, i - 1 + length) then
@@ -869,6 +1044,7 @@ local HTML_TAG_HIGHLIGHTS = {
 ---@param links MdRender.Markdown.Link[]
 ---@return string processed
 local function process_html_tags(text, highlights, links, decode_url)
+  if not text:find("<", 1, true) then return text end
   local pre_hl_count = #highlights
   local pre_link_count = #links
   local removals = {}
@@ -1003,6 +1179,7 @@ end
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@return string processed
 local function process_tags(text, highlights)
+  if not text:find("#", 1, true) then return text end
   local processed = ""
   local i = 1
   while i <= #text do
@@ -1139,6 +1316,7 @@ end
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@return string processed
 local function strip_html_tags(text, highlights)
+  if not text:find("<", 1, true) then return text end
   local processed = ""
   local i = 1
   while i <= #text do
@@ -1159,35 +1337,6 @@ local function strip_html_tags(text, highlights)
     end
   end
   return processed
-end
-
---- The UTF-8 character whose last byte sits at `pos` (1-indexed).
----@param text string
----@param pos integer
----@return string char empty when `pos` is before the start of `text`
-local function char_ending_at(text, pos)
-  if pos < 1 then return "" end
-  local first = pos
-  while first > 1 do
-    local b = text:byte(first)
-    if b < 0x80 or b > 0xBF then break end
-    first = first - 1
-  end
-  return text:sub(first, pos)
-end
-
---- The UTF-8 character whose first byte sits at `pos` (1-indexed).
----@param text string
----@param pos integer
----@return string char empty when `pos` is past the end of `text`
-local function char_starting_at(text, pos)
-  local last = pos
-  while last < #text do
-    local b = text:byte(last + 1)
-    if b < 0x80 or b > 0xBF then break end
-    last = last + 1
-  end
-  return text:sub(pos, last)
 end
 
 local function span_boundaries(highlights, links)
@@ -1423,7 +1572,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     or (autolinks and #autolinks > 0)
     or (footnote_map and next(footnote_map) and rendered_text:find "%[%^")
   -- Declare locals before the fast-path goto so they are in scope at ::finalize::
-  local backslash_escapes, entity_spans, autolink_spans
+  local backslash_escapes, entity_spans, autolink_spans, emphasis_spans, emphasis_pairs
   local decode_url, source_label
 
   if not needs_inline and #code_spans == 0 then
@@ -1435,6 +1584,17 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   rendered_text, autolink_spans = protect_autolinks(rendered_text, text, ref_links, function(label)
     return restore_source(restore_source(label, code_spans), invalid_destinations)
   end)
+  rendered_text, emphasis_spans, emphasis_pairs = protect_emphasis(
+    rendered_text,
+    text,
+    ref_links,
+    footnote_map,
+    code_spans,
+    autolink_spans,
+    function(label)
+      return restore_source(restore_source(restore_source(label, code_spans), invalid_destinations), autolink_spans)
+    end
+  )
   rendered_text, entity_spans = protect_entities(rendered_text, text)
   if rendered_text:find("<!--", 1, true) or rendered_text:find("%%", 1, true) then
     rendered_text = map_display_text(rendered_text, function(part)
@@ -1447,7 +1607,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     return restore_spans(restore_spans(url, backslash_escapes), entity_spans)
   end
   source_label = function(label)
-    label = restore_source(label, autolink_spans)
+    label = restore_source(restore_source(label, emphasis_spans), autolink_spans)
     return restore_source(
       restore_source(restore_source(restore_source(label, entity_spans), backslash_escapes), code_spans),
       invalid_destinations
@@ -1455,8 +1615,8 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   end
 
   -- Process inline elements (embeds and wikilinks before standard links)
-  rendered_text = process_embeds(rendered_text, highlights, links)
-  rendered_text = process_wikilinks(rendered_text, highlights, links)
+  rendered_text = process_embeds(rendered_text, highlights, links, emphasis_spans)
+  rendered_text = process_wikilinks(rendered_text, highlights, links, emphasis_spans)
   rendered_text = process_footnote_refs(rendered_text, footnote_map, highlights, links, source_label)
   rendered_text = process_links(rendered_text, highlights, links, source_label, ref_links)
   -- Explicit/reference validity is settled; later autolinks need real parentheses.
@@ -1474,6 +1634,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     { backslash_escapes, entity_spans },
     code_spans,
     autolink_spans,
+    emphasis_spans,
     text
   )
   if repo_base_url then rendered_text = process_issue_refs(rendered_text, repo_base_url, highlights, links) end
@@ -1481,10 +1642,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     rendered_text = process_autolink_refs(rendered_text, autolinks, highlights, links)
   end
   rendered_text = process_tags(rendered_text, highlights)
-  rendered_text = process_paired_markers(rendered_text, "%*%*([^*]+)%*%*", "Bold", 2, highlights, links)
-  rendered_text = process_paired_markers(rendered_text, "%*([^*]+)%*", "Italic", 1, highlights, links)
-  rendered_text = process_underscore_emphasis(rendered_text, "Italic", highlights, links, source_label)
-  rendered_text = process_paired_markers(rendered_text, "~~([^~]+)~~", "DiagnosticDeprecated", 2, highlights, links)
+  rendered_text = restore_emphasis(rendered_text, emphasis_spans, emphasis_pairs, highlights, links)
   rendered_text = process_paired_markers(rendered_text, "==([^=]+)==", "MdRenderHighlight", 2, highlights, links)
   rendered_text = process_inline_math(rendered_text, "MdRenderMath", highlights, links)
 

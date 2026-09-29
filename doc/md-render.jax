@@ -989,7 +989,7 @@ Markdown.parse_reference_links({lines}) ~
 	ケースフォールディングと空白・タブ・改行の正規化で照合します。
 	ラベルから URL への表と、消費した入力行番号（1 始まり）の集合を返します。
 	複数行や引用内の有効な定義は未使用でも非表示です。不正な定義は
-	Markdown として残ります。
+	Markdown として残り、表でも同じ参照情報を使います。
 
 					     *Markdown.renumber_ordered_lists()*
 Markdown.renumber_ordered_lists({lines}) ~

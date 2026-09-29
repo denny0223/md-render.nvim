@@ -476,6 +476,7 @@ end
 ---@param max_width integer
 ---@param repo_base_url? string
 ---@param autolinks? MdRender.Autolink[]
+---@param ref_links? table<string, string> normalized document labels to URLs
 --- @param per_row_source? boolean When true (markdown pipe tables), each
 ---   rendered line gets its source attribution from the corresponding
 ---   source row offset. When false/nil (HTML tables, where the source
@@ -489,14 +490,15 @@ function ContentBuilder:add_table(
   autolinks,
   expanded,
   buf_dir,
-  per_row_source
+  per_row_source,
+  ref_links
 )
   local markdown_table = require "md-render.markdown_table"
-  local parsed = markdown_table.parse(table_lines, repo_base_url, autolinks)
+  local parsed = markdown_table.parse(table_lines, repo_base_url, autolinks, ref_links)
   if not parsed then
     -- Fallback: render each line as markdown
     for _, line in ipairs(table_lines) do
-      self:add_markdown_line(line, indent, max_width, repo_base_url, autolinks)
+      self:add_markdown_line(line, indent, max_width, repo_base_url, autolinks, ref_links)
     end
     return
   end
@@ -1939,7 +1941,8 @@ function ContentBuilder:render_document(lines, opts)
         autolinks,
         tbl_expanded or false,
         buf_dir,
-        true
+        true,
+        ref_links
       )
       self._current_source_line = saved_src_line
       local lines_added = #self.lines - lines_before_tbl
@@ -2537,7 +2540,17 @@ function ContentBuilder:render_document(lines, opts)
             -- Same source-line stamping rationale as flush_table above.
             local saved_src_line = self._current_source_line
             if html_table_src_idx then self._current_source_line = html_table_src_idx + source_line_offset end
-            self:add_table(pipe_lines, indent, max_width, repo_base_url, autolinks, tbl_expanded or false)
+            self:add_table(
+              pipe_lines,
+              indent,
+              max_width,
+              repo_base_url,
+              autolinks,
+              tbl_expanded or false,
+              nil,
+              nil,
+              ref_links
+            )
             self._current_source_line = saved_src_line
             local tbl_lines_added = #self.lines - tbl_lines_before
             lines_shown = lines_shown + tbl_lines_added
@@ -2587,7 +2600,7 @@ function ContentBuilder:render_document(lines, opts)
               lines_shown = lines_shown + 1
             end
             local tbl_lines_before = #self.lines
-            self:add_table(pipe_lines, indent, max_width, repo_base_url, autolinks, nil, buf_dir)
+            self:add_table(pipe_lines, indent, max_width, repo_base_url, autolinks, nil, buf_dir, nil, ref_links)
             lines_shown = lines_shown + (#self.lines - tbl_lines_before)
             if in_details and details_summary_rendered and not skip_details_body then
               apply_details_body_prefix(tbl_lines_before, #self.lines)

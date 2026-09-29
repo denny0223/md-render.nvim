@@ -1,4 +1,5 @@
 -- Delayed image layout must not change an operation's underlying text.
+vim.env.TMUX, vim.env.TMUX_PANE, vim.env.TERM_PROGRAM = nil, nil, nil
 local child = vim.fn.jobstart(
   { vim.v.progpath, "--embed", "--headless", "-n", "-u", "NONE", "--noplugin", "-i", "NONE" },
   { rpc = true }

@@ -1,4 +1,5 @@
 -- Async layout/cache ownership and native/image interaction invariants.
+vim.env.TMUX, vim.env.TMUX_PANE, vim.env.TERM_PROGRAM = nil, nil, nil
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
 local image = require "md-render.image"
 local size = require "md-render.text_size"
@@ -11,8 +12,8 @@ end
 image.supports_kitty = function()
   return true
 end
-image.get_cell_size = function()
-  return { cell_w = 19, cell_h = 44 }
+image.get_cell_size = function(exact)
+  return exact and { cell_w = 19, cell_h = 44 } or { cell_w = 10, cell_h = 20 }
 end
 local terminal = {}
 vim.api.nvim_ui_send = function(data)
@@ -78,6 +79,10 @@ vim.wait(20)
 assert(#callbacks == 1, "concurrent builds share their layout work")
 local outputs = {}
 for index, request in ipairs(requests[1]) do
+  assert(
+    request.cell_width == 19 and request.cell_height == 44,
+    "raster layout uses the same measured cells as placement and hit targets"
+  )
   local entry = request.entries[1]
   assert(entry.bg == nil and entry.fg == 0x112233, "an unset background must not become opaque black")
   assert(entry.styles[1].fg == (index == 1 and 0xff9977 or 0xabcdef), "image styles follow user highlights")
@@ -487,7 +492,7 @@ local ok, err = pcall(function()
     }
     vim.api.nvim_buf_set_lines(0,0,-1,false,content.lines)
     local state = require("md-render.heading_image").attach(vim.api.nvim_get_current_win(), content)
-    assert(state.entries[1].links:find("https://example.invalid/%1B\\%07%7F",1,true),
+    assert(state.entries[1].links[1]:find("https://example.invalid/%1B\\%07%7F",1,true),
       "URL controls must not escape the OSC 8 payload")
     local events = 0
     _G.idle_events = -1

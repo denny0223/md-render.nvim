@@ -271,7 +271,7 @@ function M.resolve_backend()
     reason = probe.reason
     if probe.supported then
       local cell = image.get_cell_size(true)
-      if cell and cell.cell_w >= 1 and cell.cell_h >= 1 then return "image" end
+      if cell and cell.cell_w >= 1 and cell.cell_h >= 1 then return "image", reason end
       reason = "terminal cell dimensions are unavailable"
     end
   end

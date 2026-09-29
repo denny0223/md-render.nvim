@@ -192,8 +192,8 @@ function M.remap_view(view, old, new)
   local position = (old.heading_positions or {})[view.lnum]
   local source = old.source_line_map[view.lnum]
   view.lnum, view.topline = row_at(view.lnum), row_at(view.topline)
-  if position then
-    local byte = position.byte + math.max(0, view.col - position.col)
+  if position and view.col >= position.col then
+    local byte = position.byte + view.col - position.col
     for row, point in pairs(new.heading_positions or {}) do
       if new.source_line_map[row] == source and byte >= point.byte and byte < point.byte + point.length then
         view.lnum, view.col = row, point.col + byte - point.byte

@@ -576,7 +576,9 @@ Windows と tmux 内では無効です。他の OS・クライアントは未検
 
 Tmux ~
 
-接続中の Kitty クライアントが 1 つの場合、次の設定で使えます:
+ポップアップのフォーカス通知に対応した tmux >= 3.6 が必要です。
+古いバージョンでは等倍の文字を表示します。接続中の Kitty クライアントが
+1 つの場合、次の設定で使えます:
 >
   set -g allow-passthrough on
   set -g focus-events on

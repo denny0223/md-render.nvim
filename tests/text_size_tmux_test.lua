@@ -1,7 +1,7 @@
 -- Run: nvim --headless -u NONE --noplugin -l tests/text_size_tmux_test.lua
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. package.path
 local tmux = require "md-render.text_size_tmux"
-local pane = { "%3", "$1", "@2", "51", "18", "50", "20", "0", "on", "0", "1", "101", "38", "1" }
+local pane = { "%3", "$1", "@2", "51", "18", "50", "20", "0", "on", "0", "1", "101", "38", "1", "3.7c" }
 local client = { "/dev/pts/1", "$1", "@2", "kitty(0.48.2)", "101", "40", "2", "top", "100", "200", "0", "attached" }
 local function snapshot(p, c, extra)
   return table.concat(p or pane, "\t") .. "\n" .. table.concat(c or client, "\t") .. (extra or "") .. "\n"
@@ -13,6 +13,13 @@ local function change(values, index, value)
 end
 local ctx = tmux.parse(snapshot(), "%3")
 assert(ctx.supported and ctx.drawable and ctx.left == 51 and ctx.top == 20)
+for _, version in ipairs { "3.6", "3.6a", "3.7c", "4.0" } do
+  assert(tmux.parse(snapshot(change(pane, 15, version)), "%3").supported, version)
+end
+for _, version in ipairs { "2.9", "3.4", "3.5a", "", "unknown" } do
+  local unsupported = tmux.parse(snapshot(change(pane, 15, version)), "%3")
+  assert(not unsupported.supported and unsupported.reason:find("tmux >= 3.6", 1, true), version)
+end
 assert(tmux.parse(snapshot(nil, change(client, 8, "bottom")), "%3").top == 18)
 assert(tmux.parse(snapshot(nil, change(client, 7, "off")), "%3").top == 18)
 assert(tmux.parse(snapshot(nil, change(client, 4, "kitty(0.40.0)")), "%3").supported)
@@ -63,6 +70,7 @@ vim.system = function(args, opts, callback)
   assert(args[1] == "tmux" and args[2] == "-S" and args[3] == "/tmp/test.sock")
   assert(args[4] == "display-message" and args[7] == "%3" and opts.timeout == 150)
   assert(args[8]:find("#{window_linked}", 1, true), "count grouped sessions individually")
+  assert(args[8]:find("#{version}", 1, true), "check the server version, not the client executable")
   return {
     wait = function()
       error "redraw must never wait for tmux"

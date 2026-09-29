@@ -111,6 +111,8 @@ xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_t
 xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_test.py --passthrough all
 ```
 
+For redraw changes, also record continuous scrolling and cursor/search/Visual transitions in a document containing multiple headings and an image. Inspect frames during each transition: unrelated headings and images must not disappear while waiting for a debounce, and native feedback must contain the complete text. Settled screenshots and terminal text alone cannot detect a flashed intermediate frame.
+
 On Linux/X11, `--output /tmp/md-native-tmux-results` also saves terminal snapshots, state and screenshots using ImageMagick. `--ssh` repeats the checks through a temporary loopback OpenSSH server with a generated key and password authentication disabled; it requires `sshd` and `ssh-keygen`. The test removes its server, keys and terminal processes on exit. `--checkout /path/to/checkout` permits a before/after comparison with the same fixture and terminal settings.
 
 `--snacks /path/to/snacks.nvim` loads the real optional backend and adds an image beside the wrapped heading; Snacks sets passthrough to `all`. Inspect the captured image as well as the placeholder assertion, since placeholders alone do not prove PNG visibility. Use an isolated X display: desktop focus changes intentionally pause native output and can otherwise interfere with the checks. The temporary suppression test does not establish support for plugins that yield to the event loop while discarding focus events.

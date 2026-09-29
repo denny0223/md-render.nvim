@@ -1228,17 +1228,18 @@ local function html_table_to_pipe(html_lines)
   return result
 end
 
+local Markdown = require "md-render.markdown"
+local is_block_start = Markdown.is_block_start
+
 --- Check if a line opens a list item (bullet or ordered).
 --- A thematic break (`- - -`) shares the bullet's leading characters, so it
 --- is excluded here.
 ---@param line string
 ---@return boolean
 local function is_list_item(line)
-  if not (line:match "^%s*[%-%*%+]%s" or line:match "^%s*%d+[%.)]%s") then return false end
-  return not is_thematic_break(line)
+  return Markdown.list_marker_type(line) ~= nil and not is_thematic_break(line)
 end
 
-local is_block_start = require("md-render.markdown").is_block_start
 local markdown_table = require "md-render.markdown_table"
 
 --- Check if a line ends with a CommonMark hard line break marker
@@ -1285,11 +1286,12 @@ end
 ---@param column? integer original column before the list marker
 ---@return integer? column nil when the line does not open a list item
 local function list_content_column(line, column)
+  if not is_list_item(line) then return nil end
   local ws, marker, gap = line:match "^( *)([%-%*%+])([ \t]+)"
   if not ws then
     ws, marker, gap = line:match "^( *)(%d+[%.)])([ \t]+)"
   end
-  if not ws or is_thematic_break(line) then return nil end
+  if not ws then return nil end
   local start = (column or 0) + #ws + #marker
   local gap_width = fence_mod.indent_columns(gap, start)
   -- Five or more columns after the marker start indented code inside the item.
@@ -1304,6 +1306,8 @@ local function list_container_column(line, item_cols, column)
   end
   local base = item_cols[#item_cols] or 0
   local col = list_content_column(line, column)
+  -- Four columns beyond the parent content belong to indented code.
+  if ws - base >= 4 then col = nil end
   if col then table.insert(item_cols, col) end
   return base, col, ws
 end
@@ -1359,9 +1363,10 @@ end
 --- Fences and their content lose only the container prefix, which the renderer
 --- restores. Their remaining indentation is relative to that container.
 ---@param lines string[]
----@return string[] result, table<integer, string> indents, table<integer, integer> columns
+---@return string[] result, table<integer, string> indents, table<integer, integer> columns, table<integer, integer> list_bases
 local function strip_container_indent(lines)
   local result, indents, columns = {}, {}, {}
+  local list_bases = {}
   local item_cols = {}
   local open_fence, fence_container = nil, 0
   local comment_state
@@ -1391,6 +1396,7 @@ local function strip_container_indent(lines)
       result[i] = line
       if not line:match "^%s*$" then
         local base, col, ws = list_container_column(line, item_cols)
+        if col then list_bases[i] = base end
         local is_fence, normalized
         open_fence, is_fence, normalized = fence_mod.step(nil, line:sub(base + 1), base)
         if is_fence then
@@ -1408,7 +1414,7 @@ local function strip_container_indent(lines)
     end
   end
 
-  return result, indents, columns
+  return result, indents, columns, list_bases
 end
 
 -- Return the first row after a validated table, preserving source/container
@@ -1559,6 +1565,9 @@ local function join_paragraph_continuations(
       local in_code = open_fence ~= nil
       if not in_code and reference_defs and reference_defs[src] then
         flush_para()
+        -- Keep the opaque block boundary until list numbering is complete.
+        table.insert(result, line)
+        table.insert(result_indices, src)
         goto next_line
       end
 
@@ -1794,7 +1803,8 @@ local function fenced_code_lines(
   source_columns,
   comments,
   code_lines,
-  quote_prefix
+  quote_prefix,
+  list_bases
 )
   code_lines = code_lines or {}
   local open_fence, comment_state
@@ -1809,7 +1819,10 @@ local function fenced_code_lines(
     local comment_suffix
     local math_delimiter = not quote_prefix and not open_fence and not comment_state and line:match "^%$%$$"
     if math_delimiter then in_math_block = not in_math_block end
-    if in_math_block or math_delimiter then goto next_line end
+    if in_math_block or math_delimiter then
+      code_lines[src] = true
+      goto next_line
+    end
     if not open_fence then
       comment_state, comment_suffix = block_comment_step(comment_state, line)
     end
@@ -1824,7 +1837,9 @@ local function fenced_code_lines(
     else
       local base = 0
       if not open_fence and not line:match "^%s*$" then
-        base = list_container_column(expand_leading_tabs(line, column), item_cols, column)
+        local col
+        base, col = list_container_column(expand_leading_tabs(line, column), item_cols, column)
+        if quote_prefix and col and list_bases then list_bases[src] = base end
       end
       local is_fence
       open_fence, is_fence = fence_mod.step(open_fence, line, column, base)
@@ -1848,7 +1863,8 @@ local function fenced_code_lines(
           inner_columns,
           comments,
           code_lines,
-          (quote_prefix or "") .. "│ "
+          (quote_prefix or "") .. "│ ",
+          list_bases
         )
         idx = last - 1
       end
@@ -1860,12 +1876,12 @@ local function fenced_code_lines(
 end
 
 -- Keep literal boundaries as blank rows so definitions cannot continue across
--- them. Code, comments and table cells cannot define document references.
-local function definition_lines(lines, src_indices, comments, code_lines, table_rows)
+-- them. Code, comments and already-owned rows cannot define document references.
+local function definition_lines(lines, src_indices, comments, code_lines, opaque_rows)
   local result = {}
   for i, line in ipairs(lines) do
     local src = src_indices[i]
-    result[i] = (comments[src] or code_lines[src] or table_rows[src]) and "" or line
+    result[i] = (comments[src] or code_lines[src] or opaque_rows[src]) and "" or line
   end
   return result
 end
@@ -1884,12 +1900,13 @@ function ContentBuilder:render_document(lines, opts)
   -- The content of a blockquote or list item is moved to column 0 here;
   -- container_indents keeps the indent per *original* line so the loop below
   -- can restore it on output.
-  local container_indents, source_columns
+  local container_indents, source_columns, list_bases
   local fence_containers = {}
   local comments, table_rows
-  lines, container_indents, source_columns = strip_container_indent(lines)
+  lines, container_indents, source_columns, list_bases = strip_container_indent(lines)
   lines, src_indices, comments, table_rows = preprocess_multiline_html(lines, src_indices, container_indents)
-  local code_lines = fenced_code_lines(lines, src_indices, container_indents, source_columns, comments)
+  local code_lines =
+    fenced_code_lines(lines, src_indices, container_indents, source_columns, comments, nil, nil, list_bases)
   local ref_links, consumed_refs =
     markdown.parse_reference_links(definition_lines(lines, src_indices, comments, code_lines, table_rows))
   local reference_defs = {}
@@ -1907,11 +1924,20 @@ function ContentBuilder:render_document(lines, opts)
     nil,
     reference_defs
   )
-  lines = markdown.renumber_ordered_lists(lines, vim.tbl_extend("force", code_lines, comments, table_rows), src_indices)
+  -- Display numbering can grow beyond the nine-digit source marker limit.
+  local source_list_lines = lines
+  lines = markdown.renumber_ordered_lists(
+    lines,
+    vim.tbl_extend("force", code_lines, comments, table_rows, reference_defs),
+    src_indices,
+    container_indents,
+    list_bases
+  )
   -- renumber_ordered_lists rewrites text but keeps line count, so
   -- src_indices stays valid.
-  local footnote_defs, footnote_map =
-    markdown.parse_footnotes(definition_lines(lines, src_indices, comments, code_lines, table_rows))
+  local footnote_defs, footnote_map = markdown.parse_footnotes(
+    definition_lines(lines, src_indices, comments, code_lines, vim.tbl_extend("force", table_rows, reference_defs))
+  )
 
   local base_max_width = opts.max_width or 80
   local base_indent = opts.indent or "  "
@@ -2155,6 +2181,7 @@ function ContentBuilder:render_document(lines, opts)
   end
 
   for src_idx, line in ipairs(lines) do
+    if reference_defs[src_indices[src_idx]] then goto continue end
     -- src_idx is the post-transform array index; src_indices[src_idx]
     -- is the original buffer line, which is what consumers (cursor sync,
     -- shadow cursor, link/anchor extraction) actually expect.
@@ -2292,11 +2319,10 @@ function ContentBuilder:render_document(lines, opts)
         if img_tag then
           -- Extract the img tag as a standalone line, render it before the heading
           local remaining = h_content:gsub("<img%s[^>]*>", ""):gsub("^%s+", ""):gsub("%s+$", "")
-          -- Insert the img tag line (will be processed by subsequent iteration);
-          -- keep src_indices in sync so set_source_line() at line 1170 doesn't
-          -- index past the end. The synthetic img line shares the heading's
-          -- original buffer line.
+          -- The synthetic image shares the heading's physical source row.
+          -- Keep source classification and row indices aligned with it.
           table.insert(lines, src_idx + 1, img_tag)
+          table.insert(source_list_lines, src_idx + 1, img_tag)
           table.insert(src_indices, src_idx + 1, src_indices[src_idx])
           if remaining ~= "" then
             line = string.rep("#", tonumber(h_level)) .. " " .. remaining
@@ -2799,7 +2825,7 @@ function ContentBuilder:render_document(lines, opts)
         local next_marker_type
         for k = src_idx + 1, #lines do
           if not lines[k]:match "^%s*$" then
-            next_marker_type = markdown.list_marker_type(lines[k])
+            next_marker_type = markdown.list_marker_type(source_list_lines[k])
             break
           end
         end
@@ -3618,7 +3644,7 @@ function ContentBuilder:render_document(lines, opts)
     if lines_added > 0 then
       prev_was_heading = is_heading
       prev_rendered_blank = is_blank
-      if not is_blank then prev_list_marker_type = markdown.list_marker_type(line) end
+      if not is_blank then prev_list_marker_type = markdown.list_marker_type(source_list_lines[src_idx]) end
     end
 
     if lines_shown >= max_lines then

@@ -7,6 +7,7 @@ require("md-render.image").supports_kitty = function()
   return false
 end
 local ContentBuilder = require("md-render.content_builder").ContentBuilder
+local markdown = require "md-render.markdown"
 local display = require "md-render.display_utils"
 local pass_count, fail_count = 0, 0
 
@@ -43,6 +44,45 @@ local function build(lines)
 end
 
 -- The original numbered sample and CommonMark 0.31.2 example 212.
+for _, delimiter in ipairs { ".", ")" } do
+  local marker = "3" .. delimiter
+  for _, case in ipairs {
+    {
+      source = { "    " .. marker .. " first", "    " .. marker .. " second" },
+      lines = { "    " .. marker .. " first", "    " .. marker .. " second" },
+      rows = { 1, 2 },
+    },
+    {
+      source = { ">     " .. marker .. " first", ">     " .. marker .. " second" },
+      lines = { "│     " .. marker .. " first", "│     " .. marker .. " second" },
+      rows = { 1, 2 },
+    },
+    {
+      source = {
+        marker .. " outer",
+        "",
+        "       " .. marker .. " first",
+        "       " .. marker .. " second",
+        marker .. " last",
+      },
+      lines = {
+        marker .. " outer",
+        "       " .. marker .. " first",
+        "       " .. marker .. " second",
+        "4" .. delimiter .. " last",
+      },
+      rows = { 1, 3, 4, 5 },
+    },
+  } do
+    local c = build(case.source)
+    assert_eq(c.lines, case.lines, delimiter .. ": indented code markers stay literal")
+    assert_eq(c.source_line_map, case.rows, delimiter .. ": indented code source ownership")
+  end
+  local c = build { "$$", marker .. " first", marker .. " second", "$$" }
+  assert_eq(c.lines, { marker .. " first", marker .. " second" }, delimiter .. ": math markers stay literal")
+  assert_eq(c.source_line_map, { 2, 3 }, delimiter .. ": math source ownership")
+end
+
 do
   local c = build { "```markdown", "1. first", "1. second", "```" }
   assert_eq(c.lines, { "1. first", "1. second" }, "numbered code sample retains both source markers")
@@ -114,6 +154,54 @@ for _, fence in ipairs { "```", "~~~" } do
       table.insert(links, { link.url, c.lines[link.line + 1]:sub(link.col_start + 1, link.col_end) })
     end
     assert_eq(links, { { "/outside", "same" } }, name .. ": code cannot create or replace outside links")
+  end
+end
+
+-- CommonMark limits source ordered markers to nine digits. Display numbering
+-- may grow beyond that limit without changing the source container or links.
+for _, delimiter in ipairs { ".", ")" } do
+  local literal = "1234567890" .. delimiter .. " literal"
+  local c = build { "3" .. delimiter .. " first", literal }
+  assert_eq(c.lines, { "3" .. delimiter .. " first " .. literal }, "ten-digit text continues the list paragraph")
+  assert_eq(c.source_line_map, { 1 }, "non-marker text shares its paragraph source")
+  assert_eq(
+    markdown.renumber_ordered_lists { "3" .. delimiter .. " first", literal },
+    { "3" .. delimiter .. " first", literal },
+    "standalone numbering preserves an invalid marker"
+  )
+  for _, control in ipairs { "\f", "\v", "\r" } do
+    local text = control .. "3" .. delimiter .. " first"
+    assert_eq(markdown.renumber_ordered_lists { text }, { text }, "non-container control bytes stay literal")
+  end
+  c = build { "1234567890" .. delimiter .. " [r]: /wrong", "", "[r]" }
+  assert_eq(c.lines[#c.lines], "[r]", "an invalid list prefix cannot expose a reference definition")
+  assert_eq(c.link_metadata, {}, "ten-digit reference-looking text cannot define a link")
+  c = build { "999999999" .. delimiter .. " first", "1" .. delimiter .. " [next](/right)" }
+  assert_eq(c.lines[2], "1000000000" .. delimiter .. " next", "valid source numbering may grow to ten digits")
+  local link = c.link_metadata[1]
+  assert_eq(c.lines[2]:sub(link.col_start + 1, link.col_end), "next", "generated marker width preserves link bytes")
+  assert_eq(link.url, "/right", "generated marker width preserves the destination")
+  for _, preceding in ipairs { {}, { '<h2>Heading <img src="/missing.png"></h2>', "" } } do
+    local source = vim.list_extend(vim.deepcopy(preceding), {
+      "999999999" .. delimiter .. " first",
+      "",
+      "1" .. delimiter .. " second",
+    })
+    c = build(source)
+    assert_eq(
+      vim.list_slice(c.lines, #c.lines - 1),
+      { "999999999" .. delimiter .. " first", "1000000000" .. delimiter .. " second" },
+      "generated numbering preserves loose-list spacing after synthetic rows"
+    )
+    source = vim.list_extend(vim.deepcopy(preceding), {
+      "999999999" .. delimiter .. " first",
+      "1" .. delimiter .. " second",
+      "",
+      "           continuation",
+    })
+    c = build(source)
+    assert_eq(c.lines[#c.lines], "           continuation", "generated numbering preserves continuation indentation")
+    assert_eq(c.source_line_map[#c.lines], #source, "synthetic rows cannot shift continuation source mapping")
   end
 end
 

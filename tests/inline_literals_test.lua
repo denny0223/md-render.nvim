@@ -1,5 +1,5 @@
 -- Inline code contracts from CommonMark 0.31.2, examples 14 and 328-349,
--- plus #13's HTML/Obsidian literal and consumer regressions.
+-- plus #13's literal boundaries and #20's complete inline destinations.
 -- Run: nvim --headless -u NONE --noplugin -l tests/inline_literals_test.lua
 
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
@@ -418,6 +418,236 @@ test("raw autolinks keep escapes literal and do not create code spans", function
     assert_eq(content.lines, { text }, "autolink applies unchanged to the buffer")
     assert_eq(spans(content, "MdRenderInlineCode"), {}, "autolink does not produce inline code")
   end
+end)
+
+test("malformed inline destinations retain source boundaries beside valid spans", function()
+  for _, case in ipairs {
+    { "[link](/my uri)", "[link](/my uri)" }, -- CommonMark 488.
+    { "[link](foo\nbar)", "[link](foo bar)" }, -- CommonMark 490.
+    { "[link](<foo\nbar>)", "[link](<foo bar>)" }, -- CommonMark 491.
+    { "[link](中\n文)", "[link](中文)" },
+    { "[link](foo\rbar)", "[link](foo bar)" },
+    { "[link](foo<!-- -->bar)", "[link](foobar)" },
+    { "[link](<foo<!--\n-->bar>)", "[link](<foobar>)" },
+    { '[link](/url "title "and" title")', '[link](/url "title "and" title")' },
+  } do
+    local input = "[LEFT](/left) " .. case[1] .. " **B** [右](/right)"
+    local expected = "LEFT " .. case[2] .. " B 右"
+    local function check(content, indent)
+      local offset, bold = #indent, #indent + #"LEFT " + #case[2] + 1
+      assert_eq(content.lines, { indent .. expected }, "malformed destination stays visible")
+      assert_eq(content.source_line_map, { 1 }, "joined source retains its first original row")
+      assert_eq(link_spans(content), {
+        { 0, offset, offset + 4, "LEFT", "/left" },
+        { 0, bold + 2, bold + 2 + #"右", "右", "/right" },
+      }, "only neighboring complete labels are linked")
+      assert_eq(spans(content, "MdRenderLink"), {
+        { 0, offset, offset + 4, "LEFT" },
+        { 0, bold + 2, bold + 2 + #"右", "右" },
+      }, "malformed destination has no link styling")
+      assert_eq(spans(content, "Bold"), { { 0, bold, bold + 1, "B" } }, "neighboring emphasis stays aligned")
+    end
+    local lines = vim.split(input, "\n", { plain = true })
+    check(build(lines), "")
+    public_preview(lines, 1000, function(session)
+      for step = 1, 2 do
+        check(session.content, "  ")
+        check_buffer(session.buf, session.ns, session.content)
+        for col = #"  LEFT ", #"  LEFT " + #case[2] - 1 do
+          assert_eq(Links.at(session.buf, session.ns, 0, col), nil, "malformed destination is not clickable")
+        end
+        if step == 1 then session:rebuild() end
+      end
+    end)
+  end
+end)
+
+test("bare HTTP targets retain literal parentheses after invalid destination protection", function()
+  for _, suffix in ipairs { "", string.rep("a", 40) } do
+    local url = "https://example.com/[x](foo" .. suffix
+    local label = #url > 50 and url:sub(1, 49) .. "…" or url
+    local input, expected = url .. " bar)", label .. " bar)"
+    local text, highlights, links = markdown.render(input)
+    assert_eq(text, expected, "shortening uses the literal source width")
+    assert_eq(highlights, { { col = 0, end_col = #label, hl = "MdRenderLink" } }, "only the URL is highlighted")
+    assert_eq(links, { { col_start = 0, col_end = #label, url = url } }, "complete target contains no private tokens")
+    local function check(content, indent)
+      assert_eq(content.lines, { indent .. expected }, "literal parentheses remain visible")
+      assert_eq(link_spans(content), {
+        { 0, #indent, #indent + #label, label, url },
+      }, "visible URL and complete destination agree")
+    end
+    check(build { input }, "")
+    public_preview({ input }, 1000, function(session)
+      check(session.content, "  ")
+      check_buffer(session.buf, session.ns, session.content)
+    end)
+  end
+end)
+
+test("valid inline destinations and titles retain complete targets", function()
+  for _, case in ipairs {
+    { "[link](/uri)", "/uri" },
+    { "[link](</my uri>)", "/my uri" },
+    { "[link](foo(and(bar)))", "foo(and(bar))" },
+    { "[link](foo(and((bar))))", "foo(and((bar)))" },
+    { [[[link](\(foo\))]], "(foo)" },
+    { [[[link](<foo\>bar>)]], "foo>bar" },
+    { '[link](/url "title")', "/url" },
+    { "[link](/url 'title')", "/url" },
+    { "[link](/url (title))", "/url" },
+    { '[link](   /uri\n  "title"  )', "/uri" },
+    { '[link](/url "title\ncontinued")', "/url" },
+  } do
+    local lines = vim.split(case[1], "\n", { plain = true })
+    local function check(content, indent)
+      assert_eq(content.lines, { indent .. "link" }, "valid syntax renders only its label")
+      assert_eq(link_spans(content), { { 0, #indent, #indent + 4, "link", case[2] } }, "complete destination")
+      assert_eq(spans(content, "MdRenderLink"), { { 0, #indent, #indent + 4, "link" } }, "complete label style")
+    end
+    check(build(lines), "")
+    public_preview(lines, 1000, function(session)
+      check(session.content, "  ")
+      check_buffer(session.buf, session.ns, session.content)
+    end)
+  end
+end)
+
+test("source destination rejection preserves nested links and reference fallback", function()
+  for _, case in ipairs {
+    {
+      "[outer [bad](foo<!-- -->bar)](/outer)",
+      "outer [bad](foobar)",
+      { { 0, 0, 19, "outer [bad](foobar)", "/outer" } },
+    },
+    {
+      "[outer [bad](foo<!-- -->bar) [OK](/ok)](/outer)",
+      "[outer [bad](foobar) OK](/outer)",
+      { { 0, 21, 23, "OK", "/ok" } },
+    },
+    {
+      "[ref](bad<!-- -->dest)[other]",
+      "ref(baddest)other",
+      { { 0, 0, 3, "ref", "/ref" }, { 0, 12, 17, "other", "/other" } },
+    },
+  } do
+    local lines = { case[1], "", "[ref]: /ref", "[other]: /other" }
+    local function check(content, indent)
+      assert_eq(content.lines[1], indent .. case[2], "comments do not change original link ownership")
+      local expected = vim.deepcopy(case[3])
+      for _, link in ipairs(expected) do
+        link[2], link[3] = link[2] + #indent, link[3] + #indent
+      end
+      assert_eq(link_spans(content), expected, "nested or reference link keeps its source target and exact label")
+    end
+    check(build(lines), "")
+    public_preview(lines, 1000, function(session)
+      check(session.content, "  ")
+      check_buffer(session.buf, session.ns, session.content)
+    end)
+  end
+  for _, source in ipairs { "A<!-- [bad](/wrong) -->B", "A%% [bad](/wrong) %%B" } do
+    local content = build { source }
+    assert_eq(content.lines, { "AB" }, "ordinary comments remain hidden")
+    assert_eq(link_spans(content), {}, "hidden comment links create no target")
+  end
+  local content = build { "[LINK](/foo<!---->bar)" }
+  assert_eq(
+    link_spans(content),
+    { { 0, 0, 4, "LINK", "/foo<!---->bar" } },
+    "valid destination retains literal comment bytes"
+  )
+  local lookalike = "\u{F1006}1\u{F1007}"
+  content = build { "[bad](foo<!-- -->bar) [`" .. lookalike .. "`]", "", "[`" .. lookalike .. "`]: /ref" }
+  assert_eq(content.lines[1], "[bad](foobar) " .. lookalike, "code cannot impersonate a destination token")
+  assert_eq(link_spans(content), {
+    { 0, #"[bad](foobar) ", #"[bad](foobar) " + #lookalike, lookalike, "/ref" },
+  }, "reference lookup restores the original code label without token collisions")
+end)
+
+test("HTML and summary joins retain blank lines until title validation", function()
+  for _, wrapper in ipairs { { "<b>", "</b>", "" }, { "<details>", "</details>", "▶ " } } do
+    for _, separator in ipairs { { "" }, {} } do
+      local lines = { wrapper[1] }
+      if wrapper[3] ~= "" then lines[#lines + 1] = "<summary>" end
+      lines[#lines + 1] = '[x](/url "a'
+      vim.list_extend(lines, separator)
+      lines[#lines + 1] = 'b")'
+      if wrapper[3] ~= "" then lines[#lines + 1] = "</summary>" end
+      lines[#lines + 1] = wrapper[2]
+      local valid = #separator == 0
+      local function check(content, indent)
+        local prefix = indent .. wrapper[3]
+        local padding = wrapper[3] == "" and " " or ""
+        assert_eq(
+          content.lines,
+          { prefix .. padding .. (valid and "x" or '[x](/url "a b")') .. padding },
+          "source blank line controls title validity"
+        )
+        local expected = valid and { { 0, #prefix + #padding, #prefix + #padding + 1, "x", "/url" } } or {}
+        assert_eq(link_spans(content), expected, "only the single-newline title becomes a link")
+      end
+      check(build(lines), "")
+      public_preview(lines, 1000, function(session)
+        check(session.content, "  ")
+        check_buffer(session.buf, session.ns, session.content)
+      end)
+    end
+  end
+end)
+
+test("literal blocks keep source rows outside HTML accumulation", function()
+  for _, case in ipairs {
+    { { "    <b>", "    raw", "    </b>" }, { "<b>", "raw", "</b>" }, { 1, 2, 3 } },
+    { { "$$", "a", "b", "$$" }, { "a", "b" }, { 2, 3 } },
+    { { "$$", "<b>", "a", "b", "</b>", "$$" }, { "<b>", "a", "b", "</b>" }, { 2, 3, 4, 5 } },
+    { { "$$", "<!--", "%%", "$$", "after" }, { "<!--", "%%", "after" }, { 2, 3, 5 } },
+  } do
+    local content = build(case[1])
+    assert_eq(content.lines, case[2], "literal rows are not accumulated as HTML or paragraphs")
+    assert_eq(content.source_line_map, case[3], "literal rows retain their original source coordinates")
+    assert_eq(link_spans(content), {}, "literal rows have no Markdown links")
+    public_preview(case[1], 1000, function(session)
+      local expected = vim.tbl_map(function(line)
+        return "  " .. line
+      end, case[2])
+      assert_eq(session.content.lines, expected, "public preview retains literal rows")
+      check_buffer(session.buf, session.ns, session.content)
+    end)
+  end
+  local content = build { "<b>plain", "text</b>" }
+  assert_eq(content.lines, { "plain text" }, "ordinary multiline HTML still folds for display")
+  assert_eq(spans(content, "Bold"), { { 0, 0, #"plain text", "plain text" } }, "ordinary HTML style stays aligned")
+end)
+
+test("HTML cells preserve source destination boundaries before display folding", function()
+  local lines = { "<table>", "<tr><td>[bad](<foo", "bar>)</td><td>[LINK](/right)</td></tr>", "</table>" }
+  local function check(content, indent)
+    assert_eq(content.lines, { indent .. "│ [bad](<foo bar>) │ LINK │" }, "invalid cell syntax stays visible")
+    assert_eq(link_spans(content), {
+      { 0, #indent + #"│ [bad](<foo bar>) │ ", #indent + #"│ [bad](<foo bar>) │ LINK", "LINK", "/right" },
+    }, "only the adjacent valid cell is linked")
+  end
+  check(build(lines), "")
+  public_preview(lines, 1000, function(session)
+    check(session.content, "  ")
+    check_buffer(session.buf, session.ns, session.content)
+  end)
+end)
+
+test("soft breaks preserve the visible gap between adjacent CJK spans", function()
+  local content = build { "[中](/left)", "[文](/right)" }
+  assert_eq(content.lines, { "中 文" }, "adjacent links retain their separating gap")
+  assert_eq(link_spans(content), {
+    { 0, 0, #"中", "中", "/left" },
+    { 0, #"中 ", #"中 文", "文", "/right" },
+  }, "both CJK link targets remain exact")
+  content = build { "**中**", "**文**" }
+  assert_eq(content.lines, { "中 文" }, "adjacent styled spans retain their separating gap")
+  assert_eq(spans(content, "Bold"), {
+    { 0, 0, #"中", "中" },
+    { 0, #"中 ", #"中 文", "文" },
+  }, "both CJK style spans remain exact")
 end)
 
 image.supports_kitty = supports_kitty

@@ -244,7 +244,7 @@ end
 
 --- Scan one already-parsed paragraph; block boundaries are the caller's job.
 local function scan(text, refs, wanted_link, source_label)
-  local spans, brackets = {}, {}
+  local spans, brackets, invalid_destinations = {}, {}, {}
   local runs
   local pos = wanted_link or 1
   while pos <= #text do
@@ -273,6 +273,9 @@ local function scan(text, refs, wanted_link, source_label)
     elseif c == "]" and #brackets > 0 then
       local bracket = table.remove(brackets)
       local finish = bracket.active and M.link_end(text, pos + 1) or nil
+      if not finish and text:sub(pos + 1, pos + 1) == "(" then
+        invalid_destinations[#invalid_destinations + 1] = pos + 1
+      end
       local matched = finish ~= nil
       local url
       if bracket.active and not matched and refs then
@@ -299,7 +302,7 @@ local function scan(text, refs, wanted_link, source_label)
       pos = pos + 1
     end
   end
-  return { code_spans = spans }
+  return { code_spans = spans, invalid_destinations = invalid_destinations }
 end
 
 --- Raw, matched code ranges: 1-based inclusive byte offsets and delimiter length.
@@ -337,6 +340,26 @@ function M.token_prefix(text, codepoint)
   marker = vim.fn.nr2char(codepoint)
   local _, count = text:gsub(marker, "")
   return marker:rep(count + 1)
+end
+
+--- A rejected source destination cannot become valid after comments disappear.
+--- Protect only its opening parenthesis, preserving bracket/reference ownership.
+function M.protect_invalid_destinations(text, ref_links, source_label)
+  if not text:find("](", 1, true) then return text, {} end
+  local positions = scan(text, ref_links, nil, source_label).invalid_destinations
+  if #positions == 0 then return text, {} end
+  local invalid, spans = {}, {}
+  for _, pos in ipairs(positions) do
+    invalid[pos] = true
+  end
+  local prefix = M.token_prefix(text .. (source_label and source_label(text) or ""), 0xF1006)
+  local protected = text:gsub("()%(", function(pos)
+    if not invalid[pos] then return "(" end
+    local placeholder = prefix .. (#spans + 1) .. "\u{F1007}"
+    spans[#spans + 1] = { placeholder = placeholder, content = "(", raw = "(" }
+    return placeholder
+  end)
+  return protected, spans
 end
 
 --- Protect code before display whitespace, comments, escapes, or entities change.

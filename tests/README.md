@@ -102,7 +102,7 @@ A fractionally scaled heading goes out as several runs — `n=` / `d=` shrink th
 
 ### Native headings through tmux
 
-`tests/tmux_terminal_test.py` creates its own tmux server and Kitty window with focus reporting enabled. It checks six heading levels, wrapped CJK text, pane borders, status rows, resize/zoom, scrolling, copy mode, search, Visual/yank, passthrough changes, policy switching, detach/reattach, multiple-client fallback and teardown. Fullscreen and partial popups must keep their keyboard input and remain clear across redraws and keepalive; repeated popup recovery also runs during synchronous plugin-style refreshes with `eventignore=all`. It never uses your existing tmux server. CI runs both passthrough modes under Xvfb:
+`tests/tmux_terminal_test.py` creates its own tmux server and Kitty window with focus reporting enabled. It checks six heading levels, wrapped CJK text, pane borders, status rows, resize/zoom, scrolling, copy mode, search, Visual/yank, passthrough changes, policy switching, detach/reattach, multiple-client fallback and teardown. Fullscreen and partial popups must keep their keyboard input and remain clear across redraws and keepalive; repeated popup recovery also runs during synchronous plugin-style refreshes with `eventignore=all`. It never uses your existing tmux server. CI builds tmux 3.6, the minimum with popup focus events, and tmux 3.4 to verify readable fallback with `--expect-plain`. Both versions run with both passthrough modes under Xvfb:
 
 ```sh
 xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_test.py

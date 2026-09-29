@@ -511,7 +511,8 @@ Markdown 目標沿用目前的預覽視窗；其他檔案在原始編輯視窗�
 <
 Tmux ~
 
-native 標題支援單一 Kitty client，需設定：
+native 標題需要 tmux >= 3.6 提供 popup 焦點事件；舊版保留一般文字。
+支援單一 Kitty client，需設定：
 >
   set -g allow-passthrough on
   set -g focus-events on

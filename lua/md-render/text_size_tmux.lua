@@ -17,6 +17,7 @@ local pane_fields = {
   "window_width",
   "window_height",
   "focus-events",
+  "version",
 }
 local client_fields = {
   "client_tty",
@@ -67,7 +68,11 @@ function M.parse(output, pane)
       clients[#clients + 1] = client
     end
   end
-  if p["allow-passthrough"] ~= "on" and p["allow-passthrough"] ~= "all" then
+  -- Popup focus events are only available since tmux 3.6.
+  local tmux_major, tmux_minor = p.version:match "^(%d+)%.(%d+)"
+  if not tmux_major or tonumber(tmux_major) < 3 or (tonumber(tmux_major) == 3 and tonumber(tmux_minor) < 6) then
+    ctx.reason = "native headings require tmux >= 3.6 for popup focus events"
+  elseif p["allow-passthrough"] ~= "on" and p["allow-passthrough"] ~= "all" then
     ctx.reason = "native headings require tmux allow-passthrough on or all"
   elseif p["focus-events"] ~= "1" then
     ctx.reason = "native headings require tmux focus-events on (reattach after changing it)"

@@ -65,11 +65,15 @@ def main():
 
     def wait_for(check, label):
         deadline = time.monotonic() + 10
-        while not check():
+        while True:
+            result = check()
+            if result:
+                break
             assert time.monotonic() < deadline, label
             time.sleep(.1)
         print("PASS " + label, flush=True)
         checks.append(label)
+        return result
 
     checks = []
     with tempfile.TemporaryDirectory(prefix="md-native-tmux-") as td, ExitStack() as cleanups:
@@ -463,12 +467,14 @@ end})
 
             # Match a target using Kitty's painted cells, independently of the
             # renderer's hit map. Exercise both rows via real Neovim input.
-            for row_offset in (0, 1):
+            def second_link_position():
                 screen = kitty("get-text", "--ansi", "--add-wrap-markers")
-                matches = list(OSC66.finditer(screen))
-                positions = list(scaled_positions(screen))
-                index = next(i for i, match in enumerate(matches) if match[2] == "SECOND")
-                row, col, _, _ = positions[index]
+                for match, position in zip(OSC66.finditer(screen), scaled_positions(screen)):
+                    if match[2] == "SECOND":
+                        return position
+
+            for row_offset in (0, 1):
+                row, col, _, _ = wait_for(second_link_position, "SECOND link is painted before clicking")
                 ctx = state()["context"]
                 y, x = row - ctx["top"] + row_offset, col - ctx["left"] + 2
                 lua(f"vim.api.nvim_input_mouse('left','press','',0,{y},{x})")

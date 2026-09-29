@@ -130,6 +130,9 @@ assert(size.resolve_backend() == "native", "auto may use native while image tmux
 size.setup { enabled = false }
 assert(size.resolve_backend() == "plain")
 
+-- The frozen clock only belongs to cache checks; vim.wait needs real time.
+vim.uv.hrtime = hrtime
+
 -- Focus protects every output path, including queued scrolls and keepalive.
 vim.o.termguicolors = true
 local get, redraw, send = tmux.get, tmux.redraw, vim.api.nvim_ui_send
@@ -339,6 +342,6 @@ vim.api.nvim_set_decoration_provider = set_provider
 vim.o.termsync = original_termsync
 
 tmux.get, tmux.redraw, vim.api.nvim_ui_send = get, redraw, send
-vim.system, vim.api.nvim_list_uis, vim.uv.hrtime = system, uis, hrtime
+vim.system, vim.api.nvim_list_uis = system, uis
 vim.env.TMUX, vim.env.TMUX_PANE, vim.env.TERM_PROGRAM = unpack(env)
 print "tmux: capability, geometry, visibility, transport, reconnection and policy checks passed"

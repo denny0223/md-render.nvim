@@ -785,9 +785,10 @@ end
 --- characters are pushed to the next line to keep lines within max_width.
 ---@param text string The text to wrap
 ---@param max_width integer Maximum display width per line
+---@param measure? fun(text: string, offset: integer): number optional rendered width
 ---@return string[] wrapped_lines
 ---@return integer[] line_starts 0-indexed start position of each line in the original text
-function M.wrap_words(text, max_width)
+function M.wrap_words(text, max_width, measure)
   local wrapped_lines = {}
   local line_starts = {}
   local current = ""
@@ -816,7 +817,9 @@ function M.wrap_words(text, max_width)
     local gap = text:sub(current_start + #current + 1, seg.byte_pos)
     local space_width = vim.api.nvim_strwidth(gap)
 
-    if current_width + space_width + seg_width > max_width and current ~= "" then
+    local candidate = text:sub(current_start + 1, seg.byte_pos + #seg.text)
+    local candidate_width = measure and measure(candidate, current_start) or current_width + space_width + seg_width
+    if candidate_width > max_width and current ~= "" then
       -- Kinsoku 追い出し: if this segment starts with a no-break-start char,
       -- push the last segment of the current line to the next line too.
       -- Skip for multi-char ASCII words where the first char happens to be
@@ -841,24 +844,24 @@ function M.wrap_words(text, max_width)
         table.insert(line_starts, current_start)
         current_start = last_seg_pos
         current = text:sub(current_start + 1, seg.byte_pos + #seg.text)
-        current_width = vim.api.nvim_strwidth(current)
+        current_width = measure and measure(current, current_start) or vim.api.nvim_strwidth(current)
       elseif is_no_break_start then
         -- Kinsoku 追い込み fallback: keep the char on the current line
         -- even if it exceeds max_width, to avoid it starting a new line
         current = text:sub(current_start + 1, seg.byte_pos + #seg.text)
-        current_width = current_width + space_width + seg_width
+        current_width = candidate_width
       elseif ends_no_break_end(current, current_start) then
         -- Kinsoku: current ends with a NO_BREAK_END char (e.g. "(", "「").
         -- Pushing it now would strand the opener at line end. Append seg
         -- (overflowing the line) so the opener stays bonded to its content.
         current = text:sub(current_start + 1, seg.byte_pos + #seg.text)
-        current_width = current_width + space_width + seg_width
+        current_width = candidate_width
       else
         table.insert(wrapped_lines, current)
         table.insert(line_starts, current_start)
         current = seg.text
         current_start = seg.byte_pos
-        current_width = seg_width
+        current_width = measure and measure(current, current_start) or seg_width
       end
       prev_current = ""
       last_seg_pos = 0
@@ -870,12 +873,16 @@ function M.wrap_words(text, max_width)
       if ends_no_break_end(seg.text, seg.byte_pos) and current ~= "" then
         local next_seg = segments[i + 1]
         local next_width = next_seg and vim.api.nvim_strwidth(next_seg.text) or 0
-        if current_width + space_width + seg_width + next_width >= max_width then
+        local with_next = measure
+            and next_seg
+            and measure(text:sub(current_start + 1, next_seg.byte_pos + #next_seg.text), current_start)
+          or candidate_width + next_width
+        if with_next >= max_width then
           table.insert(wrapped_lines, current)
           table.insert(line_starts, current_start)
           current = seg.text
           current_start = seg.byte_pos
-          current_width = seg_width
+          current_width = measure and measure(current, current_start) or seg_width
           prev_current = ""
           last_seg_pos = 0
           goto continue
@@ -887,7 +894,7 @@ function M.wrap_words(text, max_width)
       last_seg_pos = seg.byte_pos
 
       current = text:sub(current_start + 1, seg.byte_pos + #seg.text)
-      current_width = current_width + space_width + seg_width
+      current_width = candidate_width
     end
     ::continue::
   end

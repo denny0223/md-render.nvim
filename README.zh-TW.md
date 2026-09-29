@@ -207,7 +207,7 @@ require("md-render.image").setup({ backend = "snacks" })
 外掛載入後，請確認設定：
 
 1. 執行 `:checkhealth snacks`。確認 `:echo executable('magick')` 回傳 `1`，且 `:lua print(require("md-render.image").config().backend)` 顯示 `snacks`。
-2. 如果使用 tmux，`tmux show-options -gv allow-passthrough` 應顯示 `on`。
+2. 如果使用 tmux，`tmux show-options -gv allow-passthrough` 應顯示 `on` 或 `all`。
 3. 在 Kitty 中開啟含有本機 PNG 圖片的 Markdown 檔案，執行 `:MdRender tab`。等圖片出現後，將游標移到圖片或標題上，按 Enter 確認能開啟圖片分頁。找到工具不代表終端機一定能正確顯示，仍需完成這一步。
 
 兩個後端都能播放 GIF 動畫與影片。Snacks 後端使用 Kitty 的動畫功能，也支援在 tmux 內播放；影片影格擷取需要 `ffmpeg`。Snacks 後端會準備整份文件的圖片，包括目前畫面外的圖片；所有預覽共用最多兩個圖表產生／下載／影格擷取工作，關閉預覽後，已經開始的工作仍可能繼續執行並寫入快取。因此，圖片較多的文件會有較多前置處理。
@@ -343,7 +343,7 @@ autocmd FileType markdown silent! MdRender auto on
 
 #### 試用圖片標題
 
-執行 `:MdRender textsize image`，再用 `:MdRender toggle` 開啟預覽。圖片需要 Neovim >= 0.12、終端確認 PNG 支援（Kitty >= 0.28）、`termguicolors`、Python 3、PyGObject、Pycairo 與 Pango/PangoCairo。Python 套件與字型需安裝於 Neovim 所在主機；明確選擇 `image` 後，環境不足時會使用一般文字。
+執行 `:MdRender textsize image`，再用 `:MdRender toggle` 開啟預覽。圖片需要 Neovim >= 0.12、Kitty >= 0.28、`termguicolors`、Python 3、PyGObject、Pycairo 與 Pango/PangoCairo。Python 套件與字型需安裝於 Neovim 所在主機；明確選擇 `image` 後，環境不足時會使用一般文字。
 
 若要調整字型或基準大小：
 
@@ -358,7 +358,16 @@ require("md-render.text_size").setup {
 
 搜尋、選取或將游標移入標題時，受影響的文字會顯示出來，維持原布局，不臨時插入標記。內部錨點可直接點擊；外部連結也支援終端快捷操作（Kitty 為 Ctrl＋Shift＋點擊）。若要用終端選取文字，先執行 `:MdRender textsize off`，或用 `:MdRender toggle` 回到原文。
 
-Windows 與 tmux 不啟用圖片標題。已驗證 Linux 直接使用 Kitty，以及 SSH 連入 Linux；其他作業系統／客戶端組合與螢幕閱讀器尚未驗證。
+在 tmux 中，`auto` 通過以下檢查後會選用圖片標題；不符條件時依序嘗試 native、一般文字，檢查期間保留一般文字。需要只有一個連線中的 Kitty 客戶端，且能取得格子像素尺寸、保留 RGB 與超連結；預覽須在目前 pane，且不在 copy mode；客戶端暫停時會等待恢復。tmux 視窗必須完整容納於客戶端；不支援巢狀 tmux 或多客戶端。請在 tmux 設定加入：
+
+```tmux
+set -g allow-passthrough all
+set -as terminal-features ',xterm-kitty:RGB:hyperlinks'
+```
+
+`all` 允許重繪期間及隱藏 pane 的傳輸，外掛不會自行變更此設定。超過 tmux `input-buffer-size` 的圖片會退回文字。tmux 圖片傳輸採 **quiet 模式，不等待終端確認**，避免回應進入其他 pane 或 popup。可偵測的環境與繪圖錯誤會保留文字；若圖片被無聲丟棄或拒絕，標題可能空白。此時用 `:MdRender toggle` 回到原文，或以 `:MdRender textsize off` 閱讀渲染後文字；修正環境後用 `:MdRender textsize image` 重試。直接連接 Kitty 時仍會確認上傳成功才遮住文字。
+
+Windows 不啟用圖片標題。已驗證 Linux 直接使用 Kitty，以及 SSH 連入 Linux；tmux 驗收方式與限制見[測試文件](tests/README.md#tmux-image-headings)。其他作業系統／客戶端組合與螢幕閱讀器尚未驗證。
 
 #### 原生文字標題
 
@@ -374,7 +383,7 @@ Kitty >= 0.40 可用 `:MdRender textsize native`，不需圖片依賴。原生�
 
 請在前景啟動 Neovim 並維持焦點回報。既有 popup 底下的背景啟動、抑制 `FocusLost`／`FocusGained`，以及 tmux 切換瞬間完全沒有暫態畫面，都不在保證範圍。多 client、跨 session 連結 window、巢狀 multiplexer 與被裁切的 window 保留一般文字；`:MdRender textsize status` 會說明降級或焦點暫停。
 
-已在 Linux、Kitty 0.48.2、tmux 3.7c、Neovim 0.12.5 驗證本機與 loopback SSH PTY。native 標題可與一般 Snacks 圖片共存；圖片式標題的 tmux 支援仍由 [#11](https://github.com/denny0223/md-render.nvim/issues/11) 另外追蹤，`auto` 可改用已確認支援的 native 後端。
+已在 Linux、Kitty 0.48.2、tmux 3.7c、Neovim 0.12.5 驗證本機與 loopback SSH PTY。native 標題可與一般 Snacks 圖片共存。圖片標題使用上方說明的獨立 quiet 傳輸；不符圖片條件時，`auto` 會嘗試 native 後端。
 
 native 的分數字級可能在文字分段之間留下明顯空隙，包含漢字標題；直接使用 Kitty 也會發生，已由 [upstream #65](https://github.com/delphinus/md-render.nvim/issues/65) 追蹤。
 

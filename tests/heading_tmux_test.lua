@@ -22,7 +22,15 @@ vim.system = function(cmd, opts, callback)
 end
 local tmux = require "md-render.heading_tmux"
 local image = require "md-render.image"
-tmux.status()
+local size = require "md-render.text_size"
+local native_supported, native_checks = false, 0
+size.supports = function()
+  native_checks = native_checks + 1
+  return native_supported
+end
+assert(size.resolve_backend() == "plain" and #output == 0 and #jobs == 1, "auto waits for connection inspection")
+native_supported = true
+assert(size.resolve_backend() == "plain" and native_checks == 0, "pending inspection must not activate native")
 local client = {
   "123",
   "1000",
@@ -58,6 +66,8 @@ assert(not tmux.status().key and #jobs == 1)
 tmux.status()
 assert(#jobs == 1, "coalesce connection checks")
 assert(inspect(client).key)
+assert(size.resolve_backend() == "image" and native_checks == 0, "auto selects a verified quiet connection")
+assert(vim.deep_equal(image.get_cell_size(true), { cell_w = 13, cell_h = 30 }))
 local function blocked(index, value, reason)
   local values = vim.deepcopy(client)
   values[index] = value
@@ -65,6 +75,10 @@ local function blocked(index, value, reason)
   assert(not status.key and status.reason:find(reason, 1, true), vim.inspect(status))
   local count = #output
   assert(image.png_status().supported == false and #output == count, "unsupported connections send no query")
+  native_supported = true
+  assert(size.resolve_backend() == "native", "auto falls back through independent native support")
+  native_supported = false
+  assert(size.resolve_backend() == "plain", "auto keeps ordinary text when neither backend is supported")
 end
 blocked(6, "%1", "active")
 blocked(7, "1", "copy mode")
@@ -83,7 +97,8 @@ assert(not inspect(client, table.concat(client, "\t")).key, "multiple clients re
 inspect(client)
 output = {}
 local probe = image.png_status()
-assert(not probe.supported and #output == 0, "public image support waits for the placeholder renderer")
+assert(probe.supported and #output == 0, "capability inspection never sends a terminal probe")
+assert(size.status():find("not acknowledged", 1, true))
 require("md-render.tty").kitty_version = function()
   error "tmux uploads must not send identity queries"
 end
@@ -91,33 +106,61 @@ image.supports_kitty = function()
   error "tmux headings must not depend on the ordinary image backend"
 end
 
-local ready = false
-local first_upload = assert(image.transmit_png(string.rep("YWJj", 1500), function()
-  ready = true
-end, 10, 2))
-assert(not ready, "quiet completion is deferred until after queuing the upload")
+local content = {
+  lines = { "Body", "共同研究", "" },
+  text_placements = {
+    {
+      line = 1,
+      col = 0,
+      text = "共同研究",
+      scale = 2,
+      raster = { data = string.rep("YWJj", 1500), cols = 10, width = 130, height = 60 },
+    },
+  },
+}
+vim.api.nvim_buf_set_lines(0, 0, -1, false, content.lines)
+vim.fn.screenpos = function(_, row, col)
+  return { row = row, col = col }
+end
+local headings = require "md-render.heading_image"
+local state = assert(headings.attach(0, content))
+assert(state.drawn == 0 and not state.masked, "queue the upload before displaying placeholders")
 assert(
   output[1]:find("a=T", 1, true) and output[1]:find("U=1,p=1,c=10,r=2", 1, true),
   "upload and retain the correctly sized PNG as one atomic Kitty operation"
 )
 settle()
-assert(ready)
+local entry = state.entries[1]
 for _, message in ipairs(output) do
   assert(not message:find("d=A", 1, true), "headings must never delete another pane's images")
   assert(not message:find("a=q", 1, true) and not message:find("q=0", 1, true), "never request terminal replies")
   assert(message:sub(1, 7) == "\27Ptmux;", "wrap graphics commands in tmux passthrough")
   assert(message:find("q=2", 1, true), "every chunk stays quiet even if the first chunk is dropped")
 end
+assert(state.drawn == 1 and state.masked)
 assert(#output == 1 and output[1]:find("q=2,m=0", 1, true), "all PNG chunks travel in a single tmux DCS")
+local marks = vim.api.nvim_buf_get_extmarks(0, state.mask_ns, 0, -1, { details = true })
+assert(#marks == 2 and marks[1][4].virt_text[1][1]:find(vim.fn.nr2char(0x10EEEE), 1, true))
+assert(vim.api.nvim_get_hl(0, { name = entry.hl }).fg == entry.id)
+assert(
+  vim.deep_equal(vim.api.nvim_buf_get_lines(0, 0, -1, false), content.lines),
+  "placeholders never enter searchable or yankable text"
+)
 local placements = 0
 for _, message in ipairs(output) do
   if message:find("U=1", 1, true) then placements = placements + 1 end
 end
 assert(placements == 1)
-blocked(7, "1", "copy mode")
-image.delete_image(first_upload)
-local old_id = first_upload
 local count = #output
+vim.api.nvim_exec_autocmds("User", { pattern = require("md-render.display_utils").REPAINT_EVENT })
+settle()
+assert(#output == count, "tmux redraw reuses the virtual placement")
+
+blocked(7, "1", "copy mode")
+assert(state.drawn == 0 and not state.masked, "connection changes immediately remove masks")
+headings.detach(state)
+local old_id = entry.id
+count = #output
 assert(not output[#output]:find("d=I", 1, true), "copy-mode snapshots keep their uploaded PNG until return")
 inspect(client)
 assert(#output > count and output[#output]:find("d=I,i=" .. old_id, 1, true))
@@ -137,7 +180,7 @@ inspect(new_client)
 queued()
 assert(not called, "a queued callback from a retired connection cannot complete new work")
 image.delete_image(upload)
-assert(tmux.status().key, "replacement client has its own transport capability")
+assert(image.png_status().supported, "the new supported client also uses inspection without ACKs")
 
 -- A fresh connection cached before opening a preview still needs observation.
 vim.b.md_render = true
@@ -191,19 +234,49 @@ assert(
   output[#output]:find("d=I,i=" .. retired, 1, true),
   "font resizing invalidates the layout without orphaning PNGs"
 )
+-- The three smaller heading levels occupy one row; do not mask following text.
 inspect(client)
+content.link_metadata = { { line = 1, col_start = 0, col_end = 6, url = "https://example.invalid/first" } }
+content.text_placements[1].raster.columns = { 0, 0, 0, 3, false, 6, 6, 9, 9, false }
+state = assert(headings.attach(0, content))
+settle()
+entry = state.entries[1]
+assert(entry.links[1]:find(vim.fn.nr2char(0x0305) .. vim.fn.nr2char(0x0305), 1, true))
+assert(
+  entry.links[2]:find(vim.fn.nr2char(0x030D) .. vim.fn.nr2char(0x0305), 1, true),
+  "linked rows encode distinct image origins"
+)
+assert(output[#output]:sub(1, 8) == "\27[?2026h", "link cells redraw in a pane-local synchronized batch")
+headings.detach(state)
+
+content.text_placements[1].scale = 1
+content.text_placements[1].raster.height = 30
+state = assert(headings.attach(0, content))
+settle()
+marks = vim.api.nvim_buf_get_extmarks(0, state.mask_ns, 0, -1, {})
+assert(#marks == 1 and marks[1][2] == 1, "one-row headings leave the following row intact")
+headings.detach(state)
+
 upload = image.transmit_png("YWJj", function()
   error "deleted quiet upload completed"
 end)
 image.delete_image(upload)
 settle()
 local send = vim.api.nvim_ui_send
-vim.api.nvim_ui_send = function()
-  error "EIO: simulated terminal output failure"
+for _, command in ipairs { "a=T", "]8" } do
+  vim.api.nvim_ui_send = function(data)
+    if data:find(command, 1, true) then error "EIO: simulated terminal output failure" end
+    send(data)
+  end
+  state = assert(headings.attach(0, content))
+  settle()
+  assert(state.failed and not state.masked and state.drawn == 0, "failed output must not hide text")
+  assert(size.resolve_backend() == "plain" and size.status():find("EIO", 1, true))
+  headings.detach(state)
+  size.retry_image()
 end
-local failed, failure = image.transmit_png "YWJj"
-assert(not failed and failure:find("EIO", 1, true), "local output errors reach the caller")
 vim.api.nvim_ui_send = send
+assert(size.resolve_backend() == "image", "explicit retry recovers without probes")
 
 local system = vim.system
 vim.system = function()
@@ -211,8 +284,11 @@ vim.system = function()
 end
 vim.api.nvim_exec_autocmds("FocusGained", {})
 assert(not tmux.status().key and tmux.status().reason:find("EAGAIN", 1, true))
+assert(size.resolve_backend() == "plain", "process failures keep text without wedging inspection")
 vim.system = system
 assert(inspect(client).key, "inspection can recover from a local spawn failure")
+size.retry_image()
+assert(size.resolve_backend() == "image", "explicit retry recovers without probes")
 local small_buffer = vim.deepcopy(client)
 small_buffer[17] = "10000"
 assert(inspect(small_buffer).limit == 8192, "respect tmux's buffer allocation boundary")
@@ -228,4 +304,4 @@ assert(
   not image.png_status().supported and #output == output_count,
   "missing tmux connection data must not trigger a direct probe"
 )
-print "Tmux PNG transport: quiet atomic uploads, owner-scoped retirement and local failures OK"
+print "Tmux headings: auto selection, quiet transport, connection gates, placeholder ownership and retirement OK"

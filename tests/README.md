@@ -86,6 +86,23 @@ For a visual check, load this checkout in Kitty and open [image_headings.md](fix
 
 Keep screenshots with the terminal/Neovim/Pango/Cairo versions, font, cell size and colorscheme. Inspect pixels and interaction results, not only buffer/terminal text. Custom reverse, nocombine, blending and alternate underlines deliberately use text fallback; unsupported fonts and renderer failures must leave usable text.
 
+### Tmux image headings
+
+Tmux `auto` selects image headings after connection checks pass, retains ordinary text while pending, and falls back through native support on failure. `heading_tmux_test.lua` checks this selection, quiet output, capability gates, one/two-row placeholders, local failures and connection ownership. Direct uploads retain their separate acknowledgement tests. These checks do not establish terminal display.
+
+For real-terminal acceptance, repeat the image-heading procedure in a private Kitty/tmux session with `allow-passthrough all` and `terminal-features` including `xterm-kitty:RGB:hyperlinks`. Check all six sizes and linked heading pixels, dark/light/transparent backgrounds, both rows of OSC 8 targets, gaps, wrapped labels, search, cursor feedback, Visual/yank and drag origin. Include right/bottom panes, status rows, scrolling, resizing/zoom, copy mode, pane/window changes, popup closure, client suspend/resume, detach/reattach and teardown. Disabled or `on` passthrough, unknown clients, multiple clients, oversized viewports and uploads exceeding the input buffer limit must retain text and report a reason.
+
+Capture input in an isolated receiver while switching pane or opening a popup during uploads; no graphics response may enter it. Separately discard an upload or evict its image data: quiet transport cannot detect this, but `:MdRender toggle` must immediately recover unchanged source, `textsize off` must recover rendered text, and explicit `image` retry must restore pictures. Verify stale image URL cells disappear too. Record the code revision, tool versions and source hashes with pixels and interaction results in the untracked workspace.
+
+Repeat over SSH before claiming remote tmux support. A loopback SSH PTY verifies byte transport without a shared image path, but does not establish a separate remote-host/local-client configuration. Linux acceptance does not establish other OS/client support.
+
+The optional `--images` path reuses the isolated Kitty/tmux terminal harness and requires the image-heading Python dependencies, Pillow and ImageMagick. Its native-fallback check requires tmux >= 3.6. It compares foreground glyph pixels for all six levels against their PNGs, verifies reference/angle-link destinations in painted OSC 8 cells, and checks source toggle/reopening plus auto recovery through native and plain fallback. Use an isolated X display; `--ssh` repeats the same checks over the temporary loopback server. This compact regression does not replace the broader interaction procedure above.
+
+```sh
+xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_test.py --images --passthrough all --output /tmp/md-image-tmux-results
+xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_test.py --images --passthrough all --ssh --output /tmp/md-image-tmux-ssh-results
+```
+
 ## Layer 3: Terminal tests
 
 `terminal_test.py` launches a real Kitty (under `xvfb-run` when present), runs Neovim with the plugin, and asserts on what the terminal ended up holding.

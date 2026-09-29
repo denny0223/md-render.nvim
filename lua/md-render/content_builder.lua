@@ -672,7 +672,7 @@ function ContentBuilder:add_image_heading(text, highlights, links, indent, max_w
   if not vim.o.termguicolors then return false end
   local text_size = require "md-render.text_size"
   local spec = text_size.spec_for(level, "image")
-  local cell = require("md-render.image").get_cell_size()
+  local cell = require("md-render.image").get_cell_size(true)
   if not spec or not cell then return false end
   local prefix = require("md-render.markdown").heading_icon_prefix(level)
   local offset = #prefix

@@ -171,6 +171,22 @@ test("cursor position survives round-trip via source_line_map", function()
   cleanup_buffer(source)
 end)
 
+-- A rebuild must not reinterpret heading indentation as the first title byte.
+test("heading margins survive content rebuilds", function()
+  local source = setup_md_buffer { "# 共同標題", "", "Body" }
+  local win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_cursor(win, { 1, 0 })
+  preview.toggle()
+  local session = preview._sessions[vim.api.nvim_get_current_buf()]
+  assert_eq(vim.api.nvim_win_get_cursor(win), { 1, 0 }, "toggle initially stays at the heading margin")
+  for col = 0, 1 do
+    vim.api.nvim_win_set_cursor(win, { 1, col })
+    session:rebuild()
+    assert_eq(vim.api.nvim_win_get_cursor(win), { 1, col }, "rebuild preserves each heading margin column")
+  end
+  cleanup_buffer(source)
+end)
+
 -- ----------------------------------------------------------------------
 -- Test 5: non-markdown buffer is rejected
 -- ----------------------------------------------------------------------

@@ -282,6 +282,211 @@ local function render_doc(input_lines, opts)
   return builder.lines
 end
 
+test("ordered list numbering respects delimiters and source containers", function()
+  local cases = {
+    {
+      name = "sibling markers may vary their indentation below the content column",
+      source = { "3) first", "  3) second", "3) third" },
+      lines = { "3) first", "  4) second", "5) third" },
+      rows = { 1, 2, 3 },
+    },
+    {
+      name = "consumed reference definitions separate lists",
+      source = { "3) first", "", "[r]: /url", "", "3) second" },
+      lines = { "3) first", "", "3) second" },
+      rows = { 1, 2, 5 },
+    },
+    {
+      name = "indented reference definitions remain inside their item",
+      source = { "3) first", "", "   [r]: /url", "", "3) second" },
+      lines = { "3) first", "", "4) second" },
+      rows = { 1, 2, 5 },
+    },
+    {
+      name = "four-space nested lists remain lists under bullet containers",
+      source = { "- outer", "    3) first", "    3) second" },
+      lines = { "• outer", "    3) first", "    4) second" },
+      rows = { 1, 2, 3 },
+    },
+    {
+      name = "delimiter changes start new lists",
+      source = { "3) first", "3) second", "1. dot", "1. next", "7) new", "7) last" },
+      lines = { "3) first", "4) second", "1. dot", "2. next", "7) new", "8) last" },
+      rows = { 1, 2, 3, 4, 5, 6 },
+    },
+    {
+      name = "blank lines keep a list but an unrelated paragraph ends it",
+      source = { "3) first", "", "3) second", "", "paragraph", "", "7) new", "7) last" },
+      lines = { "3) first", "4) second", "", "paragraph", "", "7) new", "8) last" },
+      rows = { 1, 3, 4, 5, 6, 7, 8 },
+    },
+    {
+      name = "nested lists and item paragraphs preserve the parent counter",
+      source = { "3) outer", "   7) child", "   7) child", "   - bullet", "3) outer", "", "   more", "3) last" },
+      lines = { "3) outer", "   7) child", "   8) child", "   ◦ bullet", "4) outer", "", "   more", "5) last" },
+      rows = { 1, 2, 3, 4, 5, 6, 7, 8 },
+    },
+    {
+      name = "nested delimiter changes stay local",
+      source = { "3) outer", "   7. child", "   7. child", "   2) new", "   2) next", "3) outer" },
+      lines = { "3) outer", "   7. child", "   8. child", "   2) new", "   3) next", "4) outer" },
+      rows = { 1, 2, 3, 4, 5, 6 },
+    },
+    {
+      name = "quote depth, optional spacing and separate quotes",
+      source = {
+        "> 3) first",
+        ">3) second",
+        ">>",
+        ">> 7) deep",
+        "> > 7) deep",
+        "> 3) last",
+        "",
+        "> 3) new",
+        "> 3) next",
+      },
+      lines = {
+        "│ 3) first",
+        "│ 4) second",
+        "│ │ ",
+        "│ │ 7) deep",
+        "│ │ 8) deep",
+        "│ 3) last",
+        "",
+        "│ 3) new",
+        "│ 4) next",
+      },
+      rows = { 1, 2, 3, 4, 5, 6, 7, 8, 9 },
+    },
+    {
+      name = "quotes in separate list items own separate counters",
+      source = { "3) outer", "   > 7) child", "   > 7) child", "3) next", "   > 7) new", "   > 7) new", "3) last" },
+      lines = {
+        "3) outer",
+        "   │ 7) child",
+        "   │ 8) child",
+        "4) next",
+        "   │ 7) new",
+        "   │ 8) new",
+        "5) last",
+      },
+      rows = { 1, 2, 3, 4, 5, 6, 7 },
+    },
+    {
+      name = "quoted blank lines remain in the same list",
+      source = { ">> 3) first", ">>", ">> 3) next" },
+      lines = { "│ │ 3) first", "│ │ ", "│ │ 4) next" },
+      rows = { 1, 2, 3 },
+    },
+    {
+      name = "nested comments do not supply list items",
+      source = { "3) before", "   <!--", "   7) hidden", "   7) hidden", "   -->", "3) after" },
+      lines = { "3) before", "4) after" },
+      rows = { 1, 6 },
+    },
+    {
+      name = "an unrelated fence ends the list without rewriting its literal items",
+      source = { "3) before", "~~~text", "3) literal", "3) literal", "~~~", "3) after", "3) next" },
+      lines = { "3) before", "3) literal", "3) literal", "3) after", "4) next" },
+      rows = { 1, 3, 4, 6, 7 },
+    },
+    {
+      name = "quoted fences keep literal items",
+      source = { "> ~~~text", "> 3) literal", "> 3) literal", "> ~~~", "> 3) after", "> 3) next" },
+      lines = { "│ 3) literal", "│ 3) literal", "│ 3) after", "│ 4) next" },
+      rows = { 2, 3, 5, 6 },
+    },
+  }
+  for _, case in ipairs(cases) do
+    local original = vim.deepcopy(case.source)
+    local builder = ContentBuilder.new()
+    builder:render_document(case.source, { max_width = 1000, indent = "", text_scale = false })
+    local content = builder:result()
+    assert_eq(content.lines, case.lines, case.name .. ": displayed text")
+    assert_eq(content.source_line_map, case.rows, case.name .. ": source rows")
+    assert_eq(case.source, original, case.name .. ": source array unchanged")
+  end
+end)
+
+test("ordered marker width changes preserve spans, code containers and source buffers", function()
+  for _, delimiter in ipairs { ".", ")" } do
+    local marker = "9" .. delimiter
+    local input = {
+      "[ref]: https://example.com/reference",
+      marker .. " **bold** [link](https://example.com/direct)",
+      marker .. " **bold** [link][ref]",
+      "",
+      "   ```text",
+      "   3) literal",
+      "   3) literal",
+      "   ```",
+      marker .. " last",
+    }
+    local source = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_lines(source, 0, -1, false, input)
+    local source_tick = vim.api.nvim_buf_get_changedtick(source)
+    for _, width in ipairs { 1000, 10 } do
+      local builder = ContentBuilder.new()
+      builder:render_document(vim.api.nvim_buf_get_lines(source, 0, width == 1000 and -1 or 3, false), {
+        max_width = width,
+        indent = "",
+        text_scale = false,
+      })
+      local content = builder:result()
+      assert_eq(content.lines, width == 1000 and {
+        marker .. " bold link",
+        "10" .. delimiter .. " bold link",
+        "",
+        "   3) literal",
+        "   3) literal",
+        "11" .. delimiter .. " last",
+      } or {
+        marker .. " bold",
+        "   link",
+        "10" .. delimiter .. " bold",
+        "    link",
+      }, delimiter .. ": numbering and code text")
+      assert_eq(
+        content.source_line_map,
+        width == 1000 and { 2, 3, 4, 6, 7, 9 } or { 2, 2, 3, 3 },
+        delimiter .. ": source rows after definitions"
+      )
+      if width == 1000 then
+        assert_eq(content.code_blocks[1].prefix_len, 3, delimiter .. ": original source marker width owns code")
+        assert_eq(content.code_blocks[1].source_lines, { "3) literal", "3) literal" }, delimiter .. ": literal code")
+      end
+      local spans = { Special = {}, Bold = {} }
+      for _, info in ipairs(content.highlights) do
+        for _, hl in ipairs(info.groups) do
+          if spans[hl.hl] then table.insert(spans[hl.hl], content.lines[info.line + 1]:sub(hl.col + 1, hl.end_col)) end
+        end
+      end
+      assert_eq(
+        spans.Special,
+        { marker .. " ", "10" .. delimiter .. " ", width == 1000 and "11" .. delimiter .. " " or nil },
+        "marker spans"
+      )
+      assert_eq(spans.Bold, { "bold", "bold" }, "Bold spans after marker growth")
+      assert_eq(#content.link_metadata, 2, "direct and reference links")
+      for i, link in ipairs(content.link_metadata) do
+        assert_eq(content.lines[link.line + 1]:sub(link.col_start + 1, link.col_end), "link", "link label span")
+        assert_eq(link.url, "https://example.com/" .. (i == 1 and "direct" or "reference"), "link destination")
+      end
+      local buffer = vim.api.nvim_create_buf(false, true)
+      require("md-render.display_utils").apply_content_to_buffer(
+        buffer,
+        vim.api.nvim_create_namespace "ordered_list_test",
+        content
+      )
+      assert_eq(vim.api.nvim_buf_get_lines(buffer, 0, -1, false), content.lines, "applied ordered list text")
+      assert_eq(vim.api.nvim_buf_get_lines(source, 0, -1, false), input, "ordered list source buffer unchanged")
+      assert_eq(vim.api.nvim_buf_get_changedtick(source), source_tick, "ordered list source buffer not modified")
+      vim.api.nvim_buf_delete(buffer, { force = true })
+    end
+    vim.api.nvim_buf_delete(source, { force = true })
+  end
+end)
+
 test("task boundaries preserve buffer text, spans, and source ownership", function()
   local input = {
     "- [x]done",

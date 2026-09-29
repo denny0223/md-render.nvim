@@ -1611,8 +1611,7 @@ end
 function Markdown.is_block_start(line, in_paragraph)
   if line:match "^%s*$" then return true end
   if Markdown.parse_atx_heading(line) then return true end
-  if line:match "^%s*[%-%*%+]%s" then return true end
-  if line:match "^%s*%d+[%.)]%s" then return true end
+  if Markdown.list_marker_type(line) then return true end
   if line:match "^>" then return true end
   if line:match "^%s*[-_*]%s*[-_*]%s*[-_*]" then return true end
   if line:match "^[=-]+%s*$" then return true end
@@ -1642,7 +1641,7 @@ local function reference_content(line)
     column = column + math.min(width, 1)
   end
   local prefix, gap, content = line:match "^( ? ? ?[-*+])([ \t]+)(.*)$"
-  if not content then
+  if not content and Markdown.list_marker_type(line) then
     prefix, gap, content = line:match "^( ? ? ?%d+[.)])([ \t]+)(.*)$"
   end
   if content then
@@ -1711,11 +1710,12 @@ end
 --- "-", "*", "+" for bullet lists, "." or ")" for ordered list delimiters, or nil for non-list lines.
 ---@param line string
 ---@return string? marker_type
+---@return string? number source digits for an ordered marker
 Markdown.list_marker_type = function(line)
   local bullet = line:match "^%s*([-*+])%s"
   if bullet then return bullet end
-  local delim = line:match "^%s*%d+([.)])%s"
-  if delim then return delim end
+  local number, delim = line:match "^%s*(%d+)([.)])%s"
+  if number and #number <= 9 then return delim, number end
   return nil
 end
 
@@ -1723,30 +1723,58 @@ end
 --- The first item's number determines the start; subsequent items are
 --- numbered sequentially regardless of their source numbers.
 ---@param lines string[]
----@param excluded_lines? table<integer, boolean> literal source rows
+---@param excluded_lines? table<integer, any> literal source rows
 ---@param src_indices? integer[] original source row for each input line
+---@param container_indents? table<integer, string> removed source container indentation
+---@param list_bases? table<integer, integer> source parent content columns of eligible list markers
 ---@return string[]
-Markdown.renumber_ordered_lists = function(lines, excluded_lines, src_indices)
+Markdown.renumber_ordered_lists = function(lines, excluded_lines, src_indices, container_indents, list_bases)
   local result = {}
-  -- Stack of { prefix = string, counter = integer } for nested lists
   local stack = {}
 
   for i, line in ipairs(lines) do
-    local excluded = excluded_lines and excluded_lines[src_indices and src_indices[i] or i]
-    local prefix, num, rest = line:match "^(%s*>?%s*)(%d+)(%.%s.*)$"
-    if prefix and num and not excluded then
-      -- Pop stack entries deeper than current prefix
-      while #stack > 0 and #stack[#stack].prefix > #prefix do
-        table.remove(stack)
-      end
-      if #stack > 0 and stack[#stack].prefix == prefix then
-        stack[#stack].counter = stack[#stack].counter + 1
+    local src = src_indices and src_indices[i] or i
+    -- Source container parsing owns marker eligibility; indentation alone
+    -- cannot distinguish nested lists from literal code.
+    local excluded = (excluded_lines and excluded_lines[src]) or (list_bases and list_bases[src] == nil)
+    local prefix = line:match "^([ \t>]*)"
+    local marker_line = line:sub(#prefix + 1)
+    local delimiter, num = Markdown.list_marker_type(marker_line)
+    if not marker_line:match "^%d" then num = nil end
+    local rest = num and marker_line:sub(#num + 2)
+    local source_prefix = (container_indents and container_indents[src] or "") .. prefix
+    -- Optional spacing after > does not change the quote's identity.
+    local container = source_prefix:gsub("> ?", "> ")
+    local quote_prefix = container:match "^(.*>)" or ""
+    local base = list_bases and list_bases[src]
+    local blank = line:match "^[ \t>]*$"
+    local sibling
+    while #stack > 0 do
+      local item = stack[#stack]
+      sibling = num
+        and not excluded
+        and quote_prefix == item.quote_prefix
+        and (base ~= nil and base == item.base or base == nil and container == item.prefix)
+      local nested = vim.startswith(container, item.content_prefix)
+      -- Unmarked blank rows end quotes, but keep ordinary loose lists open.
+      if sibling or nested or (blank and vim.startswith(container, item.quote_prefix)) then break end
+      table.remove(stack)
+    end
+    if num and not excluded then
+      local item = stack[#stack]
+      if sibling and item.delimiter == delimiter then
+        item.counter = item.counter + 1
       else
-        table.insert(stack, { prefix = prefix, counter = tonumber(num) })
+        if sibling then table.remove(stack) end
+        item = { prefix = container, base = base, delimiter = delimiter, counter = tonumber(num) }
+        table.insert(stack, item)
       end
-      table.insert(result, prefix .. tostring(stack[#stack].counter) .. rest)
+      -- Container widths belong to the source marker, even when 9 becomes 10.
+      local gap = fence_mod.indent_columns(rest:match "^[ \t]*", #source_prefix + #num + 1)
+      item.content_prefix = container .. string.rep(" ", #num + 1 + (gap <= 4 and gap or 1))
+      item.quote_prefix = quote_prefix
+      table.insert(result, prefix .. tostring(item.counter) .. delimiter .. rest)
     else
-      if not line:match "^%s*$" then stack = {} end
       table.insert(result, line)
     end
   end

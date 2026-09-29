@@ -599,7 +599,6 @@ end
 ---@param indent string
 ---@param max_width integer
 ---@return MdRender.TextSize.Spec? spec
----@return integer? content_width width for the text alone, indent excluded
 local function heading_scale_plan(source_text, indent, max_width)
   local level = heading_level_of(source_text)
   if not level then return nil end
@@ -615,47 +614,45 @@ local function heading_scale_plan(source_text, indent, max_width)
   local avail = math.floor((max_width - vim.api.nvim_strwidth(indent) - spec.s) / spec.ratio)
   if avail < MIN_SCALED_HEADING_WIDTH then return nil end
 
-  return spec, avail
+  return spec
 end
 
---- Register one scaled-text placement per rendered line of a heading.
----
---- The heading lines themselves stay in the buffer at plain size; the scaled
---- text is painted over them later by `md-render.text_size`, so every terminal
---- repaint falls back to the normal heading instead of to an empty line. The
---- caller has already reserved `scale - 1` blank lines after each heading line,
---- so the Nth line of a wrapped heading sits at `heading_line + N * scale`.
----@param self MdRender.ContentBuilder
----@param heading_line integer 0-indexed rendered line holding the heading
----@param indent string
----@param spec MdRender.TextSize.Spec
----@param level integer
----@param max_width integer window width the scaled runs have to stay inside
-function ContentBuilder:add_heading_text_scale(heading_line, indent, spec, level, max_width)
-  local text_size = require "md-render.text_size"
-  local scale = spec.s
-  local segments = (#self.lines - heading_line) / scale
-  for n = 0, segments - 1 do
-    local line = heading_line + n * scale
-    local col = #indent
-    local content = (self.lines[line + 1] or ""):sub(col + 1)
-    if content ~= "" then
-      -- The indent comes out of the scaled runs' available width.
-      local budget = max_width - vim.api.nvim_strwidth((self.lines[line + 1] or ""):sub(1, col))
-      local runs, width = text_size.split_run(content, spec, budget)
-      table.insert(self.text_placements, {
-        line = line,
-        col = col,
-        text = content,
-        runs = runs,
-        width = width,
-        scale = scale,
-        num = spec.n,
-        den = spec.d,
-        hl = "MdRenderH" .. level,
-        normal = self.heading_normal or "Normal",
-      })
+--- Wrap using the same styled runs that will be painted in the terminal.
+function ContentBuilder:add_native_heading(text, highlights, links, indent, spec, level, max_width)
+  local native = require "md-render.heading_native"
+  local budget = max_width - vim.fn.strdisplaywidth(indent)
+  local function measure(fragment, offset)
+    local _, width = native.runs(fragment, offset, highlights, links, spec, budget)
+    return width
+  end
+  local lines, starts = wrap_words(text, budget, measure)
+  local styles = distribute_highlights(highlights, lines, starts, indent, "", 0)
+  local first_line = #self.lines
+  local metadata = distribute_links(links, lines, starts, indent, "", 0, first_line)
+  for index, line in ipairs(lines) do
+    local runs, width = native.runs(line, starts[index], highlights, links, spec, budget)
+    local placement = {
+      line = #self.lines,
+      col = #indent,
+      text = line,
+      runs = runs,
+      width = width,
+      scale = spec.s,
+      num = spec.n,
+      den = spec.d,
+      hl = "MdRenderH" .. level,
+      normal = self.heading_normal or "Normal",
+    }
+    placement.columns = native.columns(placement)
+    self.text_placements[#self.text_placements + 1] = placement
+    self:add_line(indent .. line, styles[index])
+    for _ = 1, spec.s - 1 do
+      self:add_line ""
     end
+  end
+  for _, link in ipairs(metadata) do
+    link.line = first_line + (link.line - first_line) * spec.s
+    self.link_metadata[#self.link_metadata + 1] = link
   end
 end
 
@@ -847,19 +844,24 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
 
   -- A scaled heading wraps at 1/ratio of the usual width and reserves
   -- `s - 1` rows under each of its lines for the taller glyphs.
-  local spec, level, content_width
+  local spec, level
   local heading_text, plain_prefix = rendered_text, ""
   local backend = heading_content and self:heading_renderer() or "plain"
   local image_heading = backend == "image"
   local plain_heading = backend == "plain" or not self.text_scale
   if heading_content then
     level = heading_level_of(text)
-    -- OSC 66 paints one style per heading; rich headings must retain their
-    -- native inline colors and link feedback instead of losing them to scaling.
-    if self.text_scale and backend == "native" and #md_highlights == 1 and #md_links == 0 then
-      spec, content_width = heading_scale_plan(text, indent, max_width)
+    if self.text_scale and backend == "native" then
+      -- OSC 66 cannot preserve Neovim's tab/control-character display.
+      if rendered_text:find "%c" then
+        self.native_heading_fallback = "native heading text contains control characters"
+      else
+        spec = heading_scale_plan(text, indent, max_width)
+        if not spec then
+          self.native_heading_fallback = self.native_heading_fallback or "insufficient width for native heading scaling"
+        end
+      end
     end
-    if self.text_scale and backend == "native" and not spec then self.native_heading_fallback = true end
     -- A stable plain layout keeps Markdown's rank markers. Paint-time image
     -- or native feedback retains its existing layout instead of inserting text.
     if plain_heading then
@@ -874,35 +876,21 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
       end
     end
   end
-  local line_gap = spec and (spec.s - 1) or 0
-  -- The window budget includes indent; add_wrapped_markdown adds it after
-  -- wrapping. Scaled headings already have it removed by heading_scale_plan.
   local indent_w = vim.api.nvim_strwidth(indent)
-  local wrap_threshold = content_width and (indent_w + content_width) or max_width
-  local wrap_max = content_width or math.max(1, max_width - indent_w)
+  local wrap_max = math.max(1, max_width - indent_w)
 
   local lines_before_fn = #self.lines
   local image_added = level
     and self.text_scale
     and image_heading
     and self:add_image_heading(rendered_text, md_highlights, md_links, indent, max_width, level)
-  if not image_added then
-    if indent_w + vim.api.nvim_strwidth(rendered_text) > wrap_threshold then
-      self:add_wrapped_markdown(
-        rendered_text,
-        md_highlights,
-        md_links,
-        indent,
-        wrap_max,
-        quote_prefix,
-        list_marker,
-        line_gap
-      )
+  if spec then
+    self:add_native_heading(rendered_text, md_highlights, md_links, indent, spec, level, max_width)
+  elseif not image_added then
+    if indent_w + vim.api.nvim_strwidth(rendered_text) > max_width then
+      self:add_wrapped_markdown(rendered_text, md_highlights, md_links, indent, wrap_max, quote_prefix, list_marker)
     else
       self:add_simple_markdown(rendered_text, md_highlights, md_links, indent)
-      for _ = 1, line_gap do
-        self:add_line ""
-      end
     end
   end
 
@@ -916,7 +904,6 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
         self.heading_anchors[slug] = lines_before_fn
       end
     end
-    if spec then self:add_heading_text_scale(lines_before_fn, indent, spec, level, max_width) end
     local offset = 0
     for row = lines_before_fn, #self.lines - 1 do
       local line = self.lines[row + 1]

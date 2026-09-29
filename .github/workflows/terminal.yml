@@ -8,7 +8,7 @@ name: Terminal
 # This is the layer between the unit tests (the bytes md-render emits) and the
 # visual regression tests (pixels, macOS-local only). It explicitly selects
 # native OSC 66, checks all six sizes and plain Markdown ranks, and verifies
-# CursorLine feedback withdraws/restores a heading without moving body rows.
+# Heading margins retain scaling; text entry reveals accurate cursor feedback.
 # The driver clears inherited terminal/tmux hints and uses isolated configs.
 #
 # Same shape as the FFmpeg matrix: a pinned floor plus a version that follows
@@ -59,7 +59,7 @@ jobs:
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            xvfb libgl1-mesa-dri xauth fontconfig fonts-dejavu-core fonts-noto-cjk \
+            xvfb tmux libgl1-mesa-dri xauth fontconfig fonts-dejavu-core fonts-noto-cjk \
             libxcursor1 libxrandr2 libxi6 libxinerama1 libxkbcommon-x11-0 libdbus-1-3
           version='${{ matrix.kitty }}'
           if [ "$version" = latest ]; then
@@ -80,6 +80,11 @@ jobs:
 
       - name: Run terminal tests
         run: python3 tests/terminal_test.py
+
+      - name: Run native headings through tmux
+        run: |
+          xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_test.py
+          xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_test.py --passthrough all
 
   notify:
     name: Open an issue on scheduled failure

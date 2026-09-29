@@ -494,8 +494,12 @@ Markdown 目標沿用目前的預覽視窗；其他檔案在原始編輯視窗�
 需要終端確認為 Kitty >= 0.40；其他終端保留一般文字。H1-H6 的倍率依序為
 2、1.75、1.5、1.4、1.25、1.17，每個換行後的標題行占兩行高度。
 
-若標題因行內格式、連結或寬度不足而無法縮放，整份預覽會使用一般標題，
-維持層級間的一致性。:MdRender textsize status 會說明原因。
+原生標題保留行內樣式與連結，上下兩行都能正確點擊，並依各樣式區段的實際
+寬度換行。可用寬度不足以縮放，或標題文字含 Tab 等控制字元時，整份預覽會
+使用一般標題，保留內容與層級間的一致性。:MdRender textsize status 會說明原因。
+
+游標在標題留白處移動時維持放大，啟用 'cursorline' 也相同。進入文字區域時
+顯示一般文字，讓游標位置與鍵盤連結操作一致。
 
 不支援的高亮、索引色、自訂高亮 namespace，或只顯示一部分的標題，可能暫時
 讓出一般文字，不重新排版。捲動、重繪或其他視窗遮住預覽時，也可能短暫顯示
@@ -505,6 +509,36 @@ Markdown 目標沿用目前的預覽視窗；其他檔案在原始編輯視窗�
 
 	require("md-render.text_size").setup { enabled = false }
 <
+Tmux ~
+
+native 標題支援單一 Kitty client，需設定：
+>
+  set -g allow-passthrough on
+  set -g focus-events on
+<
+也支援 Snacks 使用的 allow-passthrough=all。更改焦點回報設定後請重新 attach。
+外掛讀取 tmux 的終端辨識與 pane 座標，不改動 tmux 設定，也不向 pane 輸入通道
+發送版本查詢。只有聚焦的 pane 會放大；popup、copy mode 與失焦時保留一般
+文字，返回後自動恢復，不切換 backend。外部重繪沿用既有的 500 ms 補繪計時器。
+
+為避免移動游標時標題閃回一般文字，tmux native 預覽會暫時停用全域 'termsync'，
+影響同一個 Neovim 程序中的所有視窗。最後一個有放大標題的預覽關閉或降級後，
+會恢復先前的值；若期間明確修改過，就保留你的設定。tmux 自身仍會批次更新
+終端畫面。
+
+請在前景啟動 Neovim 並維持焦點回報。既有 popup 底下的背景啟動、抑制
+FocusLost／FocusGained，以及 tmux 切換瞬間完全沒有暫態畫面，都不在保證範圍。
+多 client、跨 session 連結 window、巢狀 multiplexer 與被裁切的 window 保留
+一般文字；:MdRender textsize status 會說明降級或焦點暫停。
+
+已在 Linux、Kitty 0.48.2、tmux 3.7c、Neovim 0.12.5 驗證本機、loopback SSH PTY
+及一般 Snacks 圖片共存。圖片式標題的 tmux 支援仍由 #11 另外追蹤；auto 可改用
+已確認支援的 native 後端。
+
+native 分數字級可能在文字分段之間留下明顯空隙，包含漢字標題；直接使用 Kitty
+也會發生，由 upstream #65 追蹤：
+https://github.com/delphinus/md-render.nvim/issues/65
+
                                                        *md-render-eventignore*
 頻繁重繪 ~
 

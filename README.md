@@ -360,9 +360,21 @@ Image headings are disabled on Windows and through tmux. Linux with direct Kitty
 
 #### Native text headings
 
-Select `:MdRender textsize native` for Kitty >= 0.40 without image dependencies. If a heading contains inline formatting, links, or has too little width for scaling, the whole document uses ordinary headings to keep its hierarchy consistent. Search, selection and unsupported highlights can still reveal individual headings as text.
+Select `:MdRender textsize native` for Kitty >= 0.40 without image dependencies. Native headings preserve inline styles and links, and wrap to their painted width. If the available width is too narrow for scaling, or a heading contains control characters such as tabs, the whole document uses ordinary headings to preserve its text and hierarchy. Search, selection and unsupported highlights can still reveal individual headings as text.
+
+Moving the cursor through a heading’s margin keeps it enlarged, including with `cursorline`. Entering its text reveals ordinary text for accurate cursor positioning and keyboard link actions.
 
 Native headings reserve two rows per wrapped line. Scrolling or overlapping windows may briefly reveal plain text, and redraws can be more expensive. Telescope and Snacks picker previews do not use native scaling. See `:help md-render-text-size` for troubleshooting.
+
+**Kitty through tmux:** native headings support one attached Kitty client with `set -g allow-passthrough on` (or `all`, including Snacks) and `set -g focus-events on`. Reattach after changing focus reporting. The plugin reads tmux's terminal identification and pane geometry without changing tmux settings or sending version queries into pane input. Only the focused pane is enlarged: popups, copy mode and focus loss leave ordinary text, and returning restores enlargement automatically without switching backends. External redraws use the existing 500 ms recovery timer.
+
+To prevent cursor movement from flashing ordinary headings, native tmux previews temporarily disable Neovim’s global `termsync`, affecting all windows in that Neovim process. The previous value returns when the last preview with enlarged headings closes or falls back, unless you explicitly changed it. tmux still batches its own terminal updates.
+
+Start Neovim in the foreground and keep focus reporting enabled. Starting underneath an existing popup, suppressing `FocusLost`/`FocusGained`, and guaranteeing zero transient frames during tmux transitions are outside this support boundary. Multiple clients, linked windows, nested multiplexers and cropped windows retain ordinary text; `:MdRender textsize status` explains fallback or a focus pause.
+
+Tested on Linux with Kitty 0.48.2, tmux 3.7c and Neovim 0.12.5, locally and through a loopback SSH PTY. Native headings can coexist with regular Snacks images; image-rendered headings through tmux remain separate work in [#11](https://github.com/denny0223/md-render.nvim/issues/11). `auto` can use the verified native backend instead.
+
+Native fractional sizing can leave visible gaps between text runs, including CJK headings; this also occurs without tmux and is tracked in [upstream #65](https://github.com/delphinus/md-render.nvim/issues/65).
 
 Use `:MdRender textsize off` to turn scaling off, or disable it in your configuration:
 

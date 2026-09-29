@@ -260,17 +260,18 @@ do
   text_size.setup { enabled = false }
 end
 
--- Test 8: rich headings keep their styles and links in ordinary text.
+-- Test 8: rich headings retain link bytes while scaling and wrapping.
 do
   text_size.setup { enabled = true }
   with_support(true, function()
     local out = render({
       "# See [alpha](https://example.com/a) then [bravo](https://example.com/b) and more words here",
     }, { max_width = 60, indent = "  " })
-    assert_eq(#out.text_placements, 0, "OSC 66 must not cover inline link colors")
+    assert_true(#out.text_placements > 0, "linked headings retain native scaling")
     assert_true(#out.link_metadata >= 2, "both links survive")
-    for _, line in ipairs(out.lines) do
-      assert_true(line ~= "", "rich headings reserve no scaled rows")
+    for _, p in ipairs(out.text_placements) do
+      assert_eq(out.lines[p.line + 2], "", "rich headings reserve their scaled height")
+      assert_true(p.width <= 58, "wrapped styled runs fit the window")
     end
     for _, l in ipairs(out.link_metadata) do
       local line = out.lines[l.line + 1] or ""
@@ -469,13 +470,21 @@ do
     )
     assert_eq(text_size._stats.invalidations, 0, "the immediate rewrite costs no full-screen repaint")
 
-    -- Cursor movement does not destroy anything, so it stays on the debounce.
-    local settled = #writes
+    -- Finish the scroll cleanup before checking cursor-only movement.
+    text_size.paint(state)
+    local invalidations = text_size._stats.invalidations
     vim.api.nvim_exec_autocmds("CursorMoved", { modeline = false })
-    vim.wait(40, function()
-      return #writes > settled
-    end, 5)
-    assert_eq(#writes, settled, "a cursor move does not trigger the immediate path")
+    local finished = false
+    vim.schedule(function()
+      finished = true
+    end)
+    assert_true(
+      vim.wait(1000, function()
+        return finished
+      end),
+      "cursor feedback completes after the TUI flush"
+    )
+    assert_eq(text_size._stats.invalidations, invalidations, "unchanged cursor feedback needs no forced repaint")
 
     vim.api.nvim_ui_send = real_send
     text_size.detach(state)
@@ -688,8 +697,8 @@ do
       return #writes > 0
     end, 5)
 
-    -- Queue a paint, then ask for a re-assert before it can fire.
-    vim.api.nvim_exec_autocmds("CursorMoved", { modeline = false })
+    -- Queue an event repaint, then ask for a re-assert before it can fire.
+    vim.api.nvim_exec_autocmds("ModeChanged", { modeline = false })
     assert_true(state.redraw_timer ~= nil, "a paint is queued")
     local keepalives = text_size._stats.keepalives
     state.last_reassert_at = nil -- past the rate limit
@@ -931,7 +940,7 @@ end
 -- Native fallback must not paint over the feedback provided by Neovim.
 with_support(true, function()
   text_size.setup { enabled = true }
-  local out = render { "# Feedback", "", "Body." }
+  local out = render { "# Feedback 共同", "", "Body." }
   local win, previous = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
   local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, out.lines)
@@ -945,14 +954,40 @@ with_support(true, function()
   assert_eq(#state.drawn, 1, "native heading is initially visible")
   vim.api.nvim_win_set_cursor(win, { row + 1, 0 })
   local cursorline, cursorlineopt = vim.wo[win].cursorline, vim.wo[win].cursorlineopt
-  vim.wo[win].cursorline, vim.wo[win].cursorlineopt = true, "line"
-  text_size.paint(state)
-  assert_eq(#state.drawn, 0, "native scaled text still yields to CursorLine")
+  local col = out.text_placements[1].col
+  for _, enabled in ipairs { false, true } do
+    vim.wo[win].cursorline = enabled
+    for _, option in ipairs { "line", "screenline", "both", "number" } do
+      vim.wo[win].cursorlineopt = option
+      for _, case in ipairs {
+        { row + 1, 0, 1 }, -- left margin
+        { row + 1, col, 0 }, -- first text byte
+        { row + 1, col + #"Feedback 共", 0 }, -- multibyte text
+        { row + 2, 0, 1 }, -- lower-row margin
+      } do
+        vim.api.nvim_win_set_cursor(win, { case[1], case[2] })
+        text_size.paint(state)
+        assert_eq(#state.drawn, case[3], "cursor entry reveals text while heading margins retain scaling")
+      end
+    end
+  end
+  local virtualedit = vim.wo[win].virtualedit
+  vim.wo[win].virtualedit = "all"
+  local pos = vim.fn.screenpos(win, row + 1, col + 1)
+  for _, case in ipairs { { pos.col, 0 }, { pos.col + out.text_placements[1].width, 1 } } do
+    vim.api.nvim_win_set_cursor(win, { row + 2, 0 })
+    vim.cmd("normal! " .. case[1] .. "|")
+    text_size.paint(state)
+    assert_eq(#state.drawn, case[2], "virtual cursor entry protects the painted lower row but not its right margin")
+  end
+  vim.wo[win].virtualedit = virtualedit
+  vim.api.nvim_win_set_cursor(win, { row + 1, 0 })
   vim.wo[win].cursorline, vim.wo[win].cursorlineopt = cursorline, cursorlineopt
   vim.cmd "normal! v$"
   text_size.paint(state)
   assert_eq(#state.drawn, 0, "Visual selection reveals native text")
   vim.cmd("normal! " .. vim.keycode "<Esc>")
+  vim.api.nvim_win_set_cursor(win, { row + 1, 0 })
   local ns = vim.api.nvim_create_namespace "text-size-feedback-test"
   vim.api.nvim_buf_set_extmark(buf, ns, row, 0, { end_row = row + 1, end_col = 0, hl_group = "IncSearch" })
   text_size.paint(state)

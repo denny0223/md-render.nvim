@@ -1066,6 +1066,7 @@ Markdown.render({text}, ...) ~
 	  {autolinks}      (table[]|nil) Autolink patterns
 	  {ref_links}      (table|nil)  Reference link definitions
 	  {footnote_map}   (table|nil)  Footnote definitions
+	  {inline_only}    (boolean|nil) Keep block markers literal (default: false)
 
 	Returns: ~
 	  {text}        (string)  Display text

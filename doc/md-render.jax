@@ -1004,6 +1004,7 @@ Markdown.render({text}, ...) ~
 	  {autolinks}      (table[]|nil) オートリンクパターン
 	  {ref_links}      (table|nil)   参照リンク定義
 	  {footnote_map}   (table|nil)   脚注定義
+	  {inline_only}    (boolean|nil) ブロック記号を文字として保持（既定: false）
 
 	戻り値: ~
 	  {text}        (string)  表示テキスト

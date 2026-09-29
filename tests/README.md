@@ -40,6 +40,7 @@ Mock-based tests that verify Kitty Graphics Protocol escape sequences without re
 - `tty_test.lua` -- TTY discovery (isatty, ttyname, socket peer)
 - `link_types_test.lua` -- Link type distinction (external, anchor, Obsidian)
 - `reference_links_test.lua` -- Definition validity and consumption, Unicode label matching, table ranges, source mappings and real buffer/preview application
+- `atx_headings_test.lua` -- ATX boundaries, empty headings, source mappings, inline ranges and anchor activation through plain/native/image layouts and public preview rebuilds
 - `markdown_checkbox_test.lua` -- Checkbox rendering
 - `html_table_test.lua` -- HTML table parsing
 

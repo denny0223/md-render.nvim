@@ -587,24 +587,15 @@ end
 --- than leaving it at plain size.
 local MIN_SCALED_HEADING_WIDTH = 12
 
---- The heading level a source line carries, or nil when it is not a heading.
----@param source_text string raw source line (still carrying the `#` markers)
----@return integer?
-local function heading_level_of(source_text)
-  local markers = source_text:match "^(#+)%s"
-  return markers and math.min(#markers, 6) or nil
-end
+local parse_atx_heading = require("md-render.markdown").parse_atx_heading
 
 --- How to draw a source line's heading, and the width its text has to wrap to
 --- in order to fit once scaled. Returns nil when the heading must stay plain.
----@param source_text string raw source line (still carrying the `#` markers)
+---@param level integer parsed heading level
 ---@param indent string
 ---@param max_width integer
 ---@return MdRender.TextSize.Spec? spec
-local function heading_scale_plan(source_text, indent, max_width)
-  local level = heading_level_of(source_text)
-  if not level then return nil end
-
+local function heading_scale_plan(level, indent, max_width)
   local spec = require("md-render.text_size").spec_for(level, "native")
   if not spec then return nil end
 
@@ -855,13 +846,13 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
   local image_heading = backend == "image"
   local plain_heading = backend == "plain" or not self.text_scale
   if heading_content then
-    level = heading_level_of(text)
-    if self.text_scale and backend == "native" then
+    level = parse_atx_heading(text)
+    if self.text_scale and backend == "native" and rendered_text ~= "" then
       -- OSC 66 cannot preserve Neovim's tab/control-character display.
       if rendered_text:find "%c" then
         self.native_heading_fallback = "native heading text contains control characters"
       else
-        spec = heading_scale_plan(text, indent, max_width)
+        spec = heading_scale_plan(level, indent, max_width)
         if not spec then
           self.native_heading_fallback = self.native_heading_fallback or "insufficient width for native heading scaling"
         end
@@ -886,6 +877,7 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
 
   local lines_before_fn = #self.lines
   local image_added = level
+    and rendered_text ~= ""
     and self.text_scale
     and image_heading
     and self:add_image_heading(rendered_text, md_highlights, md_links, indent, max_width, level)
@@ -912,7 +904,7 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
     local offset = 0
     for row = lines_before_fn, #self.lines - 1 do
       local line = self.lines[row + 1]
-      if line ~= "" then
+      if row == lines_before_fn or line ~= "" then
         self.heading_lines[row] = true
         local prefix = row == lines_before_fn and (indent .. plain_prefix .. markdown.heading_icon_prefix(level))
           or (line:match "^%s*" or "")
@@ -1596,8 +1588,10 @@ local function join_paragraph_continuations(
         -- These lines always end their own output line, so a trailing hard
         -- break marker is redundant: drop it so it does not leave a stray
         -- trailing space (visible on highlighted lines such as blockquotes).
-        -- Code and HTML are left alone, where whitespace can be content.
-        if not in_code and not line:match "^    %S" and not line:match "^%s*<" then line = (line:gsub("%s+$", "")) end
+        -- Code/HTML keep literal whitespace; ATX owns its space/tab boundary.
+        if not in_code and not line:match "^    %S" and not line:match "^%s*<" and not parse_atx_heading(line) then
+          line = (line:gsub("%s+$", ""))
+        end
         table.insert(result, line)
         table.insert(result_indices, src)
       else
@@ -1992,7 +1986,8 @@ function ContentBuilder:render_document(lines, opts)
 
     local det_lines_before = #self.lines
     local det_icon = is_collapsed and "▶ " or "▼ "
-    local det_rendered, det_hls, det_links = markdown.render(summary_text, repo_base_url, autolinks, ref_links)
+    local det_rendered, det_hls, det_links =
+      markdown.render(summary_text, repo_base_url, autolinks, ref_links, nil, true)
 
     local det_icon_len = #det_icon
     for _, hl in ipairs(det_hls) do
@@ -2232,7 +2227,8 @@ function ContentBuilder:render_document(lines, opts)
     end
 
     local is_blank = line:match "^%s*$" ~= nil
-    local is_heading = (not in_code_block) and line:match "^#+%s+" ~= nil
+    local atx_level, atx_content = parse_atx_heading(line)
+    local is_heading = (not in_code_block) and atx_level ~= nil
     local is_table_line = (not in_code_block) and line:match "^%s*|" ~= nil
 
     -- Handle <details>/<summary> HTML blocks (outside code blocks)
@@ -2339,7 +2335,7 @@ function ContentBuilder:render_document(lines, opts)
             local saved_src_line = self._current_source_line
             if figure_caption_src then self._current_source_line = figure_caption_src + source_line_offset end
             local rendered_text, md_highlights, md_links =
-              markdown.render(figure_caption, repo_base_url, autolinks, ref_links, footnote_map)
+              markdown.render(figure_caption, repo_base_url, autolinks, ref_links, footnote_map, true)
             -- Apply Comment as the base highlight covering the whole caption
             table.insert(md_highlights, 1, {
               col = 0,
@@ -2467,7 +2463,8 @@ function ContentBuilder:render_document(lines, opts)
             for _, seg in ipairs(vim.split(dt_content, "<br%s*/?>", { plain = false, trimempty = true })) do
               seg = seg:gsub("^%s+", ""):gsub("%s+$", "")
               if seg ~= "" then
-                local dt_rendered, dt_hls, dt_links = markdown.render(seg, repo_base_url, autolinks, ref_links)
+                local dt_rendered, dt_hls, dt_links =
+                  markdown.render(seg, repo_base_url, autolinks, ref_links, nil, true)
                 table.insert(dt_hls, { col = 0, end_col = #dt_rendered, hl = "Bold" })
                 self:add_simple_markdown(dt_rendered, dt_hls, dt_links, indent)
               end
@@ -2493,7 +2490,8 @@ function ContentBuilder:render_document(lines, opts)
             for _, seg in ipairs(vim.split(dd_content, "<br%s*/?>", { plain = false, trimempty = true })) do
               seg = seg:gsub("^%s+", ""):gsub("%s+$", "")
               if seg ~= "" then
-                local dd_rendered, dd_hls, dd_links = markdown.render(seg, repo_base_url, autolinks, ref_links)
+                local dd_rendered, dd_hls, dd_links =
+                  markdown.render(seg, repo_base_url, autolinks, ref_links, nil, true)
                 if vim.api.nvim_strwidth(dd_rendered) > dd_width then
                   self:add_wrapped_markdown(dd_rendered, dd_hls, dd_links, dd_indent, dd_width, "")
                 else
@@ -2715,7 +2713,7 @@ function ContentBuilder:render_document(lines, opts)
           -- References were consumed before joining; skip blanks and footnotes.
           if not lines[k]:match "^%s*$" and not markdown.is_footnote_def(lines[k]) then
             -- Check ATX heading or setext heading (text followed by === or ---)
-            skip = lines[k]:match "^#+%s+" ~= nil
+            skip = parse_atx_heading(lines[k]) ~= nil
             if not skip then skip = is_thematic_break(lines[k]) end
             if not skip then skip = lines[k]:match "^:::$" ~= nil end
             if not skip and not lines[k]:match "^[#>%-%*`|%d]" then
@@ -3238,11 +3236,9 @@ function ContentBuilder:render_document(lines, opts)
         local img_path, img_alt
         if not current_alert_type then
           -- Markdown image: ![alt](path) (standalone on line)
-          img_alt, img_path = line:match "^%s*!%[([^%]]-)%]%(([^)]-)%)%s*$"
-          -- Also match heading lines that are just an image: # ![alt](path)
-          if not img_path then
-            img_alt, img_path = line:match "^#+%s+!%[([^%]]-)%]%(([^)]-)%)%s*$"
-          end
+          -- Headings containing only an image retain the same media presentation.
+          local image_text = atx_content or line
+          img_alt, img_path = image_text:match "^%s*!%[([^%]]-)%]%(([^)]-)%)%s*$"
           -- Linked image: [![alt](img-path)](link-url) (standalone on line)
           if not img_path then
             img_alt, img_path = line:match "^%s*%[!%[(.-)%]%((.-)%)%]%(.-%)%s*$"
@@ -3250,7 +3246,7 @@ function ContentBuilder:render_document(lines, opts)
           -- HTML img: <img src="path" alt="alt"> as sole content on line
           -- Also matches inside headings: # <img ...> or ## <img ...>
           if not img_path then
-            local img_tag = line:match "^%s*(<img%s[^>]*>)%s*$" or line:match "^#+%s+(<img%s[^>]*>)%s*$"
+            local img_tag = image_text:match "^%s*(<img%s[^>]*>)%s*$"
             if img_tag then
               img_path = img_tag:match 'src="([^"]*)"' or img_tag:match "src='([^']*)'"
               img_alt = img_tag:match 'alt="([^"]*)"' or img_tag:match "alt='([^']*)'"
@@ -3499,9 +3495,7 @@ function ContentBuilder:render_document(lines, opts)
           -- Details add their prefix and background after rendering. Leave
           -- image headings as text until those transforms carry image geometry.
           local text_scale = self.text_scale
-          if in_details and heading_level_of(line) and self:heading_renderer() == "image" then
-            self.text_scale = false
-          end
+          if in_details and is_heading and self:heading_renderer() == "image" then self.text_scale = false end
           -- Reserve the prefix that apply_details_body_prefix() adds later.
           local text_width = base_max_width
           if in_details and details_summary_rendered and not skip_details_body then
@@ -3588,7 +3582,7 @@ function ContentBuilder:render_document(lines, opts)
       local prefix = base_indent .. to_superscript(num) .. " "
       local prefix_display_width = vim.api.nvim_strwidth(prefix)
       local rendered_text, md_highlights, md_links =
-        markdown.render(def.text, repo_base_url, autolinks, ref_links, footnote_map)
+        markdown.render(def.text, repo_base_url, autolinks, ref_links, footnote_map, true)
 
       local full_text = prefix .. rendered_text
       local def_first_line = #self.lines -- 0-indexed line where this def starts

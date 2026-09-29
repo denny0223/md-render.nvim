@@ -245,14 +245,13 @@ def run_kitty(kitty, enabled, workdir, mode="float"):
             if len(expected) != 2:
                 bad("both body lines are visible before cursor movement", repr(expected))
             else:
-                # Native scaling yields to CursorLine on either row of the
-                # heading block. Leaving it must restore the run without
-                # moving body rows; unrelated headings must stay scaled.
+                # Margins retain enlargement; entering text reveals precise cursor
+                # feedback without moving body rows or other headings.
                 for context, row, col, scaled in (
                     ("on heading text", heading_row, heading_col, False),
-                    ("on the reserved heading row", heading_row + 1, 1, False),
+                    ("on the reserved heading row", heading_row + 1, 1, True),
                     ("back on body text", body_row, body_col, True),
-                    ("on the heading's left margin", heading_row, 1, False),
+                    ("on the heading's left margin", heading_row, 1, True),
                     ("after returning to body text", body_row, body_col, True),
                 ):
                     remote("send-text", "--", f"{row}G{col}|")

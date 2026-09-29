@@ -1,4 +1,4 @@
--- Use real Neovim input to verify native heading click and drag semantics.
+-- Use real Neovim input to verify native heading cursor, click and drag semantics.
 local child = vim.fn.jobstart({ vim.v.progpath, "--embed", "--headless", "-u", "NONE", "-i", "NONE" }, { rpc = true })
 local function lua(code, ...)
   return vim.rpcrequest(child, "nvim_exec_lua", code, { ... })
@@ -102,6 +102,55 @@ local ok, err = pcall(function()
     end, 5),
     "batched click must retain the visible destination"
   )
+  -- Keyboard navigation uses ordinary text cells. Entering SECOND must reveal
+  -- that text before gf can follow it, with or without CursorLine enabled.
+  lua [[
+    require("md-render.preview").toggle()
+    local cwd = vim.fn.getcwd()
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, {
+      "Body", "", "## [FIRST](" .. cwd .. "/README.md) [SECOND](" .. cwd .. "/README.zh-TW.md)",
+    })
+    require("md-render.preview").toggle()
+    session = require("md-render.preview")._sessions[vim.api.nvim_get_current_buf()]
+    session.follow_file = function(_, path) _G.followed = path end
+  ]]
+  for _, cursorline in ipairs { false, true } do
+    lua(
+      [[
+      vim.wo.cursorline = ...
+      _G.followed, _G.entry_frame = nil, nil
+      local p = session.content.text_placements[1]
+      vim.api.nvim_win_set_cursor(session.win, { p.line + 1, p.col - 1 })
+      vim.cmd "redraw"
+      size.paint(session.text_size_state)
+      assert(#session.text_size_state.drawn == 1, "start enlarged at the margin")
+      -- Registered after the renderer: observe its scheduled CursorMoved
+      -- paint, without forcing redraw or waiting for the debounce timer.
+      vim.api.nvim_create_autocmd("CursorMoved", { callback = function()
+        if vim.api.nvim_win_get_cursor(session.win)[2] == p.col then
+          vim.schedule(function() _G.entry_frame = #session.text_size_state.drawn end)
+          return true
+        end
+      end })
+    ]],
+      cursorline
+    )
+    vim.rpcrequest(child, "nvim_input", "l")
+    assert(
+      vim.wait(1000, function()
+        return lua "return entry_frame ~= nil"
+      end, 5),
+      "cursor input must be processed"
+    )
+    assert(lua "return entry_frame == 0", "text entry must reveal accurate cursor feedback without a debounce")
+    vim.rpcrequest(child, "nvim_input", "6lgf")
+    assert(
+      vim.wait(1000, function()
+        return lua "return followed == vim.fn.getcwd() .. '/README.zh-TW.md'"
+      end, 5),
+      "gf must follow the visible SECOND link"
+    )
+  end
   lua [[require("md-render.preview").toggle()]]
   assert(
     lua [[return require('md-render.text_size').mouse_position({winid=session.win}).column == nil]],
@@ -111,4 +160,4 @@ end)
 pcall(vim.rpcnotify, child, "nvim_command", "qa!")
 vim.fn.jobwait({ child }, 1000)
 assert(ok, err)
-print "Native heading mouse: upper/lower clicks, padding, CursorLine, drag/yank and teardown OK"
+print "Native heading mouse: upper/lower clicks, padding, CursorLine, drag/yank, keyboard gf and teardown OK"

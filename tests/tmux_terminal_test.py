@@ -266,6 +266,26 @@ end})
             wait_for(lambda: not scaled(), "scrolling away clears offscreen headings")
             lua("vim.cmd('normal! gg0')")
             wait_for(six_levels, "scrolling back restores six levels")
+            # Alternate text and margins so an unchanged, pre-movement frame
+            # cannot satisfy the next expectation. Confirm the cursor as well.
+            for index, (offset, column, label, enlarged) in enumerate((
+                (1, "p.col", "text", False), (1, "0", "margin", True),
+                (1, "p.col", "text", False), (2, "0", "lower-row margin", True),
+            )):
+                target = json.loads(lua("(function() local s=require('md-render.preview')._sessions[vim.api.nvim_get_current_buf()]; local p=s.content.text_placements[1]; local c={p.line+%d,%s}; vim.api.nvim_win_set_cursor(0,c); return vim.json.encode(c) end)()" % (offset, column)))
+
+                def cursor_feedback():
+                    cursor = json.loads(lua("vim.json.encode(vim.api.nvim_win_get_cursor(0))"))
+                    runs = scaled()
+                    return cursor == target and all(
+                        "".join(text for meta, text in runs if level_of(meta) == level)
+                        == ("" if level == 1 and not enlarged else f"共同 H{level}")
+                        for level in range(1, 7)
+                    ) and (enlarged or "共同 H1" in kitty("get-text"))
+
+                wait_for(cursor_feedback, f"CursorLine on heading {label} {'preserves scaling' if enlarged else 'reveals precise text'}")
+                capture(f"04-cursor-{index}-{label.replace(' ', '-')}")
+            lua("vim.cmd('normal! gg0')")
             lua("(function() vim.fn.setreg('/', '共同'); vim.o.hlsearch=true; vim.v.hlsearch=1; vim.cmd('redraw!') end)()")
             wait_for(lambda: not scaled(), "search exposes every matching heading")
             assert all(f"共同 H{level}" in kitty("get-text") for level in range(1, 7)), "search feedback lost heading text"
@@ -282,8 +302,10 @@ end})
             capture("05-visual")
             lua("vim.api.nvim_input('y')")
             wait_for(lambda: lua("vim.fn.getreg('0')") == "共同", "Visual yank copies the real CJK text")
+            assert not any("H1" in text for _, text in scaled()), "keyboard cursor still needs ordinary text after yank"
+            lua("vim.cmd('normal! 0')")
+            wait_for(six_levels, "leaving the text restores scaling after yank feedback")
             lua("vim.cmd('normal! gg0')")
-            wait_for(six_levels, "scaling returns after yank feedback and leaving the cursor line")
             tmux("set-option", "-p", "-t", pane, "allow-passthrough", "off")
             wait_for(lambda: state().get("backend") == "plain" and not scaled(), "passthrough off restores plain headings")
             assert state()["termsync"], "plain fallback restores synchronized updates"

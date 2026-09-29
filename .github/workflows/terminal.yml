@@ -8,7 +8,7 @@ name: Terminal
 # This is the layer between the unit tests (the bytes md-render emits) and the
 # visual regression tests (pixels, macOS-local only). It explicitly selects
 # native OSC 66, checks all six sizes and plain Markdown ranks, and verifies
-# CursorLine feedback withdraws/restores a heading without moving body rows.
+# Heading margins retain scaling; text entry reveals accurate cursor feedback.
 # The driver clears inherited terminal/tmux hints and uses isolated configs.
 #
 # Same shape as the FFmpeg matrix: a pinned floor plus a version that follows

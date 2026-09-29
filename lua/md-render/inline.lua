@@ -35,7 +35,7 @@ function M.autolink_end(text, start)
 end
 
 --- HTML and code have equal precedence: the first complete construct wins.
-local function html_end(text, start)
+function M.html_end(text, start)
   local rest = text:sub(start)
   if rest:sub(1, 5) == "<!-->" then return start + 4 end
   if rest:sub(1, 6) == "<!--->" then return start + 5 end
@@ -83,10 +83,9 @@ local function html_end(text, start)
   end
 end
 
---- Closing parenthesis of a valid inline link destination and optional title.
-function M.link_end(text, start)
-  if text:sub(start, start) ~= "(" then return end
-  local pos = skip_space(text, start + 1)
+--- First byte after a valid destination (angle delimiters included).
+function M.destination_end(text, start)
+  local pos = start
   if text:sub(pos, pos) == "<" then
     pos = pos + 1
     while pos <= #text and text:sub(pos, pos) ~= ">" do
@@ -109,6 +108,8 @@ function M.link_end(text, start)
         if depth == 0 then break end
         depth = depth - 1
         pos = pos + 1
+      elseif text:byte(pos) == 127 then
+        return
       elseif text:byte(pos) <= 32 then
         break
       else
@@ -117,11 +118,14 @@ function M.link_end(text, start)
     end
     if depth ~= 0 then return end
   end
-  local dest_end = pos
-  pos = skip_space(text, pos)
-  if text:sub(pos, pos) == ")" then return pos end
+  return pos
+end
+
+--- First byte after a complete title, including its closing delimiter.
+function M.title_end(text, start)
+  local pos = start
   local delimiter = text:sub(pos, pos)
-  if pos == dest_end or not (delimiter == '"' or delimiter == "'" or delimiter == "(") then return end
+  if not (delimiter == '"' or delimiter == "'" or delimiter == "(") then return end
   local closing = delimiter == "(" and ")" or delimiter
   pos = pos + 1
   local title_start = pos
@@ -132,7 +136,20 @@ function M.link_end(text, start)
   if pos > #text then return end
   local title = text:sub(title_start, pos - 1):gsub("\r\n", "\n"):gsub("\r", "\n")
   if title:find "\n[ \t]*\n" then return end
-  pos = skip_space(text, pos + 1)
+  return pos + 1
+end
+
+--- Closing parenthesis of a valid inline link destination and optional title.
+function M.link_end(text, start)
+  if text:sub(start, start) ~= "(" then return end
+  local dest_end = M.destination_end(text, skip_space(text, start + 1))
+  if not dest_end then return end
+  local pos = skip_space(text, dest_end)
+  if text:sub(pos, pos) == ")" then return pos end
+  if pos == dest_end then return end
+  pos = M.title_end(text, pos)
+  if not pos then return end
+  pos = skip_space(text, pos)
   if text:sub(pos, pos) == ")" then return pos end
 end
 
@@ -165,15 +182,20 @@ local function code_end(text, start, runs)
   return nil, ticks, run_end
 end
 
-local function reference_end(text, start)
+function M.reference_end(text, start, source_label)
   if text:sub(start, start) ~= "[" then return end
   local pos = start + 1
-  while pos <= #text and pos - start <= 1000 do
+  -- UTF-8 uses at most four bytes per character; include the closing bracket.
+  -- Protected labels need restoration before the source character count below.
+  while pos <= #text and (source_label or pos - start <= 4 * 999 + 1) do
     local c = text:sub(pos, pos)
     if escaped(text, pos) then
       pos = pos + 2
     elseif c == "]" then
-      return pos
+      local label = text:sub(start + 1, pos - 1)
+      if source_label then label = source_label(label) end
+      if vim.fn.strchars(label) <= 999 then return pos end
+      return
     elseif c == "[" then
       return
     else
@@ -182,13 +204,40 @@ local function reference_end(text, start)
   end
 end
 
-local function has_reference(refs, label)
-  if not refs then return false end
-  return refs[label:lower()] ~= nil or refs[(label:gsub("%s+", " "):gsub("^ ", ""):gsub(" $", ""):lower())] ~= nil
+--- Labels retain source escapes/entities; only case and label whitespace fold.
+function M.normalize_reference_label(label)
+  label = label:gsub("[ \t\r\n]+", " "):gsub("^ ", ""):gsub(" $", "")
+  return label:lower()
+end
+
+--- Parse a complete definition at a line start; return its final newline byte.
+--- The caller supplies one container at a time and owns block/code boundaries.
+function M.reference_definition(text, start)
+  local pos = text:match("^ ? ? ?()", start)
+  local label_end = M.reference_end(text, pos)
+  if not label_end or text:sub(label_end + 1, label_end + 1) ~= ":" then return end
+  local label = text:sub(pos + 1, label_end - 1)
+  if label:sub(1, 1) == "^" or label:find "\n[ \t]*\n" then return end
+  label = M.normalize_reference_label(label)
+  if label == "" then return end
+  local dest_start = skip_space(text, label_end + 2)
+  local dest_end = M.destination_end(text, dest_start)
+  if not dest_end or dest_end == dest_start then return end
+  local line_end = text:match("^[ \t]*()", dest_end)
+  local destination_only = line_end > #text or text:sub(line_end, line_end) == "\n"
+  pos = skip_space(text, dest_end)
+  local title_end = pos > dest_end and M.title_end(text, pos)
+  if title_end then
+    title_end = text:match("^[ \t]*()", title_end)
+    if title_end > #text or text:sub(title_end, title_end) == "\n" then
+      return label, text:sub(dest_start, dest_end - 1), title_end
+    end
+  end
+  if destination_only then return label, text:sub(dest_start, dest_end - 1), line_end end
 end
 
 --- Scan one already-parsed paragraph; block boundaries are the caller's job.
-local function scan(text, refs, wanted_link)
+local function scan(text, refs, wanted_link, source_label)
   local spans, brackets = {}, {}
   local runs
   local pos = wanted_link or 1
@@ -202,7 +251,7 @@ local function scan(text, refs, wanted_link)
       if finish then spans[#spans + 1] = { start = pos, finish = finish, ticks = ticks } end
       pos = (finish or run_end) + 1
     elseif c == "<" then
-      local finish = M.autolink_end(text, pos) or html_end(text, pos)
+      local finish = M.autolink_end(text, pos) or M.html_end(text, pos)
       pos = (finish or pos) + 1
     elseif text:sub(pos, pos + 1) == "%%" then
       -- Obsidian comments, like HTML comments, cannot open code spans.
@@ -218,14 +267,21 @@ local function scan(text, refs, wanted_link)
     elseif c == "]" and #brackets > 0 then
       local bracket = table.remove(brackets)
       local finish = bracket.active and M.link_end(text, pos + 1) or nil
-      if wanted_link == bracket.start then return spans, finish and pos + 1, finish end
       local matched = finish ~= nil
+      local url
       if bracket.active and not matched and refs then
-        local ref_end = reference_end(text, pos + 1)
+        local ref_end = M.reference_end(text, pos + 1, source_label)
         local label = ref_end and text:sub(pos + 2, ref_end - 1)
         if not label or label == "" then label = not bracket.nested and text:sub(bracket.start + 1, pos - 1) or nil end
-        matched = label and has_reference(refs, label)
-        if matched then finish = ref_end end
+        if label then
+          label = source_label and source_label(label) or label
+          if vim.fn.strchars(label) <= 999 then url = refs[M.normalize_reference_label(label)] end
+        end
+        matched = url ~= nil
+        if matched then finish = ref_end or pos end
+      end
+      if wanted_link == bracket.start then
+        return { code_spans = spans, suffix_start = matched and pos + 1 or nil, link_end = finish, reference_url = url }
       end
       if matched and not bracket.image then
         for _, previous in ipairs(brackets) do
@@ -237,20 +293,22 @@ local function scan(text, refs, wanted_link)
       pos = pos + 1
     end
   end
-  return spans
+  return { code_spans = spans }
 end
 
 --- Raw, matched code ranges: 1-based inclusive byte offsets and delimiter length.
 function M.code_spans(text, ref_links)
   if not text:find("`", 1, true) then return {} end
-  local spans = scan(text, ref_links)
-  return spans
+  return scan(text, ref_links).code_spans
 end
 
 --- The same label/code boundaries used by whitespace and link rendering.
-function M.link_bounds(text, start)
-  local _, first, last = scan(text, nil, start)
-  return first, last
+---@return integer? suffix_start 1-based byte after the closing label bracket
+---@return integer? finish 1-based inclusive end of the whole link
+---@return string? reference_url decoded destination for a resolved reference
+function M.link_bounds(text, start, ref_links, source_label)
+  local result = scan(text, ref_links, start, source_label)
+  return result.suffix_start, result.link_end, result.reference_url
 end
 
 --- Pick a marker absent from the source, even after source fragments are joined.

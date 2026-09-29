@@ -349,9 +349,9 @@ end
 
 -- Existing Obsidian comments and fenced code cannot lend syntax to HTML blocks.
 for _, hidden in ipairs { "<!-- unterminated", "```lua", "<b>" } do
-  local c = build { "%%", hidden, "%%", "*visible*", "[ref]: https://visible.example", "[ref]" }
-  assert_eq(c.lines, { "visible", "ref" }, "syntax inside an Obsidian comment cannot hide following Markdown")
-  assert_eq(c.source_line_map, { 4, 6 }, "leaving an Obsidian comment restores source mapping")
+  local c = build { "%%", hidden, "%%", "*visible*", "", "[ref]: https://visible.example", "[ref]" }
+  assert_eq(c.lines, { "visible", "", "ref" }, "syntax inside an Obsidian comment cannot hide following Markdown")
+  assert_eq(c.source_line_map, { 4, 5, 7 }, "leaving an Obsidian comment restores source mapping")
   assert_eq(c.link_metadata[1].url, "https://visible.example", "outside reference definitions remain visible")
   c = build { "%%", hidden, "%%", "[^a]: visible", "text[^a]" }
   assert_eq(c.lines[#c.lines], "¹ visible", "outside footnotes survive hidden syntax in Obsidian comments")

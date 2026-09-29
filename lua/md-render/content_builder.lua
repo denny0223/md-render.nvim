@@ -1241,33 +1241,7 @@ local function is_list_item(line)
   return not is_thematic_break(line)
 end
 
---- Check if a line starts a block-level construct (not a paragraph continuation)
----@param line string
----@param in_paragraph boolean whether a paragraph is currently open
----@return boolean
-local function is_block_start(line, in_paragraph)
-  if line:match "^%s*$" then return true end
-  if line:match "^#+%s" then return true end
-  if line:match "^%s*|" then return true end
-  if line:match "^%s*[%-%*%+]%s" then return true end
-  if line:match "^%s*%d+[%.)]%s" then return true end
-  if line:match "^>" then return true end
-  if line:match "^%s*[-_*]%s*[-_*]%s*[-_*]" then return true end
-  if line:match "^[=-]+%s*$" then return true end
-  if line:match "^%[.+%]:" then return true end
-  if line:match "^%[%^.+%]:" then return true end
-  if line:match "^%[!%a+%]" then return true end -- callout header (marker already stripped)
-  if line:match "^%s*<" then return true end
-  if line:match "^%s*!%[" then return true end
-  if line:match "^%$%$$" then return true end
-  if line:match "^%%%%" then return true end
-  if line:match "^:::" then return true end
-  -- Indented code block (4+ spaces). Per CommonMark it cannot interrupt a
-  -- paragraph, so while one is open the line is a continuation instead --
-  -- this is what keeps deeply indented list continuations joined.
-  if not in_paragraph and line:match "^    %S" then return true end
-  return false
-end
+local is_block_start = require("md-render.markdown").is_block_start
 
 --- Check if a line ends with a CommonMark hard line break marker
 --- (two or more trailing spaces, or a trailing backslash).
@@ -1459,6 +1433,7 @@ end
 ---@param fence_containers table<integer, integer> quote-local list columns at fence openings
 ---@param comments table<integer, {suffix: string, prefix: string}> comment-owned source rows
 ---@param quote_prefix? string display prefix of the current quote container
+---@param reference_defs? table<integer, boolean> consumed original source rows
 ---@return string[] result, integer[] result_indices
 local function join_paragraph_continuations(
   lines,
@@ -1468,7 +1443,8 @@ local function join_paragraph_continuations(
   source_columns,
   fence_containers,
   comments,
-  quote_prefix
+  quote_prefix,
+  reference_defs
 )
   --- Container a quote line belongs to, as its display indent.
   local function quote_container(idx)
@@ -1481,6 +1457,7 @@ local function join_paragraph_continuations(
   local para_indices = {}
   local item_cols = {}
   local open_fence = nil
+  local in_math = false
   local comment_state
   local comment_indent = 0
 
@@ -1521,6 +1498,14 @@ local function join_paragraph_continuations(
 
     do
       local column = source_columns and source_columns[src] or 0
+      local math_boundary = not quote_prefix and not open_fence and not comment_state and line:match "^%$%$$"
+      if math_boundary then in_math = not in_math end
+      if in_math or math_boundary then
+        flush_para()
+        table.insert(result, line)
+        table.insert(result_indices, src)
+        goto next_line
+      end
       local was_in_comment = comment_state ~= nil
       local comment_suffix
       if not open_fence then
@@ -1550,6 +1535,10 @@ local function join_paragraph_continuations(
       open_fence, is_fence, line = fence_mod.step(open_fence, line, column, base)
       if is_fence and open_fence then fence_containers[src] = open_fence.container end
       local in_code = open_fence ~= nil
+      if not in_code and reference_defs and reference_defs[src] then
+        flush_para()
+        goto next_line
+      end
 
       -- A blockquote is a container of block content: strip one marker level
       -- off the whole run and recurse, so paragraphs (and list items) inside
@@ -1578,7 +1567,8 @@ local function join_paragraph_continuations(
           inner_columns,
           fence_containers,
           comments,
-          (quote_prefix or "") .. "│ "
+          (quote_prefix or "") .. "│ ",
+          reference_defs
         )
         for k, joined_line in ipairs(joined) do
           local marker = markers[joined_src[k]] or "> "
@@ -1640,6 +1630,9 @@ local function preprocess_multiline_html(lines, src_indices)
   local open_fence = nil
   local comment_state
   local comments = {}
+  -- A definition's angle destination is not an opening HTML tag. This pass
+  -- only protects syntax; the final collector uses the literal/comment mask.
+  local _, definition_rows = require("md-render.markdown").parse_reference_links(lines)
 
   for idx, l in ipairs(lines) do
     local src = src_indices[idx]
@@ -1670,7 +1663,7 @@ local function preprocess_multiline_html(lines, src_indices)
     else
       open_fence = fence_mod.step(open_fence, l)
       if not open_fence then
-        local tag_name = l:match "^%s*<(%a%w*)[%s>]"
+        local tag_name = not definition_rows[idx] and l:match "^%s*<(%a%w*)[%s>]"
         if tag_name then
           local lower_tag = tag_name:lower()
           if not HTML_SKIP_TAGS[lower_tag] and not HTML_VOID_ELEMENTS[lower_tag] and not l:match "/>%s*$" then
@@ -1829,7 +1822,12 @@ function ContentBuilder:render_document(lines, opts)
   lines, container_indents, source_columns = strip_container_indent(lines)
   lines, src_indices, comments = preprocess_multiline_html(lines, src_indices)
   local code_lines = fenced_code_lines(lines, src_indices, container_indents, source_columns, comments)
-  local ref_links = markdown.parse_reference_links(definition_lines(lines, src_indices, comments, code_lines))
+  local ref_links, consumed_refs =
+    markdown.parse_reference_links(definition_lines(lines, src_indices, comments, code_lines))
+  local reference_defs = {}
+  for index in pairs(consumed_refs) do
+    reference_defs[src_indices[index]] = true
+  end
   lines, src_indices = join_paragraph_continuations(
     lines,
     src_indices,
@@ -1837,7 +1835,9 @@ function ContentBuilder:render_document(lines, opts)
     ref_links,
     source_columns,
     fence_containers,
-    comments
+    comments,
+    nil,
+    reference_defs
   )
   lines = markdown.renumber_ordered_lists(lines, code_lines, src_indices)
   -- renumber_ordered_lists rewrites text but keeps line count, so
@@ -2162,9 +2162,6 @@ function ContentBuilder:render_document(lines, opts)
       end
       goto continue
     end
-
-    -- Skip reference link definition lines
-    if not in_code_block and markdown.is_reference_link_def(line) then goto continue end
 
     -- Skip footnote definition lines (rendered in footnote section at end)
     if not in_code_block and markdown.is_footnote_def(line) then goto continue end
@@ -2691,12 +2688,8 @@ function ContentBuilder:render_document(lines, opts)
       local skip = prev_was_heading or prev_was_hr
       if not skip then
         for k = src_idx + 1, #lines do
-          -- Skip blank lines, reference link definitions, and footnote definitions (not rendered)
-          if
-            not lines[k]:match "^%s*$"
-            and not markdown.is_reference_link_def(lines[k])
-            and not markdown.is_footnote_def(lines[k])
-          then
+          -- References were consumed before joining; skip blanks and footnotes.
+          if not lines[k]:match "^%s*$" and not markdown.is_footnote_def(lines[k]) then
             -- Check ATX heading or setext heading (text followed by === or ---)
             skip = lines[k]:match "^#+%s+" ~= nil
             if not skip then skip = is_thematic_break(lines[k]) end

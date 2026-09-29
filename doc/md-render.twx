@@ -918,7 +918,9 @@ Markdown.parse_footnotes({lines}) ~
 
                                             *Markdown.parse_reference_links()*
 Markdown.parse_reference_links({lines}) ~
-	從 Markdown 文字行剖析參照連結定義。
+	剖析參照連結定義，採用第一個有效定義。標籤會正規化空格、Tab 與換行。
+	回傳標籤至 URL 的對照表，以及已消耗輸入行號的集合（從 1 起算）。
+	多行與引用內的有效定義即使未使用也會隱藏；無效定義保留為 Markdown。
 
                                            *Markdown.renumber_ordered_lists()*
 Markdown.renumber_ordered_lists({lines}) ~

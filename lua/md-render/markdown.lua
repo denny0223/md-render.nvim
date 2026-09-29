@@ -483,6 +483,8 @@ local function map_display_text(text, transform)
     elseif comment_end then
       -- A link-looking sequence inside a comment is not a link boundary.
       i = comment_end
+    elseif c == "<" and inline.autolink_end(text, i) then
+      i = inline.autolink_end(text, i)
     elseif c == "[" then
       local first, last = link_bounds(text, i)
       if last then
@@ -514,6 +516,31 @@ local function collapse_spaces(text, highlights, links, prefix)
     end)
   adjust_positions(highlights, links, removals, #highlights, #links)
   return collapsed
+end
+
+--- Angle and www autolinks own their source bytes before other inline syntax.
+local function protect_autolinks(text, source, ref_links, source_label)
+  local spans, pieces, pos = {}, {}, 1
+  local prefix = inline.token_prefix(source .. text, 0xF1006)
+  for _, range in ipairs(inline.autolinks(text, ref_links, source_label)) do
+    local token = prefix .. (#spans + 1) .. "\u{F1007}"
+    local raw = text:sub(range.start, range.finish)
+    local label = range.angle and raw:sub(2, -2) or raw
+    local url = range.angle and (label:match "^[A-Za-z][A-Za-z0-9.+-]*:" and label or "mailto:" .. label)
+      or "http://" .. label
+    spans[#spans + 1] = { placeholder = token, content = raw, raw = raw, label = label, url = url }
+    pieces[#pieces + 1] = text:sub(pos, range.start - 1) .. token
+    pos = range.finish + 1
+  end
+  pieces[#pieces + 1] = text:sub(pos)
+  return table.concat(pieces), spans
+end
+
+local function overlaps_link(links, first, last)
+  for _, link in ipairs(links) do
+    if first < link.col_end and last > link.col_start then return true end
+  end
+  return false
 end
 
 --- Keep destination colors in the inline stack, before nested emphasis/code.
@@ -592,10 +619,10 @@ local function truncate_url(url, max_width, literals)
     local size = span and #span.placeholder or #char
     width = width + vim.api.nvim_strwidth(char)
     if width <= target then cut = pos + size - 1 end
-    if width > max_width then return url:sub(1, cut) .. "…", cut end
+    if width > max_width then return url:sub(1, cut) .. "…" end
     pos = pos + size
   end
-  return url, #url
+  return url
 end
 
 --- Keep the established HTTP boundary for decoded tokens and Unicode symbols.
@@ -617,86 +644,97 @@ local function trim_autolink(url, literals)
   return url
 end
 
---- Process bare URLs: detect standalone URLs, truncate for display, add link metadata with full URL
+local function bare_autolink(text, start, literals, code_spans, angle_spans)
+  local previous = text:sub(start - 1, start - 1)
+  -- Retain existing HTTP(S) support for single-label hosts and adjacent prose.
+  local scheme = text:match("^(https?://)", start)
+  if scheme then
+    local url = text:match('^[^%s<>"`]+', start)
+    for _, spans in ipairs { code_spans, angle_spans } do
+      if #spans > 0 then
+        local first = url:find(spans[1].placeholder:gsub("%d+", "%%d+"))
+        if first then url = url:sub(1, first - 1) end
+      end
+    end
+    url = trim_autolink(url, literals)
+    return url, url
+  end
+
+  -- Email addresses are recognized within text, with their own ASCII alphabet.
+  if previous:find "[A-Za-z0-9._+%-]" then return end
+  local protocol = text:match("^(mailto:)", start) or text:match("^(xmpp:)", start) or ""
+  local address = text:match("^[A-Za-z0-9._+%-]+@[A-Za-z0-9_.%-]+", start + #protocol)
+  if not address then return end
+  address = address:gsub("%.+$", "")
+  local domain = address:match "@(.+)$"
+  if
+    not domain
+    or domain:sub(1, 1) == "."
+    or not domain:find(".", 1, true)
+    or domain:find("..", 1, true)
+    or not domain:match "[A-Za-z0-9]$"
+  then
+    return
+  end
+  local label = protocol .. address
+  if protocol == "xmpp:" then label = label .. (text:match("^/[A-Za-z0-9@.]+", start + #label) or "") end
+  return label, protocol == "" and "mailto:" .. address or label
+end
+
+--- Recognize autolinks once, preserving their labels through later formatting.
 ---@param text string
 ---@param max_url_width integer
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
 ---@return string processed
-local function process_bare_urls(text, max_url_width, highlights, links, literals, code_spans)
-  if not text:find "https?://" then return text end
+local function process_bare_urls(text, max_url_width, highlights, links, literals, code_spans, spans, source)
   local pre_hl_count = #highlights
   local pre_link_count = #links
+  local existing_links = vim.list_slice(links)
+  -- Remaining raw HTML is displayed dimly, but its attributes are not text nodes.
+  for _, hl in ipairs(highlights) do
+    if hl.hl == "Comment" then existing_links[#existing_links + 1] = { col_start = hl.col, col_end = hl.end_col } end
+  end
+  local prefix = spans[1] and spans[1].placeholder:match "^(.-)%d+" or inline.token_prefix(source .. text, 0xF1006)
+  local protected = {}
+  for _, span in ipairs(spans) do
+    protected[span.placeholder] = span
+  end
+  local pattern = spans[1] and spans[1].placeholder:gsub("%d+", "%%d+")
   local processed = ""
   local i = 1
-  local adjustments = {}
+  local removals = {}
 
   while i <= #text do
-    -- CommonMark autolink: <https://example.com>. The angle brackets are
-    -- delimiters only and must not appear in the rendered output.
-    local handled_autolink = false
-    if text:sub(i, i) == "<" then
-      local _, lt_e, captured = text:find("^<(https?://[^>%s]+)>", i)
-      if captured then
-        handled_autolink = true
-        local start_col = #processed
-        local display_url, byte_pos = truncate_url(captured, max_url_width, literals)
-        table.insert(adjustments, { input_pos = i, delta = 1 })
-        if byte_pos < #captured then
-          table.insert(adjustments, { input_pos = i + byte_pos, delta = #captured - byte_pos - #"…" })
-        end
-        table.insert(adjustments, { input_pos = i + 1 + #captured, delta = 1 })
-        processed = processed .. display_url
-        add_link_highlight(highlights, start_col, start_col + #display_url, captured)
-        table.insert(links, { col_start = start_col, col_end = start_col + #display_url, url = captured })
-        i = lt_e + 1
-      end
+    local token = pattern and text:match("^" .. pattern, i)
+    local literal = token and protected[token]
+    local label, url
+    if literal then
+      label, url = literal.label, literal.url
+    else
+      label, url = bare_autolink(text, i, literals, code_spans, spans)
     end
-    if not handled_autolink then
-      local s, e = text:find('https?://[^%s<>"`]+', i)
-      if s == i then
-        local url_match = text:sub(s, e)
-        -- Code spans terminate a bare URL; their private tokens are never URLs.
-        if #code_spans > 0 then
-          local code_start = url_match:find(code_spans[1].placeholder:gsub("%d+", "%%d+"))
-          if code_start then url_match = url_match:sub(1, code_start - 1) end
-        end
-        local url = trim_autolink(url_match, literals)
-        local start_col = #processed
-        local display_url, byte_pos = truncate_url(url, max_url_width, literals)
-        if byte_pos < #url then
-          table.insert(adjustments, { input_pos = i - 1 + byte_pos, delta = #url - byte_pos - #"…" })
-        end
-
-        processed = processed .. display_url
-        add_link_highlight(highlights, start_col, start_col + #display_url, url)
-        table.insert(links, { col_start = start_col, col_end = start_col + #display_url, url = url })
-        i = i + #url
+    local length = token and #token or label and #label
+    if label and not overlaps_link(existing_links, i - 1, i - 1 + length) then
+      local display_url = truncate_url(label, max_url_width, literal and {} or literals)
+      if literal then
+        literal.content = display_url
       else
-        processed = processed .. text:sub(i, i)
-        i = i + 1
+        token = prefix .. (#spans + 1) .. "\u{F1007}"
+        spans[#spans + 1] = { placeholder = token, content = display_url }
+        removals[#removals + 1] = { start = i - 1 + #token, count = length - #token }
       end
-    end -- if not handled_autolink
-  end
-
-  if #adjustments > 0 then
-    local function adjust(pos)
-      local total_delta = 0
-      for _, adj in ipairs(adjustments) do
-        if pos > adj.input_pos then total_delta = total_delta + adj.delta end
-      end
-      return pos - total_delta
-    end
-    for idx = 1, pre_hl_count do
-      highlights[idx].col = adjust(highlights[idx].col)
-      highlights[idx].end_col = adjust(highlights[idx].end_col)
-    end
-    for idx = 1, pre_link_count do
-      links[idx].col_start = adjust(links[idx].col_start)
-      links[idx].col_end = adjust(links[idx].col_end)
+      local first = #processed
+      processed = processed .. token
+      add_link_highlight(highlights, first, #processed, url)
+      links[#links + 1] = { col_start = first, col_end = #processed, url = url, _decoded = literal ~= nil }
+      i = i + length
+    else
+      processed = processed .. text:sub(i, i)
+      i = i + 1
     end
   end
-
+  adjust_positions(highlights, links, removals, pre_hl_count, pre_link_count)
   return processed
 end
 
@@ -711,7 +749,7 @@ local function process_issue_refs(text, repo_base_url, highlights, links)
   local i = 1
   while i <= #text do
     local s, e = text:find("#%d+", i)
-    if s == i then
+    if s == i and not overlaps_link(links, s - 1, e) then
       local issue_num = text:match("#(%d+)", i)
       local issue_text = "#" .. issue_num
       local url = repo_base_url .. "/issues/" .. issue_num
@@ -752,6 +790,7 @@ local function process_autolink_refs(text, autolinks, highlights, links)
         end
         if value and #value > 0 then
           local ref_text = prefix .. value
+          if overlaps_link(links, i - 1, i - 1 + #ref_text) then break end
           local url = autolink.url_template:gsub("<num>", value)
           local start_col = #processed
           processed = processed .. ref_text
@@ -1359,12 +1398,13 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   -- no markdown-significant characters.  This dramatically speeds up rendering
   -- of large documents (e.g. classical Chinese texts) where most lines are
   -- pure prose with no formatting.
-  local needs_inline = rendered_text:find "[%*_~`%[<>=!$\\&#%%]"
+  local needs_inline = rendered_text:find "[%*_~`%[<>=!$\\&#%%@]"
     or rendered_text:find "https?://"
+    or rendered_text:find("www.", 1, true)
     or (autolinks and #autolinks > 0)
     or (footnote_map and next(footnote_map) and rendered_text:find "%[%^")
   -- Declare locals before the fast-path goto so they are in scope at ::finalize::
-  local backslash_escapes, entity_spans
+  local backslash_escapes, entity_spans, autolink_spans
   local decode_url, source_label
 
   if not needs_inline and #code_spans == 0 then
@@ -1373,6 +1413,9 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     goto finalize
   end
 
+  rendered_text, autolink_spans = protect_autolinks(rendered_text, text, ref_links, function(label)
+    return restore_source(restore_source(label, code_spans), invalid_destinations)
+  end)
   rendered_text, entity_spans = protect_entities(rendered_text, text)
   if rendered_text:find("<!--", 1, true) or rendered_text:find("%%", 1, true) then
     rendered_text = map_display_text(rendered_text, function(part)
@@ -1385,6 +1428,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     return restore_spans(restore_spans(url, backslash_escapes), entity_spans)
   end
   source_label = function(label)
+    label = restore_source(label, autolink_spans)
     return restore_source(
       restore_source(restore_source(restore_source(label, entity_spans), backslash_escapes), code_spans),
       invalid_destinations
@@ -1409,7 +1453,9 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     highlights,
     links,
     { backslash_escapes, entity_spans },
-    code_spans
+    code_spans,
+    autolink_spans,
+    text
   )
   if repo_base_url then rendered_text = process_issue_refs(rendered_text, repo_base_url, highlights, links) end
   if autolinks and #autolinks > 0 then
@@ -1433,6 +1479,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   -- Validate labels in their original spelling before display-space collapse.
   -- Code and entities remain protected, and generated checkbox padding stays.
   rendered_text = collapse_spaces(rendered_text, highlights, links, checkbox_hl and #list_marker or 0)
+  rendered_text = restore_spans(rendered_text, autolink_spans, nil, highlights, links)
   rendered_text = restore_spans(rendered_text, backslash_escapes, nil, highlights, links)
   rendered_text = restore_spans(rendered_text, code_spans, "MdRenderInlineCode", highlights, links)
   rendered_text = restore_spans(rendered_text, entity_spans, nil, highlights, links)

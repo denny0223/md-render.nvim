@@ -23,7 +23,7 @@ function M.autolink_end(text, start)
   local finish = text:find(">", start + 1, true)
   if not finish then return end
   local value = text:sub(start + 1, finish - 1)
-  if value:find "[<>%z\1-\32]" then return end
+  if value:find "[<>%z\1-\32\127]" then return end
   local scheme = value:match "^([A-Za-z][A-Za-z0-9.+-]*):"
   if scheme and #scheme >= 2 and #scheme <= 32 then return finish end
   local domain = value:match "^[A-Za-z0-9.!#$%%&'*+/=?^_`{|}~%-]+@(.+)$"
@@ -48,6 +48,20 @@ function M.trim_autolink(url)
     end
   until previous == url
   return url
+end
+
+local function www_end(text, start, source_label)
+  local before = text:sub(1, start - 1)
+  if source_label then before = source_label(before) end
+  if before ~= "" and not before:sub(-1):find "[%s*_~(]" then return end
+  -- A www segment inside an existing HTTP URL belongs to that URL.
+  if before:match 'https?://[^%s<>"`]*$' then return end
+  local url = M.trim_autolink(text:match("^[^%s<]+", start))
+  local domain = url:match "^[A-Za-z0-9_.%-]+"
+  if not domain or domain:find("..", 1, true) then return end
+  local penultimate, last = domain:match "([^.]+)%.([^.]+)$"
+  if not last or last:find("_", 1, true) or penultimate:find("_", 1, true) then return end
+  return start + #url - 1
 end
 
 --- HTML and code have equal precedence: the first complete construct wins.
@@ -260,8 +274,16 @@ end
 
 --- Scan one already-parsed paragraph; block boundaries are the caller's job.
 local function scan(text, refs, wanted_link, source_label)
-  local spans, brackets, invalid_destinations = {}, {}, {}
+  local spans, brackets, autolinks, invalid_destinations = {}, {}, {}, {}
   local runs
+  local has_angle_link = false
+  local function note_angle_link()
+    if #brackets > 0 then
+      brackets[#brackets].angle_link = true
+    else
+      has_angle_link = true
+    end
+  end
   local pos = wanted_link or 1
   while pos <= #text do
     local c = text:sub(pos, pos)
@@ -273,7 +295,33 @@ local function scan(text, refs, wanted_link, source_label)
       if finish then spans[#spans + 1] = { start = pos, finish = finish, ticks = ticks } end
       pos = (finish or run_end) + 1
     elseif c == "<" then
-      local finish = M.autolink_end(text, pos) or M.html_end(text, pos)
+      local finish = M.autolink_end(text, pos)
+      if finish then
+        autolinks[#autolinks + 1] = { start = pos, finish = finish, angle = true }
+        note_angle_link()
+      end
+      finish = finish or M.html_end(text, pos)
+      pos = (finish or pos) + 1
+    elseif not wanted_link and text:sub(pos, pos + 3) == "www." then
+      local finish = www_end(text, pos, source_label)
+      -- Autolinks apply to text nodes, never a resolved link/image label.
+      -- Reuse the same bracket scanner; lookahead disables www recognition.
+      if finish then
+        for _, bracket in ipairs(brackets) do
+          if bracket.link == nil then
+            local lookahead = scan(text, refs, bracket.start, source_label)
+            bracket.link = lookahead.suffix_start ~= nil
+              or (
+                text:sub(bracket.start, bracket.start + 1) == "[[" and text:find("]]", bracket.start + 2, true) ~= nil
+              )
+          end
+          if bracket.link then
+            finish = nil
+            break
+          end
+        end
+      end
+      if finish then autolinks[#autolinks + 1] = { start = pos, finish = finish } end
       pos = (finish or pos) + 1
     elseif text:sub(pos, pos + 1) == "%%" then
       -- Obsidian comments, like HTML comments, cannot open code spans.
@@ -283,11 +331,21 @@ local function scan(text, refs, wanted_link, source_label)
       for _, bracket in ipairs(brackets) do
         bracket.nested = true
       end
-      local image = c == "!"
-      brackets[#brackets + 1] = { start = pos + (image and 1 or 0), image = image, active = true }
-      pos = pos + (image and 2 or 1)
+      local image_marker = c == "!"
+      -- link_bounds() starts at [, so recover a preceding unescaped image marker.
+      local preceding_escape = wanted_link == pos and text:sub(1, pos - 1):match "(\\*)!$" or nil
+      local image = image_marker or (preceding_escape ~= nil and #preceding_escape % 2 == 0)
+      brackets[#brackets + 1] = { start = pos + (image_marker and 1 or 0), image = image, active = true }
+      pos = pos + (image_marker and 2 or 1)
     elseif c == "]" and #brackets > 0 then
       local bracket = table.remove(brackets)
+      if source_label then
+        local label = text:sub(bracket.start + 1, pos - 1)
+        local original = source_label(label)
+        -- Protected text must retain the same ownership as its source label.
+        if original ~= label and scan(original, refs).has_angle_link then bracket.angle_link = true end
+      end
+      if bracket.angle_link and not bracket.image then bracket.active = false end
       local finish = bracket.active and M.link_end(text, pos + 1) or nil
       if not finish and text:sub(pos + 1, pos + 1) == "(" then
         invalid_destinations[#invalid_destinations + 1] = pos + 1
@@ -305,6 +363,9 @@ local function scan(text, refs, wanted_link, source_label)
         matched = url ~= nil
         if matched then finish = ref_end or pos end
       end
+      -- Images may contain links in their description; a valid image consumes
+      -- that ownership, while literal brackets leave the inner autolink active.
+      if bracket.angle_link and not (bracket.image and matched) then note_angle_link() end
       if wanted_link == bracket.start then
         return { code_spans = spans, suffix_start = matched and pos + 1 or nil, link_end = finish, reference_url = url }
       end
@@ -318,7 +379,21 @@ local function scan(text, refs, wanted_link, source_label)
       pos = pos + 1
     end
   end
-  return { code_spans = spans, invalid_destinations = invalid_destinations }
+  for _, bracket in ipairs(brackets) do
+    if bracket.angle_link then has_angle_link = true end
+  end
+  return {
+    code_spans = spans,
+    autolinks = autolinks,
+    invalid_destinations = invalid_destinations,
+    has_angle_link = has_angle_link,
+  }
+end
+
+--- Source-literal autolinks follow the shared escape, code, comment and link precedence.
+function M.autolinks(text, ref_links, source_label)
+  if not text:find("<", 1, true) and not text:find("www.", 1, true) then return {} end
+  return scan(text, ref_links, nil, source_label).autolinks
 end
 
 --- Raw, matched code ranges: 1-based inclusive byte offsets and delimiter length.

@@ -45,8 +45,11 @@ scrolling using |:MdRender-split|.
 
 Features: ~
 
-- Bare HTTP(S) URLs retain balanced parentheses and exclude trailing
-  punctuation. Shortened labels keep their complete destinations.
+- Autolinks: angle-bracket URI/email, bare HTTP(S), www., email, mailto:
+  and xmpp:. Balanced URL parentheses and full destinations are preserved
+  when long labels are shortened. Angle-link contents and www. URLs retain
+  literal source text. Bare HTTP(S) also accepts single-label hosts and
+  adjacent prose.
 - Rich inline formatting (bold, strikethrough, inline code, links,
   Obsidian`==highlight==`)
 - Tables with box-drawing borders, column alignment, and proportional sizing

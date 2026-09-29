@@ -81,7 +81,7 @@ end
 ---@return MdRender.MarkdownTable.ParsedCell
 local function process_cell(text, repo_base_url, autolinks, ref_links)
   local markdown = require "md-render.markdown"
-  local rendered, highlights, links = markdown.render(text, repo_base_url, autolinks, ref_links)
+  local rendered, highlights, links = markdown.render(text, repo_base_url, autolinks, ref_links, nil, true)
   return {
     text = rendered,
     highlights = highlights,

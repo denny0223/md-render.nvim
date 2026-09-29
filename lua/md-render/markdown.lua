@@ -27,6 +27,18 @@ local character_references = require "md-render.character_references"
 
 local MAX_URL_DISPLAY_WIDTH = 50
 
+--- Parse ATX syntax before interpreting its inline content or container layout.
+---@param line string source line after any container prefix has been removed
+---@return integer? level 1-6, or nil when this is not an ATX heading
+---@return string? content raw inline source; empty string is a valid heading
+function Markdown.parse_atx_heading(line)
+  local markers, content = line:match "^ ? ? ?(#+)(.*)$"
+  if not markers or #markers > 6 or (content ~= "" and not content:match "^[ \t]") then return nil end
+  -- A closing run is unescaped only when whitespace immediately precedes it.
+  content = content:gsub("[ \t]+#+[ \t]*$", "")
+  return #markers, (content:gsub("^[ \t]+", ""):gsub("[ \t]+$", ""))
+end
+
 --- Convert heading text to a URL-safe slug (GitHub-compatible).
 --- Strips inline markdown markers, lowercases, replaces spaces with hyphens.
 ---@param text string raw heading text (after # markers)
@@ -1270,29 +1282,30 @@ end
 ---@param repo_base_url? string Optional repository base URL for issue/PR references
 ---@param autolinks? MdRender.Autolink[] Optional autolink definitions
 ---@param ref_links? table<string, string> Optional reference link definitions (normalized label -> URL)
+---@param footnote_map? table<string, integer>
+---@param inline_only? boolean Leave block markers literal in cells, captions and other inline contexts
 ---@return string rendered_text The rendered plain text
 ---@return MdRender.Markdown.Highlight[] highlights
 ---@return MdRender.Markdown.Link[] links
 ---@return string? special_type Special type like "heading" if applicable
 ---@return string? list_marker List marker if applicable
 ---@return string? alert_type Alert type (NOTE, TIP, etc.) if applicable
-Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_map)
+Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_map, inline_only)
   local rendered_text = text
   local highlights = {}
   local links = {}
 
   -- Heading (# ## ### etc.) - detect level and strip markers, process inline elements below
-  local heading_markers, heading_content = rendered_text:match "^(#+)%s+(.+)$"
-  local heading_level = nil
-  if heading_markers then
-    heading_level = math.min(#heading_markers, 6)
-    rendered_text = heading_content
+  local heading_level, heading_content
+  if not inline_only then
+    heading_level, heading_content = Markdown.parse_atx_heading(rendered_text)
   end
+  if heading_level then rendered_text = heading_content end
 
   -- Blockquote (> ) - extract prefix
   local quote_prefix = ""
   local is_blockquote = false
-  while rendered_text:match "^>%s?" do
+  while not inline_only and not heading_level and rendered_text:match "^>%s?" do
     rendered_text = rendered_text:gsub("^>%s?", "", 1)
     quote_prefix = quote_prefix .. "│ "
     is_blockquote = true
@@ -1342,7 +1355,10 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   end
 
   -- List items (- * + 1. 1)) - detect marker
-  local list_marker = rendered_text:match "^(%s*[-*+]%s)" or rendered_text:match "^(%s*%d+[.)]%s)"
+  local list_marker
+  if not inline_only and not heading_level then
+    list_marker = rendered_text:match "^(%s*[-*+]%s)" or rendered_text:match "^(%s*%d+[.)]%s)"
+  end
 
   -- Checkbox (- [ ] / - [x] / - [X] / - [-]) - replace marker + checkbox with icon
   local checkbox_hl = nil
@@ -1389,10 +1405,12 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   rendered_text = rendered_text:gsub("\r\n", "\n"):gsub("\r", "\n")
   if checkbox_hl then rendered_text = list_marker .. rendered_text:sub(#list_marker + 1):gsub("^ +", "") end
 
-  -- A trailing unescaped backslash is a hard break outside literal code.
-  rendered_text = rendered_text:gsub("(\\+)%s*$", function(slashes)
-    return #slashes % 2 == 1 and slashes:sub(2) or slashes
-  end)
+  -- Only block text can consume a trailing hard-break backslash.
+  if not inline_only and not heading_level then
+    rendered_text = rendered_text:gsub("(\\+)%s*$", function(slashes)
+      return #slashes % 2 == 1 and slashes:sub(2) or slashes
+    end)
+  end
 
   -- Fast path: skip all inline processing for plain text lines that contain
   -- no markdown-significant characters.  This dramatically speeds up rendering
@@ -1591,7 +1609,7 @@ end
 ---@return boolean
 function Markdown.is_block_start(line, in_paragraph)
   if line:match "^%s*$" then return true end
-  if line:match "^#+%s" then return true end
+  if Markdown.parse_atx_heading(line) then return true end
   if line:match "^%s*|" then return true end
   if line:match "^%s*[%-%*%+]%s" then return true end
   if line:match "^%s*%d+[%.)]%s" then return true end

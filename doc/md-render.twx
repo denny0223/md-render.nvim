@@ -929,6 +929,7 @@ Markdown.render({text}, ...) ~
 	  {autolinks}      (table[]|nil) 自動連結規則。
 	  {ref_links}      (table|nil)  參照連結定義。
 	  {footnote_map}   (table|nil)  註腳定義。
+	  {inline_only}    (boolean|nil) 將區塊標記保留為文字，預設 false。
 
 	回傳值：~
 	  {text}        (string)  顯示文字。

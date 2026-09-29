@@ -365,7 +365,7 @@ Kitty >= 0.40 可用 `:MdRender textsize native`，不需圖片依賴。原生�
 
 原生標題換行後，每行占用兩列。捲動或視窗重疊時可能短暫顯示一般文字，重繪成本也較高；Telescope 與 Snacks 選取器預覽不使用原生縮放。疑難排解請見 `:help md-render-text-size`。
 
-**Kitty 經過 tmux：** native 標題支援單一 Kitty client，需設定 `set -g allow-passthrough on`（也支援 Snacks 使用的 `all`）及 `set -g focus-events on`；更改焦點回報設定後請重新 attach。外掛讀取 tmux 的終端辨識與 pane 座標，不改動 tmux 設定，也不向 pane 輸入通道發送版本查詢。只有聚焦的 pane 會放大：popup、copy mode 與失焦時保留一般文字，返回後自動恢復，不切換 backend。外部重繪沿用既有的 500 ms 補繪計時器。
+**Kitty 經過 tmux：** native 標題需要 tmux >= 3.6 提供 popup 焦點事件；舊版保留一般文字。支援單一 Kitty client，需設定 `set -g allow-passthrough on`（也支援 Snacks 使用的 `all`）及 `set -g focus-events on`；更改焦點回報設定後請重新 attach。外掛讀取 tmux 的終端辨識與 pane 座標，不改動 tmux 設定，也不向 pane 輸入通道發送版本查詢。只有聚焦的 pane 會放大：popup、copy mode 與失焦時保留一般文字，返回後自動恢復，不切換 backend。外部重繪沿用既有的 500 ms 補繪計時器。
 
 為避免移動游標時標題閃回一般文字，tmux native 預覽會暫時停用 Neovim 的全域 `termsync`，影響同一個 Neovim 程序中的所有視窗。最後一個有放大標題的預覽關閉或降級後，會恢復先前的值；若你在期間明確修改過，就保留你的設定。tmux 自身仍會批次更新終端畫面。
 

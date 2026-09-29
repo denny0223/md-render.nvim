@@ -51,6 +51,7 @@ def main():
     parser.add_argument("--ssh", action="store_true", help="attach through an isolated loopback OpenSSH server")
     parser.add_argument("--passthrough", choices=("on", "all"), default="on")
     parser.add_argument("--snacks", type=Path, help="installed Snacks checkout for image coexistence checks")
+    parser.add_argument("--expect-plain", action="store_true", help="verify fallback for tmux older than 3.6")
     options = parser.parse_args()
     output = options.output
     if output:
@@ -64,11 +65,15 @@ def main():
 
     def wait_for(check, label):
         deadline = time.monotonic() + 10
-        while not check():
+        while True:
+            result = check()
+            if result:
+                break
             assert time.monotonic() < deadline, label
             time.sleep(.1)
         print("PASS " + label, flush=True)
         checks.append(label)
+        return result
 
     checks = []
     with tempfile.TemporaryDirectory(prefix="md-native-tmux-") as td, ExitStack() as cleanups:
@@ -223,6 +228,17 @@ end})
             nvim = shlex.join(["nvim", "-u", str(init), "-i", "NONE", "--listen", server, str(fixture)])
             pane = tmux("split-window", "-v", "-t", "headings:0.1", "-P", "-F", "#{pane_id}", nvim).strip()
             wait_for(lambda: Path(server).exists(), "Neovim started")
+            if options.expect_plain:
+                for policy in ("native", "auto"):
+                    lua(f"vim.cmd('MdRender textsize {policy}')")
+                    wait_for(lambda: state().get("backend") == "plain" and "tmux >= 3.6" in state()["status"],
+                             f"{policy} explains unsupported popup focus events")
+                    assert not scaled(), "unsupported tmux must not receive enlarged text"
+                    assert all(f"共同 H{level}" in kitty("get-text") for level in range(1, 7))
+                    assert state()["termsync"], "plain fallback must retain synchronized updates"
+                capture("unsupported-tmux")
+                print(f"tmux terminal: {len(checks)} checks passed (plain fallback)", flush=True)
+                return
             try:
                 wait_for(lambda: state().get("drawn") == 6 and six_levels() and inside_pane(), "six distinct scales within bottom-right pane")
             except AssertionError:
@@ -344,7 +360,7 @@ end})
             kitty("focus-window", "--match", "all")
             wait_for(lambda: state().get("backend") == "native" and six_levels(), "single-client recovery after another client leaves")
             tmux("new-session", "-d", "-t", "headings", "-s", "grouped")
-            assert tmux("display-message", "-p", "-t", pane, "#{window_linked_sessions}").strip() == "1"
+            assert tmux("display-message", "-p", "-t", pane, "#{session_grouped}").strip() == "1"
             wait_for(lambda: state().get("backend") == "plain" and not scaled(), "grouped sessions cannot bypass the linked-window guard")
             capture("10-grouped-sessions")
             tmux("kill-session", "-t", "grouped")
@@ -451,12 +467,14 @@ end})
 
             # Match a target using Kitty's painted cells, independently of the
             # renderer's hit map. Exercise both rows via real Neovim input.
-            for row_offset in (0, 1):
+            def second_link_position():
                 screen = kitty("get-text", "--ansi", "--add-wrap-markers")
-                matches = list(OSC66.finditer(screen))
-                positions = list(scaled_positions(screen))
-                index = next(i for i, match in enumerate(matches) if match[2] == "SECOND")
-                row, col, _, _ = positions[index]
+                for match, position in zip(OSC66.finditer(screen), scaled_positions(screen)):
+                    if match[2] == "SECOND":
+                        return position
+
+            for row_offset in (0, 1):
+                row, col, _, _ = wait_for(second_link_position, "SECOND link is painted before clicking")
                 ctx = state()["context"]
                 y, x = row - ctx["top"] + row_offset, col - ctx["left"] + 2
                 lua(f"vim.api.nvim_input_mouse('left','press','',0,{y},{x})")

@@ -43,6 +43,7 @@ Mock-based tests that verify Kitty Graphics Protocol escape sequences without re
 - `atx_headings_test.lua` -- ATX boundaries, empty headings, source mappings, inline ranges and anchor activation through plain/native/image layouts and public preview rebuilds
 - `markdown_checkbox_test.lua` -- Checkbox rendering
 - `html_table_test.lua` -- HTML table parsing
+- `markdown_table_test.lua` -- Optional outer pipes, table boundaries, cell ranges and source mappings through real buffer application
 
 Tests monkey-patch `vim.api.nvim_ui_send` to capture the bytes the image module would emit (mirrors Neovim's own `test/functional/ui/img_spec.lua`). The image module also exposes `_set_kitty_supported` and `_reset_image_id` for state control.
 

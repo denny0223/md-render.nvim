@@ -11,19 +11,18 @@
 
 local MarkdownTable = {}
 local wrap_mod = require "md-render.wrap"
+local fence_mod = require "md-render.fence"
+local inline = require "md-render.inline"
 
 --- Split a table row into cell strings (trim leading/trailing whitespace)
 ---@param line string
 ---@return string[]|nil cells or nil if not a valid table row
 local function split_row(line)
-  -- Strip leading whitespace, then expect |
-  local stripped = line:match "^%s*(.*)" or line
-  if stripped:sub(1, 1) ~= "|" then return nil end
-  -- Remove leading and trailing |
-  local inner = stripped:match "^|(.*)$"
-  if not inner then return nil end
-  -- Remove trailing | if present (but not escaped \|)
-  if inner:sub(-1) == "|" and inner:sub(-2, -2) ~= "\\" then inner = inner:sub(1, -2) end
+  local inner = line:match "^%s*(.-)%s*$"
+  if inner == "" then return nil end
+  -- Outer pipes are optional. The scanner consumes a trailing pipe as the
+  -- last cell's delimiter, while an escaped pipe remains cell content.
+  if inner:sub(1, 1) == "|" then inner = inner:sub(2) end
   local cells = {}
   local pos = 1
   while pos <= #inner do
@@ -71,6 +70,58 @@ local function parse_separator(line)
     end
   end
   return alignments
+end
+
+--- A table ends at a blank line or another block, not an inline construct.
+---@param line string
+---@return boolean
+function MarkdownTable.is_body_row(line)
+  local indent, text = line:match "^([ \t]*)(.*)$"
+  if fence_mod.indent_columns(indent) >= 4 or text == "" then return false end
+  if text:sub(1, 1) == "|" then return true end
+  if fence_mod.opening(line) then return false end
+  -- Images, autolinks and inline HTML remain cell content. Complete HTML
+  -- tags on their own line and block tags still end the table.
+  if text:sub(1, 1) == "<" then
+    if text:match "^<%?" or text:match "^<!%-%-" or text:match "^<![A-Za-z]" or text:sub(1, 9) == "<![CDATA[" then
+      return false
+    end
+    local tag = text:lower():match "^</?([a-z][a-z0-9%-]*)[%s/>]"
+    local block_tags =
+      " address article aside base basefont blockquote body caption center col colgroup dd details dialog dir div dl dt fieldset figcaption figure footer form frame frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu menuitem nav noframes ol optgroup option p param pre script search section source style summary table tbody td textarea tfoot th thead title tr track ul "
+    if tag and block_tags:find(" " .. tag .. " ", 1, true) then return false end
+    local finish = inline.html_end(text, 1)
+    return not (finish and text:sub(finish + 1):match "^%s*$")
+  end
+  if text:match "^!%[" or text:match "^=+%s*$" then return true end
+  if text:match "^[%-%*%+]%s*$" then return false end
+  local digits, tail = text:match "^(%d+)[.)](.*)$"
+  if digits and (tail == "" or tail:match "^[ \t]") then return #digits > 9 end
+  -- The paragraph boundary helper also recognizes Setext underlines and
+  -- loose thematic-break prefixes; neither can end a table unless it is
+  -- an actual thematic break or list item.
+  if text:match "^[%-_*]%s*[%-_*]" then
+    local compact = text:gsub("%s", "")
+    if #compact >= 3 and compact == string.rep(compact:sub(1, 1), #compact) then return false end
+    return not text:match "^[%-%*]%s"
+  end
+  return not require("md-render.markdown").is_block_start(text, false)
+end
+
+--- Validate the header and delimiter together before collecting table rows.
+---@param header string
+---@param separator? string
+---@return string[]? cells
+---@return string[]? alignments
+function MarkdownTable.parse_header(header, separator)
+  -- Plain dashes retain Setext-heading precedence, even after a piped header.
+  if not separator or separator:match "^%s*%-+%s*$" then return nil end
+  if not MarkdownTable.is_body_row(separator) then return nil end
+  local alignments = parse_separator(separator)
+  if not alignments or not MarkdownTable.is_body_row(header) then return nil end
+  local cells = split_row(header)
+  if not cells or #cells ~= #alignments then return nil end
+  return cells, alignments
 end
 
 --- Process a cell's text through markdown.render() for inline formatting
@@ -231,16 +282,8 @@ end
 function MarkdownTable.parse(lines, repo_base_url, autolinks, ref_links)
   if #lines < 2 then return nil end
 
-  -- Line 1: header row
-  local header_cells = split_row(lines[1])
-  if not header_cells or #header_cells == 0 then return nil end
-
-  -- Line 2: separator row
-  local alignments = parse_separator(lines[2])
-  if not alignments then return nil end
-
-  -- Column count must match
-  if #header_cells ~= #alignments then return nil end
+  local header_cells, alignments = MarkdownTable.parse_header(lines[1], lines[2])
+  if not header_cells then return nil end
 
   -- Process header cells
   local headers = {}
@@ -251,6 +294,7 @@ function MarkdownTable.parse(lines, repo_base_url, autolinks, ref_links)
   -- Process data rows (line 3+)
   local rows = {}
   for i = 3, #lines do
+    if not MarkdownTable.is_body_row(lines[i]) then break end
     local cells = split_row(lines[i])
     if not cells then break end
     local row = {}
@@ -285,7 +329,7 @@ function MarkdownTable.parse(lines, repo_base_url, autolinks, ref_links)
     alignments = alignments,
     rows = rows,
     col_widths = col_widths,
-    _raw_lines = lines,
+    _raw_lines = vim.list_slice(lines, 1, #rows + 2),
     empty_header = empty_header,
   }
 end

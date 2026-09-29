@@ -87,6 +87,23 @@ test("an unresolved link returns no optional byte position", function()
   eq({ first, last, url }, {}, "missing bounds use nil, not a boolean")
 end)
 
+test("forwarded reference results do not enable inline-only rendering", function()
+  local source = { "[r]: /url" }
+  local refs = markdown.parse_reference_links(source)
+  local captured = { markdown.render("# [r]", nil, nil, refs) }
+  eq(captured[1], "r", "heading text")
+  eq(captured[4], "heading", "captured reference retains heading metadata")
+  eq(
+    { markdown.render("# [r]", nil, nil, markdown.parse_reference_links(source)) },
+    captured,
+    "additional reference results cannot become a boolean option"
+  )
+  eq({ markdown.render("# [r]", nil, nil, refs, nil, false) }, captured, "explicit false retains heading parsing")
+  local text, _, _, kind = markdown.render("# [r]", nil, nil, refs, nil, true)
+  eq(text, "# r", "explicit true keeps the inline marker")
+  eq(kind, nil, "explicit true suppresses heading metadata")
+end)
+
 local definitions = {
   { "same line title", { '[foo]: /url "title"' }, "/url" },
   { "multiline destination", { "[foo]:", "/url" }, "/url" },
@@ -117,6 +134,64 @@ for _, case in ipairs(definitions) do
     eq(link_texts(content), { { "foo", case[3], 1 } }, "target and source mapping")
   end)
 end
+
+test("reference titles cannot define footnotes", function()
+  local content = build { '[ref]: /url "title', "[^note]: hidden footnote", '"', "", "[ref] [^note]" }
+  eq(visible(content), { "ref [^note]" }, "consumed title remains opaque to footnote collection")
+  eq(link_texts(content), { { "ref", "/url", 5 } }, "real reference still resolves on its original row")
+end)
+
+test("multiline reference titles retain table-looking source rows", function()
+  for _, definition in ipairs {
+    { '[ref]: /url "title', "|a|b|", "|---|---|", 'end"' },
+    { "[ref]: /url", "'title", "a|b", "---|---", "end'" },
+  } do
+    local source = vim.list_extend(vim.deepcopy(definition), { "", "[ref] [**標題**][ref]" })
+    local content = build(source)
+    eq(content.lines, { "", "ref 標題" }, "definition does not become a table")
+    eq(content.source_line_map, { #source - 1, #source }, "definition removal preserves physical source rows")
+    eq(link_texts(content), { { "ref", "/url", #source }, { "標題", "/url", #source } }, "both references resolve")
+    local bold = {}
+    for _, group in ipairs(content.highlights) do
+      for _, hl in ipairs(group.groups) do
+        if hl.hl == "Bold" then bold[#bold + 1] = { group.line, hl.col, hl.end_col } end
+      end
+    end
+    eq(bold, { { 1, 4, 10 } }, "Unicode label retains its exact bold bytes")
+  end
+end)
+
+test("a completed reference title still permits a later table", function()
+  local source = {
+    '[ref]: /url "title',
+    "|a|b|",
+    "|---|---|",
+    'end"',
+    "",
+    "[other]: /other",
+    "|real|[**標題**][ref]|",
+    "|---|---|",
+    "[ref]|tail",
+    "",
+    "[ref] [other]",
+  }
+  local content = build(source)
+  eq(content.lines, {
+    "",
+    "│ real │ 標題 │",
+    "│──────│──────│",
+    "│ ref  │ tail │",
+    "",
+    "ref other",
+  }, "only the later table renders")
+  eq(content.source_line_map, { 5, 7, 8, 9, 10, 11 }, "later table retains each physical source row")
+  eq(link_texts(content), {
+    { "標題", "/url", 7 },
+    { "ref", "/url", 9 },
+    { "ref", "/url", 11 },
+    { "other", "/other", 11 },
+  }, "definitions remain available inside and after the table")
+end)
 
 test("malformed definitions and unresolved uses remain text", function()
   for _, lines in ipairs {

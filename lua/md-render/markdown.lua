@@ -1291,6 +1291,7 @@ end
 ---@return string? list_marker List marker if applicable
 ---@return string? alert_type Alert type (NOTE, TIP, etc.) if applicable
 Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_map, inline_only)
+  inline_only = inline_only == true
   local rendered_text = text
   local highlights = {}
   local links = {}
@@ -1610,7 +1611,6 @@ end
 function Markdown.is_block_start(line, in_paragraph)
   if line:match "^%s*$" then return true end
   if Markdown.parse_atx_heading(line) then return true end
-  if line:match "^%s*|" then return true end
   if line:match "^%s*[%-%*%+]%s" then return true end
   if line:match "^%s*%d+[%.)]%s" then return true end
   if line:match "^>" then return true end
@@ -1657,8 +1657,9 @@ end
 ---@param lines string[]
 ---@return table<string, string> refs normalized source label to decoded URL
 ---@return table<integer, boolean> consumed 1-based input rows owned by valid definitions
+---@return table<integer, integer> definition_ends definition's first input row to its last
 Markdown.parse_reference_links = function(lines)
-  local refs, consumed = {}, {}
+  local refs, consumed, definition_ends = {}, {}, {}
   local first = 1
   while first <= #lines do
     local parts, starts = {}, {}
@@ -1681,10 +1682,12 @@ Markdown.parse_reference_links = function(lines)
       end
       if finish then
         if refs[label] == nil then refs[label] = link_destination(destination) end
+        local start = first + row - 1
         repeat
           consumed[first + row - 1] = true
           row = row + 1
         until row > #parts or starts[row] > finish
+        definition_ends[start] = first + row - 2
       else
         paragraph = not Markdown.is_block_start(line, paragraph)
         row = row + 1
@@ -1692,7 +1695,7 @@ Markdown.parse_reference_links = function(lines)
     end
     first = last
   end
-  return refs, consumed
+  return refs, consumed, definition_ends
 end
 
 --- Check whether one complete line is a valid reference definition.

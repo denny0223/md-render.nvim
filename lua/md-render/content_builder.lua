@@ -1239,6 +1239,7 @@ local function is_list_item(line)
 end
 
 local is_block_start = require("md-render.markdown").is_block_start
+local markdown_table = require "md-render.markdown_table"
 
 --- Check if a line ends with a CommonMark hard line break marker
 --- (two or more trailing spaces, or a trailing backslash).
@@ -1410,6 +1411,30 @@ local function strip_container_indent(lines)
   return result, indents, columns
 end
 
+-- Return the first row after a validated table, preserving source/container
+-- boundaries before any pass can join cells or reinterpret their contents.
+local function table_end(lines, idx, src_indices, container_indents)
+  local src = src_indices[idx]
+  local container = container_indents and container_indents[src] or ""
+  if
+    not markdown_table.parse_header(lines[idx], lines[idx + 1])
+    or src_indices[idx + 1] ~= src + 1
+    or (container_indents and container_indents[src_indices[idx + 1]] or "") ~= container
+  then
+    return nil
+  end
+  local last = idx + 2
+  while
+    last <= #lines
+    and src_indices[last] == src + last - idx
+    and (container_indents and container_indents[src_indices[last]] or "") == container
+    and markdown_table.is_body_row(lines[last])
+  do
+    last = last + 1
+  end
+  return last
+end
+
 --- Join paragraph continuation rows into source strings, retaining soft breaks.
 --- In CommonMark, consecutive lines that don't start block-level constructs
 --- form a single paragraph. This is needed for inline constructs (like links)
@@ -1577,6 +1602,19 @@ local function join_paragraph_continuations(
         goto next_line
       end
 
+      -- Decide table ownership before paragraph joining can merge the header
+      -- or an unpiped body row. Keep each row's original source boundary.
+      local last_table_row = not in_code and not is_fence and table_end(lines, idx, src_indices, container_indents)
+      if last_table_row then
+        flush_para()
+        for row = idx, last_table_row - 1 do
+          table.insert(result, lines[row])
+          table.insert(result_indices, src_indices[row])
+        end
+        consumed = last_table_row - idx
+        goto next_line
+      end
+
       -- A list item opens a paragraph of its own: the lines that follow it
       -- (indented to its content, or lazily unindented) belong to that same
       -- paragraph, so they must be joined onto the marker line.
@@ -1621,8 +1659,9 @@ end
 --- correct buffer position even after collapse.
 ---@param lines string[]
 ---@param src_indices integer[]  parallel original-line indices for `lines`
----@return string[] result, integer[] result_indices, table comments
-local function preprocess_multiline_html(lines, src_indices)
+---@param container_indents table<integer, string>
+---@return string[] result, integer[] result_indices, table comments, table table_rows
+local function preprocess_multiline_html(lines, src_indices, container_indents)
   local result = {}
   local result_indices = {}
   local accum = nil -- { tag: string, lines: string[], depth: integer, src: integer }
@@ -1630,17 +1669,39 @@ local function preprocess_multiline_html(lines, src_indices)
   local in_math = false
   local comment_state
   local comments = {}
+  local table_rows = {}
+  local reference_end = 0
   -- A definition's angle destination is not an opening HTML tag. This pass
   -- only protects syntax; the final collector uses the literal/comment mask.
-  local _, definition_rows = require("md-render.markdown").parse_reference_links(lines)
+  local _, definition_rows, definition_ends = require("md-render.markdown").parse_reference_links(lines)
 
   for idx, l in ipairs(lines) do
     local src = src_indices[idx]
+    if
+      idx > reference_end
+      and not table_rows[src]
+      and not accum
+      and not open_fence
+      and not comment_state
+      and not in_math
+    then
+      local last = table_end(lines, idx, src_indices, container_indents)
+      if last then
+        for row = idx, last - 1 do
+          table_rows[src_indices[row]] = true
+        end
+      else
+        -- Preserve the existing multiline-title behavior at this GFM collision.
+        -- A definition inside an earlier table cannot reserve later source rows.
+        reference_end = definition_ends[idx] or 0
+      end
+    end
     local comment_suffix
     local math_boundary = not accum and not open_fence and not comment_state and l:match "^%$%$$"
     if math_boundary then in_math = not in_math end
-    -- These rows bypass inline rendering, so keep their original row boundaries.
-    local literal = not accum and not comment_state and (in_math or math_boundary or l:match "^    ")
+    -- Keep literal blocks and individual table cells out of multiline HTML grouping.
+    local literal = table_rows[src]
+      or (not accum and not comment_state and (in_math or math_boundary or l:match "^    "))
     if not literal and not accum and not open_fence then
       comment_state, comment_suffix = block_comment_step(comment_state, l)
     end
@@ -1720,7 +1781,7 @@ local function preprocess_multiline_html(lines, src_indices)
     end
   end
 
-  return result, result_indices, comments
+  return result, result_indices, comments, table_rows
 end
 
 -- Collect literal ownership before references can affect paragraph code-span
@@ -1799,12 +1860,12 @@ local function fenced_code_lines(
 end
 
 -- Keep literal boundaries as blank rows so definitions cannot continue across
--- them. Neither fenced code nor comment content is a document definition.
-local function definition_lines(lines, src_indices, comments, code_lines)
+-- them. Code, comments and table cells cannot define document references.
+local function definition_lines(lines, src_indices, comments, code_lines, table_rows)
   local result = {}
   for i, line in ipairs(lines) do
     local src = src_indices[i]
-    result[i] = (comments[src] or code_lines[src]) and "" or line
+    result[i] = (comments[src] or code_lines[src] or table_rows[src]) and "" or line
   end
   return result
 end
@@ -1825,12 +1886,12 @@ function ContentBuilder:render_document(lines, opts)
   -- can restore it on output.
   local container_indents, source_columns
   local fence_containers = {}
-  local comments
+  local comments, table_rows
   lines, container_indents, source_columns = strip_container_indent(lines)
-  lines, src_indices, comments = preprocess_multiline_html(lines, src_indices)
+  lines, src_indices, comments, table_rows = preprocess_multiline_html(lines, src_indices, container_indents)
   local code_lines = fenced_code_lines(lines, src_indices, container_indents, source_columns, comments)
   local ref_links, consumed_refs =
-    markdown.parse_reference_links(definition_lines(lines, src_indices, comments, code_lines))
+    markdown.parse_reference_links(definition_lines(lines, src_indices, comments, code_lines, table_rows))
   local reference_defs = {}
   for index in pairs(consumed_refs) do
     reference_defs[src_indices[index]] = true
@@ -1846,11 +1907,11 @@ function ContentBuilder:render_document(lines, opts)
     nil,
     reference_defs
   )
-  lines = markdown.renumber_ordered_lists(lines, code_lines, src_indices)
+  lines = markdown.renumber_ordered_lists(lines, vim.tbl_extend("force", code_lines, comments, table_rows), src_indices)
   -- renumber_ordered_lists rewrites text but keeps line count, so
   -- src_indices stays valid.
   local footnote_defs, footnote_map =
-    markdown.parse_footnotes(definition_lines(lines, src_indices, comments, code_lines))
+    markdown.parse_footnotes(definition_lines(lines, src_indices, comments, code_lines, table_rows))
 
   local base_max_width = opts.max_width or 80
   local base_indent = opts.indent or "  "
@@ -2109,6 +2170,28 @@ function ContentBuilder:render_document(lines, opts)
     local indent = base_indent .. container_indent
     local max_width = math.max(1, base_max_width - #container_indent)
 
+    -- An established table owns its delimiter and ordinary body rows before
+    -- HTML, images or Setext detection can reinterpret inline cell content.
+    if #table_buf > 0 then
+      if
+        src_indices[src_idx] == table_buf_start_idx + #table_buf
+        and container_indent == table_buf_indent
+        and (#table_buf == 1 or markdown_table.is_body_row(line))
+      then
+        table.insert(table_buf, line)
+        goto continue
+      end
+      flush_table()
+      if lines_shown >= max_lines then
+        self:add_line(indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
+        truncated = true
+        break
+      end
+      self:add_line(indent)
+      lines_shown = lines_shown + 1
+      prev_rendered_blank = true
+    end
+
     -- Skip setext heading underline
     if skip_next_line then
       skip_next_line = false
@@ -2229,7 +2312,6 @@ function ContentBuilder:render_document(lines, opts)
     local is_blank = line:match "^%s*$" ~= nil
     local atx_level, atx_content = parse_atx_heading(line)
     local is_heading = (not in_code_block) and atx_level ~= nil
-    local is_table_line = (not in_code_block) and line:match "^%s*|" ~= nil
 
     -- Handle <details>/<summary> HTML blocks (outside code blocks)
     if not in_code_block and not in_callout_code_block then
@@ -2670,36 +2752,22 @@ function ContentBuilder:render_document(lines, opts)
     end
     if prev_was_hr and not is_blank then prev_was_hr = false end
 
-    -- Accumulate table lines
-    if is_table_line then
-      if #table_buf == 0 then
-        -- Record the table's original buffer line so flush_table can
-        -- stamp source_line_map with the table itself rather than the
-        -- line that happens to trigger the flush.
-        table_buf_start_idx = src_indices[src_idx]
-        table_buf_indent = container_indent
-        -- Ensure exactly 1 blank line before table
-        if lines_shown > 0 and not prev_rendered_blank then
-          self:add_line(indent)
-          lines_shown = lines_shown + 1
-        end
+    -- Start collecting only after a matching header and delimiter are known.
+    if
+      not in_code_block
+      and not in_callout_code_block
+      and not in_math_block
+      and markdown_table.parse_header(line, lines[src_idx + 1])
+      and src_indices[src_idx + 1] == src_indices[src_idx] + 1
+    then
+      table_buf_start_idx = src_indices[src_idx]
+      table_buf_indent = container_indent
+      if lines_shown > 0 and not prev_rendered_blank then
+        self:add_line(indent)
+        lines_shown = lines_shown + 1
       end
       table.insert(table_buf, line)
       goto continue
-    end
-
-    -- Flush table buffer when a non-table line is encountered
-    if #table_buf > 0 then
-      flush_table()
-      if lines_shown >= max_lines then
-        self:add_line(indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
-        truncated = true
-        break
-      end
-      -- Ensure exactly 1 blank line after table (collapse duplicates below)
-      self:add_line(indent)
-      lines_shown = lines_shown + 1
-      prev_rendered_blank = true
     end
 
     -- Collapse consecutive rendered blank lines (outside regular code blocks)

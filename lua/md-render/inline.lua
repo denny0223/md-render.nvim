@@ -207,7 +207,13 @@ end
 --- Labels retain source escapes/entities; only case and label whitespace fold.
 function M.normalize_reference_label(label)
   label = label:gsub("[ \t\r\n]+", " "):gsub("^ ", ""):gsub(" $", "")
-  return label:lower()
+  if not label:find "[\128-\255]" then return label:lower() end
+  local exceptions = require "md-render.casefold"
+  return (
+    label:gsub("[%z\1-\127\194-\253][\128-\191]*", function(char)
+      return exceptions[char] or vim.fn.tolower(char)
+    end)
+  )
 end
 
 --- Parse a complete definition at a line start; return its final newline byte.

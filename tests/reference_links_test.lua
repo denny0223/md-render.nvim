@@ -184,16 +184,25 @@ test("completed blocks allow definitions while indented paragraph continuation d
   )
   eq(markdown.parse_reference_links { "-     [x]: /code" }, {}, "indented code inside a list is literal")
 end)
-test("labels share whitespace normalization", function()
+test("labels share Unicode folding and whitespace normalization", function()
   for _, case in ipairs {
+    { "ΑΓΩ", "αγω", "αγω" },
+    { "SS", "ẞ", "ss" },
+    { "ß", "SS", "ss" },
+    { "Σ", "ς", "σ" },
+    { "FFI", "ﬃ", "ffi" },
+    { "İ", "i\u{0307}", "i\u{0307}" },
     { "  Foo\t bar  ", "foo bar", "foo bar" },
     { "Foo\n bar", "foo bar", "foo bar" },
   } do
     eq(inline.normalize_reference_label(case[1]), case[3], "normalized definition")
     eq(inline.normalize_reference_label(case[2]), case[3], "normalized use")
     local source = vim.split("[" .. case[1] .. "]: /url\n\n[" .. case[2] .. "]", "\n", { plain = true })
-    eq(link_texts(build(source)), { { case[2], "/url", #source } }, "normalized reference")
+    eq(link_texts(build(source)), { { case[2], "/url", #source } }, "Unicode reference")
   end
+  eq(inline.normalize_reference_label "İ", "i\u{0307}", "dotted I is not plain i")
+  assert(inline.normalize_reference_label "ı" ~= inline.normalize_reference_label "I", "dotless I stays distinct")
+  eq(markdown.render("[i]", nil, nil, markdown.parse_reference_links { "[İ]: /url" }), "[i]", "no false fold")
 end)
 test("full collapsed shortcut and raw escaped labels", function()
   local refs = markdown.parse_reference_links { "[Foo]: /url", "[Foo*bar\\]]:my_(url) 'title'" }
@@ -222,6 +231,12 @@ test("label limits count Unicode characters and retain source spelling", functio
     "x",
     "escape tokens do not inflate source character count"
   )
+  local folded_label = string.rep("a", 998) .. "ß"
+  local folded_refs = markdown.parse_reference_links { "[" .. folded_label .. "]: /url" }
+  for _, suffix in ipairs { "]", "][]" } do
+    local _, _, links = markdown.render("[" .. string.rep("a", 998) .. "ss" .. suffix, nil, nil, folded_refs)
+    eq(links, {}, "1000-character shortcut/collapsed labels cannot match a folded 999-character definition")
+  end
   local spaced_label = string.rep("a", 997) .. "  b"
   local spaced_refs = { [string.rep("a", 997) .. " b"] = "/url" }
   for _, source in ipairs { "[x][" .. spaced_label .. "]", "[" .. spaced_label .. "]", "[" .. spaced_label .. "][]" } do
@@ -248,10 +263,10 @@ test("shared destination scanner retains explicit validation", function()
     eq(links[1].url, "", "empty destination excludes separator whitespace")
   end
 end)
-test("references own label backticks before code scanning", function()
+test("Unicode references own label backticks before code scanning", function()
   local refs = markdown.parse_reference_links { "[SS`label]: /url" }
-  eq(inline.code_spans("[x][ss`label] y`", refs), {}, "reference label owns backtick")
-  local content = build { "[x][ss`label] y`", "", "[SS`label]: /url" }
+  eq(inline.code_spans("[x][ẞ`label] y`", refs), {}, "reference label owns backtick")
+  local content = build { "[x][ẞ`label] y`", "", "[SS`label]: /url" }
   eq(visible(content), { "x y`" }, "same scanner and render resolution")
   eq(link_texts(content), { { "x", "/url", 1 } }, "reference range")
   eq(visible(build { "[foo`][ref]`", "", "[ref]: /url" }), { "[foo][ref]" }, "code takes precedence")

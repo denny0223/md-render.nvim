@@ -462,7 +462,7 @@ end
 --- Inline and reference links share the same destination/title syntax.
 local function link_destination(text)
   local escaped, escapes = escape_backslashes(text)
-  local destination = escaped:match "^%s*<([^>]*)>" or escaped:match "^%s*(%S+)" or escaped
+  local destination = escaped:match "^%s*<([^>]*)>" or escaped:match "^%s*(%S+)" or ""
   return character_references.decode(restore_source(destination, escapes))
 end
 
@@ -470,7 +470,7 @@ local link_bounds = inline.link_bounds
 
 --- Apply display transformations without changing a valid link destination/title.
 local function map_display_text(text, transform)
-  if not text:find("](", 1, true) then return transform(text) end
+  if not text:find("](", 1, true) then return transform(text, 0) end
   local parts, start, i = {}, 1, 1
   while i <= #text do
     local c = text:sub(i, i)
@@ -486,24 +486,34 @@ local function map_display_text(text, transform)
     elseif c == "[" then
       local first, last = link_bounds(text, i)
       if last then
-        parts[#parts + 1] = transform(text:sub(start, first))
+        parts[#parts + 1] = transform(text:sub(start, first), start - 1)
         parts[#parts + 1] = text:sub(first + 1, last)
         start, i = last + 1, last
       end
     end
     i = i + 1
   end
-  parts[#parts + 1] = transform(text:sub(start))
+  parts[#parts + 1] = transform(text:sub(start), start - 1)
   return table.concat(parts)
 end
 
 --- Collapse display spaces while retaining indentation and literal destinations.
-local function collapse_spaces(text)
+local function collapse_spaces(text, highlights, links, prefix)
   if not text:find("  ", 1, true) then return text end
-  local leading = text:match "^(%s*)" or ""
-  return leading .. map_display_text(text:sub(#leading + 1), function(part)
-    return (part:gsub("  +", " "))
-  end)
+  prefix = prefix or 0
+  local leading = text:sub(1, prefix) .. text:sub(prefix + 1):match "^(%s*)"
+  local removals = {}
+  local collapsed = leading
+    .. map_display_text(text:sub(#leading + 1), function(part, start)
+      return (
+        part:gsub("()(  +)", function(pos, spaces)
+          removals[#removals + 1] = { start = #leading + start + pos, count = #spaces - 1 }
+          return " "
+        end)
+      )
+    end)
+  adjust_positions(highlights, links, removals, #highlights, #links)
+  return collapsed
 end
 
 --- Keep destination colors in the inline stack, before nested emphasis/code.
@@ -513,24 +523,28 @@ local function add_link_highlight(highlights, first, last, url)
   table.insert(highlights, { col = first, end_col = last, hl = hl })
 end
 
---- Process [text](url) links: remove markers and produce highlight/link entries
+--- Process inline and reference links through the same bracket/code scanner
 --- Supports balanced brackets for image-in-link patterns like [![alt](img)](url)
 ---@param text string
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
 ---@return string processed
-local function process_links(text, highlights, links, source_label)
+local function process_links(text, highlights, links, source_label, ref_links)
   local pre_hl_count = #highlights
   local pre_link_count = #links
   local removals = {}
   local processed = ""
   local i = 1
   while i <= #text do
-    if text:sub(i, i) == "[" then
-      local j, paren_end = link_bounds(text, i)
-      if paren_end then
-        local link_text_raw = text:sub(i + 1, j - 2)
-        local url = link_destination(source_label(text:sub(j + 1, paren_end - 1)))
+    local literal_end = text:sub(i, i) == "<" and (inline.autolink_end(text, i) or inline.html_end(text, i))
+    if literal_end then
+      processed = processed .. text:sub(i, literal_end)
+      i = literal_end + 1
+    elseif text:sub(i, i) == "[" then
+      local suffix_start, finish, reference_url = link_bounds(text, i, ref_links, source_label)
+      if finish then
+        local link_text_raw = text:sub(i + 1, suffix_start - 2)
+        local url = reference_url or link_destination(source_label(text:sub(suffix_start + 1, finish - 1)))
 
         -- If link text is an image ![alt](img-url), use alt as display
         local alt = link_text_raw:match "^!%[(.-)%]%((.-)%)$"
@@ -541,84 +555,8 @@ local function process_links(text, highlights, links, source_label)
         add_link_highlight(highlights, start_col, start_col + #display_text, url)
         table.insert(links, { col_start = start_col, col_end = start_col + #display_text, url = url, _decoded = true })
         table.insert(removals, { start = i - 1, count = 1 }) -- opening [
-        table.insert(removals, { start = j - 2, count = paren_end - j + 2 }) -- ](url)
-        i = paren_end + 1
-      else
-        processed = processed .. text:sub(i, i)
-        i = i + 1
-      end
-    else
-      processed = processed .. text:sub(i, i)
-      i = i + 1
-    end
-  end
-  adjust_positions(highlights, links, removals, pre_hl_count, pre_link_count)
-  return processed
-end
-
---- Process reference-style links: [text][ref] and [text] shortcut forms
----@param text string
----@param ref_links table<string, string> lowercase label -> URL mapping
----@param highlights MdRender.Markdown.Highlight[]
----@param links MdRender.Markdown.Link[]
----@return string processed
-local function process_reference_links(text, ref_links, highlights, links, source_label)
-  if not ref_links or not next(ref_links) then return text end
-  local pre_hl_count = #highlights
-  local pre_link_count = #links
-  local removals = {}
-  local processed = ""
-  local i = 1
-  while i <= #text do
-    if text:sub(i, i) == "[" then
-      local close = text:find("]", i + 1, true)
-      if close then
-        local label = text:sub(i + 1, close - 1)
-        -- Check for [text][ref] form
-        if close + 1 <= #text and text:sub(close + 1, close + 1) == "[" then
-          local close2 = text:find("]", close + 2, true)
-          if close2 then
-            local ref = text:sub(close + 2, close2 - 1)
-            -- Collapsed reference link: [text][] uses label as ref
-            if ref == "" then ref = label end
-            local url = ref_links[source_label(ref):lower()]
-            if url then
-              local start_col = #processed
-              processed = processed .. label
-              add_link_highlight(highlights, start_col, start_col + #label, url)
-              table.insert(links, { col_start = start_col, col_end = start_col + #label, url = url, _decoded = true })
-              table.insert(removals, { start = i - 1, count = 1 }) -- opening [
-              table.insert(removals, { start = close - 1, count = close2 - close + 1 }) -- ][ref]
-              i = close2 + 1
-            else
-              processed = processed .. text:sub(i, i)
-              i = i + 1
-            end
-          else
-            processed = processed .. text:sub(i, i)
-            i = i + 1
-          end
-        else
-          -- Check for [text] shortcut form (not followed by '(')
-          if close + 1 > #text or text:sub(close + 1, close + 1) ~= "(" then
-            local url = ref_links[source_label(label):lower()]
-            if url then
-              local start_col = #processed
-              processed = processed .. label
-              add_link_highlight(highlights, start_col, start_col + #label, url)
-              table.insert(links, { col_start = start_col, col_end = start_col + #label, url = url, _decoded = true })
-              table.insert(removals, { start = i - 1, count = 1 }) -- opening [
-              table.insert(removals, { start = close - 1, count = 1 }) -- closing ]
-              i = close + 1
-            else
-              processed = processed .. text:sub(i, i)
-              i = i + 1
-            end
-          else
-            processed = processed .. text:sub(i, i)
-            i = i + 1
-          end
-        end
+        table.insert(removals, { start = suffix_start - 2, count = finish - suffix_start + 2 }) -- ] plus link suffix
+        i = finish + 1
       else
         processed = processed .. text:sub(i, i)
         i = i + 1
@@ -1267,7 +1205,7 @@ end
 ---@param text string The markdown text to render
 ---@param repo_base_url? string Optional repository base URL for issue/PR references
 ---@param autolinks? MdRender.Autolink[] Optional autolink definitions
----@param ref_links? table<string, string> Optional reference link definitions (lowercase label -> URL)
+---@param ref_links? table<string, string> Optional reference link definitions (normalized label -> URL)
 ---@return string rendered_text The rendered plain text
 ---@return MdRender.Markdown.Highlight[] highlights
 ---@return MdRender.Markdown.Link[] links
@@ -1382,13 +1320,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   local code_spans
   rendered_text, code_spans = inline.protect_code(rendered_text, ref_links)
   rendered_text = rendered_text:gsub("\r", "")
-  if checkbox_hl then
-    -- Normalize source spaces without collapsing the generated icon padding.
-    local body = rendered_text:sub(#list_marker + 1):gsub("^ +", "")
-    rendered_text = list_marker .. collapse_spaces(body)
-  else
-    rendered_text = collapse_spaces(rendered_text)
-  end
+  if checkbox_hl then rendered_text = list_marker .. rendered_text:sub(#list_marker + 1):gsub("^ +", "") end
 
   -- A trailing unescaped backslash is a hard break outside literal code.
   rendered_text = rendered_text:gsub("(\\+)%s*$", function(slashes)
@@ -1407,7 +1339,10 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   local backslash_escapes, entity_spans
   local decode_url, source_label
 
-  if not needs_inline and #code_spans == 0 then goto finalize end
+  if not needs_inline and #code_spans == 0 then
+    rendered_text = collapse_spaces(rendered_text, highlights, links, checkbox_hl and #list_marker or 0)
+    goto finalize
+  end
 
   rendered_text, entity_spans = protect_entities(rendered_text, text)
   if rendered_text:find("<!--", 1, true) or rendered_text:find("%%", 1, true) then
@@ -1428,8 +1363,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   rendered_text = process_embeds(rendered_text, highlights, links)
   rendered_text = process_wikilinks(rendered_text, highlights, links)
   rendered_text = process_footnote_refs(rendered_text, footnote_map, highlights, links, source_label)
-  rendered_text = process_links(rendered_text, highlights, links, source_label)
-  rendered_text = process_reference_links(rendered_text, ref_links, highlights, links, source_label)
+  rendered_text = process_links(rendered_text, highlights, links, source_label, ref_links)
   repeat
     local prev = rendered_text
     rendered_text = process_html_tags(rendered_text, highlights, links, decode_url)
@@ -1461,6 +1395,9 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     if not link._decoded then link.url = decode_url(link.url) end
     link._decoded = nil
   end
+  -- Validate labels in their original spelling before display-space collapse.
+  -- Code and entities remain protected, and generated checkbox padding stays.
+  rendered_text = collapse_spaces(rendered_text, highlights, links, checkbox_hl and #list_marker or 0)
   rendered_text = restore_spans(rendered_text, backslash_escapes, nil, highlights, links)
   rendered_text = restore_spans(rendered_text, code_spans, "MdRenderInlineCode", highlights, links)
   rendered_text = restore_spans(rendered_text, entity_spans, nil, highlights, links)
@@ -1566,27 +1503,104 @@ Markdown.is_footnote_def = function(line)
   return line:match "^%[%^[^%]]+%]:%s+" ~= nil
 end
 
---- Parse reference link definitions from document lines
---- Extracts lines like [label]: url and returns a mapping from lowercase label to URL
----@param lines string[]
----@return table<string, string> ref_links mapping from lowercase label to URL
-Markdown.parse_reference_links = function(lines)
-  local refs = {}
-  for _, line in ipairs(lines) do
-    local label, rest = line:match "^%[([^%]]+)%]:%s+(.+)$"
-    if label then
-      local url = link_destination(rest)
-      refs[label:lower()] = url
-    end
-  end
-  return refs
+--- Check if a line starts a block-level construct (not a paragraph continuation)
+---@param line string
+---@param in_paragraph boolean whether a paragraph is currently open
+---@return boolean
+function Markdown.is_block_start(line, in_paragraph)
+  if line:match "^%s*$" then return true end
+  if line:match "^#+%s" then return true end
+  if line:match "^%s*|" then return true end
+  if line:match "^%s*[%-%*%+]%s" then return true end
+  if line:match "^%s*%d+[%.)]%s" then return true end
+  if line:match "^>" then return true end
+  if line:match "^%s*[-_*]%s*[-_*]%s*[-_*]" then return true end
+  if line:match "^[=-]+%s*$" then return true end
+  if line:match "^%[%^.+%]:" then return true end
+  if line:match "^%[!%a+%]" then return true end -- callout header (marker already stripped)
+  if line:match "^%s*<" then return true end
+  if line:match "^%s*!%[" then return true end
+  if line:match "^%$%$$" then return true end
+  if line:match "^%%%%" then return true end
+  if line:match "^:::" then return true end
+  -- Indented code block (4+ spaces). Per CommonMark it cannot interrupt a
+  -- paragraph, so while one is open the line is a continuation instead --
+  -- this is what keeps deeply indented list continuations joined.
+  if not in_paragraph and line:match "^    %S" then return true end
+  return false
 end
 
---- Check if a line is a reference link definition
+--- Strip only explicit containers; lazy quote continuation belongs to block parsing.
+local function reference_content(line)
+  local depth, column = 0, 0
+  while true do
+    local prefix, gap, content = line:match "^( ? ? ?>)([ \t]?)(.*)$"
+    if not content then break end
+    column = column + #prefix
+    local width = fence_mod.indent_columns(gap, column)
+    line, depth = string.rep(" ", math.max(0, width - 1)) .. content, depth + 1
+    column = column + math.min(width, 1)
+  end
+  local prefix, gap, content = line:match "^( ? ? ?[-*+])([ \t]+)(.*)$"
+  if not content then
+    prefix, gap, content = line:match "^( ? ? ?%d+[.)])([ \t]+)(.*)$"
+  end
+  if content then
+    local width = fence_mod.indent_columns(gap, column + #prefix)
+    line = string.rep(" ", width <= 4 and 0 or width - 1) .. content
+  end
+  return line, depth, content ~= nil
+end
+
+--- Parse definitions at paragraph starts, retaining input indices for consumption.
+--- Masked code/comment rows must remain blank input rows, never disappear.
+---@param lines string[]
+---@return table<string, string> refs normalized source label to decoded URL
+---@return table<integer, boolean> consumed 1-based input rows owned by valid definitions
+Markdown.parse_reference_links = function(lines)
+  local refs, consumed = {}, {}
+  local first = 1
+  while first <= #lines do
+    local parts, starts = {}, {}
+    local _, depth = reference_content(lines[first])
+    local last, offset = first, 1
+    while last <= #lines do
+      local content, current_depth, item = reference_content(lines[last])
+      if current_depth ~= depth or (last > first and item) then break end
+      parts[#parts + 1], starts[#starts + 1] = content, offset
+      offset = offset + #content + 1
+      last = last + 1
+    end
+    local text = table.concat(parts, "\n")
+    local row, paragraph = 1, false
+    while row <= #parts do
+      local line = parts[row]
+      local label, destination, finish
+      if not paragraph then
+        label, destination, finish = inline.reference_definition(text, starts[row])
+      end
+      if finish then
+        if refs[label] == nil then refs[label] = link_destination(destination) end
+        repeat
+          consumed[first + row - 1] = true
+          row = row + 1
+        until row > #parts or starts[row] > finish
+      else
+        paragraph = not Markdown.is_block_start(line, paragraph)
+        row = row + 1
+      end
+    end
+    first = last
+  end
+  return refs, consumed
+end
+
+--- Check whether one complete line is a valid reference definition.
 ---@param line string
 ---@return boolean
 Markdown.is_reference_link_def = function(line)
-  return line:match "^%[([^%]]+)%]:%s+" ~= nil
+  local _, consumed = Markdown.parse_reference_links { line }
+  return consumed[1] == true
 end
 
 --- Get the list marker type of a line.

@@ -269,6 +269,8 @@ Directories open in the original source window through the configured directory 
 
 Local links support relative paths, POSIX absolute paths, and `file:///` URLs, including encoded filenames, inline/reference links, and optional titles. Missing or unreadable files leave the preview unchanged. Fragments do not yet select a heading; pager navigation and Windows/UNC paths are outside this feature's initial scope.
 
+Reference links use the first valid definition and match labels with normalized whitespace. Valid definitions, including multiline and quoted definitions, are hidden even when unused; malformed definitions remain ordinary Markdown.
+
 ### Image tab keys
 
 With the [Snacks backend](#optional-snacks-image-backend) configured and ImageMagick (`magick`) installed, press Enter on an image or its title to open a focused image tab. Use arrows or `hjkl` to move, `+/-` to zoom, `f` to fit the complete image, and `q` to return. These keys are set automatically in the image tab.

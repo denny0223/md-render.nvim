@@ -136,9 +136,14 @@ end
 vim.api.nvim_ui_send = function(bytes)
   writes[#writes + 1] = bytes
 end
+local set_provider, provider = vim.api.nvim_set_decoration_provider, nil
+vim.api.nvim_set_decoration_provider = function(ns, opts)
+  if ns == vim.api.nvim_get_namespaces().md_render_text_size_redraw and opts.on_start then provider = opts end
+  return set_provider(ns, opts)
+end
 size.setup { enabled = true, backend = "native" }
 local builder = require("md-render.content_builder").ContentBuilder.new()
-builder:render_document({ "Body.", "", "## Heading" }, { max_width = 60, indent = "" })
+builder:render_document({ "Body.", "", "## Heading", "", "## Another" }, { max_width = 60, indent = "" })
 local content = builder:result()
 local buf, win = vim.api.nvim_create_buf(false, true), vim.api.nvim_get_current_win()
 vim.api.nvim_buf_set_lines(buf, 0, -1, false, content.lines)
@@ -230,6 +235,89 @@ for _, selected in ipairs { true, false } do
   assert(vim.o.termsync == selected, "closing the last preview must not overwrite the user's new setting")
 end
 vim.api.nvim_win_close(other_win, true)
+vim.wait(10) -- drain notifications from the retired previews
+-- Follow the actual redraw ranges, including the empty lower row of a scaled
+-- heading. Unrelated updates must not erase it or wait for a movement timer.
+local function finish_redraw()
+  local schedule, callback = vim.schedule, nil
+  vim.schedule = function(fn)
+    callback = fn
+  end
+  provider.on_end()
+  vim.schedule = schedule
+  assert(callback, "redraw schedules completion after the TUI flush")
+  callback()
+end
+state = size.attach(win, content)
+size.paint(state)
+writes = {}
+provider.on_start()
+assert(#writes == 0, "unchanged positions do not erase headings")
+provider.on_range(nil, win, buf, 0, 0, 1, 0)
+assert(#writes == 0, "body redraw leaves unmoved headings alone")
+local p = content.text_placements[1]
+provider.on_range(nil, win, buf, p.line + 1, 0, p.line + 2, 0)
+assert(#writes > 0 and state.erased[1].p == p, "erase multicells before drawing their lower row")
+assert(
+  writes[1]:gsub("\27\27", "\27"):find(state.erased[1].sgr, 1, true),
+  "erase with the heading background, not terminal-default black"
+)
+state.owes_invalidate = true
+local invalidations = size._stats.invalidations
+finish_redraw()
+assert(not state.owes_invalidate, "finish the cleanup in the current frame")
+assert(size._stats.invalidations == invalidations, "already-erased blocks need no forced repaint")
+
+local redraw_api, redraw_requests = vim.api.nvim__redraw, {}
+vim.api.nvim__redraw = function(opts)
+  redraw_requests[#redraw_requests + 1] = opts
+  return redraw_api(opts)
+end
+local redraw_flags = vim.o.redrawdebug
+vim.wo.cursorline = true
+vim.api.nvim_win_set_cursor(win, { p.line + 1, 0 })
+provider.on_range(nil, win, buf, p.line, 0, p.line + 1, 0)
+vim.api.nvim_exec_autocmds("CursorMoved", { modeline = false })
+finish_redraw()
+assert(state.last_drawn == 1, "cursor feedback completes without waiting for the debounce")
+assert(#redraw_requests == 1 and redraw_requests[1].win == win, "restore text through a window redraw")
+assert(vim.deep_equal(redraw_requests[1].range, { p.line, p.line + p.scale }), "repaint only the heading rows")
+assert(vim.o.redrawdebug == redraw_flags, "restore the user's redraw flags")
+vim.wait(10) -- drain the scoped redraw's own notification
+vim.wo.cursorline = false
+vim.api.nvim_win_set_cursor(win, { 1, 0 })
+size.paint(state)
+assert(#redraw_requests == 1, "adding scaling does not invalidate existing headings")
+
+-- Command-line feedback can retire all headings even when the TUI only
+-- redrew one. Include the untouched blocks as well as the erased ones.
+local feedback = require "md-render.heading_feedback"
+local protected = feedback.protected
+feedback.protected = function()
+  return true, {}
+end
+provider.on_range(nil, win, buf, p.line, 0, p.line + 1, 0)
+finish_redraw()
+local last = content.text_placements[#content.text_placements]
+assert(state.last_drawn == 0, "all headings yield to command-line feedback")
+assert(redraw_requests[#redraw_requests].range[2] == last.line + last.scale, "restore untouched retired headings too")
+feedback.protected = protected
+vim.wait(10)
+size.paint(state)
+
+vim.wo.cursorline = true
+vim.api.nvim_win_set_cursor(win, { p.line + 1, 0 })
+provider.on_range(nil, win, buf, p.line, 0, p.line + 1, 0)
+vim.api.nvim__redraw = function()
+  error "test redraw failure"
+end
+local ok, err = pcall(finish_redraw)
+assert(not ok and err:find("test redraw failure", 1, true), "report the redraw error")
+assert(vim.o.redrawdebug == redraw_flags, "restore redraw flags even after a failure")
+vim.api.nvim__redraw = redraw_api
+vim.wo.cursorline = false
+size.detach(state)
+vim.api.nvim_set_decoration_provider = set_provider
 vim.o.termsync = original_termsync
 
 tmux.get, tmux.redraw, vim.api.nvim_ui_send = get, redraw, send

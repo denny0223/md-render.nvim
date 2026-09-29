@@ -626,25 +626,45 @@ end
 ---@field last_layout string? screen positions of the previous paint
 ---@field last_drawn integer? how many placements the previous paint drew
 ---@field drawn table[]? placements at their last painted screen positions
+---@field erased table[]? blocks cleared before the current TUI redraw
 ---@field owes_invalidate boolean? a write went out without clearing what it replaced
 ---@field last_event_at integer? loop time of the last repaint request
 
---- Force the TUI to physically repaint the screen, erasing any scaled text
---- still on it.
----
---- `:mode` is the only thing that does this. Neither `nvim__redraw` (with
---- `valid = false`, with or without a window/range) nor `:redraw!` works,
---- because our writes never went through Neovim: it recomputes a grid that
---- matches its shadow copy, diffs to nothing, and sends nothing. Writing
---- spaces ourselves is no good either — the cells would go blank and Neovim,
---- still believing it had already drawn the heading there, would never restore
---- it. `:mode` clears and re-sends the whole screen, which is heavy, so callers
---- must only reach for it when the layout actually moved.
---- Anything else painting straight to the terminal — Kitty graphics
---- placements, above all — is cleared by that repaint too, and cannot see it
---- happen any more than we can see theirs. Say so, so they can put themselves
---- back; see `display_utils.REPAINT_EVENT`.
-local function invalidate()
+--- Restore Neovim's text without clearing other headings or images. Both the
+--- TUI and tmux cache ordinary cells, so invalidate the affected tmux cells
+--- through its normal input and force Neovim to resend those buffer rows.
+--- A plain redraw would compare equal to Neovim's unchanged shadow grid.
+local function invalidate(state, erased)
+  if state and state.tmux and erased then
+    local out, first, last = {}, math.huge, 0
+    local left, right, top, bottom = M.text_area(state.win)
+    for _, d in ipairs(erased) do
+      local pos = vim.fn.screenpos(state.win, d.p.line + 1, d.p.col + 1)
+      local col = math.max(left, pos.col)
+      local width = math.min(right, pos.col + d.p.width - 1) - col + 1
+      if pos.row > 0 and width > 0 then
+        for row = math.max(top, pos.row), math.min(bottom, pos.row + d.p.scale - 1) do
+          table.insert(out, string.format("\27[%d;%dH\27[%dX", row, col, width))
+        end
+        first, last = math.min(first, d.p.line), math.max(last, d.p.line + d.p.scale)
+      end
+    end
+    if #out == 0 then return end
+    vim.api.nvim_ui_send("\x1b7" .. table.concat(out) .. "\x1b8")
+    local previous = vim.o.redrawdebug
+    vim.opt.redrawdebug:append "nodelta"
+    local ok, err = pcall(vim.api.nvim__redraw, {
+      win = state.win,
+      range = { first, last },
+      valid = true,
+      flush = true,
+    })
+    vim.o.redrawdebug = previous
+    if not ok then error(err) end
+    return
+  end
+  -- Retain the direct-terminal and teardown cleanup, including notification
+  -- for renderers whose terminal-only placements the full repaint removes.
   vim.cmd "mode"
   require("md-render.display_utils").announce_repaint "text_size"
 end
@@ -785,7 +805,7 @@ local function layout_key(drawn)
 end
 
 --- Repaint counters, for measuring how costly a given navigation pattern is.
---- `invalidations` is the one that matters: each is a full-screen repaint.
+--- `invalidations` counts forced text repaints; tmux uses the affected rows.
 M._stats = { paints = 0, invalidations = 0, skipped = 0, keepalives = 0 }
 
 local function transport(state)
@@ -794,7 +814,7 @@ local function transport(state)
   local key = ctx.key .. ":" .. tostring(tmux_focused)
   if state.tmux and state.tmux_key ~= key then
     if (state.last_drawn or 0) > 0 then tmux.redraw(state.tmux.client) end
-    state.drawn, state.last_layout, state.last_drawn, state.owes_invalidate = nil, nil, 0, false
+    state.drawn, state.erased, state.last_layout, state.last_drawn, state.owes_invalidate = nil, nil, nil, 0, false
     state.gesture, state.press, state.dragged = nil, nil, nil
   end
   state.tmux, state.tmux_key = ctx, key
@@ -894,26 +914,18 @@ local function write_runs(state, drawn)
   M._stats.paints = M._stats.paints + 1
 end
 
---- Paint all visible placements now.
----
---- When the layout moved since the last paint, the screen is invalidated first.
---- Neovim's shadow grid does not know we ever wrote to those cells, and a
---- scaled run is twice as wide as the plain text Neovim thinks is there, so the
---- right-hand half of the old run survives a scroll and shows through as
---- garbage next to the new one.
----
---- That invalidation is a full-screen repaint, so the clear, Neovim's repaint
---- and our own writes are bracketed in synchronized output (DEC 2026, the same
---- mechanism `md-render.image` uses for batched placements). The terminal then
---- presents all three as a single frame instead of showing the cleared screen
---- and the plain-size heading in between.
+--- Paint visible placements, restoring ordinary text where scaling retires.
+--- Direct terminals retain the full repaint inside synchronized output;
+--- tmux uses a scoped repaint and owns its own synchronization.
 ---@param state MdRender.TextSizeState
 function M.paint(state)
-  if not state or state.closed then return end
+  if not state or state.closed or not vim.api.nvim_win_is_valid(state.win) then return end
   local ctx = transport(state)
   if state.closed or not can_draw(ctx) or not M.supports() then return end
 
   local drawn = visible_placements(state)
+  local erased = state.erased
+  state.erased = nil
   local key = layout_key(drawn)
   local moved = key ~= state.last_layout
   if not moved and #drawn == 0 then
@@ -929,17 +941,41 @@ function M.paint(state)
   -- and it records the layout it wrote so that `reassert` can keep the runs
   -- alive against foreign repaints in the meantime — which leaves `moved`
   -- false here even though a clear is still owed.
-  local cleanup = (moved or state.owes_invalidate) and (state.last_drawn or 0) > 0
+  local owed = state.owes_invalidate
+  local cleanup = (moved or owed) and (state.last_drawn or 0) > 0
   state.owes_invalidate = false
 
+  -- Cleared blocks can move without another repaint. Retired headings still
+  -- visible on screen need their ordinary text restored; adding a heading
+  -- does not invalidate any of the existing ones.
+  local restore
+  local previous = erased and vim.list_extend(erased, state.drawn or {}) or state.drawn
+  if cleanup and previous and (erased or not owed) then
+    cleanup, restore = false, {}
+    local scaled = {}
+    for _, current in ipairs(drawn) do
+      scaled[current.p] = current
+    end
+    for _, old in ipairs(previous) do
+      local current = scaled[old.p]
+      if current and not erased and (current.row ~= old.row or current.col ~= old.col) then
+        cleanup, restore = true, nil -- old screen positions were not erased
+        break
+      elseif not current and vim.fn.screenpos(state.win, old.p.line + 1, old.p.col + 1).row > 0 then
+        cleanup = true
+        table.insert(restore, old)
+      end
+    end
+  end
+
   -- tmux redraws its ordinary pane grid when a sync block ends, overwriting
-  -- passthrough headings. Its own terminal batching still applies without this.
+  -- passthrough headings. Leave tmux in charge of terminal synchronization.
   local sync = cleanup and not ctx
   if sync then vim.api.nvim_ui_send "\x1b[?2026h" end
   local ok, err = pcall(function()
     if cleanup then
       M._stats.invalidations = M._stats.invalidations + 1
-      invalidate()
+      invalidate(state, restore)
       -- Positions can shift while Neovim repaints, so recompute afterwards.
       drawn = visible_placements(state)
     end
@@ -953,24 +989,10 @@ function M.paint(state)
   if not ok then error(err) end
 end
 
---- Repaint delay for an isolated movement. Deliberately longer than the 50 ms
---- the image redraw waits: both debounce off the same scroll, and going second
---- means the `redraw!` over there has already cleared the screen, so this paint
---- is a plain write instead of a second full-screen repaint. Correctness does
---- not depend on the order — whoever repaints announces it — only the cost of
---- a scroll does.
+-- Coalesce events that do not trigger a TUI redraw. Actual redraws finish in
+-- the decoration provider, so erased headings never wait for these timers.
 local SETTLED_MS = 90
---- Repaint delay while events keep arriving (a held `<C-e>`, a mouse wheel
---- spin). Each layout change costs a full-screen repaint, so waiting for the
---- scroll to stop turns a burst into one repaint instead of one per step.
 local BURST_MS = 180
---- Two events closer together than this count as one burst.
----
---- A real mouse wheel is slower than this. Notches measured 117-800 ms apart,
---- median 233, over a ten-second spin, so twenty-seven of thirty landed
---- outside the window and took the isolated path. Coalescing is the exception
---- rather than the rule while scrolling by wheel, which means the runs have to
---- survive each individual step — see `restore_runs_now`.
 local BURST_WINDOW_MS = 130
 
 --- Backstop interval for re-asserting runs that are already on screen.
@@ -1024,13 +1046,11 @@ end
 
 --- Re-send what we believe is already on screen.
 ---@param state MdRender.TextSizeState
----@param state MdRender.TextSizeState
----@param forced? boolean skip the rate limit; the caller has already coalesced
-local function reassert(state, forced)
+local function reassert(state)
   if state.closed or not vim.api.nvim_win_is_valid(state.win) then return end
   if not can_draw(transport(state)) then return end
   local now = vim.uv.now()
-  if not forced and state.last_reassert_at and (now - state.last_reassert_at) < REASSERT_GAP_MS then return end
+  if state.last_reassert_at and (now - state.last_reassert_at) < REASSERT_GAP_MS then return end
   state.last_reassert_at = now
 
   local drawn = visible_placements(state)
@@ -1052,43 +1072,15 @@ local function reassert(state, forced)
   elseif #drawn > 0 or (state.last_drawn or 0) > 0 then
     -- The layout moved without any event this module saw. Runs may be sitting
     -- where they no longer belong — the terminal shifts them bodily when
-    -- Neovim scrolls with a scroll region — and clearing those needs the full
-    -- repaint `M.paint` does. Go through the debounce so a burst of these
-    -- collapses into one.
+    -- Neovim scrolls with a scroll region. Let `M.paint` handle cleanup,
+    -- coalescing a burst of these notifications.
     schedule_paint(state)
   end
 end
 
---- Put the runs back at their new positions, without a full repaint.
----
---- A scroll destroys them. Neovim redraws the rows it moved and our writes
---- never went through its grid, so the scaled cells go with the scroll. A
---- screen recording of `:MdRender demo` puts numbers on it: all thirty wheel
---- notches dropped every heading to plain size in the same frame as the
---- scroll, and none dropped without one. Recovery took a median of 50 ms,
---- which is `md-render.image`'s debounce and not ours — the headings were
---- coming back only once *it* had redrawn and announced. `schedule_paint`
---- would not have arrived for another 40 ms on top. That window is what reads
---- as a pulse once per notch while scrolling.
----
---- Saying the same thing again costs a few hundred bytes and needs no `:mode`,
---- so it can happen on the scroll itself. Two things are deliberate here:
----
----   * The layout it wrote is recorded, and `state.owes_invalidate` carries
----     the clear over to the debounced `M.paint` instead. Leaving
----     `last_layout` stale was the obvious thing and it was wrong: `reassert`
----     only re-sends when the layout matches, so a stale key disabled the
----     one path that keeps the runs alive against a repaint by somebody else
----     — for the whole debounce, and a wheel being turned re-arms that
----     debounce at `BURST_MS` for as long as it keeps turning. Recovery then
----     fell to whatever else happened to repaint, which measured as a flat
----     50 ms: `md-render.image`'s own debounce, not ours.
----   * The write is scheduled rather than immediate. `WinScrolled` fires
----     before Neovim has flushed its own redraw for the rows it moved, and
----     that flush would paint straight over anything written here.
----
---- The same applies to a window opening or closing, which is why this is also
---- reached from `WinNew` and `WinClosed` rather than only from a scroll.
+--- Restore quickly after scroll/window events that can precede the TUI flush.
+--- Keep the current layout and pending cleanup separate so SafeState can
+--- continue reasserting headings while the event debounce is pending.
 ---@param state MdRender.TextSizeState
 local function restore_runs_now(state)
   vim.schedule(function()
@@ -1195,56 +1187,62 @@ vim.api.nvim_create_autocmd({ "FocusLost", "FocusGained" }, {
 local decoration_ns = nil
 local decoration_pending = false
 
---- Learn about a repaint that no autocmd will report.
----
---- `'eventignore'` is the hole every event-based recovery here falls into. A
---- plugin that wraps its work in `eventignore = "all"` — nvim-scrollview does,
---- around a refresh it runs about twenty times a second — silences `WinNew`,
---- `WinClosed` and everything else while it opens, moves and closes windows.
---- Measured against it: 308 calls to `nvim_open_win` produced one `WinNew`,
---- and 295 to `nvim_win_close` produced two `WinClosed`. Every one of those
---- recomposed the screen and took the runs with it, and this module was blind
---- to all of them.
----
---- A decoration provider is not an autocmd, so `'eventignore'` does not reach
---- it. Measured the same way, driving thirty rounds of that exact pattern:
---- `WinNew` 0, `WinClosed` 0, `on_end` 32. It is the one signal that says "the
---- screen was just redrawn" whoever did it and however they did it.
----
---- `on_start` clears the terminal-only blocks before Neovim redraws.
---- `on_end` schedules their restoration after Neovim flushes the grid,
---- coalescing writes and bypassing the rate limit `SafeState` needs.
+-- Erase only blocks whose cells the TUI will replace. Moving the viewport
+-- needs the old positions before the grid scroll; other updates use on_range.
+-- Clearing the whole block before its lower row is redrawn prevents Kitty's
+-- multicell cursor advance from shifting the following text.
+local function erase_runs(state, ctx, should_erase)
+  local out, kept = {}, {}
+  for _, d in ipairs(state.drawn or {}) do
+    if should_erase(d) then
+      -- ECH uses the current background; keep the heading background while clearing.
+      table.insert(out, d.sgr .. position(d.row, d.col, ctx) .. string.format("\x1b[%dX", d.p.width))
+      if d.icon_col then table.insert(out, position(d.row, d.icon_col, ctx) .. string.format("\x1b[%dX", d.p.scale)) end
+      state.erased = state.erased or {}
+      table.insert(state.erased, d)
+    else
+      table.insert(kept, d)
+    end
+  end
+  state.drawn = kept
+  if #out > 0 then send("\x1b7" .. table.concat(out) .. "\x1b8", ctx) end
+end
+
+-- Unlike autocmds, this also runs during plugin redraws with eventignore=all.
 local function ensure_redraw_notification()
   if decoration_ns then return end
   decoration_ns = vim.api.nvim_create_namespace "md_render_text_size_redraw"
   vim.api.nvim_set_decoration_provider(decoration_ns, {
     on_start = function()
-      -- Writing spaces over a multicell's lower row skips its occupied cells
-      -- in Kitty. A cursorline repaint can therefore wrap into the next row.
-      -- Erase the blocks before Neovim draws, using their previous positions
-      -- because a scroll may already have changed screenpos(). on_end restores
-      -- them after the grid update. Keep the unscaled icon separator intact.
-      local out = {}
-      local ctx
       for _, st in pairs(active) do
-        ctx = transport(st)
-        for _, d in ipairs(not st.closed and can_draw(ctx) and st.drawn or {}) do
-          table.insert(out, position(d.row, d.col, ctx) .. string.format("\x1b[%dX", d.p.width))
-          if d.icon_col then
-            table.insert(out, position(d.row, d.icon_col, ctx) .. string.format("\x1b[%dX", d.p.scale))
-          end
+        local ctx = transport(st)
+        if not st.closed and can_draw(ctx) then
+          erase_runs(st, ctx, function(d)
+            local pos = vim.fn.screenpos(st.win, d.p.line + 1, d.p.col + 1)
+            return pos.row ~= d.row or pos.col ~= d.col
+          end)
         end
-        st.drawn = nil
       end
-      if #out > 0 then send("\x1b7" .. table.concat(out) .. "\x1b8", ctx) end
+    end,
+    on_range = function(_, win, buf, first, _, last, col)
+      local st = active[win]
+      if not st or st.closed or st.buf ~= buf then return end
+      local ctx = transport(st)
+      if not can_draw(ctx) then return end
+      if col > 0 then last = last + 1 end
+      erase_runs(st, ctx, function(d)
+        return d.p.line < last and d.p.line + d.p.scale > first
+      end)
     end,
     on_end = function()
       if decoration_pending or not next(active) then return end
       decoration_pending = true
       vim.schedule(function()
         decoration_pending = false
+        -- Finish changed layouts now: the old cells have already been erased,
+        -- so the movement debounce would leave visible gaps in this frame.
         for _, st in pairs(active) do
-          reassert(st, true)
+          M.paint(st)
         end
       end)
     end,
@@ -1403,8 +1401,9 @@ function M.attach(win, content)
 
   active[win] = state
   require("md-render.heading_mouse").attach(state, M.mouse_position, schedule_paint, function()
-    state.drawn, state.last_layout, state.last_drawn = nil, nil, 0
-    invalidate()
+    local erased = vim.list_extend(state.erased or {}, state.drawn or {})
+    state.drawn, state.erased, state.last_layout, state.last_drawn = nil, nil, nil, 0
+    invalidate(state, erased)
   end)
   update_termsync()
   ensure_redraw_notification()
@@ -1449,7 +1448,7 @@ function M.detach(state)
   if state.image_headings then return require("md-render.heading_image").detach(state) end
   state.closed = true
   if state.key_ns then vim.on_key(nil, state.key_ns) end
-  state.drawn = nil
+  state.drawn, state.erased = nil, nil
   active[state.win] = nil
   update_termsync()
   stop_redraw_notification()

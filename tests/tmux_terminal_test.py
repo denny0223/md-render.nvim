@@ -268,11 +268,17 @@ end})
             wait_for(six_levels, "scrolling back restores six levels")
             lua("(function() vim.fn.setreg('/', '共同'); vim.o.hlsearch=true; vim.v.hlsearch=1; vim.cmd('redraw!') end)()")
             wait_for(lambda: not scaled(), "search exposes every matching heading")
+            assert all(f"共同 H{level}" in kitty("get-text") for level in range(1, 7)), "search feedback lost heading text"
             capture("05-search")
+            kitty("send-text", "--", "/")
+            wait_for(lambda: not scaled() and all(f"共同 H{level}" in kitty("get-text") for level in range(1, 7)),
+                     "open search command line preserves every ordinary heading")
+            kitty("send-text", "--", "\x1b")
             lua("vim.cmd('nohlsearch')")
             wait_for(lambda: six_levels(), "nohlsearch restores scaling")
             lua("(function() local s=require('md-render.preview')._sessions[vim.api.nvim_get_current_buf()]; local p=s.content.text_placements[1]; vim.api.nvim_win_set_cursor(0,{p.line+1,p.col}); vim.api.nvim_input('v1l') end)()")
             wait_for(lambda: not any("H1" in text for _, text in scaled()) and any("H2" in text for _, text in scaled()), "Visual selection reveals only its heading")
+            assert "共同 H1" in kitty("get-text"), "Visual feedback lost unselected heading text"
             capture("05-visual")
             lua("vim.api.nvim_input('y')")
             wait_for(lambda: lua("vim.fn.getreg('0')") == "共同", "Visual yank copies the real CJK text")

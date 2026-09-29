@@ -208,7 +208,7 @@ Snacks をすでに設定している場合は、その設定に上記の `image
 読み込み後に設定を確認してください：
 
 1. `:checkhealth snacks` を実行します。`:echo executable('magick')` が `1`、`:lua print(require("md-render.image").config().backend)` が `snacks` を返すことを確認してください。
-2. tmux 内では `tmux show-options -gv allow-passthrough` が `on` を返す必要があります。
+2. tmux 内では `tmux show-options -gv allow-passthrough` が `on` または `all` を返す必要があります。
 3. Kitty でローカルの PNG を含む Markdown ファイルを開き、`:MdRender tab` を実行します。画像が表示されたら画像またはそのタイトル上で Enter を押し、画像タブが開くことを確認してください。ツールが見つかるだけでは、端末での表示確認にはなりません。
 
 両バックエンドで GIF アニメーションと動画を再生できます。Snacks は Kitty のアニメーション機能を使い、tmux 内でも再生できます。動画のフレーム展開には `ffmpeg` が必要です。Snacks バックエンドは画面外も含む文書全体の画像を準備します。ダイアグラム描画、ダウンロード、フレーム展開は全プレビューで同時に 2 ジョブまで実行し、プレビューを閉じても実行中の処理はキャッシュへの保存まで完了する場合があります。画像が多い文書では初期処理量が増えます。
@@ -357,9 +357,18 @@ require("md-render.text_size").setup {
 }
 ```
 
-画像表示には Neovim 0.12 以降、PNG 対応を確認できる Kitty 0.28 以降、`termguicolors`、Python 3、PyGObject、Pycairo、Pango/PangoCairo と Cairo の introspection データが必要です。Python、描画ライブラリ、フォントは Neovim を実行するホストにインストールします。native は Kitty 0.40 以降に対応し、画像用の依存関係は不要です。
+画像表示には Neovim 0.12 以降、Kitty 0.28 以降、`termguicolors`、Python 3、PyGObject、Pycairo、Pango/PangoCairo と Cairo の introspection データが必要です。Python、描画ライブラリ、フォントは Neovim を実行するホストにインストールします。native は Kitty 0.40 以降に対応し、画像用の依存関係は不要です。
 
-画像表示は Linux 上の Kitty への直接接続と SSH PTY 接続で検証しています。Windows と tmux 内では無効になり、その他の OS・クライアントの組み合わせは未検証です。
+tmux 内では、以下の条件を満たすと `auto` が画像見出しを選びます。満たさない場合は native、通常の文字表示の順に切り替え、確認中は通常の文字表示を保ちます。接続中の Kitty クライアントが 1 つで、セル寸法、RGB、ハイパーリンク対応を確認できる必要があります。プレビューの pane がアクティブで、copy mode ではなく、ウィンドウ全体がクライアントに収まる場合が対象です。停止中のクライアントは再開を待ちます。多重 tmux と複数クライアントには対応しません。tmux に次の設定を追加してください。
+
+```tmux
+set -g allow-passthrough all
+set -as terminal-features ',xterm-kitty:RGB:hyperlinks'
+```
+
+`all` は再描画中や非表示 pane からの送信も許可します。プラグインはこの設定を変更しません。tmux の `input-buffer-size` を超える画像は文字に戻します。tmux の画像送信は **quiet モードで、端末の応答を待ちません**。これにより応答が別の pane や popup に入ることを防ぎます。検出できる環境・描画エラーでは文字を残しますが、端末が画像を黙って破棄・拒否すると見出しが空白になる場合があります。`:MdRender toggle` でソースに戻るか、`:MdRender textsize off` で文字表示にし、環境を修正してから `:MdRender textsize image` で再試行してください。Kitty への直接接続では引き続き送信成功を確認してから文字を隠します。
+
+画像表示は Linux 上の Kitty への直接接続と SSH PTY 接続で検証しています。tmux の検証方法と制限は[テスト文書](tests/README.md#tmux-image-headings)を参照してください。Windows では無効になり、その他の OS・クライアントの組み合わせは未検証です。
 
 検索や Visual 選択では必要な見出しだけ一時的に通常の文字へ戻り、配置は変えません。コピーには Neovim の Visual 選択と `y` を使えます。端末側の Shift-drag 選択では画像と文字の位置が一致せず、透明背景では文字を取得できない場合もあるため、先に `textsize off` にするかソースへ戻してください。スクリーンリーダーとの互換性は未検証です。
 
@@ -373,7 +382,7 @@ native では、`cursorline` が有効でも、見出しの余白にカーソル
 
 Neovim は前面で起動し、フォーカス通知を有効に保ってください。既存のポップアップの下での起動、`FocusLost`／`FocusGained` の抑制、tmux 切り替え時の過渡的な表示が一切ないことは保証しません。複数クライアント、リンクしたウィンドウ、入れ子のマルチプレクサー、端末より大きいウィンドウでは等倍表示になり、`:MdRender textsize status` で理由やフォーカスによる一時停止を確認できます。
 
-Linux、Kitty 0.48.2、tmux 3.7c、Neovim 0.12.5 で、ローカルとループバック SSH PTY を検証しています。通常の Snacks 画像と共存できますが、画像として描画する見出しの tmux 対応は [#11](https://github.com/denny0223/md-render.nvim/issues/11) で別途追跡します。`auto` は確認済みのネイティブ描画へフォールバックできます。
+Linux、Kitty 0.48.2、tmux 3.7c、Neovim 0.12.5 で、ローカルとループバック SSH PTY を検証しています。通常の Snacks 画像と共存できます。画像見出しは上記の別の quiet 転送方式を使い、画像の要件を満たさない場合は `auto` が native を試します。
 
 ネイティブの分数倍率では、漢字を含む見出しの文字列の境界に隙間が生じることがあります。tmux を使わない Kitty でも発生し、[upstream #65](https://github.com/delphinus/md-render.nvim/issues/65) で追跡しています。
 

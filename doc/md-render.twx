@@ -199,8 +199,8 @@ setup()。停用 Snacks 的文件與數學式渲染，讓 md-render 負責預覽
   :lua print(require("md-render.image").config().backend)
 <
 結果應分別為 1 與 "snacks"。在 tmux 中執行
-`tmux show-options -gv allow-passthrough` 應顯示 "on"。最後，在 Kitty 中開啟
-含有本機 PNG 的 Markdown 檔案，執行 :MdRender tab。等待圖片載入後，將游標
+`tmux show-options -gv allow-passthrough` 應顯示 "on" 或 "all"。最後，在 Kitty
+中開啟含有本機 PNG 的 Markdown 檔案，執行 :MdRender tab。等待圖片載入後，將游標
 移到圖片或其標題，按 Enter 確認能開啟圖片分頁。只確認工具存在，還不足以驗證
 實際顯示是否正常。
 
@@ -488,6 +488,28 @@ Markdown 目標沿用目前的預覽視窗；其他檔案在原始編輯視窗�
 	需要終端 Shift＋拖曳複製時，先用 :MdRender textsize off 顯示渲染後
 	文字，或用 |:MdRender-toggle| 回到原文。
 
+tmux 圖片標題（實驗功能）                      *md-render-tmux-image-headings*
+
+在 tmux 中，auto 通過以下檢查後會選用圖片標題；不符條件時依序嘗試
+native、一般文字，檢查期間保留一般文字。需要單一連線中的 Kitty 客戶端、可取得
+格子像素尺寸，並保留 RGB 與超連結。在 tmux 設定加入： >
+
+  set -g allow-passthrough all
+  set -as terminal-features ',xterm-kitty:RGB:hyperlinks'
+<
+預覽須在目前 pane，且不在 copy mode；tmux 視窗必須完整容納於客戶端。
+客戶端暫停時會等待恢復；不支援巢狀 tmux 或多客戶端。
+
+all 也允許隱藏 pane 的傳輸；on 可能在重繪時丟棄圖片。外掛不會變更此設定。
+超過 tmux input buffer 上限的圖片會保留文字。
+
+圖片採 quiet 傳輸，不等待終端確認，避免回應進入其他 pane 或 popup。
+可偵測的環境、繪圖與輸出錯誤會保留文字；無聲丟圖或拒絕可能造成標題空白。
+此時用 |:MdRender-toggle| 回到原文，或用 :MdRender textsize off 閱讀
+渲染後文字。修正環境後用 :MdRender textsize image 重試；status 會說明
+quiet 傳輸未經確認。直接連接 Kitty 仍確認上傳成功後才遮字；一般圖片與
+原生 OSC 66 標題另有各自的能力檢查。
+
                                                               *:MdRender-demo*
 :MdRender demo ~
 	開啟示範視窗，展示所有支援的 Markdown 記法。
@@ -538,8 +560,9 @@ FocusLost／FocusGained，以及 tmux 切換瞬間完全沒有暫態畫面，都
 一般文字；:MdRender textsize status 會說明降級或焦點暫停。
 
 已在 Linux、Kitty 0.48.2、tmux 3.7c、Neovim 0.12.5 驗證本機、loopback SSH PTY
-及一般 Snacks 圖片共存。圖片式標題的 tmux 支援仍由 #11 另外追蹤；auto 可改用
-已確認支援的 native 後端。
+及一般 Snacks 圖片共存。圖片標題使用
+|md-render-tmux-image-headings| 說明的獨立 quiet 傳輸；不符圖片條件時，
+auto 會嘗試 native 後端。
 
 native 分數字級可能在文字分段之間留下明顯空隙，包含漢字標題；直接使用 Kitty
 也會發生，由 upstream #65 追蹤：

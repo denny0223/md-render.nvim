@@ -672,7 +672,7 @@ function ContentBuilder:add_image_heading(text, highlights, links, indent, max_w
   if not vim.o.termguicolors then return false end
   local text_size = require "md-render.text_size"
   local spec = text_size.spec_for(level, "image")
-  local cell = require("md-render.image").get_cell_size()
+  local cell = require("md-render.image").get_cell_size(true)
   if not spec or not cell then return false end
   local prefix = require("md-render.markdown").heading_icon_prefix(level)
   local offset = #prefix
@@ -744,12 +744,13 @@ function ContentBuilder:add_image_heading(text, highlights, links, indent, max_w
     request = vim.deepcopy(request)
     request.entries[1].max_cols = limit
   end
-  -- An opaque image must cover the native text without replacing terminal
-  -- cells with spaces. Shape first so padding uses Neovim's exact line widths.
+  -- Direct opaque images must cover the native text. Tmux already masks it
+  -- with placeholder cells and a blank tail, so it needs no padding pass.
+  local cover_native = not vim.env.TMUX
   local native_cols, needs_padding = {}, false
   for index, line in ipairs(entry.output.lines) do
     native_cols[index] = vim.fn.strdisplaywidth(line.text)
-    needs_padding = needs_padding or (not line.transparent and line.cols < native_cols[index])
+    needs_padding = needs_padding or (cover_native and not line.transparent and line.cols < native_cols[index])
   end
   if needs_padding then
     request = vim.deepcopy(request)
@@ -759,7 +760,9 @@ function ContentBuilder:add_image_heading(text, highlights, links, indent, max_w
     if not entry.output then return false end
   end
   for _, line in ipairs(entry.output.lines) do
-    if line.fallback or (not line.transparent and line.cols < vim.fn.strdisplaywidth(line.text)) then return false end
+    if line.fallback or (cover_native and not line.transparent and line.cols < vim.fn.strdisplaywidth(line.text)) then
+      return false
+    end
     -- A narrow linked glyph can fall between terminal cell centers. Keep text
     -- when any visible link fragment would have no projected mouse target.
     for _, link in ipairs(links) do

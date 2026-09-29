@@ -158,6 +158,7 @@ local TIOCGWINSZ = (vim.fn.has "mac" == 1 or vim.fn.has "bsd" == 1) and 0x400874
 ---@return { cell_w: number, cell_h: number }?
 function M.get_cell_size(exact)
   if M._test_cell_size then return M._test_cell_size end
+  if exact and vim.env.TMUX then return require("md-render.heading_tmux").status().cell end
   if IS_WINDOWS then return nil end
   ensure_ffi()
   local sz = ffi.new "winsize"
@@ -1414,6 +1415,22 @@ local _temp_image_paths = {} -- image_id → true for temp files that need clean
 -- alone says nothing about whether the terminal accepted the bytes.
 local png_pending, png_probe = {}, nil
 local png_refresh_pending = false
+local png_connections, png_deletes = {}, {}
+local tmux_id_base
+
+local function png_write(data)
+  if vim.env.TMUX then data = require("md-render.heading_tmux").wrap(data) end
+  return pcall(term_write, data)
+end
+
+local function next_png_id()
+  _image_id = _image_id + 1
+  if not vim.env.TMUX then return _image_id end
+  -- A terminal is shared by Neovim instances in different panes. Avoid each
+  -- instance starting at image 101; placeholders carry this 24-bit ID as RGB.
+  tmux_id_base = tmux_id_base or tonumber(vim.fn.sha256(vim.fn.getpid() .. ":" .. uv.hrtime()):sub(1, 6), 16)
+  return (tmux_id_base + _image_id) % 0xFFFFFF + 1
+end
 
 local function refresh_headings()
   if png_refresh_pending then return end
@@ -1472,14 +1489,22 @@ function M.fail_png(reason)
   refresh_headings()
 end
 
---- Positive PNG acknowledgement, independent of native OSC 66 support.
---- While the bounded query is pending, callers keep ordinary buffer text.
+--- Direct terminals confirm PNG support. Tmux uses inspected client capability
+--- and quiet output: replies cannot be routed safely across pane/popup changes.
 function M.png_status()
   if IS_WINDOWS then return { supported = false, reason = "image transport is unavailable on Windows" } end
   if #vim.api.nvim_list_uis() == 0 or type(vim.api.nvim_ui_send) ~= "function" then
     return { supported = false, reason = "no terminal UI attached" }
   end
-  if vim.env.TMUX then return { supported = false, reason = "image headings are not supported through tmux" } end
+  if not vim.env.TMUX and vim.env.TERM_PROGRAM == "tmux" then
+    return { supported = false, reason = "tmux connection information is unavailable" }
+  end
+  if vim.env.TMUX then
+    local connection = require("md-render.heading_tmux").status()
+    if connection.pending then return { reason = connection.reason } end
+    if not connection.key then return { supported = false, reason = connection.reason } end
+    return png_probe or { supported = true, reason = "tmux quiet transport; uploads are not acknowledged" }
+  end
   if vim.env.TERM_PROGRAM == "Apple_Terminal" then
     return { supported = false, reason = "terminal does not support PNG graphics" }
   end
@@ -1488,8 +1513,7 @@ function M.png_status()
   if version and version[1] == 0 and version[2] < 28 then
     return { supported = false, reason = "image headings require Kitty 0.28 or newer" }
   end
-  _image_id = _image_id + 1
-  local probe = { id = _image_id, reason = "waiting for terminal PNG support" }
+  local probe = { id = next_png_id(), reason = "waiting for terminal PNG support" }
   png_probe = probe
   await_png(probe.id, function(err)
     if png_probe ~= probe then return end
@@ -1499,9 +1523,27 @@ function M.png_status()
   end)
   -- a=q validates a real 1x1 PNG without storing or displaying it.
   local png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
-  vim.api.nvim_ui_send(string.format("\27_Ga=q,t=d,f=100,i=%d;%s\27\\", probe.id, png))
-  return probe
+  local ok, err = png_write(string.format("\27_Ga=q,t=d,f=100,i=%d;%s\27\\", probe.id, png))
+  if not ok then M.fail_png(tostring(err)) end
+  return png_probe
 end
+
+vim.api.nvim_create_autocmd("User", {
+  pattern = "MdRenderTmuxChanged",
+  callback = function()
+    M.reset_png()
+    local tmux = require "md-render.heading_tmux"
+    local connection = tmux.status().owner
+    if connection then
+      for id, owner in pairs(png_deletes) do
+        if owner == connection then png_write(string.format("\27_Ga=d,d=I,i=%d,q=2\27\\", id)) end
+        png_deletes[id] = nil
+      end
+      tmux.watch_cleanup(false)
+    end
+    refresh_headings()
+  end,
+})
 
 vim.api.nvim_create_autocmd({ "UIEnter", "UILeave" }, {
   callback = function()
@@ -1520,21 +1562,69 @@ vim.api.nvim_create_autocmd("VimLeavePre", {
 
 --- Transmit base64-encoded PNG bytes without requiring a shared filesystem.
 --- Each Kitty payload is at most 4096 bytes, including on an SSH TTY.
----@param callback? fun(error?: string) called after acknowledgement or timeout
-function M.transmit_png(data, callback)
-  if not M.supports_kitty() or data == "" then return nil end
-  -- Resolve before uploading: the identity query can yield to a screen clear.
-  tty_mod.kitty_version()
-  M.clear_all()
-  _image_id = _image_id + 1
-  local id = _image_id
-  if callback then await_png(id, callback) end
+---@param callback? fun(error?: string) after direct ACK/timeout, or queued tmux output
+---@param cols? integer tmux virtual placement width (default 1)
+---@param rows? integer tmux virtual placement height (default 1)
+---@return integer? id
+---@return string? error
+function M.transmit_png(data, callback, cols, rows)
+  if data == "" then return nil end
+  local connection = vim.env.TMUX and require("md-render.heading_tmux").status()
+  if connection then
+    if not connection.key then return nil end
+  else
+    if not M.supports_kitty() then return nil end
+    -- Resolve before uploading: the identity query can yield to a screen clear.
+    tty_mod.kitty_version()
+    M.clear_all()
+  end
+  local id = next_png_id()
+  png_connections[id] = connection and connection.owner or nil
+  if callback and not connection then await_png(id, callback) end
+  local params =
+    string.format("a=%s,f=100,t=d,i=%d,q=%d,", connection and "T" or "t", id, callback and not connection and 0 or 2)
+  if connection then
+    -- Upload and create an invisible virtual placement in one Kitty operation.
+    -- Separate commands let an intervening tmux clear free the uploaded PNG.
+    params = params .. string.format("U=1,p=1,c=%d,r=%d,", cols or 1, rows or 1)
+  end
+  local chunks = {}
   for start = 1, #data, 4096 do
     local more = start + 4096 <= #data and 1 or 0
-    local params = start == 1 and string.format("a=t,f=100,t=d,i=%d,q=%d,", id, callback and 0 or 2) or ""
-    term_write(string.format("\x1b_G%sm=%d;%s\x1b\\", params, more, data:sub(start, start + 4095)))
+    local header = start == 1 and params or (connection and "q=2," or "")
+    chunks[#chunks + 1] = string.format("\x1b_G%sm=%d;%s\x1b\\", header, more, data:sub(start, start + 4095))
   end
-  retain_image(id)
+  if connection then
+    -- One DCS makes tmux forward the complete upload without interleaving its
+    -- own screen clears between KGP chunks. Oversized DCS input is discarded.
+    local payload = require("md-render.heading_tmux").wrap(table.concat(chunks))
+    if #payload >= connection.limit then
+      png_connections[id] = nil
+      return nil, "heading PNG exceeds tmux input-buffer-size; using text"
+    end
+    chunks = { payload }
+  end
+  for _, chunk in ipairs(chunks) do
+    local ok, err = pcall(term_write, chunk)
+    if not ok then
+      cancel_png(id)
+      png_connections[id] = nil
+      return nil, tostring(err)
+    end
+  end
+  if connection then
+    if callback then
+      vim.schedule(function()
+        if
+          png_connections[id] == connection.owner and require("md-render.heading_tmux").status().key == connection.key
+        then
+          callback()
+        end
+      end)
+    end
+  else
+    retain_image(id)
+  end
   return id
 end
 
@@ -2138,6 +2228,22 @@ end
 function M.delete_image(image_id)
   cancel_png(image_id)
   _retained_images[image_id] = nil
+  if png_connections[image_id] then
+    -- A tmux copy-mode snapshot can still display our placeholders. Keep its
+    -- PNG alive until the pane is active again, then release retired uploads.
+    local tmux = require "md-render.heading_tmux"
+    local connection = tmux.status().owner
+    if connection then
+      if connection == png_connections[image_id] then
+        png_write(string.format("\27_Ga=d,d=I,i=%d,q=2\27\\", image_id))
+      end
+    else
+      png_deletes[image_id] = png_connections[image_id]
+      tmux.watch_cleanup(true)
+    end
+    png_connections[image_id] = nil
+    return
+  end
   if not M.supports_kitty() then return end
   term_write(string.format("\x1b_Ga=d,d=I,i=%d\x1b\\", image_id))
   if _temp_image_paths[image_id] and _image_paths[image_id] then

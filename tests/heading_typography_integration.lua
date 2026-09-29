@@ -134,4 +134,32 @@ for _, count in ipairs { 24, 36 } do
   end
   assert(table.concat(fragments) == text, "narrow wrapping retains every character")
 end
+-- Tmux already masks native text with placeholders and a blank tail. Reuse
+-- the first shaped result, including opaque H5/H6, without a padding worker.
+vim.env.TMUX = "/private/test,1,0"
+package.loaded["md-render.heading_tmux"] = {
+  EVENT = "MdRenderTmuxChanged",
+  status = function()
+    return { key = "test" }
+  end,
+}
+local tmux_content = build(source, 100)
+assert(#tmux_content.text_placements == 6)
+for _, entry in pairs(tmux_content.heading_layouts) do
+  assert(not entry.request.entries[1].native_cols, "tmux must not start a redundant opaque-padding request")
+end
+require("md-render.display_utils").apply_content_to_buffer(0, vim.api.nvim_create_namespace "trial", tmux_content)
+vim.api.nvim_win_set_cursor(0, { 1, 0 })
+local tmux_state = assert(heading.attach(0, tmux_content))
+assert(vim.wait(2000, function()
+  return tmux_state.drawn == 6
+end, 10))
+for level = 5, 6 do
+  local entry = tmux_state.entries[level]
+  local native_width = vim.fn.strdisplaywidth(entry.placement.text)
+  assert(entry.cols < native_width and entry.mask_ids, "tmux masks the native tail without widening the PNG")
+  local mark = vim.api.nvim_buf_get_extmark_by_id(0, tmux_state.mask_ns, entry.mask_ids[1], { details = true })
+  assert(#mark[3].virt_text[2][1] == native_width - entry.cols, "blank the complete native tail")
+end
+heading.detach(tmux_state)
 print "Heading typography: exact ratios, unchanged weight, H1/H2 rules, small-text masks and wrapping OK"

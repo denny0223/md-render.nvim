@@ -738,6 +738,12 @@ local function visible_placements(state)
 
   local all, protected = require("md-render.heading_feedback").protected(state, state.placements)
   if all then return {} end
+  local cursor
+  if win == vim.api.nvim_get_current_win() and not state.gesture then
+    local pos = vim.fn.getcurpos()
+    cursor = vim.fn.screenpos(win, pos[2], pos[3])
+    cursor.col = cursor.col + pos[4] -- include virtualedit's offset past the line
+  end
   local out = {}
   for _, p in ipairs(state.placements) do
     local sgr = sgr_for(p.hl, p.normal or "Normal")
@@ -768,7 +774,14 @@ local function visible_placements(state)
       -- Partially visible placements are skipped rather than clipped: the
       -- plain-size text underneath stays on screen, which is the graceful
       -- fallback. OSC 66 has no source-rectangle crop like graphics do.
-      local feedback = false
+      -- Keyboard coordinates follow the ordinary text grid. Keep margins
+      -- enlarged, but reveal text before the cursor enters the painted cells.
+      -- Mouse gestures use their existing projected coordinates instead.
+      local feedback = cursor
+        and cursor.row >= pos.row
+        and cursor.row < pos.row + p.scale
+        and cursor.col >= pos.col
+        and cursor.col < pos.col + p.width
       for row = p.line, p.line + p.scale - 1 do
         feedback = feedback or protected[row]
       end
@@ -1296,8 +1309,8 @@ function M.attach(win, content)
   --   * Cursor movement in the *source* window repaints the render window too
   --     (shadow cursor, cursor sync), so `CursorMoved` in another window still
   --     concerns us.
-  -- `M.paint` is a single debounced write that no-ops when nothing is visible,
-  -- so reacting to every event is cheaper than getting the filter wrong.
+  -- Reacting to every event is cheaper than getting the filter wrong;
+  -- `M.paint` no-ops when nothing is visible.
   local DESTROYS_RUNS = {
     -- Both move every run on screen and destroy them all on the way.
     WinScrolled = true,
@@ -1329,7 +1342,15 @@ function M.attach(win, content)
       group = augroup,
       callback = function()
         if destroys_runs then restore_runs_now(state) end
-        schedule_paint(state)
+        if event == "CursorMoved" then
+          -- Same-row movement may not redraw any cells. Update feedback after
+          -- the TUI flush, without waiting for the scroll debounce.
+          vim.schedule(function()
+            M.paint(state)
+          end)
+        else
+          schedule_paint(state)
+        end
       end,
     })
     table.insert(state.autocmd_ids, id)

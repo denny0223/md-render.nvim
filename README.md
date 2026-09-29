@@ -362,6 +362,8 @@ Image headings are disabled on Windows and through tmux. Linux with direct Kitty
 
 Select `:MdRender textsize native` for Kitty >= 0.40 without image dependencies. Native headings preserve inline styles and links, and wrap to their painted width. If the available width is too narrow for scaling, or a heading contains control characters such as tabs, the whole document uses ordinary headings to preserve its text and hierarchy. Search, selection and unsupported highlights can still reveal individual headings as text.
 
+Moving the cursor through a heading’s margin keeps it enlarged, including with `cursorline`. Entering its text reveals ordinary text for accurate cursor positioning and keyboard link actions.
+
 Native headings reserve two rows per wrapped line. Scrolling or overlapping windows may briefly reveal plain text, and redraws can be more expensive. Telescope and Snacks picker previews do not use native scaling. See `:help md-render-text-size` for troubleshooting.
 
 **Kitty through tmux:** native headings support one attached Kitty client with `set -g allow-passthrough on` (or `all`, including Snacks) and `set -g focus-events on`. Reattach after changing focus reporting. The plugin reads tmux's terminal identification and pane geometry without changing tmux settings or sending version queries into pane input. Only the focused pane is enlarged: popups, copy mode and focus loss leave ordinary text, and returning restores enlargement automatically without switching backends. External redraws use the existing 500 ms recovery timer.

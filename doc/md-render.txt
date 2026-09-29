@@ -597,6 +597,10 @@ available width is too narrow, or a heading contains control characters such
 as tabs, the whole preview uses ordinary headings to preserve its text and
 hierarchy. :MdRender textsize status reports why.
 
+Moving through heading margins preserves enlargement, even with 'cursorline'.
+Entering the text reveals ordinary text so cursor positions and keyboard link
+actions agree.
+
 Unsupported highlights, indexed colors, custom highlight namespaces and
 partially visible headings can temporarily reveal text without rebuilding
 the layout. Scrolling, redraws or overlapping windows may also briefly show

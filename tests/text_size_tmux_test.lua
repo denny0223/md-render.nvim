@@ -143,7 +143,7 @@ vim.api.nvim_set_decoration_provider = function(ns, opts)
 end
 size.setup { enabled = true, backend = "native" }
 local builder = require("md-render.content_builder").ContentBuilder.new()
-builder:render_document({ "Body.", "", "## Heading", "", "## Another" }, { max_width = 60, indent = "" })
+builder:render_document({ "Body.", "", "## Heading", "", "## Another" }, { max_width = 60, indent = "  " })
 local content = builder:result()
 local buf, win = vim.api.nvim_create_buf(false, true), vim.api.nvim_get_current_win()
 vim.api.nvim_buf_set_lines(buf, 0, -1, false, content.lines)
@@ -276,17 +276,24 @@ end
 local redraw_flags = vim.o.redrawdebug
 vim.wo.cursorline = true
 vim.api.nvim_win_set_cursor(win, { p.line + 1, 0 })
+size.paint(state)
+assert(state.last_drawn == 2, "CursorLine in the margin keeps both headings enlarged")
+local feedback_ns = vim.api.nvim_create_namespace "native-yank-feedback"
+vim.api.nvim_buf_set_extmark(buf, feedback_ns, p.line, p.col, {
+  end_row = p.line + 1,
+  end_col = 0,
+  hl_group = "IncSearch",
+})
 provider.on_range(nil, win, buf, p.line, 0, p.line + 1, 0)
-vim.api.nvim_exec_autocmds("CursorMoved", { modeline = false })
 finish_redraw()
-assert(state.last_drawn == 1, "cursor feedback completes without waiting for the debounce")
+assert(state.last_drawn == 1, "yank feedback completes without waiting for the debounce")
 assert(#redraw_requests == 1 and redraw_requests[1].win == win, "restore text through a window redraw")
 assert(vim.deep_equal(redraw_requests[1].range, { p.line, p.line + p.scale }), "repaint only the heading rows")
 assert(vim.o.redrawdebug == redraw_flags, "restore the user's redraw flags")
 vim.wait(10) -- drain the scoped redraw's own notification
-vim.wo.cursorline = false
-vim.api.nvim_win_set_cursor(win, { 1, 0 })
+vim.api.nvim_buf_clear_namespace(buf, feedback_ns, 0, -1)
 size.paint(state)
+assert(state.last_drawn == 2, "scaling returns after feedback without moving the cursor")
 assert(#redraw_requests == 1, "adding scaling does not invalidate existing headings")
 
 -- Command-line feedback can retire all headings even when the TUI only
@@ -305,8 +312,11 @@ feedback.protected = protected
 vim.wait(10)
 size.paint(state)
 
-vim.wo.cursorline = true
-vim.api.nvim_win_set_cursor(win, { p.line + 1, 0 })
+vim.api.nvim_buf_set_extmark(buf, feedback_ns, p.line, p.col, {
+  end_row = p.line + 1,
+  end_col = 0,
+  hl_group = "IncSearch",
+})
 provider.on_range(nil, win, buf, p.line, 0, p.line + 1, 0)
 vim.api.nvim__redraw = function()
   error "test redraw failure"

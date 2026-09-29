@@ -361,6 +361,8 @@ Windows 與 tmux 不啟用圖片標題。已驗證 Linux 直接使用 Kitty，�
 
 Kitty >= 0.40 可用 `:MdRender textsize native`，不需圖片依賴。原生標題保留行內樣式與連結，並依放大後的實際寬度換行。可用寬度不足以縮放，或標題文字含 Tab 等控制字元時，整份文件會使用一般標題，保留內容與一致的層級呈現。搜尋、選取及不支援的高亮仍可能讓個別標題顯示文字。
 
+游標在標題留白處移動時會維持放大，啟用 `cursorline` 也相同；進入文字區域時則顯示一般文字，讓游標位置與鍵盤連結操作一致。
+
 原生標題換行後，每行占用兩列。捲動或視窗重疊時可能短暫顯示一般文字，重繪成本也較高；Telescope 與 Snacks 選取器預覽不使用原生縮放。疑難排解請見 `:help md-render-text-size`。
 
 **Kitty 經過 tmux：** native 標題支援單一 Kitty client，需設定 `set -g allow-passthrough on`（也支援 Snacks 使用的 `all`）及 `set -g focus-events on`；更改焦點回報設定後請重新 attach。外掛讀取 tmux 的終端辨識與 pane 座標，不改動 tmux 設定，也不向 pane 輸入通道發送版本查詢。只有聚焦的 pane 會放大：popup、copy mode 與失焦時保留一般文字，返回後自動恢復，不切換 backend。外部重繪沿用既有的 500 ms 補繪計時器。

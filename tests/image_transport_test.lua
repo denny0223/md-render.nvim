@@ -1,4 +1,5 @@
 -- PNG bytes must survive a TTY without access to the renderer's filesystem.
+vim.env.TMUX, vim.env.TMUX_PANE, vim.env.TERM_PROGRAM = nil, nil, nil
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. package.path
 local image = require "md-render.image"
 image.supports_kitty = function()

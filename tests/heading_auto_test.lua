@@ -1,4 +1,5 @@
 -- Policy decisions and failed async work must remain bounded and retryable.
+vim.env.TMUX, vim.env.TMUX_PANE, vim.env.TERM_PROGRAM = nil, nil, nil
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
 local size = require "md-render.text_size"
 assert(size.config().enabled and size.config().backend == "auto", "automatic headings are the default")

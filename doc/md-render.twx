@@ -895,12 +895,16 @@ ContentBuilder:add_labeled({label}, {value}, {value_hl}) ~
 	新增一行鍵值配對，用於渲染 frontmatter。
 
                                        *ContentBuilder:add_wrapped_markdown()*
-ContentBuilder:add_wrapped_markdown({text}, ...) ~
-	新增一行 Markdown，套用自動換行與行內格式。
+ContentBuilder:add_wrapped_markdown({rendered_text}, ...) ~
+	將已渲染的段落自動換行，並分配其醒目提示與連結。
 
 	完整參數：~
-	  {text}, {indent}, {max_width}, {repo_base_url}, {autolinks},
-	  {ref_links}, {footnote_map}
+	  {rendered_text}, {md_highlights}, {md_links}, {indent}, {max_width},
+	  {quote_prefix}, {list_marker}, {line_gap}, {hard_breaks}, {source_lines}
+
+	選用的 {hard_breaks} 是 |Markdown.render()| 的第 9 個回傳值。
+	選用的 {source_lines} 將段落內的行序號對應至原始來源行，
+	在強制換行與自動換行後保留來源對應。
 
                                         *ContentBuilder:add_simple_markdown()*
 ContentBuilder:add_simple_markdown({text}, ...) ~
@@ -922,7 +926,8 @@ Markdown                                                  *md-render-markdown*
 
                                                            *Markdown.render()*
 Markdown.render({text}, ...) ~
-	將單行 Markdown 渲染為顯示文字、醒目提示與連結中繼資料。
+	將 Markdown 段落渲染為顯示文字、醒目提示與連結中繼資料。
+	回傳的文字不含 CR 或 LF。
 
 	參數：~
 	  {text}           (string)     Markdown 原始文字。
@@ -933,9 +938,20 @@ Markdown.render({text}, ...) ~
 	  {inline_only}    (boolean|nil) 將區塊標記保留為文字，預設 false。
 
 	回傳值：~
-	  {text}        (string)  顯示文字。
-	  {highlights}  (table[]) 醒目提示範圍。
-	  {links}       (table[]) 連結中繼資料。
+	  {text}            (string)     不含換行字元的顯示文字。
+	  {highlights}      (table[])    醒目提示範圍。
+	  {links}           (table[])    連結中繼資料。
+	  {special_type}    (string|nil) 標題或引用區塊類型。
+	  {list_marker}     (string|nil) 渲染後的清單前綴。
+	  {alert_type}      (string|nil) 提示區塊類型。
+	  {fold_mod}        (string|nil) 提示區塊的摺疊修飾符。
+	  {heading_content} (string|nil) 標題原始內容。
+	  {hard_breaks}     (table[])    強制顯示換行（第九個回傳值）。
+
+	每個換行記錄為 { col = byte_offset, source_line = row }。{col} 是
+	{text} 中 ASCII 分隔空白的零起算位元組位置；拆分顯示行時省略該空白。
+	{source_line} 是傳入段落中下一段開始的列號，從一開始計算。
+	程式碼及實體參照解碼後的換行字元不會建立強制顯示換行。
 
                                                      *Markdown.heading_slug()*
 Markdown.heading_slug({text}) ~

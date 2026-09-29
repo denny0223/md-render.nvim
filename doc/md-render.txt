@@ -1031,12 +1031,16 @@ ContentBuilder:add_labeled({label}, {value}, {value_hl}) ~
 	Add a key-value pair line (used for frontmatter rendering).
 
 					 *ContentBuilder:add_wrapped_markdown()*
-ContentBuilder:add_wrapped_markdown({text}, ...) ~
-	Add a line of Markdown with word wrapping and inline formatting.
+ContentBuilder:add_wrapped_markdown({rendered_text}, ...) ~
+	Wrap rendered paragraph text and distribute its highlights and links.
 
 	All parameters: ~
-	  {text}, {indent}, {max_width}, {repo_base_url}, {autolinks},
-	  {ref_links}, {footnote_map}
+	  {rendered_text}, {md_highlights}, {md_links}, {indent}, {max_width},
+	  {quote_prefix}, {list_marker}, {line_gap}, {hard_breaks}, {source_lines}
+
+	Optional {hard_breaks} is return 9 from |Markdown.render()|.
+	Optional {source_lines} maps paragraph row ordinals to original source
+	rows, preserving their ownership across mandatory breaks and wrapping.
 
 					  *ContentBuilder:add_simple_markdown()*
 ContentBuilder:add_simple_markdown({text}, ...) ~
@@ -1058,8 +1062,8 @@ MARKDOWN						    *md-render-markdown*
 
 							     *Markdown.render()*
 Markdown.render({text}, ...) ~
-	Render a single line of Markdown into display text, highlights, and
-	link metadata.
+	Render a Markdown paragraph into display text, highlights, and link
+	metadata. The text return never contains CR or LF.
 
 	Parameters: ~
 	  {text}           (string)     Raw Markdown text
@@ -1070,9 +1074,21 @@ Markdown.render({text}, ...) ~
 	  {inline_only}    (boolean|nil) Keep block markers literal (default: false)
 
 	Returns: ~
-	  {text}        (string)  Display text
-	  {highlights}  (table[]) Highlight spans
-	  {links}       (table[]) Link metadata
+	  {text}            (string)     Display text without line endings
+	  {highlights}      (table[])    Highlight spans
+	  {links}           (table[])    Link metadata
+	  {special_type}    (string|nil) Heading or blockquote type
+	  {list_marker}     (string|nil) Rendered list prefix
+	  {alert_type}      (string|nil) Alert/callout type
+	  {fold_mod}        (string|nil) Callout fold modifier
+	  {heading_content} (string|nil) Original heading content
+	  {hard_breaks}     (table[])    Mandatory display breaks (ninth return)
+
+	Each hard break is { col = byte_offset, source_line = row }. {col} is
+	the zero-based byte offset of an ASCII separator space in {text}; omit
+	that byte when splitting display rows. {source_line} is the one-based
+	row within the supplied paragraph that starts the next segment. Code
+	and entity-decoded line endings do not create mandatory display breaks.
 
 						       *Markdown.heading_slug()*
 Markdown.heading_slug({text}) ~

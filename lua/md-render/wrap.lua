@@ -568,9 +568,12 @@ local function join_source_lines(lines, ref_links)
     source[i] = i == 1 and line or line:gsub("^[ \t]+", "")
   end
   local protected, spans = require("md-render.inline").protect_code(table.concat(source, "\n"), ref_links)
-  local parts = {}
-  for i, line in ipairs(vim.split(protected, "\n", { plain = true })) do
-    parts[i] = i == 1 and (line:gsub("%s+$", "")) or (line:gsub("^%s+", ""):gsub("%s+$", ""))
+  local parts = vim.split(protected, "\n", { plain = true })
+  for i, line in ipairs(parts) do
+    if i > 1 then line = line:gsub("^%s+", "") end
+    -- Source hard-break spaces must survive until inline ownership is known.
+    if i == #parts or not line:match "  +$" then line = line:gsub("%s+$", "") end
+    parts[i] = line
   end
   local text = table.concat(parts, "\n")
   for _, span in ipairs(spans) do

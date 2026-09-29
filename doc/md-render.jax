@@ -969,12 +969,16 @@ ContentBuilder:add_labeled({label}, {value}, {value_hl}) ~
 	キーバリューペアの行を追加します（フロントマターの表示に使用）。
 
 					 *ContentBuilder:add_wrapped_markdown()*
-ContentBuilder:add_wrapped_markdown({text}, ...) ~
-	ワードラップとインライン書式付きの Markdown 行を追加します。
+ContentBuilder:add_wrapped_markdown({rendered_text}, ...) ~
+	レンダリング済みの段落を折り返し、ハイライトとリンクを分配します。
 
 	全パラメータ: ~
-	  {text}, {indent}, {max_width}, {repo_base_url}, {autolinks},
-	  {ref_links}, {footnote_map}
+	  {rendered_text}, {md_highlights}, {md_links}, {indent}, {max_width},
+	  {quote_prefix}, {list_marker}, {line_gap}, {hard_breaks}, {source_lines}
+
+	省略可能な {hard_breaks} は |Markdown.render()| の第 9 戻り値です。
+	省略可能な {source_lines} は段落内の行番号を元のソース行に対応させ、
+	強制改行と折り返し後もソース行との対応を維持します。
 
 					  *ContentBuilder:add_simple_markdown()*
 ContentBuilder:add_simple_markdown({text}, ...) ~
@@ -996,8 +1000,8 @@ MARKDOWN						    *md-render-markdown*
 
 							     *Markdown.render()*
 Markdown.render({text}, ...) ~
-	1 行の Markdown を表示テキスト、ハイライト、リンクメタデータにレンダリ
-	ングします。
+	Markdown の段落を表示テキスト、ハイライト、リンクメタデータにレンダリ
+	ングします。返されるテキストに CR や LF は含まれません。
 
 	パラメータ: ~
 	  {text}           (string)      生の Markdown テキスト
@@ -1008,9 +1012,21 @@ Markdown.render({text}, ...) ~
 	  {inline_only}    (boolean|nil) ブロック記号を文字として保持（既定: false）
 
 	戻り値: ~
-	  {text}        (string)  表示テキスト
-	  {highlights}  (table[]) ハイライトスパン
-	  {links}       (table[]) リンクメタデータ
+	  {text}            (string)     改行文字を含まない表示テキスト
+	  {highlights}      (table[])    ハイライトスパン
+	  {links}           (table[])    リンクメタデータ
+	  {special_type}    (string|nil) 見出しまたは引用ブロックの種類
+	  {list_marker}     (string|nil) 表示用リスト接頭辞
+	  {alert_type}      (string|nil) アラート／コールアウトの種類
+	  {fold_mod}        (string|nil) コールアウトの折り畳み修飾子
+	  {heading_content} (string|nil) 見出しの元の内容
+	  {hard_breaks}     (table[])    必須の表示改行（第 9 戻り値）
+
+	各改行は { col = byte_offset, source_line = row } です。{col} は
+	{text} 内の ASCII 区切り空白の 0 始まりのバイト位置です。表示行を分割
+	するときはこの空白を除きます。{source_line} は次の区間が始まる入力段落
+	内の行番号で、1 から数えます。コード内や文字参照のデコードで生じた改行
+	文字は必須の表示改行になりません。
 
 						       *Markdown.heading_slug()*
 Markdown.heading_slug({text}) ~

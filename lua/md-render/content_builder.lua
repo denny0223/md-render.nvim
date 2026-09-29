@@ -219,7 +219,6 @@ local function to_superscript(n)
 end
 
 local wrap_mod = require "md-render.wrap"
-local inline = require "md-render.inline"
 local icons = require "md-render.icons"
 local fence_mod = require "md-render.fence"
 
@@ -287,7 +286,7 @@ local function distribute_highlights(
         end
       else
         local wline_end = line_start_pos + #wline
-        if hl_end > line_start_pos and hl_start < wline_end then
+        if #wline > 0 and hl_end > line_start_pos and hl_start < wline_end then
           local local_start = math.max(0, hl_start - line_start_pos)
           local local_end = math.min(#wline, hl_end - line_start_pos)
           table.insert(line_hls, {
@@ -339,7 +338,7 @@ local function distribute_links(
       local link_end = link.col_end - content_offset
       local wline_end = line_start_pos + #wline
 
-      if link_end > line_start_pos and link_start < wline_end then
+      if #wline > 0 and link_end > line_start_pos and link_start < wline_end then
         local local_start = math.max(0, link_start - line_start_pos)
         local local_end = math.min(#wline, link_end - line_start_pos)
         table.insert(entries, {
@@ -364,6 +363,8 @@ end
 ---@param quote_prefix string
 ---@param list_marker? string
 ---@param line_gap? integer blank lines to insert after each wrapped line
+---@param hard_breaks? MdRender.Markdown.Break[] mandatory paragraph row boundaries
+---@param source_lines? integer[] original source rows of the paragraph
 function ContentBuilder:add_wrapped_markdown(
   rendered_text,
   md_highlights,
@@ -372,7 +373,9 @@ function ContentBuilder:add_wrapped_markdown(
   max_width,
   quote_prefix,
   list_marker,
-  line_gap
+  line_gap,
+  hard_breaks,
+  source_lines
 )
   local wrap_text = rendered_text
   local content_offset = 0
@@ -395,7 +398,28 @@ function ContentBuilder:add_wrapped_markdown(
   if quote_prefix ~= "" then content_max_width = max_width - vim.api.nvim_strwidth(quote_prefix) end
   if list_cont_len > 0 then content_max_width = content_max_width - list_cont_len end
 
-  local wrapped_lines, line_starts = wrap_words(wrap_text, content_max_width)
+  local wrapped_lines, line_starts, row_sources = {}, {}, {}
+  local first, source_line = 0, self._current_source_line
+  hard_breaks = hard_breaks or {}
+  for i = 1, #hard_breaks + 1 do
+    local boundary = hard_breaks[i]
+    local last = boundary and boundary.col - content_offset or #wrap_text
+    local segment = wrap_text:sub(first + 1, last)
+    local rows, starts = wrap_words(segment, content_max_width)
+    if segment == "" then
+      rows, starts = { "" }, { 0 }
+    end
+    for row, value in ipairs(rows) do
+      wrapped_lines[#wrapped_lines + 1] = value
+      line_starts[#line_starts + 1] = first + starts[row]
+      row_sources[#row_sources + 1] = source_line
+    end
+    first = last + 1
+    if boundary then
+      local offset = source_lines and source_lines[boundary.source_line] - source_lines[1] or boundary.source_line - 1
+      source_line = self._current_source_line + offset
+    end
+  end
   local per_line_hls = distribute_highlights(
     md_highlights,
     wrapped_lines,
@@ -423,15 +447,18 @@ function ContentBuilder:add_wrapped_markdown(
   local list_continuation = string.rep(" ", list_cont_len)
 
   line_gap = line_gap or 0
+  local saved_source = self._current_source_line
   for idx, wline in ipairs(wrapped_lines) do
     local line_prefix = quote_prefix ~= "" and (indent .. quote_prefix) or indent
     local lm = idx == 1 and list_prefix or list_continuation
     local line_hls = per_line_hls[idx]
+    self:set_source_line(row_sources[idx])
     self:add_line(line_prefix .. lm .. wline, #line_hls > 0 and line_hls or nil)
     for _ = 1, line_gap do
       self:add_line ""
     end
   end
+  self:set_source_line(saved_source)
 
   for _, entry in ipairs(link_entries) do
     -- distribute_links assumed the wrapped lines were consecutive; spread the
@@ -821,11 +848,21 @@ end
 ---@param repo_base_url? string
 ---@param autolinks? MdRender.Autolink[]
 ---@param ref_links? table<string, string>
+---@param source_lines? integer[] original source rows of the paragraph
 ---@return string? alert_type Alert type if this line is an alert header
 ---@return string? fold_mod Fold modifier ("+" or "-") if this is a foldable callout
-function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url, autolinks, ref_links, footnote_map)
+function ContentBuilder:add_markdown_line(
+  text,
+  indent,
+  max_width,
+  repo_base_url,
+  autolinks,
+  ref_links,
+  footnote_map,
+  source_lines
+)
   local markdown = require "md-render.markdown"
-  local rendered_text, md_highlights, md_links, special_type, list_marker, alert_type, fold_mod, heading_content =
+  local rendered_text, md_highlights, md_links, special_type, list_marker, alert_type, fold_mod, heading_content, hard_breaks =
     markdown.render(text, repo_base_url, autolinks, ref_links, footnote_map)
 
   local quote_prefix = ""
@@ -884,8 +921,19 @@ function ContentBuilder:add_markdown_line(text, indent, max_width, repo_base_url
   if spec then
     self:add_native_heading(rendered_text, md_highlights, md_links, indent, spec, level, max_width)
   elseif not image_added then
-    if indent_w + vim.api.nvim_strwidth(rendered_text) > max_width then
-      self:add_wrapped_markdown(rendered_text, md_highlights, md_links, indent, wrap_max, quote_prefix, list_marker)
+    if #hard_breaks > 0 or indent_w + vim.api.nvim_strwidth(rendered_text) > max_width then
+      self:add_wrapped_markdown(
+        rendered_text,
+        md_highlights,
+        md_links,
+        indent,
+        wrap_max,
+        quote_prefix,
+        list_marker,
+        nil,
+        hard_breaks,
+        source_lines
+      )
     else
       self:add_simple_markdown(rendered_text, md_highlights, md_links, indent)
     end
@@ -1242,15 +1290,6 @@ end
 
 local markdown_table = require "md-render.markdown_table"
 
---- Check if a line ends with a CommonMark hard line break marker
---- (two or more trailing spaces, or a trailing backslash).
----@param line string
----@return boolean
-local function has_hard_break(line)
-  local slashes = line:match "(\\+)$"
-  return line:match "  +$" ~= nil or (slashes ~= nil and #slashes % 2 == 1)
-end
-
 --- Remove up to `n` leading spaces from a line (CommonMark dedents fenced
 --- code content by the opening fence's indent, no further).
 ---@param line string
@@ -1444,8 +1483,7 @@ end
 --- Join paragraph continuation rows into source strings, retaining soft breaks.
 --- In CommonMark, consecutive lines that don't start block-level constructs
 --- form a single paragraph. This is needed for inline constructs (like links)
---- that span multiple source lines.  Lines ending in a hard line break
---- marker are *not* joined with the next line: the break is preserved.
+--- that span multiple source lines, including mandatory display breaks.
 ---
 --- `src_indices` is a parallel array giving the original buffer line
 --- number for each input line. The returned `result_indices` carries the
@@ -1462,6 +1500,7 @@ end
 ---@param comments table<integer, {suffix: string, prefix: string}> comment-owned source rows
 ---@param quote_prefix? string display prefix of the current quote container
 ---@param reference_defs? table<integer, boolean> consumed original source rows
+---@param paragraph_sources table<integer, integer[]> original rows by paragraph start
 ---@return string[] result, integer[] result_indices
 local function join_paragraph_continuations(
   lines,
@@ -1472,7 +1511,8 @@ local function join_paragraph_continuations(
   fence_containers,
   comments,
   quote_prefix,
-  reference_defs
+  reference_defs,
+  paragraph_sources
 )
   --- Container a quote line belongs to, as its display indent.
   local function quote_container(idx)
@@ -1491,28 +1531,18 @@ local function join_paragraph_continuations(
 
   local function flush_para()
     if #para == 0 then return end
-    -- Only a matched code span can turn a would-be hard break into literal
-    -- whitespace. Collect the whole paragraph before deciding where to split.
-    for i = 2, #para do
-      para[i] = para[i]:gsub("^[ \t]+", "")
-    end
-    local spans = inline.code_spans(table.concat(para, "\n"), ref_links)
-    local chunk, first, offset, span_index = {}, 1, 0, 1
+    local sources = {}
     for i, line in ipairs(para) do
-      chunk[#chunk + 1] = line
-      local newline = offset + #line + 1
-      while spans[span_index] and spans[span_index].finish < newline do
-        span_index = span_index + 1
+      sources[#sources + 1] = para_indices[i]
+      -- HTML preprocessing may already have joined several contiguous rows.
+      local _, count = line:gsub("\n", "")
+      for row = 1, count do
+        sources[#sources + 1] = para_indices[i] + row
       end
-      local span = spans[span_index]
-      local in_code = span and span.start < newline and newline < span.finish
-      if i == #para or (has_hard_break(line) and not in_code) then
-        result[#result + 1] = wrap_mod.join_source_lines(chunk, ref_links)
-        result_indices[#result_indices + 1] = para_indices[first]
-        chunk, first = {}, i + 1
-      end
-      offset = newline
     end
+    paragraph_sources[para_indices[1]] = sources
+    result[#result + 1] = wrap_mod.join_source_lines(para, ref_links)
+    result_indices[#result_indices + 1] = para_indices[1]
     para, para_indices = {}, {}
   end
 
@@ -1599,7 +1629,8 @@ local function join_paragraph_continuations(
           fence_containers,
           comments,
           (quote_prefix or "") .. "│ ",
-          reference_defs
+          reference_defs,
+          paragraph_sources
         )
         for k, joined_line in ipairs(joined) do
           local marker = markers[joined_src[k]] or "> "
@@ -1913,6 +1944,7 @@ function ContentBuilder:render_document(lines, opts)
   for index in pairs(consumed_refs) do
     reference_defs[src_indices[index]] = true
   end
+  local paragraph_sources = {}
   lines, src_indices = join_paragraph_continuations(
     lines,
     src_indices,
@@ -1922,7 +1954,8 @@ function ContentBuilder:render_document(lines, opts)
     fence_containers,
     comments,
     nil,
-    reference_defs
+    reference_defs,
+    paragraph_sources
   )
   -- Display numbering can grow beyond the nine-digit source marker limit.
   local source_list_lines = lines
@@ -2940,8 +2973,16 @@ function ContentBuilder:render_document(lines, opts)
         else
           -- Render as blockquote-style content with alert styling
           local qn_line = "> " .. line
-          local alert_type_ret =
-            self:add_markdown_line(qn_line, indent, base_max_width, repo_base_url, autolinks, ref_links, footnote_map)
+          local alert_type_ret = self:add_markdown_line(
+            qn_line,
+            indent,
+            base_max_width,
+            repo_base_url,
+            autolinks,
+            ref_links,
+            footnote_map,
+            paragraph_sources[src_indices[src_idx]]
+          )
           local lines_after = #self.lines
           if not alert_type_ret then self:apply_alert_styling(lines_before, lines_after, qiita_note_type, false) end
           lines_shown = lines_shown + (lines_after - lines_before)
@@ -3595,8 +3636,16 @@ function ContentBuilder:render_document(lines, opts)
           if in_details and details_summary_rendered and not skip_details_body then
             text_width = math.max(1, text_width - vim.fn.strdisplaywidth "│ ")
           end
-          local alert_type, fold_mod =
-            self:add_markdown_line(line, indent, text_width, repo_base_url, autolinks, ref_links, footnote_map)
+          local alert_type, fold_mod = self:add_markdown_line(
+            line,
+            indent,
+            text_width,
+            repo_base_url,
+            autolinks,
+            ref_links,
+            footnote_map,
+            paragraph_sources[src_indices[src_idx]]
+          )
           self.text_scale = text_scale
           local lines_after = #self.lines
           if alert_type then

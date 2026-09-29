@@ -13,6 +13,10 @@
 ---@field col_end integer 0-indexed end column
 ---@field url string
 
+---@class MdRender.Markdown.Break
+---@field col integer 0-indexed separator byte in rendered text (one ASCII space)
+---@field source_line integer 1-indexed source row starting the next paragraph segment
+
 ---@class MdRender.Markdown.Removal
 ---@field start integer 0-indexed position in the input text
 ---@field count integer number of bytes removed
@@ -193,6 +197,31 @@ local function protect_entities(text, source)
   return table.concat(result), spans
 end
 
+--- Preserve source breaks through inline parsing without changing whitespace
+--- boundaries. Tabs protect the token from display-space collapse; source
+--- restoration retains reference-label spelling and source-row accounting.
+local function protect_hard_breaks(text, source, ref_links, source_label, bare_url)
+  local ranges = inline.hard_breaks(text, ref_links, source_label, bare_url)
+  if #ranges == 0 then return text, {} end
+  local prefix = inline.token_prefix(source .. character_references.decode(source) .. text, 0xF100A)
+  local spans, parts, pos, source_line = {}, {}, 1, 1
+  for _, range in ipairs(ranges) do
+    local _, rows = source_label(text:sub(pos, range.finish)):gsub("\n", "")
+    source_line = source_line + rows
+    local placeholder = "\t" .. prefix .. (#spans + 1) .. "\u{F100B}\t"
+    spans[#spans + 1] = {
+      placeholder = placeholder,
+      raw = text:sub(range.start, range.finish),
+      content = " ",
+      source_line = source_line,
+    }
+    parts[#parts + 1] = text:sub(pos, range.start - 1) .. placeholder
+    pos = range.finish + 1
+  end
+  parts[#parts + 1] = text:sub(pos)
+  return table.concat(parts), spans
+end
+
 --- Pad a Nerd Font icon glyph so it always occupies 2 display cells.
 --- When setcellwidths makes the glyph width 1, an extra space is appended.
 ---@param icon string single icon character
@@ -317,7 +346,7 @@ end
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
 ---@return string processed
-local function process_wikilinks(text, highlights, links, emphasis_spans)
+local function process_wikilinks(text, highlights, links, emphasis_spans, hard_break_spans)
   if not text:find("[[", 1, true) then return text end
   local processed = ""
   local i = 1
@@ -349,7 +378,7 @@ local function process_wikilinks(text, highlights, links, emphasis_spans)
         end
 
         -- Targets keep their original spelling while labels render inline styles.
-        target = restore_source(target, emphasis_spans)
+        target = restore_source(restore_source(target, hard_break_spans), emphasis_spans)
         -- Determine URL and highlight based on link type
         local url, hl
         local anchor_heading = target:match "^#(.+)$"
@@ -397,7 +426,7 @@ local IMAGE_EXTENSIONS = { png = true, jpg = true, jpeg = true, gif = true, svg 
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
 ---@return string processed
-local function process_embeds(text, highlights, links, emphasis_spans)
+local function process_embeds(text, highlights, links, emphasis_spans, hard_break_spans)
   if not text:find("![[", 1, true) then return text end
   local processed = ""
   local i = 1
@@ -408,7 +437,7 @@ local function process_embeds(text, highlights, links, emphasis_spans)
       if close then
         local inner = text:sub(i + 3, close - 1)
         local target = inner:match "^([^|#]+)" or inner
-        local source_target = restore_source(target, emphasis_spans)
+        local source_target = restore_source(restore_source(target, hard_break_spans), emphasis_spans)
         local ext = source_target:match "%.(%w+)$"
         local icons_mod = require "md-render.icons"
         local raw_icon, embed_icon_hl
@@ -1439,11 +1468,24 @@ end
 ---@return string? special_type Special type like "heading" if applicable
 ---@return string? list_marker List marker if applicable
 ---@return string? alert_type Alert type (NOTE, TIP, etc.) if applicable
+---@return string? fold_mod Callout fold modifier if applicable
+---@return string? heading_content Original heading content if applicable
+---@return MdRender.Markdown.Break[] hard_breaks Mandatory row boundaries in the newline-free text
 Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_map, inline_only)
   inline_only = inline_only == true
   local rendered_text = text
   local highlights = {}
   local links = {}
+  local hard_break_spans = {}
+
+  local function finish(special_type, list_marker, alert_type, fold_mod, heading_content)
+    rendered_text = restore_spans(rendered_text:gsub("[\r\n]", " "), hard_break_spans, nil, highlights, links)
+    local breaks = {}
+    for _, span in ipairs(hard_break_spans) do
+      if span.col then breaks[#breaks + 1] = { col = span.col, source_line = span.source_line } end
+    end
+    return rendered_text, highlights, links, special_type, list_marker, alert_type, fold_mod, heading_content, breaks
+  end
 
   -- Heading (# ## ### etc.) - detect level and strip markers, process inline elements below
   local heading_level, heading_content
@@ -1500,7 +1542,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
         rendered_text = padded_icon .. " " .. label
       end
       rendered_text = apply_blockquote_prefix(rendered_text, quote_prefix, highlights, links)
-      return rendered_text, highlights, links, "blockquote", nil, style_key, fold_mod
+      return finish("blockquote", nil, style_key, fold_mod)
     end
   end
 
@@ -1555,13 +1597,6 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   rendered_text = rendered_text:gsub("\r\n", "\n"):gsub("\r", "\n")
   if checkbox_hl then rendered_text = list_marker .. rendered_text:sub(#list_marker + 1):gsub("^ +", "") end
 
-  -- Only block text can consume a trailing hard-break backslash.
-  if not inline_only and not heading_level then
-    rendered_text = rendered_text:gsub("(\\+)%s*$", function(slashes)
-      return #slashes % 2 == 1 and slashes:sub(2) or slashes
-    end)
-  end
-
   -- Fast path: skip all inline processing for plain text lines that contain
   -- no markdown-significant characters.  This dramatically speeds up rendering
   -- of large documents (e.g. classical Chinese texts) where most lines are
@@ -1575,7 +1610,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   local backslash_escapes, entity_spans, autolink_spans, emphasis_spans, emphasis_pairs
   local decode_url, source_label
 
-  if not needs_inline and #code_spans == 0 then
+  if not needs_inline and #code_spans == 0 and not rendered_text:find "  +\n" then
     rendered_text = display_soft_breaks(rendered_text, highlights, links)
     rendered_text = collapse_spaces(rendered_text, highlights, links, checkbox_hl and #list_marker or 0)
     goto finalize
@@ -1595,6 +1630,14 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
       return restore_source(restore_source(restore_source(label, code_spans), invalid_destinations), autolink_spans)
     end
   )
+  rendered_text, hard_break_spans = protect_hard_breaks(rendered_text, text, ref_links, function(label)
+    return restore_source(
+      restore_source(restore_source(restore_source(label, emphasis_spans), autolink_spans), code_spans),
+      invalid_destinations
+    )
+  end, function(pos)
+    return bare_autolink(rendered_text, pos, {}, code_spans, autolink_spans, emphasis_spans)
+  end)
   rendered_text, entity_spans = protect_entities(rendered_text, text)
   if rendered_text:find("<!--", 1, true) or rendered_text:find("%%", 1, true) then
     rendered_text = map_display_text(rendered_text, function(part)
@@ -1607,6 +1650,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     return restore_spans(restore_spans(url, backslash_escapes), entity_spans)
   end
   source_label = function(label)
+    label = restore_source(label, hard_break_spans)
     label = restore_source(restore_source(label, emphasis_spans), autolink_spans)
     return restore_source(
       restore_source(restore_source(restore_source(label, entity_spans), backslash_escapes), code_spans),
@@ -1615,8 +1659,8 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   end
 
   -- Process inline elements (embeds and wikilinks before standard links)
-  rendered_text = process_embeds(rendered_text, highlights, links, emphasis_spans)
-  rendered_text = process_wikilinks(rendered_text, highlights, links, emphasis_spans)
+  rendered_text = process_embeds(rendered_text, highlights, links, emphasis_spans, hard_break_spans)
+  rendered_text = process_wikilinks(rendered_text, highlights, links, emphasis_spans, hard_break_spans)
   rendered_text = process_footnote_refs(rendered_text, footnote_map, highlights, links, source_label)
   rendered_text = process_links(rendered_text, highlights, links, source_label, ref_links)
   -- Explicit/reference validity is settled; later autolinks need real parentheses.
@@ -1686,7 +1730,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     rendered_text = icon .. rendered_text
     local hl_group = "MdRenderH" .. heading_level
     table.insert(highlights, 1, { col = 0, end_col = #rendered_text, hl = hl_group })
-    return rendered_text, highlights, links, "heading", nil, nil, nil, heading_content
+    return finish("heading", nil, nil, nil, heading_content)
   end
 
   -- Add list marker and checkbox highlight
@@ -1702,10 +1746,10 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   -- Prepend blockquote prefix
   if is_blockquote then
     rendered_text = apply_blockquote_prefix(rendered_text, quote_prefix, highlights, links)
-    return rendered_text, highlights, links, "blockquote", list_marker
+    return finish("blockquote", list_marker)
   end
 
-  return rendered_text, highlights, links, nil, list_marker
+  return finish(nil, list_marker)
 end
 
 --- Parse footnote definitions from document lines.

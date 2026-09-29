@@ -288,6 +288,32 @@ test("nested labels use existing link precedence", function()
     "nested targets"
   )
 end)
+test("table headers and expanded rows receive references with exact byte ranges", function()
+  local source =
+    { "[r]: /url", "", "| [標題][r] | other |", "| --- | --- |", "| [長標籤 alpha beta gamma][r] | tail |" }
+  local wide = build(source)
+  eq(link_texts(wide), { { "標題", "/url", 3 }, { "長標籤 alpha beta gamma", "/url", 5 } }, "wide table")
+  for _, expanded in ipairs { false, true } do
+    local content = build(source, { max_width = 24, expand_state = { [3] = expanded } })
+    local pieces, headers = {}, {}
+    for _, link in ipairs(link_texts(content)) do
+      eq(link[2], "/url", "wrapped target")
+      if link[3] == 5 then
+        pieces[#pieces + 1] = link[1]
+      else
+        eq(link[3], 3, "header source")
+        headers[#headers + 1] = link[1]
+      end
+      assert(not link[1]:find("…", 1, true), "ellipsis is not clickable")
+    end
+    eq(headers, { "標題" }, "narrow table keeps its linked header")
+    if expanded then
+      eq(table.concat(pieces):gsub(" ", ""), "長標籤alphabetagamma", "all wrapped label bytes")
+    else
+      eq(pieces, { "長標籤 alpha " }, "truncated body keeps its visible linked text")
+    end
+  end
+end)
 test("comment definitions stay hidden and footnotes and wikilinks remain separate", function()
   local content = build { "<!--", "[foo]: /hidden", "-->", "", "[foo]" }
   assert(visible(content)[1]:find("[foo]", 1, true), "comment cannot define reference")
@@ -300,7 +326,7 @@ test("comment definitions stay hidden and footnotes and wikilinks remain separat
 end)
 test("public preview preserves source bytes and reference mappings", function()
   local preview = require "md-render.preview"
-  local lines = { "[first]:", "/first", "", "[first]" }
+  local lines = { "[first]:", "/first", "", "[first]", "", "| [HEAD][first] |", "| --- |", "| [BODY][first] |" }
   local source = vim.api.nvim_create_buf(false, true)
   vim.bo[source].filetype = "markdown"
   vim.api.nvim_buf_set_lines(source, 0, -1, false, lines)
@@ -313,7 +339,7 @@ test("public preview preserves source bytes and reference mappings", function()
     for _, link in ipairs(session.content.link_metadata) do
       destinations[#destinations + 1] = link.url
     end
-    eq(destinations, { "/first" }, "preview receives the full reference context")
+    eq(destinations, { "/first", "/first", "/first" }, "preview receives the full reference context")
   end)
   if preview._toggle_sessions[source] then preview.toggle() end
   eq(vim.api.nvim_buf_get_lines(source, 0, -1, false), lines, "source is unchanged after closing preview")

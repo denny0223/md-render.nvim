@@ -246,7 +246,9 @@ for level = 1, 2 do
       local out = preview.build_content({
         "<details open>",
         "<summary>More</summary>",
+        "",
         string.rep("#", level) .. " [" .. string.rep("中", 30) .. "](#target)",
+        "",
         "</details>",
       }, { max_width = width, indent = "", text_scale = text_scale })
       if text_scale then

@@ -120,9 +120,10 @@ end
 ---@param autolinks? MdRender.Autolink[]
 ---@param ref_links? table<string, string> normalized document labels to URLs
 ---@return MdRender.MarkdownTable.ParsedCell
-local function process_cell(text, repo_base_url, autolinks, ref_links)
+local function process_cell(text, repo_base_url, autolinks, ref_links, raw_html)
   local markdown = require "md-render.markdown"
-  local rendered, highlights, links = markdown.render(text, repo_base_url, autolinks, ref_links, nil, true)
+  local rendered, highlights, links =
+    markdown.render(text, repo_base_url, autolinks, ref_links, nil, true, { raw_html = raw_html })
   return {
     text = rendered,
     highlights = highlights,
@@ -269,7 +270,7 @@ end
 ---@param autolinks? MdRender.Autolink[]
 ---@param ref_links? table<string, string> normalized document labels to URLs
 ---@return MdRender.MarkdownTable.ParsedTable|nil
-function MarkdownTable.parse(lines, repo_base_url, autolinks, ref_links)
+function MarkdownTable.parse(lines, repo_base_url, autolinks, ref_links, raw_html)
   if #lines < 2 then return nil end
 
   local header_cells, alignments = MarkdownTable.parse_header(lines[1], lines[2])
@@ -278,7 +279,7 @@ function MarkdownTable.parse(lines, repo_base_url, autolinks, ref_links)
   -- Process header cells
   local headers = {}
   for _, cell_text in ipairs(header_cells) do
-    table.insert(headers, process_cell(cell_text, repo_base_url, autolinks, ref_links))
+    table.insert(headers, process_cell(cell_text, repo_base_url, autolinks, ref_links, raw_html))
   end
 
   -- Process data rows (line 3+)
@@ -290,7 +291,7 @@ function MarkdownTable.parse(lines, repo_base_url, autolinks, ref_links)
     local row = {}
     for col = 1, #alignments do
       local cell_text = cells[col] or ""
-      table.insert(row, process_cell(cell_text, repo_base_url, autolinks, ref_links))
+      table.insert(row, process_cell(cell_text, repo_base_url, autolinks, ref_links, raw_html))
     end
     table.insert(rows, row)
   end

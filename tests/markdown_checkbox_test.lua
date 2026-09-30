@@ -1117,7 +1117,6 @@ test("html multiline: <h1> with img and links (neovim-style)", function()
   builder:render_document({
     '<h1 align="center">',
     '  <img src="https://example.com/logo.png" alt="Neovim">',
-    "",
     '  <a href="https://neovim.io/doc/">Documentation</a> |',
     '  <a href="https://example.com/chat">Chat</a>',
     "</h1>",

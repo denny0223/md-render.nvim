@@ -308,8 +308,8 @@ test("table rows survive HTML preprocessing independently", function()
   eq(spans, { { "X", "/x", 3 }, { "Y", "/y", 4 } }, "separate HTML rows retain exact link text, targets and sources")
   eq(build({ "<mark>x", "y</mark>" }).lines, { "x y" }, "HTML outside a table keeps multiline behavior")
   eq(
-    build({ "<mark>outside", "a|b", "---|---", "end</mark>" }).lines,
-    { "outside a|b ---|--- end" },
+    build({ "<mark>", "outside", "a|b", "---|---", "end", "</mark>" }).lines,
+    { "outside", "a|b", "---|---", "end" },
     "table-looking text inside HTML stays in its owner"
   )
 end)

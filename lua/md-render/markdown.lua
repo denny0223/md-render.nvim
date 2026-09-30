@@ -213,7 +213,7 @@ end
 
 --- Recognize references in the source, before removing any Markdown syntax.
 --- Keeping their values hidden also prevents decoded punctuation from becoming syntax.
-local function protect_entities(text, source)
+local function protect_entities(text, source, literal)
   local spans, result = {}, {}
   local prefix = inline.token_prefix((source or "") .. text, 0xF1004)
   local i = 1
@@ -221,7 +221,7 @@ local function protect_entities(text, source)
     local autolink_end = text:sub(i, i) == "<" and inline.autolink_end(text, i)
     local reference, replacement = character_references.match(text, i)
     local next_char = text:sub(i + 1, i + 1)
-    if text:sub(i, i) == "\\" and next_char ~= "" and ESCAPABLE_CHARS:find(next_char, 1, true) then
+    if not literal and text:sub(i, i) == "\\" and next_char ~= "" and ESCAPABLE_CHARS:find(next_char, 1, true) then
       result[#result + 1] = text:sub(i, i + 1)
       i = i + 2
     elseif autolink_end then
@@ -1153,11 +1153,16 @@ local HTML_TAG_HIGHLIGHTS = {
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
 ---@return string processed
-local function process_html_tags(text, highlights, links, decode_url)
+local function process_html_tags(text, highlights, links, decode_url, keep_rows)
   if not text:find("<", 1, true) then return text end
   local pre_hl_count = #highlights
   local pre_link_count = #links
   local removals = {}
+  local function remove_tag(start, tag)
+    local rows = keep_rows and tag:gsub("[^\n]", "") or ""
+    table.insert(removals, { start = start, count = #tag - #rows })
+    return rows
+  end
   local processed = ""
   local i = 1
   while i <= #text do
@@ -1173,8 +1178,8 @@ local function process_html_tags(text, highlights, links, decode_url)
         if href and close_start then
           href = decode_url(href)
           local content = text:sub(i + #a_tag, close_start - 1)
-          table.insert(removals, { start = i - 1, count = #a_tag })
-          table.insert(removals, { start = close_start - 1, count = 4 })
+          processed = processed .. remove_tag(i - 1, a_tag)
+          remove_tag(close_start - 1, "</a>")
           local start_col = #processed
           processed = processed .. content
           add_link_highlight(highlights, start_col, start_col + #content, href)
@@ -1197,7 +1202,8 @@ local function process_html_tags(text, highlights, links, decode_url)
             local raw_img_icon, img_icon_hl = icons_mod.get_image_icon(src)
             local img_icon = icons_mod.pad_icon(raw_img_icon) .. " "
             local display = img_icon .. ((alt and alt ~= "") and alt or display_name)
-            table.insert(removals, { start = i - 1, count = #img_tag })
+            if keep_rows then display = display:gsub("[\r\n]", " ") end
+            local tag_rows = remove_tag(i - 1, img_tag)
             local start_col = #processed
             processed = processed .. display
             if img_icon_hl then
@@ -1205,6 +1211,7 @@ local function process_html_tags(text, highlights, links, decode_url)
             end
             add_link_highlight(highlights, start_col + #img_icon, start_col + #display, src)
             table.insert(links, { col_start = start_col, col_end = start_col + #display, url = src, _decoded = true })
+            processed = processed .. tag_rows
             i = i + #img_tag
             matched = true
           end
@@ -1223,7 +1230,8 @@ local function process_html_tags(text, highlights, links, decode_url)
             local raw_icon, icon_hl = icons_mod.get_image_icon(src)
             local img_icon = icons_mod.pad_icon(raw_icon) .. " "
             local display = img_icon .. display_name
-            table.insert(removals, { start = i - 1, count = #video_tag })
+            if keep_rows then display = display:gsub("[\r\n]", " ") end
+            local tag_rows = remove_tag(i - 1, video_tag)
             local start_col = #processed
             processed = processed .. display
             if icon_hl then
@@ -1231,6 +1239,7 @@ local function process_html_tags(text, highlights, links, decode_url)
             end
             add_link_highlight(highlights, start_col + #img_icon, start_col + #display, src)
             table.insert(links, { col_start = start_col, col_end = start_col + #display, url = src, _decoded = true })
+            processed = processed .. tag_rows
             i = i + #video_tag
             matched = true
           end
@@ -1254,8 +1263,8 @@ local function process_html_tags(text, highlights, links, decode_url)
               end
               if close_start then
                 local content = text:sub(i + #open_tag, close_start - 1)
-                table.insert(removals, { start = i - 1, count = #open_tag })
-                table.insert(removals, { start = close_start - 1, count = #close_tag })
+                processed = processed .. remove_tag(i - 1, open_tag)
+                remove_tag(close_start - 1, close_tag)
                 local start_col = #processed
                 processed = processed .. content
                 if hl then table.insert(highlights, { col = start_col, end_col = start_col + #content, hl = hl }) end
@@ -1449,6 +1458,34 @@ local function strip_html_tags(text, highlights)
   return processed
 end
 
+--- Apply supported HTML display semantics without activating Markdown syntax.
+--- Physical source breaks survive tag removal, including multiline attributes.
+function Markdown.render_html(text)
+  text = text:gsub("\r\n", "\n"):gsub("\r", "\n")
+  local entities
+  text, entities = protect_entities(text, text, true)
+  text = text:gsub("<!%-%-.-%-%->", function(comment)
+    return comment:gsub("[^\n]", "")
+  end)
+  local highlights, links = {}, {}
+  repeat
+    local previous = text
+    text = process_html_tags(text, highlights, links, function(url)
+      return restore_spans(url, entities)
+    end, true)
+    if text == previous then break end
+  until false
+  text = strip_html_tags(text, highlights)
+  for _, span in ipairs(entities) do
+    span.content = span.content:gsub("[\r\n]", " ")
+  end
+  text = restore_spans(text, entities, nil, highlights, links)
+  for _, link in ipairs(links) do
+    link._decoded = nil
+  end
+  return text, highlights, links
+end
+
 local function span_boundaries(highlights, links)
   local starts, ends = {}, {}
   for _, hl in ipairs(highlights) do
@@ -1554,7 +1591,8 @@ end
 ---@return string? heading_content Original heading content if applicable
 ---@return MdRender.Markdown.Break[] hard_breaks Mandatory row boundaries in the newline-free text
 Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_map, inline_only, block_context)
-  inline_only = inline_only == true
+  local raw_html = block_context and block_context.raw_html
+  inline_only = inline_only == true or (raw_html and not block_context.heading_level)
   local rendered_text = text
   local highlights = {}
   local links = {}
@@ -1583,7 +1621,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   if not inline_only then
     if block_context and block_context.heading_level then
       heading_level = block_context.heading_level
-      heading_content = rendered_text:gsub("^[ \t]+", ""):gsub("[ \t]+$", "")
+      heading_content = raw_html and rendered_text or rendered_text:gsub("^[ \t]+", ""):gsub("[ \t]+$", "")
     else
       heading_level, heading_content = Markdown.parse_atx_heading(rendered_text)
     end
@@ -1687,10 +1725,14 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
 
   -- Establish code boundaries before whitespace or comment transformations.
   local code_spans, invalid_destinations
-  rendered_text, code_spans = inline.protect_code(rendered_text, ref_links)
-  rendered_text, invalid_destinations = inline.protect_invalid_destinations(rendered_text, ref_links, function(label)
-    return restore_source(label, code_spans)
-  end)
+  if raw_html then
+    code_spans, invalid_destinations = {}, {}
+  else
+    rendered_text, code_spans = inline.protect_code(rendered_text, ref_links)
+    rendered_text, invalid_destinations = inline.protect_invalid_destinations(rendered_text, ref_links, function(label)
+      return restore_source(label, code_spans)
+    end)
+  end
   rendered_text = rendered_text:gsub("\r\n", "\n"):gsub("\r", "\n")
   if checkbox_hl then rendered_text = list_marker .. rendered_text:sub(#list_marker + 1):gsub("^ +", "") end
 
@@ -1707,6 +1749,12 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   local backslash_escapes, entity_spans, autolink_spans, emphasis_spans, emphasis_pairs
   local standard_spans, html_ranges, html_spans, html_pos
   local decode_url, source_label
+
+  if raw_html then
+    rendered_text, highlights, links = Markdown.render_html(rendered_text)
+    rendered_text = rendered_text:gsub("\n", " ")
+    goto finalize
+  end
 
   if not needs_inline and #code_spans == 0 and not rendered_text:find "  +\n" then
     rendered_text = display_soft_breaks(rendered_text, highlights, links)

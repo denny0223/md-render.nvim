@@ -65,8 +65,15 @@ for level = 1, 2 do
   cases[#cases + 1] = {
     name = "H" .. level .. " in details",
     heading = true,
-    source = { "<details open>", "<summary>Details</summary>", string.rep("#", level) .. " " .. text, "</details>" },
-    line = 3,
+    source = {
+      "<details open>",
+      "<summary>Details</summary>",
+      "",
+      string.rep("#", level) .. " " .. text,
+      "",
+      "</details>",
+    },
+    line = 4,
     prefix = "│ " .. string.rep("#", level) .. " ",
     continuation = "│ ",
   }

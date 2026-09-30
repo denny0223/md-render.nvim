@@ -219,9 +219,12 @@ do
         "# Before",
         "<details open>",
         "<summary>Study</summary>",
+        "",
         string.rep("#", level) .. " [共同研究](https://example.com/study)",
         string.rep("#", level) .. " " .. string.rep("文字 ", 20),
+        "",
         "</details>",
+        "",
         "# After",
       }
       local opts = { max_width = 42, indent = "    " }

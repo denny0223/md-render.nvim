@@ -275,8 +275,8 @@ test("continuation indentation is structural while internal whitespace is litera
   end
 end)
 
-test("HTML consumers retain inline code spaces", function()
-  local content = build({ "<h2>`a  b`", "[L](/left)</h2>" }, { max_width = 40 })
+test("HTML consumers retain HTML code spaces", function()
+  local content = build({ "<h2><code>a  b</code>", '<a href="/left">L</a></h2>' }, { max_width = 40 })
   assert_eq(content.lines, { "## a  b L", string.rep("─", 40) }, "multiline HTML heading preserves code spaces")
   assert_eq(spans(content, "MdRenderInlineCode"), { { 0, 3, 7, "a  b" } }, "HTML heading code range")
   assert_eq(link_spans(content), { { 0, 8, 9, "L", "/left" } }, "HTML heading link range")
@@ -284,7 +284,7 @@ test("HTML consumers retain inline code spaces", function()
   content = build {
     "<table>",
     "<tr><th>C</th><th>L</th></tr>",
-    "<tr><td>`a  b`</td><td>[LEFT](/left)</td></tr>",
+    '<tr><td><code>a  b</code></td><td><a href="/left">LEFT</a></td></tr>',
     "</table>",
   }
   assert_eq(
@@ -565,7 +565,7 @@ test("source destination rejection preserves nested links and reference fallback
   }, "reference lookup restores the original code label without token collisions")
 end)
 
-test("HTML and summary joins retain blank lines until title validation", function()
+test("raw HTML and summary joins never activate Markdown link titles", function()
   for _, wrapper in ipairs { { "<b>", "</b>", "" }, { "<details>", "</details>", "▶ " } } do
     for _, separator in ipairs { { "" }, {} } do
       local lines = { wrapper[1] }
@@ -575,17 +575,18 @@ test("HTML and summary joins retain blank lines until title validation", functio
       lines[#lines + 1] = 'b")'
       if wrapper[3] ~= "" then lines[#lines + 1] = "</summary>" end
       lines[#lines + 1] = wrapper[2]
-      local valid = #separator == 0
       local function check(content, indent)
         local prefix = indent .. wrapper[3]
-        local padding = wrapper[3] == "" and " " or ""
-        assert_eq(
-          content.lines,
-          { prefix .. padding .. (valid and "x" or '[x](/url "a b")') .. padding },
-          "source blank line controls title validity"
-        )
-        local expected = valid and { { 0, #prefix + #padding, #prefix + #padding + 1, "x", "/url" } } or {}
-        assert_eq(link_spans(content), expected, "only the single-newline title becomes a link")
+        local expected
+        if wrapper[3] ~= "" then
+          expected = { prefix .. '[x](/url "a' .. (#separator == 0 and ' b")' or "") }
+        elseif #separator == 0 then
+          expected = { indent .. '[x](/url "a', indent .. 'b")' }
+        else
+          expected = { indent .. "<b>", indent .. '[x](/url "a', indent, indent .. 'b") </b>' }
+        end
+        assert_eq(content.lines, expected, "raw block boundaries preserve literal link-title spelling")
+        assert_eq(link_spans(content), {}, "neither raw source title becomes a Markdown link")
       end
       check(build(lines), "")
       public_preview(lines, 1000, function(session)
@@ -621,7 +622,7 @@ test("literal blocks keep source rows outside HTML accumulation", function()
 end)
 
 test("HTML cells preserve source destination boundaries before display folding", function()
-  local lines = { "<table>", "<tr><td>[bad](<foo", "bar>)</td><td>[LINK](/right)</td></tr>", "</table>" }
+  local lines = { "<table>", "<tr><td>[bad](<foo", 'bar>)</td><td><a href="/right">LINK</a></td></tr>', "</table>" }
   local function check(content, indent)
     assert_eq(content.lines, { indent .. "│ [bad](<foo bar>) │ LINK │" }, "invalid cell syntax stays visible")
     assert_eq(link_spans(content), {

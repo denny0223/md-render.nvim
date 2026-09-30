@@ -412,14 +412,14 @@ end)
 
 test("heading aliases only target rendered occurrences", function()
   local Builder = require("md-render.content_builder").ContentBuilder
-  local lines = { "<details>", "<summary>More</summary>", "### Repeat", "</details>", "### Repeat" }
+  local lines = { "<details>", "<summary>More</summary>", "", "### Repeat", "", "</details>", "", "### Repeat" }
   for _, closed in ipairs { true, false } do
     local b = Builder.new()
     b:render_document(lines, { text_scale = false, indent = "", fold_state = { [1] = closed } })
     local out = b:result()
     assert_eq(
       out.source_line_map[out.heading_anchors["repeat"] + 1],
-      closed and 5 or 3,
+      closed and 8 or 4,
       "natural anchor targets first visible occurrence"
     )
     if closed then
@@ -427,7 +427,7 @@ test("heading aliases only target rendered occurrences", function()
     else
       assert_eq(
         out.source_line_map[out.heading_anchors["repeat-1"] + 1],
-        5,
+        8,
         "duplicate alias targets the next visible occurrence"
       )
     end

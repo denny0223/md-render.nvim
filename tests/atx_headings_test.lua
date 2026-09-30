@@ -209,11 +209,12 @@ test("inline-only consumers preserve markers, formatting and link byte ranges", 
     eq({ kind, marker }, {}, "inline mode has no block metadata")
   end
   local text = "## **title** [link](https://example.invalid) ##"
+  local html_text = '## <strong>title</strong> <a href="https://example.invalid">link</a> ##'
   for _, source in ipairs {
-    { "<details open>", "<summary>" .. text .. "</summary>", "</details>" },
-    { "<figure>", "<figcaption>" .. text .. "</figcaption>", "</figure>" },
-    { "<dl>", "<dt>" .. text .. "</dt>", "<dd>#</dd>", "</dl>" },
-    { "<dl>", "<dt>term</dt>", "<dd>" .. text .. "</dd>", "</dl>" },
+    { "<details open>", "<summary>" .. html_text .. "</summary>", "</details>" },
+    { "<figure>", "<figcaption>" .. html_text .. "</figcaption>", "</figure>" },
+    { "<dl>", "<dt>" .. html_text .. "</dt>", "<dd>#</dd>", "</dl>" },
+    { "<dl>", "<dt>term</dt>", "<dd>" .. html_text .. "</dd>", "</dl>" },
     { "note[^n]", "", "[^n]: " .. text },
   } do
     local content = build(source)

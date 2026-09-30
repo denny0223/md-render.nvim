@@ -72,17 +72,25 @@ end
 for _, tag in ipairs { "div", "span" } do
   local opening, closing = "<" .. tag .. ">", "</" .. tag .. ">"
   local c = build { opening .. "<!-- foo", "hidden", "-->", closing, "*after*" }
-  assert_eq(c.lines, { "after" }, "wrapped multiline comment contents stay hidden")
+  assert_eq(c.lines, { "*after*" }, "wrapped multiline comment contents stay hidden inside the raw owner")
   assert_eq(c.source_line_map, { 5 }, "wrapped comment retains the following source position")
   c = build { opening .. "<!-- foo", "```lua", "-->*tail*", closing, "   > quote", "*after*" }
-  assert_eq(c.lines, { "*tail*", "│ quote after" }, "wrapped comment cannot leak fence or container state")
-  assert_eq(c.source_line_map, { 3, 5 }, "wrapped suffix and following blocks retain source positions")
+  assert_eq(c.lines, { "*tail*", "   > quote", "*after*" }, "wrapped comment cannot leak fence or container state")
+  assert_eq(c.source_line_map, { 3, 5, 6 }, "wrapped suffix and raw rows retain source positions")
   assert_eq(#c.code_blocks, 0, "a fence inside a wrapped comment never becomes code")
-  assert_eq(styled_text(c, "Italic"), { { 2, "after" } }, "only following Markdown receives emphasis")
+  assert_eq(styled_text(c, "Italic"), {}, "the enclosing raw block stays opaque after its comment ends")
   c = build { opening .. "<!-- foo -->*tail*" .. closing, "*after*" }
-  assert_eq(c.lines, { "*tail*", "after" }, "single-line wrapper is removed without parsing the raw suffix")
+  assert_eq(
+    c.lines,
+    { "*tail*", tag == "div" and "*after*" or "after" },
+    "single-line wrapper retains the type-6 boundary and the comment-closing suffix"
+  )
   c = build { opening .. "<!-- foo", closing .. "-->tail", "*after*" }
-  assert_eq(c.lines, { "tail", "after" }, "wrapper-looking comment body cannot hide the closing delimiter")
+  assert_eq(
+    c.lines,
+    { "tail", tag == "div" and "*after*" or "after" },
+    "wrapper-looking comment body cannot hide the closing delimiter"
+  )
 end
 
 do
@@ -310,7 +318,7 @@ for _, collapsed in ipairs { false, true } do
   }
   assert_eq(
     c.lines,
-    collapsed and { "▶ s", "after" } or { "▼ s", "│ *raw*", "│ visible", "after" },
+    collapsed and { "▶ s", "after" } or { "▼ s", "│ *raw*", "│ *visible*", "after" },
     "a hidden details tag cannot change the enclosing fold state"
   )
 end

@@ -151,9 +151,12 @@ end
 local details_lines = {
   "<details open>",
   "<summary>Study</summary>",
+  "",
   "## [FIRST](#first) [SECOND](#second)",
   "Body",
+  "",
   "</details>",
+  "",
   "# First",
 }
 local details = build(details_lines)
@@ -161,7 +164,7 @@ local plain_details = build(details_lines, { text_scale = false })
 assert(#details.text_placements == 1 and details.text_placements[1].text == "First", "details fallback stays local")
 assert(vim.deep_equal(details.link_metadata, plain_details.link_metadata), "details links retain native coordinates")
 for i, line_text in ipairs(details.lines) do
-  if details.source_line_map[i] <= 5 then
+  if details.source_line_map[i] <= 7 then
     assert(line_text == plain_details.lines[i], "details retain their native prefix, background and row spacing")
     local point = details.heading_positions[i]
     if point then

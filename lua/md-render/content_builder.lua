@@ -221,6 +221,7 @@ end
 local wrap_mod = require "md-render.wrap"
 local icons = require "md-render.icons"
 local fence_mod = require "md-render.fence"
+local html_block = require "md-render.html_block"
 
 local wrap_words = wrap_mod.wrap_words
 
@@ -518,14 +519,25 @@ function ContentBuilder:add_table(
   expanded,
   buf_dir,
   per_row_source,
-  ref_links
+  ref_links,
+  raw_html
 )
   local markdown_table = require "md-render.markdown_table"
-  local parsed = markdown_table.parse(table_lines, repo_base_url, autolinks, ref_links)
+  local parsed = markdown_table.parse(table_lines, repo_base_url, autolinks, ref_links, raw_html)
   if not parsed then
     -- Fallback: render each line as markdown
     for _, line in ipairs(table_lines) do
-      self:add_markdown_line(line, indent, max_width, repo_base_url, autolinks, ref_links)
+      self:add_markdown_line(
+        line,
+        indent,
+        max_width,
+        repo_base_url,
+        autolinks,
+        ref_links,
+        nil,
+        nil,
+        { raw_html = raw_html }
+      )
     end
     return
   end
@@ -1123,42 +1135,6 @@ local function is_thematic_break(line)
   return stripped == string.rep(ch, #stripped)
 end
 
---- Tags already handled by render_document's main loop (skip in preprocessing)
-local HTML_SKIP_TAGS = {
-  details = true,
-  summary = true,
-  hr = true,
-  figure = true,
-  p = true,
-  div = true,
-  span = true,
-  dl = true,
-  table = true,
-  tr = true,
-  td = true,
-  th = true,
-  thead = true,
-  tbody = true,
-}
-
---- HTML void elements (self-closing, no end tag) — must not accumulate lines.
-local HTML_VOID_ELEMENTS = {
-  area = true,
-  base = true,
-  br = true,
-  col = true,
-  embed = true,
-  hr = true,
-  img = true,
-  input = true,
-  link = true,
-  meta = true,
-  param = true,
-  source = true,
-  track = true,
-  wbr = true,
-}
-
 --- Strip the display wrapper tags supported by the renderer.
 --- A nil result means a wrapper-only line with no display content.
 ---@param line string
@@ -1519,7 +1495,9 @@ local function strip_container_indent(lines)
   local list_bases = {}
   local item_cols = {}
   local open_fence, fence_container = nil, 0
+  local html
   local comment_state
+  local comment_start
   local quote
   local empty_item
   local paragraph_column, table_column
@@ -1529,10 +1507,35 @@ local function strip_container_indent(lines)
   for i, line in ipairs(lines) do
     local origin = { column = 0, quote_columns = {} }
     origins[i] = origin
+    if html then
+      in_root_code, code_blanks = false, {}
+      local blank = line:match "^[ \t]*$"
+      local ws = fence_mod.indent_columns(line:match "^[ \t]*")
+      if (html.kind >= 6 and blank) or (not blank and ws < html.container) then
+        html = nil
+      else
+        origin.html, origin.column = html.src, html.container
+        result[i] = strip_container_prefix(line, html.container)
+        if html.container > 0 then indents[i] = string.rep(" ", html.container) end
+        paragraph_column, table_column, quote = nil, nil, nil
+        if html_block.ends(html.kind, result[i]) then html = nil end
+        goto next_source
+      end
+    end
+    if not open_fence and not comment_state and line:match "^%$%$$" then
+      in_math = not in_math
+      in_root_code, code_blanks = false, {}
+      result[i] = line
+      paragraph_column, table_column, quote = nil, nil, nil
+      goto next_source
+    end
+    if in_math then
+      result[i] = line
+      goto next_source
+    end
     -- Settle root literal ownership before comments, quotes or list markers
     -- can claim the line. Keep tabs beyond the four structural columns intact.
     if not open_fence and not comment_state then
-      if line:match "^%$%$$" then in_math = not in_math end
       local ws = fence_mod.indent_columns(line:match "^[ \t]*")
       local base = 0
       for _, col in ipairs(item_cols) do
@@ -1610,6 +1613,17 @@ local function strip_container_indent(lines)
       if not was_in_comment then list_container_column(structural_line, item_cols) end
       local base = item_cols[#item_cols] or 0
       if base > 0 and ws >= base then indents[i] = string.rep(" ", base) end
+      if not was_in_comment then comment_start = i end
+      if comment_state == "html" or (was_in_comment and comment_start) or line:find("<!--", 1, true) then
+        origin.html = comment_start
+      end
+      local kind = not was_in_comment and html_block.start(strip_container_prefix(line, base), false, base)
+      if kind then
+        origin.html = i
+        if not html_block.ends(kind, line) then html = { kind = kind, src = i, container = base } end
+        comment_state = nil
+      end
+      if not comment_state then comment_start = nil end
     elseif open_fence then
       paragraph_column, table_column = nil, nil
       quote = nil
@@ -1652,6 +1666,14 @@ local function strip_container_indent(lines)
         if opens_item then
           leaf, leaf_column = item_content, col
         end
+        local html_kind = not is_fence
+          and html_block.start(leaf, paragraph_column == leaf_column and not opens_item, leaf_column)
+        if html_kind then
+          origin.html = i
+          paragraph_column, table_column, quote = nil, nil, nil
+          if not html_block.ends(html_kind, leaf) then html = { kind = html_kind, src = i, container = leaf_column } end
+          goto next_source
+        end
         local next_line = lines[i + 1] and expand_leading_tabs(lines[i + 1])
         if next_line then
           next_line = #next_line:match "^ *" >= leaf_column and next_line:sub(leaf_column + 1) or nil
@@ -1683,12 +1705,12 @@ local function strip_container_indent(lines)
       goto next_source
     end
     local base = #(indents[i] or "")
-    local limit = quote and quote.base == base and (quote.fence or quote.comment) and quote.depth or nil
+    local limit = quote and quote.base == base and (quote.fence or quote.comment or quote.html) and quote.depth or nil
     local content, quote_columns, column, ancestor_prefix = quote_content(result[i], origin.column, limit)
     -- A blank quote row may omit list indentation while keeping its quote ancestors.
     if
       quote
-      and quote.fence
+      and (quote.fence or quote.html)
       and quote.ancestor_prefix
       and not (content:match "^[ \t]*$" and vim.startswith(quote.ancestor_prefix, ancestor_prefix))
       and not vim.startswith(
@@ -1711,6 +1733,17 @@ local function strip_container_indent(lines)
     result[i] = string.rep("> ", depth) .. content
     if not quote or quote.base ~= base or quote.depth ~= depth then
       quote = { base = base, depth = depth, items = {}, paragraph = false }
+    end
+    if quote.html then
+      local leaf = strip_container_prefix(content, quote.html.container, column)
+      if quote.html.kind >= 6 and leaf:match "^[ \t]*$" then
+        quote.html = nil
+      else
+        origin.html = quote.html.src
+        quote.paragraph = false
+        if html_block.ends(quote.html.kind, leaf) then quote.html = nil end
+        goto next_source
+      end
     end
     local next_content, next_columns
     local next_line = lines[i + 1]
@@ -1781,6 +1814,17 @@ local function strip_container_indent(lines)
       goto next_source
     end
     local paragraph_leaf = col and leaf or strip_container_prefix(leaf, local_base, column)
+    local html_kind = not quote.fence
+      and html_block.start(paragraph_leaf, quote.paragraph and not col, column + (col or local_base))
+    if html_kind then
+      origin.html = i
+      quote.paragraph = false
+      quote.ancestor_prefix = ancestor_prefix .. string.rep(" ", col or local_base)
+      if not html_block.ends(html_kind, paragraph_leaf) then
+        quote.html = { kind = html_kind, src = i, container = col or local_base }
+      end
+      goto next_source
+    end
     local is_fence
     quote.fence, is_fence = fence_mod.step(quote.fence, leaf, column, col and 0 or local_base)
     -- Later passes must not reopen fence-looking text inside literal code.
@@ -1882,16 +1926,7 @@ local function join_paragraph_continuations(
 
   local function flush_para()
     if #para == 0 then return end
-    local sources = {}
-    for i, line in ipairs(para) do
-      sources[#sources + 1] = para_indices[i]
-      -- HTML preprocessing may already have joined several contiguous rows.
-      local _, count = line:gsub("\n", "")
-      for row = 1, count do
-        sources[#sources + 1] = para_indices[i] + row
-      end
-    end
-    paragraph_sources[para_indices[1]] = sources
+    paragraph_sources[para_indices[1]] = para_indices
     result[#result + 1] = wrap_mod.join_source_lines(para, ref_links)
     result_indices[#result_indices + 1] = para_indices[1]
     para, para_indices = {}, {}
@@ -1911,7 +1946,11 @@ local function join_paragraph_continuations(
 
     do
       local column = source_column(source_origins, src, quote_depth)
-      local math_boundary = not quote_prefix and not open_fence and not comment_state and line:match "^%$%$$"
+      local math_boundary = not line_origin.html
+        and not quote_prefix
+        and not open_fence
+        and not comment_state
+        and line:match "^%$%$$"
       if math_boundary then in_math = not in_math end
       if in_math or math_boundary then
         flush_para()
@@ -1937,6 +1976,13 @@ local function join_paragraph_continuations(
           suffix = comment_suffix,
           prefix = quote_prefix and (quote_prefix .. string.rep(" ", comment_indent)) or "",
         }
+        flush_para()
+        table.insert(result, line)
+        table.insert(result_indices, src)
+        goto next_line
+      end
+
+      if line_origin.html and quote_depth == #line_origin.quote_columns then
         flush_para()
         table.insert(result, line)
         table.insert(result_indices, src)
@@ -2067,140 +2113,51 @@ local function join_paragraph_continuations(
   return result, result_indices
 end
 
---- Preprocess multi-line HTML constructs into single entries with source breaks.
----
---- `src_indices` is a parallel array giving the original buffer line
---- number for each input line. The returned `result_indices` carries the
---- original line of the *first* input line of each accumulated
---- multi-line block, so callers can set source_line_map back to the
---- correct buffer position even after collapse.
----@param lines string[]
----@param src_indices integer[]  parallel original-line indices for `lines`
----@param container_indents table<integer, string>
----@return string[] result, integer[] result_indices, table comments, table table_rows
+--- Preserve physical boundaries while masking comments and validated tables.
 local function preprocess_multiline_html(lines, src_indices, container_indents, source_origins)
-  local result = {}
-  local result_indices = {}
-  local accum = nil -- { tag: string, lines: string[], depth: integer, src: integer }
-  local open_fence = nil
+  local comments, table_rows = {}, {}
+  local open_fence, comment_state, comment_owner
   local in_math = false
-  local comment_state
-  local comments = {}
-  local table_rows = {}
+  local masked = {}
+  for index, line in ipairs(lines) do
+    local origin = source_origins[src_indices[index]]
+    masked[index] = (origin.code or origin.html) and "" or line
+  end
+  local _, _, definition_ends = Markdown.parse_reference_links(masked, source_origins, src_indices)
   local reference_end = 0
-  -- A definition's angle destination is not an opening HTML tag. This pass
-  -- only protects syntax; the final collector uses the literal/comment mask.
-  local _, definition_rows, definition_ends =
-    require("md-render.markdown").parse_reference_links(lines, source_origins, src_indices)
-
-  for idx, l in ipairs(lines) do
+  for idx, line in ipairs(lines) do
     local src = src_indices[idx]
-    if
-      idx > reference_end
-      and not table_rows[src]
-      and not accum
-      and not open_fence
-      and not comment_state
-      and not in_math
-    then
+    local origin = source_origins[src]
+    if origin.code then goto next_row end
+    if idx <= reference_end then goto next_row end
+    if comment_state == "html" and comment_owner ~= origin.html then comment_state = nil end
+    local math_boundary = not origin.html and not open_fence and not comment_state and line:match "^%$%$$"
+    if math_boundary then in_math = not in_math end
+    if in_math or math_boundary or table_rows[src] then goto next_row end
+    if not origin.html and not open_fence and not comment_state then
       local last = table_end(lines, idx, src_indices, container_indents)
       if last then
         for row = idx, last - 1 do
           table_rows[src_indices[row]] = true
         end
-      else
-        -- Preserve the existing multiline-title behavior at this GFM collision.
-        -- A definition inside an earlier table cannot reserve later source rows.
-        reference_end = definition_ends[idx] or 0
+        goto next_row
+      end
+      reference_end = definition_ends[idx] or 0
+      if reference_end >= idx then goto next_row end
+    end
+    if not open_fence then
+      local suffix
+      comment_state, suffix = block_comment_step(comment_state, line)
+      if suffix ~= nil then
+        comments[src] = { suffix = suffix, prefix = "" }
+        comment_owner = origin.html
+        goto next_row
       end
     end
-    local comment_suffix
-    local math_boundary = not accum and not open_fence and not comment_state and l:match "^%$%$$"
-    if math_boundary then in_math = not in_math end
-    -- Keep literal blocks and individual table cells out of multiline HTML grouping.
-    local literal = source_origins[src].code
-      or table_rows[src]
-      or (not accum and not comment_state and (in_math or math_boundary or l:match "^    "))
-    if not literal and not accum and not open_fence then
-      comment_state, comment_suffix = block_comment_step(comment_state, l)
-    end
-    if literal then
-      table.insert(result, l)
-      table.insert(result_indices, src)
-    elseif comment_suffix ~= nil then
-      comments[src] = { suffix = comment_suffix, prefix = "" }
-      table.insert(result, l)
-      table.insert(result_indices, src)
-    elseif accum then
-      table.insert(accum.lines, l)
-      local ll = l:lower()
-      for _ in ll:gmatch("<" .. accum.tag .. "[%s>]") do
-        accum.depth = accum.depth + 1
-      end
-      for _ in ll:gmatch("</" .. accum.tag .. "[%s>]") do
-        accum.depth = accum.depth - 1
-      end
-      if accum.depth <= 0 then
-        -- Keep source line endings until the inline syntax is recognized.
-        local joined = wrap_mod.join_source_lines(accum.lines)
-        table.insert(result, joined)
-        table.insert(result_indices, accum.src)
-        accum = nil
-      end
-    else
-      open_fence = fence_mod.step(open_fence, l)
-      if not open_fence then
-        local tag_name = not definition_rows[idx] and l:match "^%s*<(%a%w*)[%s>]"
-        if tag_name then
-          local lower_tag = tag_name:lower()
-          if not HTML_SKIP_TAGS[lower_tag] and not HTML_VOID_ELEMENTS[lower_tag] and not l:match "/>%s*$" then
-            local ll = l:lower()
-            local open_count = 0
-            for _ in ll:gmatch("<" .. lower_tag .. "[%s>]") do
-              open_count = open_count + 1
-            end
-            local close_count = 0
-            for _ in ll:gmatch("</" .. lower_tag .. "[%s>]") do
-              close_count = close_count + 1
-            end
-            if open_count > close_count then
-              accum = {
-                tag = lower_tag,
-                lines = { l },
-                depth = open_count - close_count,
-                src = src,
-              }
-            else
-              table.insert(result, l)
-              table.insert(result_indices, src)
-            end
-          else
-            table.insert(result, l)
-            table.insert(result_indices, src)
-          end
-        else
-          table.insert(result, l)
-          table.insert(result_indices, src)
-        end
-      else
-        table.insert(result, l)
-        table.insert(result_indices, src)
-      end
-    end
+    if not origin.html then open_fence = fence_mod.step(open_fence, line) end
+    ::next_row::
   end
-
-  -- Unclosed accumulation: output lines as-is, each at its own original
-  -- line. We don't have src indices for the inner lines anymore (we only
-  -- stashed accum.src), so fall back to that for all of them; the
-  -- shadow's owner-fallback will treat them as one block.
-  if accum then
-    for _, l in ipairs(accum.lines) do
-      table.insert(result, l)
-      table.insert(result_indices, accum.src)
-    end
-  end
-
-  return result, result_indices, comments, table_rows
+  return lines, src_indices, comments, table_rows
 end
 
 -- Collect literal ownership before references can affect paragraph code-span
@@ -2230,7 +2187,11 @@ local function fenced_code_lines(
     local column = source_column(source_origins, src, quote_depth)
     local was_in_comment = comment_state ~= nil
     local comment_suffix
-    local math_delimiter = not quote_prefix and not open_fence and not comment_state and line:match "^%$%$$"
+    local math_delimiter = not origin.html
+      and not quote_prefix
+      and not open_fence
+      and not comment_state
+      and line:match "^%$%$$"
     if origin.code then
       code_lines[src] = true
       goto next_line
@@ -2252,6 +2213,8 @@ local function fenced_code_lines(
         suffix = comment_suffix,
         prefix = quote_prefix and (quote_prefix .. string.rep(" ", comment_indent)) or "",
       }
+    elseif origin.html and quote_depth == #origin.quote_columns then
+      goto next_line
     else
       local base = 0
       if not open_fence and not line:match "^%s*$" then
@@ -2304,11 +2267,11 @@ end
 
 -- Keep literal boundaries as blank rows so definitions cannot continue across
 -- them. Code, comments and already-owned rows cannot define document references.
-local function definition_lines(lines, src_indices, comments, code_lines, opaque_rows)
+local function definition_lines(lines, src_indices, comments, code_lines, opaque_rows, source_origins)
   local result = {}
   for i, line in ipairs(lines) do
     local src = src_indices[i]
-    result[i] = (comments[src] or code_lines[src] or opaque_rows[src]) and "" or line
+    result[i] = (comments[src] or code_lines[src] or opaque_rows[src] or source_origins[src].html) and "" or line
   end
   return result
 end
@@ -2336,7 +2299,7 @@ function ContentBuilder:render_document(lines, opts)
   local code_lines =
     fenced_code_lines(lines, src_indices, container_indents, source_origins, comments, nil, nil, list_bases)
   local ref_links, consumed_refs = markdown.parse_reference_links(
-    definition_lines(lines, src_indices, comments, code_lines, table_rows),
+    definition_lines(lines, src_indices, comments, code_lines, table_rows, source_origins),
     source_origins,
     src_indices
   )
@@ -2360,9 +2323,13 @@ function ContentBuilder:render_document(lines, opts)
   )
   -- Display numbering can grow beyond the nine-digit source marker limit.
   local source_list_lines = lines
+  local html_lines = {}
+  for src, origin in pairs(source_origins) do
+    if origin.html then html_lines[src] = true end
+  end
   lines = markdown.renumber_ordered_lists(
     lines,
-    vim.tbl_extend("force", code_lines, comments, table_rows, reference_defs),
+    vim.tbl_extend("force", code_lines, comments, table_rows, reference_defs, html_lines),
     src_indices,
     container_indents,
     list_bases,
@@ -2371,8 +2338,86 @@ function ContentBuilder:render_document(lines, opts)
   -- renumber_ordered_lists rewrites text but keeps line count, so
   -- src_indices stays valid.
   local footnote_defs, footnote_map = markdown.parse_footnotes(
-    definition_lines(lines, src_indices, comments, code_lines, vim.tbl_extend("force", table_rows, reference_defs))
+    definition_lines(
+      lines,
+      src_indices,
+      comments,
+      code_lines,
+      vim.tbl_extend("force", table_rows, reference_defs),
+      source_origins
+    )
   )
+
+  -- Only display semantics may span raw rows. Their physical boundaries have
+  -- already survived definition extraction, paragraph joining and numbering.
+  local html_groups, html_rows, html_headings, html_heading_rows = {}, {}, {}, {}
+  for index, line in ipairs(lines) do
+    local src = src_indices[index]
+    local origin = source_origins[src]
+    if origin.html then
+      local group = html_groups[origin.html] or { lines = {}, sources = {}, blanks = {} }
+      html_groups[origin.html] = group
+      local column = origin.column
+      for depth = 1, #origin.quote_columns do
+        local _
+        _, line, column = split_quote_marker(line, column, origin.quote_columns[depth])
+      end
+      local marker = ""
+      if src == origin.html and list_bases[src] ~= nil then
+        local source_marker = line:match "^( *[-*+][ \t]+)" or line:match "^( *%d+[.)][ \t]+)"
+        if source_marker then
+          marker = markdown.render(source_marker)
+          line = line:sub(#source_marker + 1)
+        end
+      end
+      group.blanks[#group.lines + 1] = line:match "^[ \t]*$" ~= nil
+      line = unwrap_html_wrapper(line) or ""
+      local p_content = line:match "^%s*<p[^>]*>%s*(.-)%s*</p>%s*$"
+      group.lines[#group.lines + 1] = marker .. (p_content or line)
+      group.sources[#group.sources + 1] = src
+    end
+  end
+  for _, group in pairs(html_groups) do
+    local index = 1
+    while index <= #group.lines do
+      local level, first = group.lines[index]:match "^%s*<h([1-6])[^>]*>(.*)$"
+      if level then
+        local parts, last = {}, index
+        while last <= #group.lines do
+          local part = last == index and first or group.lines[last]
+          local before = part:match("^(.-)</h" .. level .. ">%s*$")
+          parts[#parts + 1] = before or part
+          if before then
+            html_headings[group.sources[index]] =
+              { level = tonumber(level), content = wrap_mod.join_source_lines(parts) }
+            for row = index + 1, last do
+              html_heading_rows[group.sources[row]] = true
+            end
+            index = last
+            break
+          end
+          last = last + 1
+        end
+      end
+      index = index + 1
+    end
+    local text, highlights, links = markdown.render_html(table.concat(group.lines, "\n"))
+    local rows = vim.split(text, "\n", { plain = true })
+    local starts, offset = {}, 0
+    for row_index, row in ipairs(rows) do
+      starts[row_index], offset = offset, offset + #row + 1
+    end
+    local row_highlights = distribute_highlights(highlights, rows, starts, "", "", 0)
+    for row_index, src in ipairs(group.sources) do
+      html_rows[src] =
+        { text = rows[row_index], highlights = row_highlights[row_index], links = {}, blank = group.blanks[row_index] }
+    end
+    for _, link in ipairs(distribute_links(links, rows, starts, "", "", 0, 0)) do
+      local row = html_rows[group.sources[link.line + 1]]
+      link.line = nil
+      row.links[#row.links + 1] = link
+    end
+  end
 
   local base_max_width = opts.max_width or 80
   local base_indent = opts.indent or "  "
@@ -2434,7 +2479,9 @@ function ContentBuilder:render_document(lines, opts)
   local details_depth = 0
   local in_details_summary = false
   local details_summary_parts = {}
+  local details_summary_owner, details_summary_src
   local in_figure = false
+  local figure_owner, figure_indent, figure_width
   local figure_caption = nil
   -- Original buffer line of the <figcaption> tag, captured at parse
   -- time so we can stamp source_line_map under it when the caption is
@@ -2445,10 +2492,13 @@ function ContentBuilder:render_document(lines, opts)
   local in_qiita_note = false
   local qiita_note_type = nil
   local in_dl = false
+  local dl_owner
   local in_html_table = false
   local html_table_lines = {}
   local html_table_src_idx = nil
   local html_table_depth = 0
+  local html_table_owner
+  local html_table_sources = {}
 
   local function finish_quote_code()
     if callout_code_lang and callout_code_start < #self.lines then
@@ -2521,7 +2571,7 @@ function ContentBuilder:render_document(lines, opts)
   end
 
   --- Render a <details> summary header with fold indicator
-  local function render_details_summary(summary_text)
+  local function render_details_summary(summary_text, raw_html)
     local is_collapsed
     if fold_state[details_src_idx] ~= nil then
       is_collapsed = fold_state[details_src_idx]
@@ -2532,7 +2582,7 @@ function ContentBuilder:render_document(lines, opts)
     local det_lines_before = #self.lines
     local det_icon = is_collapsed and "▶ " or "▼ "
     local det_rendered, det_hls, det_links =
-      markdown.render(summary_text, repo_base_url, autolinks, ref_links, nil, true)
+      markdown.render(summary_text, repo_base_url, autolinks, ref_links, nil, true, { raw_html = raw_html })
 
     local det_icon_len = #det_icon
     for _, hl in ipairs(det_hls) do
@@ -2559,6 +2609,16 @@ function ContentBuilder:render_document(lines, opts)
 
     details_summary_rendered = true
     lines_shown = lines_shown + (#self.lines - det_lines_before)
+  end
+
+  local function finish_details_summary(src)
+    local saved_source = self._current_source_line
+    self:set_source_line((src or details_summary_src) + source_line_offset)
+    local joined = wrap_mod.join_source_lines(details_summary_parts)
+    render_details_summary(joined ~= "" and joined or "Details", details_summary_owner ~= nil)
+    self._current_source_line = saved_source
+    in_details_summary, details_summary_parts = false, {}
+    details_summary_owner, details_summary_src = nil, nil
   end
 
   --- Apply │ prefix and FloatBorder highlight to lines rendered within a <details> body
@@ -2665,6 +2725,125 @@ function ContentBuilder:render_document(lines, opts)
     return markdown.parse_setext_underline(underline)
   end
 
+  local function render_html_row(src, display_indent, quote_prefix)
+    local row = html_rows[src]
+    if not row or (row.text == "" and not row.blank) then return end
+    local saved_source = self._current_source_line
+    self:set_source_line(src + source_line_offset)
+    local before = #self.lines
+    local text = quote_prefix .. row.text
+    local highlights, links = vim.deepcopy(row.highlights), vim.deepcopy(row.links)
+    for _, hl in ipairs(highlights) do
+      hl.col, hl.end_col = hl.col + #quote_prefix, hl.end_col + #quote_prefix
+    end
+    for _, link in ipairs(links) do
+      link.col_start, link.col_end = link.col_start + #quote_prefix, link.col_end + #quote_prefix
+    end
+    if quote_prefix ~= "" then table.insert(highlights, 1, { col = 0, end_col = #quote_prefix, hl = "FloatBorder" }) end
+    local width = base_max_width - vim.api.nvim_strwidth(display_indent)
+    if in_details and details_summary_rendered then width = width - vim.fn.strdisplaywidth "│ " end
+    if vim.api.nvim_strwidth(text) > width then
+      self:add_wrapped_markdown(text, highlights, links, display_indent, math.max(1, width), quote_prefix)
+    else
+      self:add_simple_markdown(text, highlights, links, display_indent)
+    end
+    if in_details and details_summary_rendered and not skip_details_body then
+      apply_details_body_prefix(before, #self.lines)
+    end
+    lines_shown = lines_shown + #self.lines - before
+    self._current_source_line = saved_source
+  end
+
+  local function release_html_table()
+    for _, src in ipairs(html_table_sources) do
+      render_html_row(
+        src,
+        base_indent .. (container_indents[src] or ""),
+        string.rep("│ ", #source_origins[src].quote_columns)
+      )
+    end
+    in_html_table, html_table_lines, html_table_sources, html_table_owner = false, {}, {}, nil
+    html_table_src_idx = nil
+  end
+
+  local function render_figure_caption(indent, max_width)
+    -- Render figcaption centered (captured during figure body processing).
+    -- Keep supported tags such as <em>/<strong> while preserving raw text,
+    -- and wrap long captions instead of overflowing the window.
+    if figure_caption then
+      -- Trigger line is </figure>; restore the figcaption's own
+      -- source line so its render rows are attributed to it.
+      local saved_src_line = self._current_source_line
+      if figure_caption_src then self._current_source_line = figure_caption_src + source_line_offset end
+      local rendered_text, md_highlights, md_links = markdown.render(
+        figure_caption,
+        repo_base_url,
+        autolinks,
+        ref_links,
+        footnote_map,
+        true,
+        { raw_html = source_origins[figure_caption_src].html ~= nil }
+      )
+      -- Apply Comment as the base highlight covering the whole caption
+      table.insert(md_highlights, 1, {
+        col = 0,
+        end_col = #rendered_text,
+        hl = "Comment",
+      })
+
+      local indent_width = vim.api.nvim_strwidth(indent)
+      local available = math.max(1, max_width - indent_width)
+      local wrapped_lines, line_starts
+      if vim.api.nvim_strwidth(rendered_text) > available then
+        wrapped_lines, line_starts = wrap_words(rendered_text, available)
+      else
+        wrapped_lines, line_starts = { rendered_text }, { 0 }
+      end
+
+      local base_line = #self.lines
+      for idx, wline in ipairs(wrapped_lines) do
+        local line_width = vim.api.nvim_strwidth(wline)
+        local pad = math.max(0, math.floor((max_width - line_width) / 2) - indent_width)
+        local prefix_len = #indent + pad
+        local padded = indent .. string.rep(" ", pad) .. wline
+        local line_start = line_starts[idx] or 0
+        local line_end_pos = line_start + #wline
+
+        local line_hls = {}
+        for _, hl in ipairs(md_highlights) do
+          if hl.end_col > line_start and hl.col < line_end_pos then
+            local local_start = math.max(0, hl.col - line_start)
+            local local_end = math.min(#wline, hl.end_col - line_start)
+            table.insert(line_hls, {
+              col = prefix_len + local_start,
+              end_col = prefix_len + local_end,
+              hl = hl.hl,
+            })
+          end
+        end
+        self:add_line(padded, #line_hls > 0 and line_hls or nil)
+
+        for _, link in ipairs(md_links) do
+          if link.col_end > line_start and link.col_start < line_end_pos then
+            local local_start = math.max(0, link.col_start - line_start)
+            local local_end = math.min(#wline, link.col_end - line_start)
+            table.insert(self.link_metadata, {
+              line = base_line + idx - 1,
+              col_start = prefix_len + local_start,
+              col_end = prefix_len + local_end,
+              url = link.url,
+            })
+          end
+        end
+
+        lines_shown = lines_shown + 1
+      end
+      figure_caption = nil
+      figure_caption_src = nil
+      self._current_source_line = saved_src_line
+    end
+  end
+
   for src_idx, line in ipairs(lines) do
     -- src_idx is the post-transform array index; src_indices[src_idx]
     -- is the original buffer line, which is what consumers (cursor sync,
@@ -2681,6 +2860,16 @@ function ContentBuilder:render_document(lines, opts)
     local indent = base_indent .. container_indent
     local max_width = math.max(1, base_max_width - #container_indent)
     local origin = source_origins[src_indices[src_idx]]
+    if in_html_table and origin.html ~= html_table_owner then release_html_table() end
+    if in_details_summary and origin.html ~= details_summary_owner then finish_details_summary() end
+    if in_dl and origin.html ~= dl_owner then
+      in_dl, dl_owner = false, nil
+    end
+    if in_figure and origin.html ~= figure_owner then
+      render_figure_caption(figure_indent, figure_width)
+      in_figure, figure_owner = false, nil
+    end
+    if html_heading_rows[src_indices[src_idx]] then goto continue end
     local quoted_content, quote_column = line, origin.column
     local quote_depth = 0
     while quoted_content:match "^>" and quote_depth < #origin.quote_columns do
@@ -2746,6 +2935,12 @@ function ContentBuilder:render_document(lines, opts)
       alert_depth = nil
     end
     if skip_callout_body then goto continue end
+
+    if in_math_block and not line:match "^%$%$$" then
+      self:add_line(indent .. line, { { col = 0, end_col = -1, hl = "MdRenderMath" } })
+      lines_shown = lines_shown + 1
+      goto continue
+    end
 
     -- Consume comment-owned lines before definitions, tags, and Setext headings
     -- can reinterpret them. Only the closing line may contain visible text.
@@ -2845,7 +3040,7 @@ function ContentBuilder:render_document(lines, opts)
     end
 
     -- Skip footnote definition lines (rendered in footnote section at end)
-    if not in_code_block and markdown.is_footnote_def(line) then goto continue end
+    if not origin.html and not in_code_block and markdown.is_footnote_def(line) then goto continue end
 
     -- Strip wrapper tags before ordinary block processing.
     if not in_code_block and not in_callout_code_block then
@@ -2861,9 +3056,15 @@ function ContentBuilder:render_document(lines, opts)
 
     -- Convert HTML headings <h1>-<h6> to markdown format
     -- If heading contains an <img>, split it into separate image + heading lines
+    local html_heading_level
     if not in_code_block then
+      local heading = line:match "^%s*<h[1-6]" and html_headings[src_indices[src_idx]]
       local h_level, h_content = line:match "^%s*<h([1-6])[^>]*>(.-)</h%1>%s*$"
+      if heading then
+        h_level, h_content = heading.level, heading.content
+      end
       if h_level then
+        html_heading_level = tonumber(h_level)
         local img_tag = h_content:match "(<img%s[^>]*>)"
         if img_tag then
           -- Extract the img tag as a standalone line, render it before the heading
@@ -2874,12 +3075,12 @@ function ContentBuilder:render_document(lines, opts)
           table.insert(source_list_lines, src_idx + 1, img_tag)
           table.insert(src_indices, src_idx + 1, src_indices[src_idx])
           if remaining ~= "" then
-            line = string.rep("#", tonumber(h_level)) .. " " .. remaining
+            line = remaining
           else
             goto continue
           end
         else
-          line = string.rep("#", tonumber(h_level)) .. " " .. h_content
+          line = h_content
         end
       end
     end
@@ -2889,13 +3090,13 @@ function ContentBuilder:render_document(lines, opts)
     local is_heading = not in_code_block
       and not in_callout_code_block
       and not origin.code
-      and not origin.html
-      and (setext_rank ~= nil or atx_level ~= nil)
+      and (html_heading_level ~= nil or (not origin.html and (setext_rank ~= nil or atx_level ~= nil)))
 
     -- Handle <details>/<summary> HTML blocks (outside code blocks)
     if not in_code_block and not in_callout_code_block then
       -- Handle </details> end tag
       if line:match "^%s*</details>%s*$" then
+        if in_details_summary then finish_details_summary(src_indices[src_idx]) end
         if in_details then
           if details_depth > 0 then
             details_depth = details_depth - 1
@@ -2934,7 +3135,7 @@ function ContentBuilder:render_document(lines, opts)
         local rest = line:match "^%s*<details.->(.+)$"
         if rest then
           local s = rest:match "<summary>(.-)</summary>"
-          if s then render_details_summary(s ~= "" and s or "Details") end
+          if s then render_details_summary(s ~= "" and s or "Details", origin.html ~= nil) end
         end
         goto continue
       end
@@ -2946,9 +3147,7 @@ function ContentBuilder:render_document(lines, opts)
           local before = line:match "^(.-)</summary>%s*$"
           if before then
             if before ~= "" then table.insert(details_summary_parts, before) end
-            in_details_summary = false
-            local joined = wrap_mod.join_source_lines(details_summary_parts)
-            render_details_summary(joined ~= "" and joined or "Details")
+            finish_details_summary(src_indices[src_idx])
             goto continue
           end
           table.insert(details_summary_parts, line)
@@ -2958,7 +3157,7 @@ function ContentBuilder:render_document(lines, opts)
         -- Single-line <summary>text</summary>
         local s = line:match "^%s*<summary>(.-)</summary>%s*$"
         if s then
-          render_details_summary(s ~= "" and s or "Details")
+          render_details_summary(s ~= "" and s or "Details", origin.html ~= nil)
           goto continue
         end
 
@@ -2967,6 +3166,7 @@ function ContentBuilder:render_document(lines, opts)
         if start_text then
           in_details_summary = true
           details_summary_parts = {}
+          details_summary_owner, details_summary_src = origin.html, src_indices[src_idx]
           if start_text ~= "" then table.insert(details_summary_parts, start_text) end
           goto continue
         end
@@ -2987,74 +3187,8 @@ function ContentBuilder:render_document(lines, opts)
       if in_figure then
         if line:match "^%s*</figure>%s*$" then
           in_figure = false
-          -- Render figcaption centered (captured during figure body processing).
-          -- Process inline markdown so tags like <em>/<strong> render properly,
-          -- and wrap long captions instead of overflowing the window.
-          if figure_caption then
-            -- Trigger line is </figure>; restore the figcaption's own
-            -- source line so its render rows are attributed to it.
-            local saved_src_line = self._current_source_line
-            if figure_caption_src then self._current_source_line = figure_caption_src + source_line_offset end
-            local rendered_text, md_highlights, md_links =
-              markdown.render(figure_caption, repo_base_url, autolinks, ref_links, footnote_map, true)
-            -- Apply Comment as the base highlight covering the whole caption
-            table.insert(md_highlights, 1, {
-              col = 0,
-              end_col = #rendered_text,
-              hl = "Comment",
-            })
-
-            local indent_width = vim.api.nvim_strwidth(indent)
-            local available = math.max(1, max_width - indent_width)
-            local wrapped_lines, line_starts
-            if vim.api.nvim_strwidth(rendered_text) > available then
-              wrapped_lines, line_starts = wrap_words(rendered_text, available)
-            else
-              wrapped_lines, line_starts = { rendered_text }, { 0 }
-            end
-
-            local base_line = #self.lines
-            for idx, wline in ipairs(wrapped_lines) do
-              local line_width = vim.api.nvim_strwidth(wline)
-              local pad = math.max(0, math.floor((max_width - line_width) / 2) - indent_width)
-              local prefix_len = #indent + pad
-              local padded = indent .. string.rep(" ", pad) .. wline
-              local line_start = line_starts[idx] or 0
-              local line_end_pos = line_start + #wline
-
-              local line_hls = {}
-              for _, hl in ipairs(md_highlights) do
-                if hl.end_col > line_start and hl.col < line_end_pos then
-                  local local_start = math.max(0, hl.col - line_start)
-                  local local_end = math.min(#wline, hl.end_col - line_start)
-                  table.insert(line_hls, {
-                    col = prefix_len + local_start,
-                    end_col = prefix_len + local_end,
-                    hl = hl.hl,
-                  })
-                end
-              end
-              self:add_line(padded, #line_hls > 0 and line_hls or nil)
-
-              for _, link in ipairs(md_links) do
-                if link.col_end > line_start and link.col_start < line_end_pos then
-                  local local_start = math.max(0, link.col_start - line_start)
-                  local local_end = math.min(#wline, link.col_end - line_start)
-                  table.insert(self.link_metadata, {
-                    line = base_line + idx - 1,
-                    col_start = prefix_len + local_start,
-                    col_end = prefix_len + local_end,
-                    url = link.url,
-                  })
-                end
-              end
-
-              lines_shown = lines_shown + 1
-            end
-            figure_caption = nil
-            figure_caption_src = nil
-            self._current_source_line = saved_src_line
-          end
+          figure_owner = nil
+          render_figure_caption(indent, max_width)
           goto continue
         end
         -- Extract <figcaption> content for rendering when </figure> is reached
@@ -3069,6 +3203,7 @@ function ContentBuilder:render_document(lines, opts)
 
       if line:match "^%s*<figure[^>]*>%s*$" then
         in_figure = true
+        figure_owner, figure_indent, figure_width = origin.html, indent, max_width
         goto continue
       end
     end
@@ -3101,6 +3236,7 @@ function ContentBuilder:render_document(lines, opts)
       if in_dl then
         if line:match "^%s*</dl>%s*$" then
           in_dl = false
+          dl_owner = nil
           -- Ensure blank line after </dl> block
           self:add_line(indent)
           lines_shown = lines_shown + 1
@@ -3124,8 +3260,15 @@ function ContentBuilder:render_document(lines, opts)
             for _, seg in ipairs(vim.split(dt_content, "<br%s*/?>", { plain = false, trimempty = true })) do
               seg = seg:gsub("^%s+", ""):gsub("%s+$", "")
               if seg ~= "" then
-                local dt_rendered, dt_hls, dt_links =
-                  markdown.render(seg, repo_base_url, autolinks, ref_links, nil, true)
+                local dt_rendered, dt_hls, dt_links = markdown.render(
+                  seg,
+                  repo_base_url,
+                  autolinks,
+                  ref_links,
+                  nil,
+                  true,
+                  { raw_html = origin.html ~= nil }
+                )
                 table.insert(dt_hls, { col = 0, end_col = #dt_rendered, hl = "Bold" })
                 self:add_simple_markdown(dt_rendered, dt_hls, dt_links, indent)
               end
@@ -3151,8 +3294,15 @@ function ContentBuilder:render_document(lines, opts)
             for _, seg in ipairs(vim.split(dd_content, "<br%s*/?>", { plain = false, trimempty = true })) do
               seg = seg:gsub("^%s+", ""):gsub("%s+$", "")
               if seg ~= "" then
-                local dd_rendered, dd_hls, dd_links =
-                  markdown.render(seg, repo_base_url, autolinks, ref_links, nil, true)
+                local dd_rendered, dd_hls, dd_links = markdown.render(
+                  seg,
+                  repo_base_url,
+                  autolinks,
+                  ref_links,
+                  nil,
+                  true,
+                  { raw_html = origin.html ~= nil }
+                )
                 if vim.api.nvim_strwidth(dd_rendered) > dd_width then
                   self:add_wrapped_markdown(dd_rendered, dd_hls, dd_links, dd_indent, dd_width, "")
                 else
@@ -3165,8 +3315,16 @@ function ContentBuilder:render_document(lines, opts)
             end
             lines_shown = lines_shown + (#self.lines - dd_lines_before)
           end
-          -- If nothing matched, skip rest to avoid infinite loop
-          if not dt_content and not dd_content then break end
+          -- Unrecognized text remains readable inside this raw owner.
+          if not dt_content and not dd_content then
+            local before = #self.lines
+            self:add_markdown_line(rest, indent, base_max_width, repo_base_url, autolinks, ref_links, nil, nil, {
+              raw_html = origin.html ~= nil,
+            })
+            if in_details and details_summary_rendered then apply_details_body_prefix(before, #self.lines) end
+            lines_shown = lines_shown + #self.lines - before
+            break
+          end
         end
         goto continue
       end
@@ -3179,6 +3337,7 @@ function ContentBuilder:render_document(lines, opts)
           lines_shown = lines_shown + 1
         end
         in_dl = true
+        dl_owner = origin.html
         goto continue
       end
     end
@@ -3187,6 +3346,7 @@ function ContentBuilder:render_document(lines, opts)
     if not in_code_block and not in_callout_code_block then
       if in_html_table then
         table.insert(html_table_lines, line)
+        table.insert(html_table_sources, src_indices[src_idx])
         -- Track nested <table> depth
         local ll = line:lower()
         for _ in ll:gmatch "<table[%s>]" do
@@ -3219,7 +3379,8 @@ function ContentBuilder:render_document(lines, opts)
               tbl_expanded or false,
               nil,
               nil,
-              ref_links
+              ref_links,
+              true
             )
             self._current_source_line = saved_src_line
             local tbl_lines_added = #self.lines - tbl_lines_before
@@ -3246,7 +3407,9 @@ function ContentBuilder:render_document(lines, opts)
             end
             prev_rendered_blank = false
           end
+          if #pipe_lines < 2 then release_html_table() end
           html_table_lines = {}
+          html_table_sources = {}
           html_table_src_idx = nil
         end
         goto continue
@@ -3257,6 +3420,8 @@ function ContentBuilder:render_document(lines, opts)
         in_html_table = true
         html_table_depth = 1
         html_table_lines = { line }
+        html_table_sources = { src_indices[src_idx] }
+        html_table_owner = origin.html
         html_table_src_idx = src_indices[src_idx]
         -- Check if </table> is on the same line
         if line:lower():match "</table" then
@@ -3270,13 +3435,15 @@ function ContentBuilder:render_document(lines, opts)
               lines_shown = lines_shown + 1
             end
             local tbl_lines_before = #self.lines
-            self:add_table(pipe_lines, indent, max_width, repo_base_url, autolinks, nil, buf_dir, nil, ref_links)
+            self:add_table(pipe_lines, indent, max_width, repo_base_url, autolinks, nil, buf_dir, nil, ref_links, true)
             lines_shown = lines_shown + (#self.lines - tbl_lines_before)
             if in_details and details_summary_rendered and not skip_details_body then
               apply_details_body_prefix(tbl_lines_before, #self.lines)
             end
           end
+          if #pipe_lines < 2 then release_html_table() end
           html_table_lines = {}
+          html_table_sources = {}
           html_table_src_idx = nil
         end
         goto continue
@@ -3304,6 +3471,35 @@ function ContentBuilder:render_document(lines, opts)
     end
 
     -- Handle markdown thematic breaks (---, ***, ___, etc.)
+    if origin.html and not line:match "^%s*<img%s[^>]*>%s*$" and not line:match "^%s*<video[%s>].-</video>%s*$" then
+      if prev_was_hr and not is_blank then
+        self:add_line(indent)
+        lines_shown = lines_shown + 1
+      end
+      if html_heading_level then
+        local before = #self.lines
+        if lines_shown > 0 and not prev_rendered_blank and not prev_was_hr then self:add_line(indent) end
+        local text_scale = self.text_scale
+        if in_details and self:heading_renderer() == "image" then self.text_scale = false end
+        self:add_markdown_line(line, indent, base_max_width, repo_base_url, autolinks, ref_links, nil, nil, {
+          raw_html = true,
+          heading_level = html_heading_level,
+        })
+        self.text_scale = text_scale
+        if in_details and details_summary_rendered then apply_details_body_prefix(before, #self.lines) end
+        lines_shown = lines_shown + #self.lines - before
+      elseif not skip_details_body then
+        render_html_row(src_indices[src_idx], indent, string.rep("│ ", quote_depth))
+      end
+      prev_was_heading, prev_was_hr, prev_rendered_blank, prev_list_marker_type =
+        html_heading_level ~= nil, false, false, nil
+      if lines_shown >= max_lines then
+        self:add_line(indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
+        truncated = true
+        break
+      end
+      goto continue
+    end
     if not in_code_block and is_thematic_break(line) then
       flush_table()
       if lines_shown > 0 and not prev_was_hr then
@@ -3460,7 +3656,11 @@ function ContentBuilder:render_document(lines, opts)
             ref_links,
             footnote_map,
             paragraph_sources[src_indices[src_idx]],
-            { list_marker = list_bases[src_indices[src_idx]] ~= nil }
+            {
+              raw_html = origin.html ~= nil,
+              heading_level = html_heading_level or setext_rank,
+              list_marker = list_bases[src_indices[src_idx]] ~= nil,
+            }
           )
           local lines_after = #self.lines
           if not alert_type_ret then self:apply_alert_styling(lines_before, lines_after, qiita_note_type, false) end
@@ -4188,6 +4388,9 @@ function ContentBuilder:render_document(lines, opts)
   end
 
   if in_callout_code_block then finish_quote_code() end
+  if in_html_table and not truncated then release_html_table() end
+  if in_details_summary and not truncated then finish_details_summary() end
+  if in_figure and not truncated then render_figure_caption(figure_indent, figure_width) end
 
   -- Flush any remaining table lines at end of document
   if not truncated then

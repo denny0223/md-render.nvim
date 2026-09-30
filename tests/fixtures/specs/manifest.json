@@ -1,0 +1,29 @@
+{
+  "license": "CC-BY-SA-4.0",
+  "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+  "retrieved_at": "2026-09-30T13:31:09.839542+00:00",
+  "inputs": {
+    "file": "inputs.json",
+    "sha256": "29eab15ae9c4e6dddbfc474411e854f06f5d1f335ccc350867e63d2b42263f6b",
+    "count": 1329
+  },
+  "specs": {
+    "commonmark": {
+      "version": "0.31.2",
+      "count": 652,
+      "source_url": "https://spec.commonmark.org/0.31.2/spec.json",
+      "spec_url": "https://spec.commonmark.org/0.31.2/",
+      "source_sha256": "d431b29d97b6f73e69d547109cf5081578fac931e72afe95639ebe766c1b2a20",
+      "extraction": "Keep every JSON example and its fields unchanged; add spec=commonmark."
+    },
+    "gfm": {
+      "version": "0.29-gfm",
+      "count": 677,
+      "source_url": "https://github.github.com/gfm/",
+      "spec_url": "https://github.github.com/gfm/",
+      "source_sha256": "b153d814fdfc8624bb6da7449162c1cd707a637f7d1c1b636eb44b9cf63fa220",
+      "extraction": "In document order, read every div.example id, the text of code.language-markdown and code.language-html, and the nearest preceding section heading. Decode HTML text and flatten span.space; replace each displayed U+2192 tab indicator with U+0009 in both payloads, as specified by the page. Preserve all other whitespace, including trailing newlines; add spec=gfm."
+    }
+  },
+  "serialization": "CommonMark examples followed by GFM examples; UTF-8 JSON, ensure_ascii=false, indent=2, one final newline."
+}

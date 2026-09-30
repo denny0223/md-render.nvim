@@ -1,0 +1,11 @@
+# Pinned specification examples
+
+[inputs.json](inputs.json) contains all 652 examples from [CommonMark 0.31.2](https://spec.commonmark.org/0.31.2/) and all 677 examples from the published [GitHub Flavored Markdown 0.29-gfm specification](https://github.github.com/gfm/). Each example retains its specification identifier, official example number, Markdown input, expected HTML and section. CommonMark also retains its source line numbers. The two specifications keep their own expectations.
+
+The CommonMark specification is by [John MacFarlane](https://github.com/jgm); the GFM specification is based on CommonMark and published by GitHub. The specification examples are licensed under [Creative Commons Attribution-ShareAlike 4.0 International](https://creativecommons.org/licenses/by-sa/4.0/). This fixture collection preserves that license separately from the plugin's code license. The only adaptations are the collection metadata and restoration of the GFM page's displayed tab indicators to actual tabs. No input or expected HTML is otherwise rewritten.
+
+[manifest.json](manifest.json) pins versions, retrieval time, source URLs, source SHA-256 hashes, extraction rules, case counts and the exact fixture SHA-256. Normal tests read these checked-in fixtures offline. The downloaded specification pages and local audit archives are not needed to replay them.
+
+Fixture updates are explicit: retrieve the sources, verify their displayed versions, record new source hashes and retrieval time, apply the documented extraction rules without trimming or normalizing payloads, and review the input/expectation diff together with the updated fixture hash and counts. Never replace the fixture during a test run. In particular, JSON `\t` and `\n` encode real tabs and newlines; an editor's whitespace cleanup must not change them. A newer GFM page at the same URL is a new fixture revision, not an implicit update.
+
+The expected HTML is a reference for named semantic assertions. The all-input corpus gate checks product invariants through a real Neovim buffer; it does not compare a complete HTML/AST representation.

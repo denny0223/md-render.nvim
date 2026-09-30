@@ -22,15 +22,18 @@ local function assert_eq(actual, expected, msg)
   end
 end
 
-local function build(lines)
+local function build(lines, opts)
   local source = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_lines(source, 0, -1, false, lines)
   local b = ContentBuilder.new()
-  b:render_document(vim.api.nvim_buf_get_lines(source, 0, -1, false), {
-    max_width = 120,
-    indent = "",
-    text_scale = false,
-  })
+  b:render_document(
+    vim.api.nvim_buf_get_lines(source, 0, -1, false),
+    vim.tbl_extend("force", {
+      max_width = 120,
+      indent = "",
+      text_scale = false,
+    }, opts or {})
+  )
   local c = b:result()
   local buf = vim.api.nvim_create_buf(false, true)
   local ns = vim.api.nvim_create_namespace "code_isolation_test"
@@ -98,13 +101,242 @@ do
   end
 end
 
+-- Indented blocks keep literal rows before every document-wide transform.
+-- Named examples are from CommonMark 0.31.2 (CC BY-SA 4.0):
+-- https://spec.commonmark.org/0.31.2/#indented-code-blocks
+for _, case in ipairs {
+  {
+    name = "CM48 / GFM18 thematic-looking code",
+    source = { "    ***" },
+    lines = { "***" },
+    rows = { 1 },
+    code = { { 1, "***" } },
+  },
+  {
+    name = "CM85 indented Setext-looking rows",
+    source = { "    Foo", "    ---" },
+    lines = { "Foo", "---" },
+    rows = { 1, 2 },
+    code = { { 1, "Foo" }, { 2, "---" } },
+  },
+  {
+    name = "CM100 / GFM70 code before a thematic break",
+    source = { "    foo", "---" },
+    lines = { "foo", "", string.rep("─", 120) },
+    rows = { 1, 2, 2 },
+    code = { { 1, "foo" } },
+  },
+  {
+    name = "CM111 / GFM81 interior blank rows",
+    source = { "    chunk1", "", "    chunk2", "  ", " ", " ", "    chunk3" },
+    lines = { "chunk1", "", "chunk2", "", "", "", "chunk3" },
+    rows = { 1, 2, 3, 4, 5, 6, 7 },
+    code = { { 1, "chunk1" }, { 2, "" }, { 3, "chunk2" }, { 4, "" }, { 5, "" }, { 6, "" }, { 7, "chunk3" } },
+  },
+  {
+    name = "CM112 / GFM82 whitespace-only payload",
+    source = { "    chunk1", "      ", "      chunk2" },
+    lines = { "chunk1", "  ", "  chunk2" },
+    rows = { 1, 2, 3 },
+    code = { { 1, "chunk1" }, { 2, "  " }, { 3, "  chunk2" } },
+  },
+  {
+    name = "CM117 leading and trailing blanks stay outside code",
+    source = { "", "", "    foo", "", "" },
+    lines = { "", "foo", "" },
+    rows = { 1, 3, 4 },
+    code = { { 3, "foo" } },
+  },
+  {
+    name = "CM118 trailing whitespace stays literal",
+    source = { "    foo  \t" },
+    lines = { "foo  \t" },
+    rows = { 1 },
+    code = { { 1, "foo  \t" } },
+  },
+  {
+    name = "tabs beyond structural indentation stay literal",
+    source = { "\t\tfoo", " \tbar", "    \tbaz", "\t\t", "    last" },
+    lines = { "\tfoo", "bar", "\tbaz", "\t", "last" },
+    rows = { 1, 2, 3, 4, 5 },
+    code = { { 1, "\tfoo" }, { 2, "bar" }, { 3, "\tbaz" }, { 4, "\t" }, { 5, "last" } },
+  },
+  {
+    name = "root code dedent closes a wider list container",
+    source = { "123. item", "", "    first", "      second", "    3. literal", "", "3. following" },
+    lines = { "123. item", "", "first", "  second", "3. literal", "", "3. following" },
+    rows = { 1, 2, 3, 4, 5, 6, 7 },
+    code = { { 3, "first" }, { 4, "  second" }, { 5, "3. literal" } },
+  },
+  {
+    name = "indented code cannot interrupt a paragraph",
+    source = { "foo", "    *bar*" },
+    lines = { "foo bar" },
+    rows = { 1 },
+    code = {},
+  },
+  {
+    name = "three columns retain ordinary inline rendering",
+    source = { "   *foo*" },
+    lines = { "   foo" },
+    rows = { 1 },
+    code = {},
+  },
+  {
+    name = "list container owns its continuation indentation",
+    source = { "- item", "", "    *bar*" },
+    lines = { "• item", "", "    bar" },
+    rows = { 1, 2, 3 },
+    code = {},
+  },
+  {
+    name = "quote container evaluates its own code columns",
+    source = { ">     *foo*" },
+    lines = { "│     *foo*" },
+    rows = { 1 },
+    code = { { 1, "    *foo*" } },
+  },
+} do
+  local c, marks = build(case.source)
+  assert_eq(c.lines, case.lines, case.name .. ": exact physical output rows")
+  assert_eq(c.source_line_map, case.rows, case.name .. ": exact physical source ownership")
+  local strings, bleed = {}, {}
+  for _, mark in ipairs(marks) do
+    local group = mark[4].hl_group
+    if group == "String" then
+      strings[#strings + 1] = { c.source_line_map[mark[2] + 1], c.lines[mark[2] + 1]:sub(mark[3] + 1, mark[4].end_col) }
+    elseif group == "Special" or group == "Italic" or group == "MdRenderInlineCode" then
+      for _, row in ipairs(case.code) do
+        if c.source_line_map[mark[2] + 1] == row[1] then bleed[#bleed + 1] = group end
+      end
+    end
+  end
+  assert_eq(strings, case.code, case.name .. ": actual String spans own the literal bytes")
+  assert_eq(bleed, {}, case.name .. ": literal rows acquire no Markdown marker or inline style")
+  if case.name:match "CM100" then
+    assert_eq(c.heading_anchors, {}, "code cannot acquire Setext heading ownership")
+    assert_eq(c.heading_lines, {}, "code before a thematic break reserves no heading rows")
+  end
+end
+
+do
+  local payload = {
+    "- foo",
+    "3. foo",
+    "# Heading",
+    "[r]: /bad",
+    "[^n]: note",
+    "<!-- comment -->",
+    "%%",
+    "$$",
+    "```lua",
+    ":::note",
+    "![x](/missing.png)",
+    "&amp; *literal*",
+  }
+  local source = vim.tbl_map(function(line)
+    return "    " .. line
+  end, payload)
+  vim.list_extend(source, { "", "[r] [^n]" })
+  local c, marks = build(source)
+  assert_eq(
+    c.lines,
+    vim.list_extend(vim.deepcopy(payload), { "", "[r] [^n]" }),
+    "every code-looking marker stays literal"
+  )
+  assert_eq(c.source_line_map, vim.fn.range(1, #source), "every literal marker keeps its physical source row")
+  local strings = {}
+  for _, mark in ipairs(marks) do
+    if mark[4].hl_group == "String" then
+      strings[#strings + 1] = c.lines[mark[2] + 1]:sub(mark[3] + 1, mark[4].end_col)
+    end
+  end
+  assert_eq(strings, payload, "lists, definitions, fences and extensions have String ownership")
+  assert_eq(c.link_metadata, {}, "literal definitions create no active Markdown references")
+  assert_eq(c.footnote_anchors, {}, "literal footnote definitions create no section or anchors")
+  assert_eq(c.heading_anchors, {}, "literal heading text creates no heading anchors")
+  assert_eq(c.code_blocks, {}, "an indented fence-looking row cannot open a nested fence")
+  assert_eq(c.image_placements, {}, "literal image syntax creates no media placement")
+end
+
+-- Narrow code keeps its full target while clipping the actual clickable bytes.
+do
+  local url = "https://example.invalid/a?x=1&y=2"
+  local source_lines = { "    prefix " .. url, "", "    - literal", "    [bad]: /bad", "", "[bad]" }
+  local c = build(source_lines, { max_width = 20 })
+  assert_eq(
+    c.lines,
+    { "prefix https://exam…", "", "- literal", "[bad]: /bad", "", "[bad]" },
+    "narrow literal display"
+  )
+  assert_eq(c.link_metadata, {
+    { line = 0, col_start = 7, col_end = 19, url = url },
+  }, "narrow code keeps the full URL and excludes the ellipsis from its visible range")
+
+  local preview = require "md-render.preview"
+  local source = vim.api.nvim_create_buf(false, true)
+  vim.bo[source].filetype = "markdown"
+  vim.api.nvim_buf_set_lines(source, 0, -1, false, source_lines)
+  vim.api.nvim_set_current_buf(source)
+  local tick = vim.api.nvim_buf_get_changedtick(source)
+  local open, getmousepos, osc8 = vim.ui.open, vim.fn.getmousepos, display.supports_osc8
+  local opened = {}
+  vim.ui.open = function(target)
+    opened[#opened + 1] = target
+  end
+  display.supports_osc8 = function()
+    return false
+  end
+  local ok, err = pcall(function()
+    preview.toggle { text_scale = false, max_width = 20 }
+    local session = assert(preview._toggle_sessions[source])
+    local expected = { "  prefix https://ex…", "  ", "  - literal", "  [bad]: /bad", "  ", "  [bad]" }
+    for step = 1, 2 do
+      assert_eq(session.content.lines, expected, "narrow public preview keeps literal payload and interior blank")
+      assert_eq(session.content.source_line_map, { 1, 2, 3, 4, 5, 6 }, "narrow code rows retain original source rows")
+      assert_eq(session.content.link_metadata, {
+        { line = 0, col_start = 9, col_end = 19, url = url },
+      }, "narrow public preview keeps exact visible URL range")
+      assert_eq(vim.api.nvim_buf_get_lines(session.buf, 0, -1, false), expected, "narrow public buffer matches output")
+      assert_eq(
+        require("md-render.links").at(session.buf, session.ns, 0, 9),
+        url,
+        "actual narrow URL mark retains full target"
+      )
+      vim.fn.getmousepos = function()
+        return { winid = session.win, line = 1, column = 10 }
+      end
+      vim.fn.maparg("<LeftRelease>", "n", false, true).callback()
+      if step == 1 then session:rebuild() end
+    end
+    vim.api.nvim_win_set_cursor(0, { 3, 0 })
+    preview.toggle()
+    assert_eq(vim.api.nvim_get_current_buf(), source, "narrow code toggle restores source")
+    assert_eq(vim.api.nvim_win_get_cursor(0)[1], 3, "narrow code toggle restores the mapped literal row")
+    preview.toggle()
+    assert_eq(session.content.lines, expected, "narrow code toggles back without changing its payload")
+    preview.toggle()
+    session:dispose()
+  end)
+  vim.ui.open, vim.fn.getmousepos, display.supports_osc8 = open, getmousepos, osc8
+  assert_eq(opened, { url, url }, "actual narrow code activation opens the full target across rebuild")
+  assert_eq(
+    vim.api.nvim_buf_get_lines(source, 0, -1, false),
+    source_lines,
+    "narrow code preview preserves source bytes"
+  )
+  assert_eq(vim.api.nvim_buf_get_changedtick(source), tick, "narrow code preview preserves source changedtick")
+  vim.api.nvim_buf_delete(source, { force = true })
+  assert(ok, err)
+end
+
 -- The original numbered sample and CommonMark 0.31.2 example 212.
 for _, delimiter in ipairs { ".", ")" } do
   local marker = "3" .. delimiter
   for _, case in ipairs {
     {
       source = { "    " .. marker .. " first", "    " .. marker .. " second" },
-      lines = { "    " .. marker .. " first", "    " .. marker .. " second" },
+      lines = { marker .. " first", marker .. " second" },
       rows = { 1, 2 },
     },
     {

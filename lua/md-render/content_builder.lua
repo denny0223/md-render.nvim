@@ -1502,10 +1502,45 @@ local function strip_container_indent(lines)
   local comment_state
   local quote
   local paragraph_column, table_column
+  local in_root_code, in_math = false, false
+  local code_blanks = {}
 
   for i, line in ipairs(lines) do
     local origin = { column = 0, quote_columns = {} }
     origins[i] = origin
+    -- Settle root literal ownership before comments, quotes or list markers
+    -- can claim the line. Keep tabs beyond the four structural columns intact.
+    if not open_fence and not comment_state then
+      if line:match "^%$%$$" then in_math = not in_math end
+      local ws = fence_mod.indent_columns(line:match "^[ \t]*")
+      local base = 0
+      for _, col in ipairs(item_cols) do
+        if col <= ws then base = col end
+      end
+      if in_root_code and line:match "^[ \t]*$" then
+        code_blanks[#code_blanks + 1] = i
+        result[i] = line
+        goto next_source
+      elseif
+        not in_math
+        and not paragraph_column
+        and not (quote and quote.paragraph)
+        and base == 0
+        and ws >= 4
+        and not line:match "^[ \t]*$"
+      then
+        origin.code = true
+        for _, row in ipairs(code_blanks) do
+          origins[row].code = true
+        end
+        in_root_code, code_blanks = true, {}
+        paragraph_column, table_column, quote = nil, nil, nil
+        item_cols = {}
+        result[i] = line
+        goto next_source
+      end
+    end
+    in_root_code, code_blanks = false, {}
     -- Resolve missing quote markers before an unindented lazy row can pop
     -- its enclosing list. A real quote at another list column ends that owner.
     if quote and quote.paragraph and not open_fence and not comment_state then
@@ -2039,7 +2074,8 @@ local function preprocess_multiline_html(lines, src_indices, container_indents, 
     local math_boundary = not accum and not open_fence and not comment_state and l:match "^%$%$$"
     if math_boundary then in_math = not in_math end
     -- Keep literal blocks and individual table cells out of multiline HTML grouping.
-    local literal = table_rows[src]
+    local literal = source_origins[src].code
+      or table_rows[src]
       or (not accum and not comment_state and (in_math or math_boundary or l:match "^    "))
     if not literal and not accum and not open_fence then
       comment_state, comment_suffix = block_comment_step(comment_state, l)
@@ -2341,7 +2377,6 @@ function ContentBuilder:render_document(lines, opts)
   local callout_code_block_id = nil
   local callout_code_has_truncation = false
   local in_math_block = false
-  local in_indented_code = false
   local skip_next_line = false
   local in_details = false
   local details_src_idx = nil
@@ -2678,6 +2713,57 @@ function ContentBuilder:render_document(lines, opts)
           truncated = true
           break
         end
+      end
+      goto continue
+    end
+
+    -- Literal source ownership precedes HTML, headings and display blank-line
+    -- policy. Fence delimiters and their active payload use the fence renderer.
+    if
+      origin.code
+      and quote_depth == 0
+      and not origin.code_opener
+      and not origin.code_closer
+      and not in_code_block
+      and not in_math_block
+    then
+      if skip_details_body then goto continue end
+      if prev_was_hr then
+        self:add_line(indent)
+        lines_shown = lines_shown + 1
+      end
+      local code_content = strip_container_prefix(line, 4, origin.column)
+      local indented_line = indent .. code_content
+      local display_width = vim.api.nvim_strwidth(indented_line)
+      local content_byte_end = #indented_line
+      local ib_lines_before = #self.lines
+      if display_width > max_width then
+        local target = max_width - vim.api.nvim_strwidth "…"
+        local current_width = 0
+        local byte_pos = 0
+        for char in indented_line:gmatch "[%z\1-\127\194-\253][\128-\191]*" do
+          local char_width = vim.api.nvim_strwidth(char)
+          if current_width + char_width > target then break end
+          current_width = current_width + char_width
+          byte_pos = byte_pos + #char
+        end
+        local truncated_line = indented_line:sub(1, byte_pos) .. "…"
+        self:add_line(truncated_line, { { col = 0, end_col = -1, hl = "String" } })
+        content_byte_end = byte_pos
+      else
+        self:add_line(indented_line, { { col = 0, end_col = -1, hl = "String" } })
+      end
+      detect_urls_in_code_line(self, code_content, #indent, content_byte_end)
+      if in_details and details_summary_rendered and not skip_details_body then
+        apply_details_body_prefix(ib_lines_before, #self.lines)
+      end
+      lines_shown = lines_shown + 1
+      prev_was_heading, prev_was_hr, prev_list_marker_type = false, false, nil
+      prev_rendered_blank = code_content:match "^[ \t]*$" ~= nil
+      if lines_shown >= max_lines then
+        self:add_line(indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
+        truncated = true
+        break
       end
       goto continue
     end
@@ -3243,45 +3329,6 @@ function ContentBuilder:render_document(lines, opts)
         break
       end
     end
-
-    -- Indented code block: 4+ spaces, not in a list/blockquote/etc context
-    if
-      not in_code_block
-      and not in_math_block
-      and not current_alert_type
-      and line:match "^    "
-      and not line:match "^    [%-*+]%s"
-      and not line:match "^    %d+[.)]%s"
-      and (in_indented_code or not prev_list_marker_type)
-    then
-      in_indented_code = true
-      local code_content = line:sub(5) -- strip 4-space indent
-      local indented_line = indent .. code_content
-      local display_width = vim.api.nvim_strwidth(indented_line)
-      local ib_lines_before = #self.lines
-      if display_width > max_width then
-        local target = max_width - vim.api.nvim_strwidth "…"
-        local current_width = 0
-        local byte_pos = 0
-        for char in indented_line:gmatch "[%z\1-\127\194-\253][\128-\191]*" do
-          local char_width = vim.api.nvim_strwidth(char)
-          if current_width + char_width > target then break end
-          current_width = current_width + char_width
-          byte_pos = byte_pos + #char
-        end
-        local truncated_line = indented_line:sub(1, byte_pos) .. "…"
-        self:add_line(truncated_line, { { col = 0, end_col = -1, hl = "String" } })
-      else
-        self:add_line(indented_line, { { col = 0, end_col = -1, hl = "String" } })
-      end
-      detect_urls_in_code_line(self, code_content, #indent, #indented_line)
-      if in_details and details_summary_rendered and not skip_details_body then
-        apply_details_body_prefix(ib_lines_before, #self.lines)
-      end
-      lines_shown = lines_shown + 1
-      goto continue
-    end
-    in_indented_code = false
 
     local lines_before = #self.lines
 

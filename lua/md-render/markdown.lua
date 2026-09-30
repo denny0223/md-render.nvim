@@ -1562,8 +1562,18 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
 
   -- List items (- * + 1. 1)) - detect marker
   local list_marker
-  if not inline_only and not heading_level then
-    list_marker = rendered_text:match "^(%s*[-*+]%s)" or rendered_text:match "^(%s*%d+[.)]%s)"
+  local list_content
+  if not inline_only and not heading_level and (not block_context or block_context.list_marker ~= false) then
+    local _, _, prefix = Markdown.list_marker_type(rendered_text)
+    -- Display numbering can exceed the source marker's nine-digit limit.
+    if not prefix and block_context and block_context.list_marker then
+      prefix = rendered_text:match "^([ \t]*%d+[.)][ \t]+)" or rendered_text:match "^([ \t]*%d+[.)])$"
+    end
+    if prefix then
+      list_content = rendered_text:sub(#prefix + 1)
+      list_marker = prefix:gsub("[ \t]*$", " ", 1)
+      rendered_text = list_marker .. list_content
+    end
   end
 
   -- Checkbox (- [ ] / - [x] / - [X] / - [-]) - replace marker + checkbox with icon
@@ -1598,7 +1608,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
       local nesting_level = math.floor(#indent_part / 2)
       local icon = bullet_icons[(nesting_level % #bullet_icons) + 1] .. " "
       list_marker = indent_part .. icon
-      rendered_text = list_marker .. rendered_text:sub(#(rendered_text:match "^%s*[-*+]%s" or "") + 1)
+      rendered_text = list_marker .. list_content
     end
   end
 
@@ -1830,8 +1840,7 @@ function Markdown.is_block_start(line, in_paragraph)
   -- Four-column indentation cannot introduce a new block inside a paragraph.
   if in_paragraph and line:match "^    " then return false end
   if Markdown.parse_atx_heading(line) then return true end
-  local list_marker, number = Markdown.list_marker_type(line)
-  if list_marker and (not number or not in_paragraph or tonumber(number) == 1) then return true end
+  if Markdown.list_marker_type(line, in_paragraph) then return true end
   if line:match "^>" then return true end
   local stripped = line:gsub("%s", "")
   local marker = stripped:sub(1, 1)
@@ -1934,14 +1943,29 @@ end
 --- Returns the specific marker character/delimiter to distinguish list types per CommonMark:
 --- "-", "*", "+" for bullet lists, "." or ")" for ordered list delimiters, or nil for non-list lines.
 ---@param line string
+---@param in_paragraph? boolean only markers allowed to interrupt a paragraph
 ---@return string? marker_type
 ---@return string? number source digits for an ordered marker
-Markdown.list_marker_type = function(line)
-  local bullet = line:match "^%s*([-*+])%s"
-  if bullet then return bullet end
-  local number, delim = line:match "^%s*(%d+)([.)])%s"
-  if number and #number <= 9 then return delim, number end
-  return nil
+---@return string? prefix source marker and its following whitespace
+---@return string? content marker-free source content
+Markdown.list_marker_type = function(line, in_paragraph)
+  local prefix, content = line:match "^([ \t]*[-*+][ \t]+)(.*)$"
+  if not prefix then
+    prefix, content = line:match "^([ \t]*[-*+])$", ""
+  end
+  local number, delim
+  if not prefix then
+    prefix, content = line:match "^([ \t]*%d+[.)][ \t]+)(.*)$"
+    if not prefix then
+      prefix, content = line:match "^([ \t]*%d+[.)])$", ""
+    end
+    if prefix then
+      number, delim = prefix:match "(%d+)([.)])"
+    end
+  end
+  if not prefix or (number and #number > 9) then return nil end
+  if in_paragraph and (content:match "^[ \t]*$" or (number and tonumber(number) ~= 1)) then return nil end
+  return delim or prefix:match "[-*+]", number, prefix, content
 end
 
 --- Renumber ordered list items following CommonMark rules.
@@ -2014,6 +2038,7 @@ Markdown.renumber_ordered_lists = function(
         column = column + fence_mod.indent_columns(indent, column)
       end
       local gap = fence_mod.indent_columns(rest:match "^[ \t]*", (column or #source_prefix) + #num + 1)
+      if rest:match "^[ \t]*$" then gap = 1 end
       item.content_prefix = source_container .. string.rep(" ", #num + 1 + (gap <= 4 and gap or 1))
       item.quote_prefix = quote_prefix
       table.insert(result, prefix .. tostring(item.counter) .. delimiter .. rest)

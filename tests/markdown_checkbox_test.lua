@@ -304,9 +304,10 @@ test("ordered list numbering respects delimiters and source containers", functio
     },
     {
       name = "four-space nested lists remain lists under bullet containers",
-      source = { "- outer", "    3) first", "    3) second" },
-      lines = { "• outer", "    3) first", "    4) second" },
-      rows = { 1, 2, 3 },
+      -- An ordered sublist starting above 1 needs a paragraph boundary.
+      source = { "- outer", "", "    3) first", "    3) second" },
+      lines = { "• outer", "", "    3) first", "    4) second" },
+      rows = { 1, 2, 3, 4 },
     },
     {
       name = "delimiter changes start new lists",
@@ -322,15 +323,15 @@ test("ordered list numbering respects delimiters and source containers", functio
     },
     {
       name = "nested lists and item paragraphs preserve the parent counter",
-      source = { "3) outer", "   7) child", "   7) child", "   - bullet", "3) outer", "", "   more", "3) last" },
+      source = { "3) outer", "", "   7) child", "   7) child", "   - bullet", "3) outer", "", "   more", "3) last" },
       lines = { "3) outer", "   7) child", "   8) child", "   ◦ bullet", "4) outer", "", "   more", "5) last" },
-      rows = { 1, 2, 3, 4, 5, 6, 7, 8 },
+      rows = { 1, 3, 4, 5, 6, 7, 8, 9 },
     },
     {
       name = "nested delimiter changes stay local",
-      source = { "3) outer", "   7. child", "   7. child", "   2) new", "   2) next", "3) outer" },
-      lines = { "3) outer", "   7. child", "   8. child", "   2) new", "   3) next", "4) outer" },
-      rows = { 1, 2, 3, 4, 5, 6 },
+      source = { "3) outer", "", "   7. child", "   7. child", "   2) new", "   2) next", "3) outer" },
+      lines = { "3) outer", "", "   7. child", "   8. child", "   2) new", "   3) next", "4) outer" },
+      rows = { 1, 2, 3, 4, 5, 6, 7 },
     },
     {
       name = "quote depth, optional spacing and separate quotes",
@@ -413,6 +414,7 @@ test("ordered marker width changes preserve spans, code containers and source bu
     local marker = "9" .. delimiter
     local input = {
       "[ref]: https://example.com/reference",
+      "",
       marker .. " **bold** [link](https://example.com/direct)",
       marker .. " **bold** [link][ref]",
       "",
@@ -427,13 +429,14 @@ test("ordered marker width changes preserve spans, code containers and source bu
     local source_tick = vim.api.nvim_buf_get_changedtick(source)
     for _, width in ipairs { 1000, 10 } do
       local builder = ContentBuilder.new()
-      builder:render_document(vim.api.nvim_buf_get_lines(source, 0, width == 1000 and -1 or 3, false), {
+      builder:render_document(vim.api.nvim_buf_get_lines(source, 0, width == 1000 and -1 or 4, false), {
         max_width = width,
         indent = "",
         text_scale = false,
       })
       local content = builder:result()
       assert_eq(content.lines, width == 1000 and {
+        "",
         marker .. " bold link",
         "10" .. delimiter .. " bold link",
         "",
@@ -441,6 +444,7 @@ test("ordered marker width changes preserve spans, code containers and source bu
         "   3) literal",
         "11" .. delimiter .. " last",
       } or {
+        "",
         marker .. " bold",
         "   link",
         "10" .. delimiter .. " bold",
@@ -448,7 +452,7 @@ test("ordered marker width changes preserve spans, code containers and source bu
       }, delimiter .. ": numbering and code text")
       assert_eq(
         content.source_line_map,
-        width == 1000 and { 2, 3, 4, 6, 7, 9 } or { 2, 2, 3, 3 },
+        width == 1000 and { 2, 3, 4, 5, 7, 8, 10 } or { 2, 3, 3, 4, 4 },
         delimiter .. ": source rows after definitions"
       )
       if width == 1000 then

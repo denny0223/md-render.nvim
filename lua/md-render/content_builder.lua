@@ -1326,8 +1326,8 @@ local is_block_start = Markdown.is_block_start
 --- is excluded here.
 ---@param line string
 ---@return boolean
-local function is_list_item(line)
-  return Markdown.list_marker_type(line) ~= nil and not is_thematic_break(line)
+local function is_list_item(line, in_paragraph)
+  return Markdown.list_marker_type(line, in_paragraph) ~= nil and not is_thematic_break(line)
 end
 
 local markdown_table = require "md-render.markdown_table"
@@ -1374,29 +1374,33 @@ end
 ---@param column? integer original column before the list marker
 ---@return integer? column nil when the line does not open a list item
 ---@return string? content marker-free content at that column
-local function list_content_column(line, column)
-  if not is_list_item(line) then return nil end
-  local ws, marker, gap = line:match "^( *)([%-%*%+])([ \t]+)"
-  if not ws then
-    ws, marker, gap = line:match "^( *)(%d+[%.)])([ \t]+)"
-  end
-  if not ws then return nil end
+local function list_content_column(line, column, in_paragraph)
+  if not is_list_item(line, in_paragraph) then return nil end
+  local _, _, prefix, content = Markdown.list_marker_type(line)
+  local ws = prefix:match "^ *"
+  local marker = prefix:sub(#ws + 1):match "^[^ \t]+"
+  local gap = prefix:sub(#ws + #marker + 1)
   local start = (column or 0) + #ws + #marker
   local gap_width = fence_mod.indent_columns(gap, start)
+  if content:match "^[ \t]*$" then
+    gap_width, content = 1, ""
+  end
   -- Five or more columns after the marker start indented code inside the item.
-  local content = line:sub(#ws + #marker + #gap + 1)
   if gap_width > 4 then content = string.rep(" ", gap_width - 1) .. content end
-  return #ws + #marker + (gap_width <= 4 and gap_width or 1), content
+  return #ws + #marker + (gap_width > 0 and gap_width <= 4 and gap_width or 1), content
 end
 
 --- Track the real content columns of open list items, before inspecting fences.
-local function list_container_column(line, item_cols, column)
+local function list_container_column(line, item_cols, column, paragraph_column, accepted_item)
   local ws = #line:match "^ *"
   while #item_cols > 0 and ws < item_cols[#item_cols] do
     table.remove(item_cols)
   end
   local base = item_cols[#item_cols] or 0
-  local col, content = list_content_column(line, column)
+  local col, content
+  if accepted_item ~= false then
+    col, content = list_content_column(line, column, paragraph_column == base)
+  end
   -- Four columns beyond the parent content belong to indented code.
   if ws - base >= 4 then col = nil end
   if col then table.insert(item_cols, col) end
@@ -1515,6 +1519,7 @@ local function strip_container_indent(lines)
   local open_fence, fence_container = nil, 0
   local comment_state
   local quote
+  local empty_item
   local paragraph_column, table_column
   local in_root_code, in_math = false, false
   local code_blanks = {}
@@ -1615,11 +1620,10 @@ local function strip_container_indent(lines)
       line = expand_leading_tabs(line)
       result[i] = line
       if not line:match "^%s*$" then
-        local base, col, ws, item_content = list_container_column(line, item_cols)
+        local base, col, ws, item_content = list_container_column(line, item_cols, nil, paragraph_column)
         if col then list_bases[i] = base end
-        -- A list marker inside the same paragraph needs permission to interrupt it.
-        -- A sibling's parent column differs from the previous item's paragraph.
-        local opens_item = col and (paragraph_column ~= base or is_block_start(line:sub(base + 1), true))
+        empty_item = col and item_content == "" and col or nil
+        local opens_item = col ~= nil
         local compound_fence, columns
         if opens_item then
           compound_fence, columns = list_quote_fence(line, 0)
@@ -1667,6 +1671,8 @@ local function strip_container_indent(lines)
         end
       else
         paragraph_column, table_column = nil, nil
+        if empty_item and item_cols[#item_cols] == empty_item then table.remove(item_cols) end
+        empty_item = nil
       end
     end
 
@@ -1725,6 +1731,9 @@ local function strip_container_indent(lines)
     end
     quote.table = nil
     local was_paragraph = quote.paragraph
+    if content:match "^%s*$" and quote.empty_item and quote.items[#quote.items] == quote.empty_item then
+      table.remove(quote.items)
+    end
     local sibling = is_list_item(content)
       and #quote.items > 0
       and #expand_leading_tabs(content, column):match "^ *" < quote.items[#quote.items]
@@ -1743,11 +1752,17 @@ local function strip_container_indent(lines)
     end
     local local_base, col = 0, nil
     if not quote.fence and not content:match "^%s*$" then
-      local_base, col = list_container_column(expand_leading_tabs(content, column), quote.items, column)
+      local_base, col = list_container_column(
+        expand_leading_tabs(content, column),
+        quote.items,
+        column,
+        quote.paragraph and (quote.items[#quote.items] or 0) or nil
+      )
       if col then list_bases[i] = local_base end
     end
     local leaf = content
-    if col then leaf = content:match "^ *[%-%*%+][ \t]+(.*)$" or content:match "^ *%d+[%.)][ \t]+(.*)$" or content end
+    if col then leaf = select(4, Markdown.list_marker_type(content)) end
+    quote.empty_item = col and leaf:match "^[ \t]*$" and col or nil
     local compound_fence, columns
     if col then
       compound_fence, columns = list_quote_fence(content, column)
@@ -1774,7 +1789,10 @@ local function strip_container_indent(lines)
       or (not col and fence_mod.indent_columns(paragraph_leaf:match "^[ \t]*", column + local_base) >= 4)
     quote.paragraph = not origin.code
       and not (was_paragraph and Markdown.parse_setext_underline(paragraph_leaf))
-      and not is_block_start(expand_leading_tabs(paragraph_leaf, column + (col or local_base)), false)
+      and not is_block_start(
+        expand_leading_tabs(paragraph_leaf, column + (col or local_base)),
+        not col and was_paragraph
+      )
     if quote.paragraph or origin.code_opener then
       quote.ancestor_prefix = ancestor_prefix .. string.rep(" ", col or local_base)
     end
@@ -1841,6 +1859,7 @@ local function join_paragraph_continuations(
   quote_prefix,
   reference_defs,
   paragraph_sources,
+  list_bases,
   quote_depth
 )
   quote_depth = quote_depth or 0
@@ -1926,7 +1945,7 @@ local function join_paragraph_continuations(
       -- for the renderer rather than guessing from the opening fence's indent.
       local base = 0
       if not open_fence and (not literal_code or line_origin.code_opener) and not line:match "^%s*$" then
-        base = list_container_column(expand_leading_tabs(line, column), item_cols, column)
+        base = list_container_column(expand_leading_tabs(line, column), item_cols, column, nil, list_bases[src] ~= nil)
       end
       local is_fence
       if not literal_code or line_origin.code_opener then
@@ -1977,6 +1996,7 @@ local function join_paragraph_continuations(
           (quote_prefix or "") .. "│ ",
           reference_defs,
           paragraph_sources,
+          list_bases,
           quote_depth + 1
         )
         for k, joined_line in ipairs(joined) do
@@ -2005,12 +2025,16 @@ local function join_paragraph_continuations(
       -- A list item opens a paragraph of its own: the lines that follow it
       -- (indented to its content, or lazily unindented) belong to that same
       -- paragraph, so they must be joined onto the marker line.
-      local starts_list_item = not in_code and is_list_item(line)
+      local starts_list_item = not in_code and list_bases[src] ~= nil and is_list_item(line)
+      local empty_list_item = starts_list_item and select(4, Markdown.list_marker_type(line)):match "^[ \t]*$"
+      local in_paragraph = #para > 0 or (is_list_item(line) and list_bases[src] == nil and not line:match "^    ")
+      local block_line = quote_prefix and strip_container_prefix(line, base, column) or line
 
       if
         in_code
         or is_fence
-        or (is_block_start(strip_container_prefix(line, base, column), #para > 0) and not starts_list_item)
+        or empty_list_item
+        or (is_block_start(block_line, in_paragraph) and not starts_list_item)
       then
         -- Flush accumulated paragraph
         flush_para()
@@ -2229,9 +2253,13 @@ local function fenced_code_lines(
     else
       local base = 0
       if not open_fence and not line:match "^%s*$" then
-        local col
-        base, col = list_container_column(expand_leading_tabs(line, column), item_cols, column)
-        if quote_prefix and col and list_bases then list_bases[src] = base end
+        base = list_container_column(
+          expand_leading_tabs(line, column),
+          item_cols,
+          column,
+          nil,
+          not list_bases or list_bases[src] ~= nil
+        )
       end
       local is_fence
       open_fence, is_fence = fence_mod.step(open_fence, line, column, base)
@@ -2325,7 +2353,8 @@ function ContentBuilder:render_document(lines, opts)
     comments,
     nil,
     reference_defs,
-    paragraph_sources
+    paragraph_sources,
+    list_bases
   )
   -- Display numbering can grow beyond the nine-digit source marker limit.
   local source_list_lines = lines
@@ -3344,7 +3373,7 @@ function ContentBuilder:render_document(lines, opts)
         local next_marker_type
         for k = src_idx + 1, #lines do
           if not lines[k]:match "^%s*$" then
-            next_marker_type = markdown.list_marker_type(source_list_lines[k])
+            next_marker_type = list_bases[src_indices[k]] ~= nil and markdown.list_marker_type(source_list_lines[k])
             break
           end
         end
@@ -3428,7 +3457,8 @@ function ContentBuilder:render_document(lines, opts)
             autolinks,
             ref_links,
             footnote_map,
-            paragraph_sources[src_indices[src_idx]]
+            paragraph_sources[src_indices[src_idx]],
+            { list_marker = list_bases[src_indices[src_idx]] ~= nil }
           )
           local lines_after = #self.lines
           if not alert_type_ret then self:apply_alert_styling(lines_before, lines_after, qiita_note_type, false) end
@@ -4084,7 +4114,7 @@ function ContentBuilder:render_document(lines, opts)
             ref_links,
             footnote_map,
             paragraph_sources[src_indices[src_idx]],
-            { heading_level = setext_rank }
+            { heading_level = setext_rank, list_marker = list_bases[src_indices[src_idx]] ~= nil }
           )
           self.text_scale = text_scale
           local lines_after = #self.lines
@@ -4134,7 +4164,10 @@ function ContentBuilder:render_document(lines, opts)
     if lines_added > 0 then
       prev_was_heading = is_heading
       prev_rendered_blank = is_blank
-      if not is_blank then prev_list_marker_type = markdown.list_marker_type(source_list_lines[src_idx]) end
+      if not is_blank then
+        prev_list_marker_type = list_bases[src_indices[src_idx]] ~= nil
+          and markdown.list_marker_type(source_list_lines[src_idx])
+      end
     end
 
     if lines_shown >= max_lines then

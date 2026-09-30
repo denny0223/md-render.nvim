@@ -354,11 +354,12 @@ for _, delimiter in ipairs { ".", ")" } do
       },
       lines = {
         marker .. " outer",
+        "",
         "       " .. marker .. " first",
         "       " .. marker .. " second",
         "4" .. delimiter .. " last",
       },
-      rows = { 1, 3, 4, 5 },
+      rows = { 1, 2, 3, 4, 5 },
     },
   } do
     local c = build(case.source)
@@ -738,14 +739,29 @@ for _, number in ipairs { "10", "999999999" } do
 end
 
 -- Non-1 ordered markers cannot turn an existing paragraph into compound code.
--- The renderer's existing marker-row split is outside this source-owner repair.
 for _, case in ipairs {
-  { first = "plain paragraph", marker = "3) > ```", prefix = "   > ", display = "   │ " },
-  { first = "- plain paragraph", marker = "  3) > ```", prefix = "     > ", display = "     │ " },
+  {
+    first = "plain paragraph",
+    marker = "3) > ```",
+    prefix = "   > ",
+    display = "│ ",
+    first_display = "plain paragraph",
+  },
+  {
+    first = "- plain paragraph",
+    marker = "  3) > ```",
+    prefix = "     > ",
+    display = "  │ ",
+    first_display = "• plain paragraph",
+  },
 } do
   local c, marks = build { case.first, case.marker, case.prefix .. "*literal*", case.prefix .. "```", "outside" }
-  assert_eq(c.lines[3], case.display .. "literal", case.marker .. ": body remains inline text")
-  assert_eq(c.source_line_map, { 1, 2, 3, 5 }, case.marker .. ": existing source-row layout survives")
+  assert_eq(
+    c.lines,
+    { case.first_display .. " 3) > ```", case.display .. "literal", "outside" },
+    case.marker .. ": rejected marker joins its paragraph"
+  )
+  assert_eq(c.source_line_map, { 1, 3, 5 }, case.marker .. ": paragraph and body keep real source owners")
   local styles = {}
   for _, mark in ipairs(marks) do
     local group = mark[4].hl_group
@@ -924,7 +940,7 @@ do
   c = build { "- > ```", "  > 3) literal", "outside", "3) first", "3) second" }
   assert_eq(
     c.lines,
-    { "• > ```", "  │ 3) literal", "outside", "3) first", "4) second" },
+    { "• > ```", "  │ 3) literal", "outside 3) first 3) second" },
     "unmarked text ends compound code ownership"
   )
 end

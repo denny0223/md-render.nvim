@@ -777,6 +777,86 @@ test("overlapping reference dispatch follows the full relative filename", functi
   assert(ok, err)
 end)
 
+test("public reference reflow uses measured window width and preserves UTF-8 ownership", function()
+  local preview = require "md-render.preview"
+  local lines = {
+    "before",
+    "",
+    "前 [[*長標籤 alpha beta gamma delta*]] 後",
+    "",
+    "[*長標籤 alpha beta gamma delta*]: <two  spaces.md>",
+  }
+  local original_win, split_win = vim.api.nvim_get_current_win(), nil
+  local source = vim.api.nvim_create_buf(false, true)
+  vim.bo[source].filetype = "markdown"
+  vim.api.nvim_buf_set_lines(source, 0, -1, false, lines)
+  vim.api.nvim_set_current_buf(source)
+  local tick = vim.api.nvim_buf_get_changedtick(source)
+  local ok, err = pcall(function()
+    vim.cmd "vsplit"
+    split_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_width(split_win, 50)
+    preview.toggle { text_scale = false }
+    local session = assert(preview._toggle_sessions[source])
+    eq(vim.api.nvim_win_get_width(session.win), 50, "actual wide window geometry")
+    eq(session.opts.max_width, 50, "actual wide session geometry")
+    local wide = vim.deepcopy(session.content.lines)
+    eq(
+      visible(session.content),
+      { "  before", "  前 [長標籤 alpha beta gamma delta] 後" },
+      "wide reference stays one row"
+    )
+    vim.api.nvim_win_set_width(split_win, 24)
+    session:resize(session.win)
+    session:rebuild()
+    eq(vim.api.nvim_win_get_width(session.win), 24, "actual narrow window geometry")
+    eq(session.opts.max_width, 24, "actual narrow session geometry")
+    eq(
+      visible(session.content),
+      { "  before", "  前 [長標籤 alpha beta", "  gamma delta] 後" },
+      "narrow reference visibly reflows"
+    )
+    eq(vim.api.nvim_buf_get_lines(session.buf, 0, -1, false), session.content.lines, "narrow public buffer rows")
+    local fragments, italic = {}, {}
+    for _, link in ipairs(session.content.link_metadata) do
+      local row = session.content.lines[link.line + 1]
+      eq(link.url, "two  spaces.md", "narrow fragment keeps full target")
+      eq(session.content.source_line_map[link.line + 1], 3, "narrow fragment physical source row")
+      eq(Links.at(session.buf, session.ns, link.line, link.col_start), link.url, "narrow fragment first byte")
+      eq(Links.at(session.buf, session.ns, link.line, link.col_end - 1), link.url, "narrow fragment last byte")
+      fragments[#fragments + 1] = row:sub(link.col_start + 1, link.col_end)
+      assert(not fragments[#fragments]:find "[%[%]]", "narrow outer brackets are literal")
+      vim.api.nvim_win_set_cursor(session.win, { link.line + 1, link.col_start })
+    end
+    assert(#fragments > 1, "actual narrow layout has multiple linked fragments")
+    for _, row in ipairs(session.content.highlights) do
+      for _, hl in ipairs(row.groups) do
+        if hl.hl == "Italic" then
+          italic[#italic + 1] = session.content.lines[row.line + 1]:sub(hl.col + 1, hl.end_col)
+        end
+      end
+    end
+    eq(table.concat(fragments):gsub(" ", ""), "長標籤alphabetagammadelta", "narrow fragments retain all label bytes")
+    eq(table.concat(italic):gsub(" ", ""), "長標籤alphabetagammadelta", "narrow italics retain all label bytes")
+    eq(vim.api.nvim_win_get_cursor(session.win)[1], 4, "cursor is on the final wrapped fragment")
+    eq(session:rendered_to_source_f(4), 3.5, "float scrolling retains interpolation between source owners")
+    eq(session:rendered_to_source(4), 3, "integer cursor recovery uses the physical owner")
+    eq(session:rendered_to_source(6), 5, "outside the map retains the existing sentinel fallback")
+    preview.toggle()
+    eq(vim.api.nvim_win_get_cursor(0)[1], 3, "narrow source toggle returns physical reference row")
+    vim.api.nvim_win_set_width(split_win, 50)
+    preview.toggle { text_scale = false }
+    eq(session.content.lines, wide, "widening restores the original rows")
+    eq(vim.api.nvim_buf_get_changedtick(source), tick, "reflow leaves source changedtick unchanged")
+    preview.toggle()
+  end)
+  if preview._toggle_sessions[source] and vim.api.nvim_get_current_buf() ~= source then preview.toggle() end
+  if split_win and vim.api.nvim_win_is_valid(split_win) then vim.api.nvim_win_close(split_win, true) end
+  if vim.api.nvim_win_is_valid(original_win) then vim.api.nvim_set_current_win(original_win) end
+  eq(vim.api.nvim_buf_get_lines(source, 0, -1, false), lines, "reflow preserves original source bytes")
+  vim.api.nvim_buf_delete(source, { force = true })
+  assert(ok, err)
+end)
 test("public preview preserves source bytes and reference mappings", function()
   local preview = require "md-render.preview"
   local lines = { "[first]:", "/first", "", "[first]", "", "| [HEAD][first] |", "| --- |", "| [BODY][first] |" }

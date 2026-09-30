@@ -537,11 +537,13 @@ function Session:source_to_rendered(src_line)
   return math.max(1, math.floor(self:source_to_rendered_f(src_line) + 0.5))
 end
 
---- Integer-rounded `rendered_to_source_f`. Returns nil when the
---- underlying map is empty, preserving the previous contract.
+--- Recover the physical owner for a concrete row; scrolling keeps interpolation.
+--- Returns nil when the underlying map is empty.
 ---@param rendered_line integer 1-indexed rendered line
 ---@return integer? 1-indexed source line, or nil if no map exists
 function Session:rendered_to_source(rendered_line)
+  local owner = self.content.source_line_map and self.content.source_line_map[rendered_line]
+  if owner then return owner end
   local pts = self:get_sync_points()
   if #pts == 0 then return nil end
   return math.max(1, math.floor(self:rendered_to_source_f(rendered_line) + 0.5))

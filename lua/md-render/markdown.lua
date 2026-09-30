@@ -1168,9 +1168,10 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
   local pre_hl_count = #highlights
   local pre_link_count = #links
   local removals = {}
-  local function remove_tag(start, tag)
+  local function remove_tag(start, tag, replacement_bytes)
     local rows = keep_rows and tag:gsub("[^\n]", "") or ""
-    table.insert(removals, { start = start, count = #tag - #rows })
+    replacement_bytes = (replacement_bytes or 0) + #rows
+    table.insert(removals, { start = start + replacement_bytes, count = #tag - replacement_bytes })
     return rows
   end
   local processed = ""
@@ -1213,7 +1214,7 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
             local img_icon = icons_mod.pad_icon(raw_img_icon) .. " "
             local display = img_icon .. ((alt and alt ~= "") and alt or display_name)
             if keep_rows then display = display:gsub("[\r\n]", " ") end
-            local tag_rows = remove_tag(i - 1, img_tag)
+            local tag_rows = remove_tag(i - 1, img_tag, #display)
             local start_col = #processed
             processed = processed .. display
             if img_icon_hl then
@@ -1241,7 +1242,7 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
             local img_icon = icons_mod.pad_icon(raw_icon) .. " "
             local display = img_icon .. display_name
             if keep_rows then display = display:gsub("[\r\n]", " ") end
-            local tag_rows = remove_tag(i - 1, video_tag)
+            local tag_rows = remove_tag(i - 1, video_tag, #display)
             local start_col = #processed
             processed = processed .. display
             if icon_hl then

@@ -49,8 +49,11 @@ local function build(source, opts)
         eq(Links.at(buf, ns, link.line, col), expected, "adjacent byte is outside the link")
       end
       local highlighted = false
-      -- Embed icons stay outside the destination color; the target starts after it.
-      local styled_start = link.col_start + (row:sub(link.col_start + 1, link.col_end):match "^📎 " and #"📎 " or 0)
+      -- Media icons stay outside the destination color; the target starts after it.
+      local styled_start = link.col_start
+      for _, icon in ipairs { "📎 ", "󰋩 " } do
+        if row:sub(link.col_start + 1, link.col_start + #icon) == icon then styled_start = styled_start + #icon end
+      end
       for _, hls in ipairs(content.highlights) do
         for _, hl in ipairs(hls.groups) do
           if hls.line == link.line and hl.hl == Links.highlight(link.url) then
@@ -163,6 +166,49 @@ test("escaped comment openers retain literal bytes and reference identity", func
   eq(link_texts(inside), { { "foo ", "/ref", 1 } }, "real comment with backslash retains its raw identifier")
   local destination = build { '[label](/a%%keep%%b "<!--title-->")' }
   eq(link_texts(destination), { { "label", "/a%%keep%%b", 1 } }, "destination/title comment-looking bytes stay opaque")
+end)
+
+test("HTML media replacement retains mixed UTF-8 link and style spans", function()
+  for _, media in ipairs {
+    { "<img src='a.png' alt='image'>", "󰋩 image", "a.png" },
+    {
+      "<img src='a.png' alt='圖像名稱長於原始標籤資料'>",
+      "󰋩 圖像名稱長於原始標籤資料",
+      "a.png",
+    },
+    { "<video src='a.mp4'></video>", "󰋩 a.mp4", "a.mp4" },
+    { "<video><source src='a.mp4'></video>", "󰋩 a.mp4", "a.mp4" },
+  } do
+    for _, prefix in ipairs { "before ", "前方 " } do
+      local content = build { prefix .. media[1] .. " [*標籤*](<two  spaces.md>) after [[note]]" }
+      eq(visible(content), { prefix .. media[2] .. " 標籤 after note" }, "mixed HTML media exact display")
+      local actual = {}
+      for _, link in ipairs(content.link_metadata) do
+        actual[link.url] =
+          { content.lines[link.line + 1]:sub(link.col_start + 1, link.col_end), link.col_start, link.col_end }
+      end
+      local label_col = #prefix + #media[2] + 1
+      eq(
+        actual["two  spaces.md"],
+        { "標籤", label_col, label_col + #"標籤" },
+        "standard target covers exact UTF-8 label bytes"
+      )
+      eq(actual[media[3]], { media[2], #prefix, #prefix + #media[2] }, "media target covers exact display bytes")
+      eq(
+        actual["obsidian://advanced-uri?filepath=note"],
+        { "note", label_col + #"標籤 after ", label_col + #"標籤 after note" },
+        "following extension target retains its span"
+      )
+      local italic = {}
+      for _, row in ipairs(content.highlights) do
+        for _, hl in ipairs(row.groups) do
+          if hl.hl == "Italic" then italic[#italic + 1] = { hl.col, hl.end_col } end
+        end
+      end
+      eq(italic, { { label_col, label_col + #"標籤" } }, "media insertion preserves the intended italic span")
+      eq(content.source_line_map, { 1 }, "mixed media stays on its physical source row")
+    end
+  end
 end)
 
 test("standalone embeds retain safe styled captions and reject competing standard owners", function()
@@ -750,6 +796,52 @@ test("standard references coexist with outside extensions and literal code URLs"
   eq(Links.at(buf, ns, 0, 9), "https://example.test/path", "literal URL first byte stays active")
   eq(Links.at(buf, ns, 0, #content.lines[1] - 1), "https://example.test/path", "literal URL last byte stays active")
   vim.api.nvim_buf_delete(buf, { force = true })
+end)
+
+test("mixed HTML media dispatches the following standard target after public rebuild", function()
+  local preview = require "md-render.preview"
+  local mouse, osc8, open = display.getmousepos, display.supports_osc8, vim.ui.open
+  display.supports_osc8 = function()
+    return false
+  end
+  local ok, err = pcall(function()
+    for _, media in ipairs { "<img src='a.png' alt='image'>", "<video src='a.mp4'></video>" } do
+      local lines = { "before " .. media .. " [*標籤*](/std)" }
+      local source = vim.api.nvim_create_buf(false, true)
+      vim.bo[source].filetype = "markdown"
+      vim.api.nvim_buf_set_lines(source, 0, -1, false, lines)
+      vim.api.nvim_set_current_buf(source)
+      preview.toggle { text_scale = false }
+      local session = assert(preview._toggle_sessions[source])
+      session:rebuild()
+      local found = false
+      for _, link in ipairs(session.content.link_metadata) do
+        if link.url == "/std" then
+          found = true
+          eq(
+            session.content.lines[link.line + 1]:sub(link.col_start + 1, link.col_end),
+            "標籤",
+            "public media keeps the standard label range"
+          )
+          local opened = {}
+          vim.ui.open = function(url)
+            opened[#opened + 1] = url
+          end
+          display.getmousepos = function()
+            return { winid = session.win, line = link.line + 1, column = link.col_start + 1 }
+          end
+          assert(vim.fn.maparg("<LeftRelease>", "n", false, true).callback)()
+          eq(opened, { "/std" }, "public mixed-media click dispatches exact standard target")
+        end
+      end
+      assert(found, "public mixed-media standard target exists")
+      preview.toggle()
+      eq(vim.api.nvim_buf_get_lines(source, 0, -1, false), lines, "mixed-media activation preserves source bytes")
+      vim.api.nvim_buf_delete(source, { force = true })
+    end
+  end)
+  display.getmousepos, display.supports_osc8, vim.ui.open = mouse, osc8, open
+  assert(ok, err)
 end)
 
 test("standard priority survives public tab preview rebuild clicks and source toggle", function()

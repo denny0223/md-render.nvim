@@ -1833,7 +1833,7 @@ function Markdown.is_block_start(line, in_paragraph)
   -- Indented code block (4+ spaces). Per CommonMark it cannot interrupt a
   -- paragraph, so while one is open the line is a continuation instead --
   -- this is what keeps deeply indented list continuations joined.
-  if not in_paragraph and line:match "^    %S" then return true end
+  if not in_paragraph and line:match "^    %s*%S" then return true end
   return false
 end
 

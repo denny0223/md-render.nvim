@@ -43,6 +43,61 @@ local function build(lines)
   return c, marks
 end
 
+-- CommonMark 0.31.2 example 116 / GFM 86: the first code row can have
+-- more than four columns. It must never become a joined paragraph string.
+do
+  local lines = { "        foo", "    bar" }
+  local c, marks = build(lines)
+  assert_eq(c.lines, { "    foo", "bar" }, "deep first code row retains separate literal output rows")
+  assert_eq(c.source_line_map, { 1, 2 }, "deep first code row retains physical source rows")
+  local strings = {}
+  for _, mark in ipairs(marks) do
+    if mark[4].hl_group == "String" then
+      strings[#strings + 1] = { mark[2] + 1, c.lines[mark[2] + 1]:sub(mark[3] + 1, mark[4].end_col) }
+    end
+  end
+  assert_eq(strings, { { 1, "    foo" }, { 2, "bar" } }, "each actual code row has literal String ownership")
+
+  local preview = require "md-render.preview"
+  for _, mode in ipairs { "show", "toggle" } do
+    local source = vim.api.nvim_create_buf(false, true)
+    vim.bo[source].filetype = "markdown"
+    vim.api.nvim_buf_set_lines(source, 0, -1, false, lines)
+    vim.api.nvim_set_current_buf(source)
+    local tick = vim.api.nvim_buf_get_changedtick(source)
+    local ok, err = pcall(function()
+      preview[mode] { indent = "", text_scale = false, max_width = 120 }
+      local session = assert(preview._sessions[vim.api.nvim_get_current_buf()])
+      local expected = vim.tbl_map(function(line)
+        return (mode == "toggle" and "  " or "") .. line
+      end, c.lines)
+      for step = 1, 2 do
+        assert_eq(session.content.lines, expected, mode .. ": public preview preserves code rows")
+        assert_eq(session.content.source_line_map, { 1, 2 }, mode .. ": public preview preserves source rows")
+        assert_eq(
+          vim.api.nvim_buf_get_lines(session.buf, 0, -1, false),
+          expected,
+          mode .. ": public preview applies physical buffer rows"
+        )
+        if step == 1 then session:rebuild() end
+      end
+      vim.api.nvim_win_set_cursor(0, { 2, 0 })
+      if mode == "toggle" then
+        preview.toggle()
+        assert_eq(vim.api.nvim_get_current_buf(), source, "toggle restores the original source buffer")
+        assert_eq(vim.api.nvim_win_get_cursor(0)[1], 2, "toggle restores the mapped code source row")
+      else
+        preview.show()
+      end
+      session:dispose()
+    end)
+    assert_eq(vim.api.nvim_buf_get_lines(source, 0, -1, false), lines, mode .. ": source bytes stay unchanged")
+    assert_eq(vim.api.nvim_buf_get_changedtick(source), tick, mode .. ": source changedtick stays unchanged")
+    vim.api.nvim_buf_delete(source, { force = true })
+    assert(ok, err)
+  end
+end
+
 -- The original numbered sample and CommonMark 0.31.2 example 212.
 for _, delimiter in ipairs { ".", ")" } do
   local marker = "3" .. delimiter

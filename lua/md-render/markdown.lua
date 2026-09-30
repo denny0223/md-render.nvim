@@ -559,9 +559,9 @@ end
 
 local link_bounds = inline.link_bounds
 
---- Apply display transformations without changing a valid link destination/title.
-local function map_display_text(text, transform)
-  if not text:find("](", 1, true) then return transform(text, 0) end
+--- Apply display transformations without changing a valid destination/title or HTML attribute.
+local function map_display_text(text, transform, keep_literals)
+  if not text:find("](", 1, true) and not (keep_literals and text:find "[<\\]") then return transform(text, 0) end
   local parts, start, i = {}, 1, 1
   while i <= #text do
     local c = text:sub(i, i)
@@ -570,12 +570,22 @@ local function map_display_text(text, transform)
       _, comment_end = text:find("^%%%%.-%%%%", i)
     end
     if c == "\\" then
+      if keep_literals and i < #text and ESCAPABLE_CHARS:find(text:sub(i + 1, i + 1), 1, true) then
+        parts[#parts + 1] = transform(text:sub(start, i - 1), start - 1)
+        parts[#parts + 1] = text:sub(i, i + 1)
+        start = i + 2
+      end
       i = i + 1
     elseif comment_end then
       -- A link-looking sequence inside a comment is not a link boundary.
       i = comment_end
     elseif c == "<" and inline.autolink_end(text, i) then
       i = inline.autolink_end(text, i)
+    elseif keep_literals and c == "<" and inline.html_end(text, i) then
+      local last = inline.html_end(text, i)
+      parts[#parts + 1] = transform(text:sub(start, i - 1), start - 1)
+      parts[#parts + 1] = text:sub(i, last)
+      start, i = last + 1, last
     elseif c == "[" then
       local first, last = link_bounds(text, i)
       if last then
@@ -1746,7 +1756,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     or (autolinks and #autolinks > 0)
     or (footnote_map and next(footnote_map) and rendered_text:find "%[%^")
   -- Declare locals before the fast-path goto so they are in scope at ::finalize::
-  local backslash_escapes, entity_spans, autolink_spans, emphasis_spans, emphasis_pairs
+  local backslash_escapes, entity_spans, autolink_spans, emphasis_spans, emphasis_pairs, comment_spans
   local standard_spans, html_ranges, html_spans, html_pos
   local decode_url, source_label
 
@@ -1785,17 +1795,25 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     return bare_autolink(rendered_text, pos, {}, code_spans, autolink_spans, emphasis_spans)
   end)
   rendered_text, entity_spans = protect_entities(rendered_text, text)
+  comment_spans = {}
   if rendered_text:find("<!--", 1, true) or rendered_text:find("%%", 1, true) then
+    local prefix = inline.token_prefix(text .. rendered_text, 0xF100E)
+    local function stash(raw)
+      local token = prefix .. (#comment_spans + 1) .. "\u{F100F}"
+      comment_spans[#comment_spans + 1] = { placeholder = token, raw = raw, content = "" }
+      return token
+    end
     rendered_text = map_display_text(rendered_text, function(part)
-      return (part:gsub("%%%%(.-)%%%%", ""):gsub("<!%-%-.-%-*%-%->", ""))
-    end)
+      return (part:gsub("%%%%.-%%%%", stash):gsub("<!%-%-.-%-*%-%->", stash))
+    end, true)
   end
   rendered_text, backslash_escapes = escape_backslashes(rendered_text, text, true)
 
   decode_url = function(url)
-    return restore_spans(restore_spans(url, backslash_escapes), entity_spans)
+    return restore_spans(restore_spans(restore_spans(url, comment_spans), backslash_escapes), entity_spans)
   end
   source_label = function(label)
+    label = restore_source(label, comment_spans)
     label = restore_source(label, hard_break_spans)
     label = restore_source(restore_source(label, emphasis_spans), autolink_spans)
     return restore_source(
@@ -1835,6 +1853,8 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   rendered_text = process_footnote_refs(rendered_text, footnote_map, highlights, links, source_label)
   rendered_text = restore_spans(rendered_text, standard_spans, nil, highlights, links)
   rendered_text = process_links(rendered_text, highlights, links, source_label, ref_links)
+  -- Link/reference ownership is settled before comments leave the display.
+  rendered_text = restore_spans(rendered_text, comment_spans, nil, highlights, links)
   -- Explicit/reference validity is settled; later autolinks need real parentheses.
   rendered_text = restore_spans(rendered_text, invalid_destinations, nil, highlights, links)
   repeat

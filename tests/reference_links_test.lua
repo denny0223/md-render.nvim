@@ -84,6 +84,87 @@ local function link_texts(content)
   return links
 end
 
+test("hidden comments retain the source identity of resolved standard references", function()
+  for _, comment in ipairs { "<!--bar-->", "%%bar%%" } do
+    local label = "*前* foo " .. comment .. "後"
+    for _, case in ipairs {
+      { "[[" .. label .. "]]", "[" .. label .. ']: <two  spaces.md> "title"', "two  spaces.md" },
+      { "[[" .. label .. "][]]", "[" .. label .. "]: <two  spaces.md>", "two  spaces.md" },
+      { "[[" .. label .. "][r]]", "[r]: <two  spaces.md>", "two  spaces.md" },
+      { "[[" .. label .. "](/explicit)]", nil, "/explicit" },
+    } do
+      local source = { case[1] }
+      if case[2] then
+        source[2], source[3] = "", case[2]
+      end
+      local content = build(source)
+      eq(visible(content), { "[前 foo 後]" }, "hidden comment retains literal outer brackets")
+      eq(
+        link_texts(content),
+        { { "前 foo 後", case[3], 1 } },
+        "original reference owner retains exact target/label/source"
+      )
+      local italic = {}
+      for _, row in ipairs(content.highlights) do
+        for _, hl in ipairs(row.groups) do
+          if hl.hl == "Italic" then italic[#italic + 1] = { hl.col, hl.end_col } end
+        end
+      end
+      eq(italic, { { 1, 1 + #"前" } }, "comment hiding retains the intended UTF-8 italic span")
+    end
+    local witness = build { "[[foo " .. comment .. "]]", "", "[foo " .. comment .. "]: /ref" }
+    eq(visible(witness), { "[foo ]" }, "exact comment identity witness retains outer brackets")
+    eq(link_texts(witness), { { "foo ", "/ref", 1 } }, "exact comment identity witness retains its standard owner")
+    local unresolved = build { "[fo" .. comment .. "o]", "", "[foo]: /wrong" }
+    eq(visible(unresolved), { "[foo]" }, "unresolved source still uses accepted comment hiding")
+    eq(unresolved.link_metadata, {}, "hiding a comment cannot manufacture a reference identifier")
+    local wiki = build { "[[note " .. comment .. "]]" }
+    eq(
+      link_texts(wiki),
+      { { "note ", "obsidian://advanced-uri?filepath=note ", 1 } },
+      "nonconflicting wiki keeps comment display policy"
+    )
+  end
+  local html = 'before <x title="a<!--keep-->b %%keep%%"> after'
+  eq(visible(build { html }), { html }, "HTML attribute bytes stay opaque to comment display transformations")
+  local code = build { "`foo<!--keep--> %%keep%%`" }
+  eq(visible(code), { "foo<!--keep--> %%keep%%" }, "code retains literal comment bytes")
+end)
+
+test("escaped comment openers retain literal bytes and reference identity", function()
+  for _, comment in ipairs { "<!--bar-->", "%%bar%%" } do
+    local label = "foo \\" .. comment
+    local content = build { "[[" .. label .. "]]", "", "[" .. label .. "]: /ref" }
+    eq(visible(content), { "[foo " .. comment .. "]" }, "escaped comment opener stays literal")
+    eq(
+      link_texts(content),
+      { { "foo " .. comment, "/ref", 1 } },
+      "escaped source identifier retains its reference owner"
+    )
+    content = build { "[[foo \\" .. comment .. "]]", "", "[foo " .. comment .. "]: /wrong" }
+    eq(
+      content.link_metadata[1].url,
+      "obsidian://advanced-uri?filepath=foo " .. comment,
+      "escaped and unescaped identifiers stay distinct"
+    )
+    eq(visible(content), { "foo " .. comment }, "ordinary unresolved wiki retains escaped literal bytes")
+    content = build { "before \\" .. comment .. " end" }
+    eq(visible(content), { "before " .. comment .. " end" }, "escaped comment opener remains literal in ordinary text")
+    content = build { "before " .. comment .. " end" }
+    eq(visible(content), { "before end" }, "real comment remains hidden in ordinary text")
+    content = build { "[[foo \\\\" .. comment .. "]]", "", "[foo \\\\" .. comment .. "]: /ref" }
+    eq(visible(content), { "[foo \\]" }, "an escaped backslash leaves a real comment opener")
+    eq(link_texts(content), { { "foo \\", "/ref", 1 } }, "escaped backslash control retains exact source ownership")
+  end
+  local mixed = build { "before \\<!--bar--> after <!--hidden--> end" }
+  eq(visible(mixed), { "before <!--bar--> after end" }, "a real HTML comment after an escaped opener stays hidden")
+  local inside = build { "[[foo <!--\\-->]]", "", "[foo <!--\\-->]: /ref" }
+  eq(visible(inside), { "[foo ]" }, "escapes inside real comments cannot protect their closer")
+  eq(link_texts(inside), { { "foo ", "/ref", 1 } }, "real comment with backslash retains its raw identifier")
+  local destination = build { '[label](/a%%keep%%b "<!--title-->")' }
+  eq(link_texts(destination), { { "label", "/a%%keep%%b", 1 } }, "destination/title comment-looking bytes stay opaque")
+end)
+
 test("standalone embeds retain safe styled captions and reject competing standard owners", function()
   local image = require "md-render.image"
   local kitty = image.supports_kitty

@@ -12,7 +12,6 @@
 local MarkdownTable = {}
 local wrap_mod = require "md-render.wrap"
 local fence_mod = require "md-render.fence"
-local inline = require "md-render.inline"
 
 --- Split a table row into cell strings (trim leading/trailing whitespace)
 ---@param line string
@@ -83,17 +82,7 @@ function MarkdownTable.is_body_row(line, in_paragraph)
   if fence_mod.opening(line) then return false end
   -- Images, autolinks and inline HTML remain cell content. Complete HTML
   -- tags on their own line and block tags still end the table.
-  if text:sub(1, 1) == "<" then
-    if text:match "^<%?" or text:match "^<!%-%-" or text:match "^<![A-Za-z]" or text:sub(1, 9) == "<![CDATA[" then
-      return false
-    end
-    local tag = text:lower():match "^</?([a-z][a-z0-9%-]*)[%s/>]"
-    local block_tags =
-      " address article aside base basefont blockquote body caption center col colgroup dd details dialog dir div dl dt fieldset figcaption figure footer form frame frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu menuitem nav noframes ol optgroup option p param pre script search section source style summary table tbody td textarea tfoot th thead title tr track ul "
-    if tag and block_tags:find(" " .. tag .. " ", 1, true) then return false end
-    local finish = inline.html_end(text, 1)
-    return in_paragraph == true or not (finish and text:sub(finish + 1):match "^%s*$")
-  end
+  if text:sub(1, 1) == "<" then return require("md-render.html_block").start(line, in_paragraph) == nil end
   if text:match "^!%[" or text:match "^=+%s*$" then return true end
   if text:match "^[%-%*%+]%s*$" then return false end
   local digits, tail = text:match "^(%d+)[.)](.*)$"

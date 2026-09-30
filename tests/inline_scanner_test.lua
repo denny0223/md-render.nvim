@@ -95,4 +95,14 @@ local _, tab_end = inline.link_bounds(tab_link, 1)
 assert(tab_end == 12, "TAB is a valid link separator")
 assert(#inline.code_spans(tab_link) == 0, "title backticks cannot pair outside a valid TAB-separated link")
 assert(inline.link_end('(u "a\n\nb")', 1) == nil, "titles cannot contain a blank line")
+-- CommonMark 0.31.2 section 6.6 permits non-whitespace C0 in unquoted values.
+for _, control in ipairs { "\1", "\11", "\12" } do
+  local control_tag = "<x a=" .. control .. ' title="[[note]] `">'
+  assert(inline.html_end(control_tag, 1) == #control_tag, "SOH/VT/FF are permitted unquoted attribute values")
+  assert(#inline.code_spans(control_tag .. " `") == 0, "HTML attribute owns its apparent code opener")
+end
+for _, forbidden in ipairs { " ", "\t", "\r", "\n", '"', "'", "=", "<", ">", "`" } do
+  assert(inline.html_end("<x a=" .. forbidden .. ">", 1) == nil, "an invalid/empty unquoted value remains invalid")
+end
+assert(inline.html_end("<x a=\0>", 1) == nil, "NUL remains rejected pending source-input normalization")
 print(string.format("inline_scanner_test: %d fixed cases and shared boundary checks passed", #cases))

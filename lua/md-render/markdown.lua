@@ -1825,7 +1825,7 @@ function Markdown.is_block_start(line, in_paragraph)
   if line:match "^[=-]+%s*$" then return true end
   if line:match "^%[%^.+%]:" then return true end
   if line:match "^%[!%a+%]" then return true end -- callout header (marker already stripped)
-  if line:match "^%s*<" then return true end
+  if require("md-render.html_block").start(line, in_paragraph) then return true end
   if line:match "^%s*!%[" then return true end
   if line:match "^%$%$$" then return true end
   if line:match "^%%%%" then return true end

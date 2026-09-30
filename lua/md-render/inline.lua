@@ -114,6 +114,13 @@ function M.html_end(text, start)
   end
 end
 
+--- Existing supported HTML semantics use quoted href/src values.
+function M.html_target(tag)
+  local name = tag:match "^<(%a+)[%s>]"
+  local attribute = name == "a" and "href" or (name == "img" or name == "video") and "src"
+  if attribute then return tag:match(attribute .. '="([^"]*)"') or tag:match(attribute .. "='([^']*)'") end
+end
+
 --- First byte after a valid destination (angle delimiters included).
 function M.destination_end(text, start)
   local pos = start
@@ -276,6 +283,7 @@ end
 --- Scan one already-parsed paragraph; block boundaries are the caller's job.
 local function scan(text, refs, wanted_link, source_label, bare_url)
   local spans, brackets, autolinks, invalid_destinations, hard_breaks = {}, {}, {}, {}, {}
+  local standard_ranges = {}
   local runs
   local autolink_finish = 0
   local has_angle_link = false
@@ -294,15 +302,29 @@ local function scan(text, refs, wanted_link, source_label, bare_url)
     elseif c == "`" then
       runs = runs or index_runs(text, pos)
       local finish, ticks, run_end = code_end(text, pos, runs)
-      if finish then spans[#spans + 1] = { start = pos, finish = finish, ticks = ticks } end
+      if finish then
+        spans[#spans + 1] = { start = pos, finish = finish, ticks = ticks }
+        standard_ranges[#standard_ranges + 1] = { start = pos, finish = finish }
+      end
       pos = (finish or run_end) + 1
     elseif c == "<" then
       local finish = M.autolink_end(text, pos)
+      local angle_link = finish ~= nil
       if finish then
         autolinks[#autolinks + 1] = { start = pos, finish = finish, angle = true }
         note_angle_link()
       end
       finish = finish or M.html_end(text, pos)
+      if finish then
+        local tag = text:sub(pos, finish)
+        local target = angle_link or M.html_target(tag)
+        if tag:match "^<a%s" and not text:find("</a>", finish + 1, true) then target = nil end
+        if tag:match "^<video[%s>]" then
+          local _, video_end = text:find("</video>", finish + 1, true)
+          target = video_end and M.html_target(text:sub(pos, video_end)) or nil
+        end
+        standard_ranges[#standard_ranges + 1] = { start = pos, finish = finish, link = target ~= nil or nil }
+      end
       pos = (finish or pos) + 1
     elseif not wanted_link and (text:sub(pos, pos + 3) == "www." or (bare_url and text:match("^https?://", pos))) then
       -- Hard-break ownership reuses Markdown's established HTTP matcher.
@@ -392,6 +414,13 @@ local function scan(text, refs, wanted_link, source_label, bare_url)
       if wanted_link == bracket.start then
         return { code_spans = spans, suffix_start = matched and pos + 1 or nil, link_end = finish, reference_url = url }
       end
+      if matched then
+        standard_ranges[#standard_ranges + 1] = {
+          start = bracket.start - (bracket.image and 1 or 0),
+          finish = finish,
+          link = true,
+        }
+      end
       if matched and not bracket.image then
         for _, previous in ipairs(brackets) do
           if not previous.image then previous.active = false end
@@ -411,6 +440,7 @@ local function scan(text, refs, wanted_link, source_label, bare_url)
     invalid_destinations = invalid_destinations,
     hard_breaks = hard_breaks,
     has_angle_link = has_angle_link,
+    standard_ranges = standard_ranges,
   }
 end
 
@@ -439,6 +469,35 @@ end
 function M.link_bounds(text, start, ref_links, source_label)
   local result = scan(text, ref_links, start, source_label)
   return result.suffix_start, result.link_end, result.reference_url
+end
+
+--- Standard code/link/image and HTML/autolink ownership, including nested labels.
+--- Return disjoint 1-based inclusive ranges; an outer image/link owns its label.
+function M.standard_ranges(text, ref_links, source_label)
+  if not text:find "[`<%[]" then return {} end
+  local ranges = scan(text, ref_links, nil, source_label).standard_ranges
+  table.sort(ranges, function(a, b)
+    return a.start < b.start or (a.start == b.start and a.finish > b.finish)
+  end)
+  local owners = {}
+  for _, range in ipairs(ranges) do
+    local previous = owners[#owners]
+    if previous and range.start <= previous.finish then
+      previous.finish = math.max(previous.finish, range.finish)
+    else
+      owners[#owners + 1] = range
+    end
+  end
+  return owners
+end
+
+--- Standard targets anywhere in an extension compete; code/HTML only own its target bytes.
+--- All three positions are 1-based inclusive source byte offsets.
+function M.extension_owned(ranges, first, last, target_end)
+  for _, range in ipairs(ranges) do
+    if range.start <= last and range.finish >= first and (range.link or range.start <= target_end) then return true end
+  end
+  return false
 end
 
 --- Pick a marker absent from the source, even after source fragments are joined.

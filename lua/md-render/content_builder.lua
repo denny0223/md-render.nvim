@@ -3881,8 +3881,13 @@ function ContentBuilder:render_document(lines, opts)
           end
           -- Obsidian embed: ![[file]] or ![[file|caption]]
           if not img_path then
-            local embed = line:match "^%s*!%[%[(.-)%]%]%s*$"
-            if embed then
+            local first, embed, last = line:match "^%s*()!%[%[(.-)%]%]()%s*$"
+            local inline = require "md-render.inline"
+            local pipe = embed and embed:find("|", 1, true)
+            local target_end = embed and (pipe and first + 2 + pipe or last - 1)
+            if
+              embed and not inline.extension_owned(inline.standard_ranges(line, ref_links), first, last - 1, target_end)
+            then
               local target = embed:match "^([^|#]+)" or embed
               local ext = target:match "%.(%w+)$"
               local img_exts = { png = true, jpg = true, jpeg = true, gif = true, webp = true, bmp = true, svg = true }

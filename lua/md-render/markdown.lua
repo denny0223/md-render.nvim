@@ -152,6 +152,41 @@ local function restore_source(text, spans)
   return (text:gsub(spans[1].placeholder:gsub("%d+", "%%d+"), originals))
 end
 
+--- Hide owned source bytes while extensions inspect the remaining text.
+local function protect_ranges(text, source, ranges, highlights, links)
+  if #ranges == 0 then return text, {} end
+  local prefix = inline.token_prefix(source .. text, 0xF100C)
+  local spans, parts, removals, pos = {}, {}, {}, 1
+  for _, range in ipairs(ranges) do
+    local raw = text:sub(range.start, range.finish)
+    local placeholder = prefix .. (#spans + 1) .. "\u{F100D}"
+    spans[#spans + 1] = { placeholder = placeholder, raw = raw, content = raw, link = range.link }
+    parts[#parts + 1] = text:sub(pos, range.start - 1) .. placeholder
+    removals[#removals + 1] = { start = range.start - 1 + #placeholder, count = #raw - #placeholder }
+    pos = range.finish + 1
+  end
+  parts[#parts + 1] = text:sub(pos)
+  adjust_positions(highlights, links, removals, #highlights, #links)
+  return table.concat(parts), spans
+end
+
+local function contains_token(text, spans)
+  return #spans > 0 and text:find(spans[1].placeholder:gsub("%d+", "%%d+")) ~= nil
+end
+
+--- Code/HTML may style an alias, but cannot become an extension destination.
+--- A resolved link/autolink anywhere in the label retains its own target.
+local function extension_owned(inner, standard_spans, code_spans, autolink_spans)
+  local target = inner:match "^[^|]*"
+  if contains_token(target, code_spans) or contains_token(inner, autolink_spans) then return true end
+  for _, span in ipairs(standard_spans) do
+    if (span.link and inner:find(span.placeholder, 1, true)) or target:find(span.placeholder, 1, true) then
+      return true
+    end
+  end
+  return false
+end
+
 --- Hide escaped punctuation until syntax recognition is finished.
 local function escape_backslashes(text, source, literal_autolinks)
   local escapes, result = {}, {}
@@ -354,14 +389,27 @@ end
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
 ---@return string processed
-local function process_wikilinks(text, highlights, links, emphasis_spans, hard_break_spans)
+local function process_wikilinks(
+  text,
+  highlights,
+  links,
+  emphasis_spans,
+  hard_break_spans,
+  standard_spans,
+  code_spans,
+  autolink_spans
+)
   if not text:find("[[", 1, true) then return text end
+  local pre_hl_count, pre_link_count, removals = #highlights, #links, {}
   local processed = ""
   local i = 1
 
   while i <= #text do
     if text:sub(i, i + 1) == "[[" then
       local close = text:find("]]", i + 2, true)
+      if close and extension_owned(text:sub(i + 2, close - 1), standard_spans, code_spans, autolink_spans) then
+        close = nil
+      end
       if close then
         local inner = text:sub(i + 2, close - 1)
         local display, target
@@ -413,6 +461,7 @@ local function process_wikilinks(text, highlights, links, emphasis_spans, hard_b
           col_end = start_col + #display,
           url = url,
         })
+        removals[#removals + 1] = { start = i - 1 + #display, count = close + 2 - i - #display }
         i = close + 2
       else
         processed = processed .. text:sub(i, i)
@@ -424,6 +473,7 @@ local function process_wikilinks(text, highlights, links, emphasis_spans, hard_b
     end
   end
 
+  adjust_positions(highlights, links, removals, pre_hl_count, pre_link_count)
   return processed
 end
 
@@ -434,14 +484,27 @@ local IMAGE_EXTENSIONS = { png = true, jpg = true, jpeg = true, gif = true, svg 
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
 ---@return string processed
-local function process_embeds(text, highlights, links, emphasis_spans, hard_break_spans)
+local function process_embeds(
+  text,
+  highlights,
+  links,
+  emphasis_spans,
+  hard_break_spans,
+  standard_spans,
+  code_spans,
+  autolink_spans
+)
   if not text:find("![[", 1, true) then return text end
+  local pre_hl_count, pre_link_count, removals = #highlights, #links, {}
   local processed = ""
   local i = 1
 
   while i <= #text do
     if text:sub(i, i + 2) == "![[" then
       local close = text:find("]]", i + 3, true)
+      if close and extension_owned(text:sub(i + 3, close - 1), standard_spans, code_spans, autolink_spans) then
+        close = nil
+      end
       if close then
         local inner = text:sub(i + 3, close - 1)
         local target = inner:match "^([^|#]+)" or inner
@@ -471,6 +534,7 @@ local function process_embeds(text, highlights, links, emphasis_spans, hard_brea
           col_end = start_col + #display,
           url = "obsidian://advanced-uri?filepath=" .. source_target,
         })
+        removals[#removals + 1] = { start = i - 1 + #display, count = close + 2 - i - #display }
         i = close + 2
       else
         processed = processed .. text:sub(i, i)
@@ -482,6 +546,7 @@ local function process_embeds(text, highlights, links, emphasis_spans, hard_brea
     end
   end
 
+  adjust_positions(highlights, links, removals, pre_hl_count, pre_link_count)
   return processed
 end
 
@@ -742,6 +807,7 @@ end
 local function protect_emphasis(text, source, refs, footnotes, code_spans, autolink_spans, source_label)
   if not text:find "[*_~]" then return text, {}, {} end
   local pairs = {}
+  local standard_ranges = inline.standard_ranges(text, refs, source_label)
   local function resolve(first, last, in_label)
     local openers, lower = {}, {}
     local pos = first
@@ -753,6 +819,13 @@ local function protect_emphasis(text, source, refs, footnotes, code_spans, autol
       end
       local wiki_start = text:sub(pos, pos + 1) == "[[" and pos or text:sub(pos, pos + 2) == "![[" and pos + 1
       local wiki_end = wiki_start and text:find("]]", wiki_start + 2, true)
+      if wiki_end then
+        local inner = text:sub(wiki_start + 2, wiki_end - 1)
+        local pipe = inner:find("|", 1, true)
+        local target_end = pipe and wiki_start + 1 + pipe or wiki_end + 1
+        if extension_owned(inner, {}, code_spans, autolink_spans) then wiki_end = nil end
+        if wiki_end and inline.extension_owned(standard_ranges, pos, wiki_end + 1, target_end) then wiki_end = nil end
+      end
       local note, note_end = text:match("^%[%^([^%]]+)%]()", pos)
       local literal_end = char == "<" and inline.html_end(text, pos)
       local comment_end = text:sub(pos, pos + 1) == "%%" and text:find("%%", pos + 2, true)
@@ -1095,7 +1168,7 @@ local function process_html_tags(text, highlights, links, decode_url)
       -- Try <a href="...">text</a>
       local a_tag = rest:match "^(<a%s[^>]*>)"
       if a_tag then
-        local href = a_tag:match 'href="([^"]*)"' or a_tag:match "href='([^']*)'"
+        local href = inline.html_target(a_tag)
         local close_start, close_end = text:find("</a>", i + #a_tag, true)
         if href and close_start then
           href = decode_url(href)
@@ -1115,7 +1188,7 @@ local function process_html_tags(text, highlights, links, decode_url)
       if not matched then
         local img_tag = rest:match "^(<img%s[^>]*>)"
         if img_tag then
-          local src = img_tag:match 'src="([^"]*)"' or img_tag:match "src='([^']*)'"
+          local src = inline.html_target(img_tag)
           if src then
             local display_name = src:match "([^/]+)$" or src
             src = decode_url(src)
@@ -1142,10 +1215,7 @@ local function process_html_tags(text, highlights, links, decode_url)
       if not matched then
         local video_tag = rest:match "^(<video[%s>].-</video>)"
         if video_tag then
-          local src = video_tag:match 'src="([^"]*)"' or video_tag:match "src='([^']*)'"
-          if not src then
-            src = video_tag:match '<source[^>]*src="([^"]*)"' or video_tag:match "<source[^>]*src='([^']*)'>"
-          end
+          local src = inline.html_target(video_tag)
           if src then
             local display_name = src:match "([^/]+)$" or src
             src = decode_url(src)
@@ -1271,6 +1341,7 @@ end
 ---@return string processed
 local function process_footnote_refs(text, footnote_map, highlights, links, source_label)
   if not footnote_map or not next(footnote_map) then return text end
+  local pre_hl_count, pre_link_count, removals = #highlights, #links, {}
   local processed = ""
   local i = 1
   while i <= #text do
@@ -1288,6 +1359,7 @@ local function process_footnote_refs(text, footnote_map, highlights, links, sour
             links,
             { col_start = start_col, col_end = start_col + #display, url = "#footnote-def-" .. label, _decoded = true }
           )
+          removals[#removals + 1] = { start = i - 1 + #display, count = close + 1 - i - #display }
           i = close + 1
         else
           processed = processed .. text:sub(i, i)
@@ -1302,6 +1374,7 @@ local function process_footnote_refs(text, footnote_map, highlights, links, sour
       i = i + 1
     end
   end
+  adjust_positions(highlights, links, removals, pre_hl_count, pre_link_count)
   return processed
 end
 
@@ -1632,6 +1705,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     or (footnote_map and next(footnote_map) and rendered_text:find "%[%^")
   -- Declare locals before the fast-path goto so they are in scope at ::finalize::
   local backslash_escapes, entity_spans, autolink_spans, emphasis_spans, emphasis_pairs
+  local standard_spans, html_ranges, html_spans, html_pos
   local decode_url, source_label
 
   if not needs_inline and #code_spans == 0 and not rendered_text:find "  +\n" then
@@ -1682,10 +1756,36 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     )
   end
 
-  -- Process inline elements (embeds and wikilinks before standard links)
-  rendered_text = process_embeds(rendered_text, highlights, links, emphasis_spans, hard_break_spans)
-  rendered_text = process_wikilinks(rendered_text, highlights, links, emphasis_spans, hard_break_spans)
+  -- Standard labels, destinations and HTML attributes are opaque to extensions.
+  rendered_text, standard_spans = protect_ranges(
+    rendered_text,
+    text,
+    inline.standard_ranges(rendered_text, ref_links, source_label),
+    highlights,
+    links
+  )
+  rendered_text = process_embeds(
+    rendered_text,
+    highlights,
+    links,
+    emphasis_spans,
+    hard_break_spans,
+    standard_spans,
+    code_spans,
+    autolink_spans
+  )
+  rendered_text = process_wikilinks(
+    rendered_text,
+    highlights,
+    links,
+    emphasis_spans,
+    hard_break_spans,
+    standard_spans,
+    code_spans,
+    autolink_spans
+  )
   rendered_text = process_footnote_refs(rendered_text, footnote_map, highlights, links, source_label)
+  rendered_text = restore_spans(rendered_text, standard_spans, nil, highlights, links)
   rendered_text = process_links(rendered_text, highlights, links, source_label, ref_links)
   -- Explicit/reference validity is settled; later autolinks need real parentheses.
   rendered_text = restore_spans(rendered_text, invalid_destinations, nil, highlights, links)
@@ -1694,6 +1794,13 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     rendered_text = process_html_tags(rendered_text, highlights, links, decode_url)
   until rendered_text == prev
   rendered_text = strip_html_tags(rendered_text, highlights)
+  html_ranges, html_pos = {}, 1
+  while html_pos <= #rendered_text do
+    local html_end = rendered_text:sub(html_pos, html_pos) == "<" and inline.html_end(rendered_text, html_pos)
+    if html_end then html_ranges[#html_ranges + 1] = { start = html_pos, finish = html_end } end
+    html_pos = (html_end or html_pos) + 1
+  end
+  rendered_text, html_spans = protect_ranges(rendered_text, text, html_ranges, highlights, links)
   rendered_text = process_bare_urls(
     rendered_text,
     MAX_URL_DISPLAY_WIDTH,
@@ -1713,6 +1820,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   rendered_text = restore_emphasis(rendered_text, emphasis_spans, emphasis_pairs, highlights, links)
   rendered_text = process_paired_markers(rendered_text, "==([^=]+)==", "MdRenderHighlight", 2, highlights, links)
   rendered_text = process_inline_math(rendered_text, "MdRenderMath", highlights, links)
+  rendered_text = restore_spans(rendered_text, html_spans, nil, highlights, links)
 
   -- Restore each source token once. Decoded destinations from reference
   -- definitions already crossed this boundary and must not be interpreted again.

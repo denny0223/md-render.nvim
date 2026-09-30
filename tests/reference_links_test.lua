@@ -49,10 +49,12 @@ local function build(source, opts)
         eq(Links.at(buf, ns, link.line, col), expected, "adjacent byte is outside the link")
       end
       local highlighted = false
+      -- Embed icons stay outside the destination color; the target starts after it.
+      local styled_start = link.col_start + (row:sub(link.col_start + 1, link.col_end):match "^📎 " and #"📎 " or 0)
       for _, hls in ipairs(content.highlights) do
         for _, hl in ipairs(hls.groups) do
           if hls.line == link.line and hl.hl == Links.highlight(link.url) then
-            highlighted = highlighted or (hl.col == link.col_start and hl.end_col == link.col_end)
+            highlighted = highlighted or (hl.col == styled_start and hl.end_col == link.col_end)
           end
         end
       end
@@ -81,6 +83,54 @@ local function link_texts(content)
   end
   return links
 end
+
+test("standalone embeds retain safe styled captions and reject competing standard owners", function()
+  local image = require "md-render.image"
+  local kitty = image.supports_kitty
+  image.supports_kitty = function()
+    return true
+  end
+  local ok, err = pcall(function()
+    local path = vim.fn.getcwd() .. "/tests/fixtures/test_4x4.png"
+    for _, caption in ipairs { "caption", "`caption`", "<b>caption</b>", "<code>caption</code>", "<a>caption</a>" } do
+      local content = build { "![[" .. path .. "|" .. caption .. "]]" }
+      eq(#content.image_placements, 1, "target-safe caption retains the existing media placement")
+      eq(content.image_placements[1].path, path, "caption styling cannot change the image destination")
+      eq(content.lines[1], "󰋩  " .. caption, "caption retains the existing literal media header display")
+      eq(content.link_metadata, {}, "safe media caption cannot create a competing Obsidian target")
+      for _, owner in ipairs(content.source_line_map) do
+        eq(owner, 1, "media rows retain their physical embed source")
+      end
+    end
+    for _, caption in ipairs { "[caption](/std)", "![caption](/std)", '<a href="/std">caption</a>', "<https://std.test>" } do
+      local content = build { "![[" .. path .. "|" .. caption .. "]]" }
+      eq(content.image_placements, {}, "a competing standard caption target suppresses the embed")
+      eq(#content.link_metadata, 1, "the standard caption target remains the sole target")
+      eq(
+        content.link_metadata[1].url,
+        caption:find("https://", 1, true) and "https://std.test" or "/std",
+        "standard caption keeps its full destination"
+      )
+      assert(
+        content.lines[1]:find("![[" .. path .. "|", 1, true),
+        "suppressed embed retains literal outer source bytes"
+      )
+    end
+    local target = build { "![[photo`note`.png|caption]]" }
+    eq(visible(target), { "![[photonote.png|caption]]" }, "code in a destination keeps standard code ownership")
+    eq(target.image_placements, {}, "protected code cannot manufacture a media destination")
+    eq(target.link_metadata, {}, "protected destination cannot create an extension link")
+    local resolved = build { "![[" .. path .. "|`caption`]]", "", "[" .. path .. "|`caption`]: /std" }
+    eq(resolved.image_placements, {}, "a valid complete reference label owns the styled embed-looking source")
+    eq(
+      link_texts(resolved),
+      { { path .. "|caption", "/std", 1 } },
+      "resolved reference keeps exact label bytes and physical owner"
+    )
+  end)
+  image.supports_kitty = kitty
+  assert(ok, err)
+end)
 
 test("an unresolved link returns no optional byte position", function()
   local first, last, url = inline.link_bounds("[missing]", 1, {})
@@ -395,10 +445,338 @@ test("comment definitions stay hidden and footnotes and wikilinks remain separat
   local text, _, links = markdown.render("[^note]", nil, nil, { foo = "/url" }, { note = 1 })
   eq(text, "¹", "footnote display remains")
   eq(links[1].url, "#footnote-def-note", "footnote target remains")
-  text, _, links = markdown.render("[[Page]]", nil, nil, { page = "/url" })
+  text, _, links = markdown.render("[[Page]]", nil, nil, { other = "/url" })
   eq(text, "Page", "wikilink display remains")
   eq(links[1].url, "obsidian://advanced-uri?filepath=Page", "wikilink target remains")
 end)
+
+-- CommonMark 0.31.2 example 559 / GFM example 568 (CC BY-SA 4.0):
+-- https://spec.commonmark.org/0.31.2/#example-559
+-- https://github.github.com/gfm/#example-568
+test("standard link ownership wins over overlapping wiki syntax", function()
+  local definitions = { '[*foo* bar]: /url "title"', "[r]: /full", "[標籤]: /unicode", "[photo.png]: /standard" }
+  for _, case in ipairs {
+    { "[[*foo* bar]]", "[foo bar]", "foo bar", "/url", "foo" },
+    { "[[*foo* bar][]]", "[foo bar]", "foo bar", "/url", "foo" },
+    { "[[*foo* bar][r]]", "[foo bar]", "foo bar", "/full", "foo" },
+    { "[[*foo* bar](/explicit)]", "[foo bar]", "foo bar", "/explicit", "foo" },
+    { "中 [[*標籤*](/unicode)] 後", "中 [標籤] 後", "標籤", "/unicode", "標籤" },
+    { "中 [[標籤]] 後", "中 [標籤] 後", "標籤", "/unicode" },
+    { "![[photo.png]]", "![photo.png]", "photo.png", "/standard" },
+    { "[![*foo* bar](/image)]", "[!foo bar]", "foo bar", "/image", "foo" },
+    { "[![*foo* bar][r]]", "[!foo bar]", "foo bar", "/full", "foo" },
+    { "[![*foo* bar][]]", "[!foo bar]", "foo bar", "/url", "foo" },
+    { "[![*foo* bar]]", "[!foo bar]", "foo bar", "/url", "foo" },
+    { "[[note]](/outer)", "[note]", "[note]", "/outer" },
+    { "[before [[note]] after][r]", "before [[note]] after", "before [[note]] after", "/full" },
+    { "a ![[note]](/image)", "a ![note]", "[note]", "/image" },
+    { "[x](<[[note]]>)", "x", "x", "[[note]]" },
+    { '[x](/file "[[note]] $x$ [^n]")', "x", "x", "/file" },
+    { "[x[^n]](/file)", "x[^n]", "x[^n]", "/file" },
+  } do
+    local source = { case[1], "" }
+    vim.list_extend(source, definitions)
+    local content = build(source)
+    eq(visible(content), { case[2] }, "owned bytes: " .. case[1])
+    eq(link_texts(content), { { case[3], case[4], 1 } }, "one standard target: " .. case[1])
+    local italic = {}
+    for _, row in ipairs(content.highlights) do
+      for _, hl in ipairs(row.groups) do
+        if hl.hl == "Italic" then italic[#italic + 1] = content.lines[row.line + 1]:sub(hl.col + 1, hl.end_col) end
+      end
+    end
+    eq(italic, case[5] and { case[5] } or {}, "emphasis covers intended label bytes: " .. case[1])
+  end
+end)
+
+test("unresolved extensions and invalid nested definitions retain the accepted dialect", function()
+  for _, source in ipairs { "[[note]]", "[[note|alias]]", "![[note]]" } do
+    local text, _, links = markdown.render(source, nil, nil, {})
+    eq(#links, 1, "one unresolved extension")
+    eq(links[1].url, "obsidian://advanced-uri?filepath=note", "unresolved target")
+    local expected = source == "[[note|alias]]" and "alias" or "note"
+    eq(text:sub(-#expected), expected, "unresolved display")
+  end
+  -- CM 548/590 define invalid nested-bracket labels; no standard reference exists.
+  for _, definition in ipairs { "[foo [bar]]: /url", "[[foo]]: /url" } do
+    eq(markdown.parse_reference_links { definition }, {}, "nested labels cannot define references")
+  end
+  local text, _, links = markdown.render("[[foo]]", nil, nil, markdown.parse_reference_links { "[[foo]]: /url" })
+  eq(text, "foo", "invalid definition does not suppress wiki")
+  eq(links[1].url, "obsidian://advanced-uri?filepath=foo", "invalid definition cannot supply /url")
+end)
+
+test("escape code and HTML tokens protect extension-looking bytes", function()
+  for _, source in ipairs { "\\[\\[note\\]\\]", "`[[note]] ![[note]] [^n] $x$`" } do
+    local text, _, links = markdown.render(source, nil, nil, {}, { n = 1 })
+    eq(links, {}, "literal source creates no competing target")
+    eq(text, source:sub(1, 1) == "`" and source:sub(2, -2) or "[[note]]", "literal bytes")
+  end
+  for _, source in ipairs { "[[`note`]]", "![[`note`]]", "![[photo`note`.png]]" } do
+    local text, highlights, links = markdown.render(source)
+    eq(text, source:gsub("`", ""), "outer brackets preserve code ownership")
+    eq(links, {}, "code tokens cannot become extension targets")
+    eq(build({ source }).lines, { text }, "standalone media detection respects code ownership")
+    local code = vim.tbl_filter(function(hl)
+      return hl.hl == "MdRenderInlineCode"
+    end, highlights)
+    eq(#code, 1, "one code span")
+    eq(text:sub(code[1].col + 1, code[1].end_col), "note", "code covers its literal bytes")
+  end
+  local text, highlights, links = markdown.render "[[Page|`note`]]"
+  eq(text, "note", "nonconflicting code alias remains")
+  eq(links[1].url, "obsidian://advanced-uri?filepath=Page", "code alias cannot alter the target")
+  eq(
+    vim.tbl_map(
+      function(hl)
+        return text:sub(hl.col + 1, hl.end_col)
+      end,
+      vim.tbl_filter(function(hl)
+        return hl.hl == "MdRenderInlineCode"
+      end, highlights)
+    ),
+    { "note" },
+    "alias retains its standard code style"
+  )
+  local tag = '<span title="[[note]] ![[note]] [^n] $x$ ==hi== *em*">'
+  text, highlights, links = markdown.render("a " .. tag .. "b", nil, nil, {}, { n = 1 })
+  eq(text, "a " .. tag .. "b", "HTML attribute bytes stay literal")
+  eq(links, {}, "HTML attributes cannot create links")
+  for _, hl in ipairs(highlights) do
+    assert(hl.hl ~= "Italic" and hl.hl ~= "MdRenderMath" and hl.hl ~= "MdRenderHighlight", "attributes are opaque")
+  end
+  text, highlights, links = markdown.render('<a href="[[note]]">label</a>', nil, nil, {})
+  eq(text, "label", "supported HTML label remains")
+  eq(highlights, { { col = 0, end_col = #"label", hl = "MdRenderLink" } }, "supported HTML keeps its link style")
+  eq(
+    vim.tbl_map(function(link)
+      return link.url
+    end, links),
+    { "[[note]]" },
+    "HTML destination keeps its source bytes"
+  )
+end)
+
+test("overlapping references retain full targets through wrapping", function()
+  local source =
+    { "前 [[*長標籤 alpha beta gamma delta*]] 後", "", "[*長標籤 alpha beta gamma delta*]: <two  spaces.md>" }
+  local content = build(source, { max_width = 14 })
+  local fragments, italic = {}, {}
+  for _, link in ipairs(link_texts(content)) do
+    eq(link[2], "two  spaces.md", "wrapped full target")
+    eq(link[3], 1, "wrapped source row")
+    fragments[#fragments + 1] = link[1]
+    assert(not link[1]:find("[", 1, true) and not link[1]:find("]", 1, true), "outer brackets are outside links")
+  end
+  for _, row in ipairs(content.highlights) do
+    for _, hl in ipairs(row.groups) do
+      if hl.hl == "Italic" then italic[#italic + 1] = content.lines[row.line + 1]:sub(hl.col + 1, hl.end_col) end
+    end
+  end
+  eq(table.concat(fragments):gsub(" ", ""), "長標籤alphabetagammadelta", "all linked UTF-8 bytes")
+  eq(table.concat(italic):gsub(" ", ""), "長標籤alphabetagammadelta", "all italic UTF-8 bytes")
+end)
+
+test("supported HTML targets own wiki aliases while targetless styles remain", function()
+  for _, case in ipairs {
+    { '<a href="/html">alias</a>', "alias", "/html" },
+    { '<img src="/image" alt="alias">', "󰋩 alias", "/image" },
+    { '<video src="/movie.mp4"></video>', "󰋩 movie.mp4", "/movie.mp4" },
+    { '<video><source src="/movie.mp4"></video>', "󰋩 movie.mp4", "/movie.mp4" },
+  } do
+    local text, highlights, links = markdown.render("[[Page|" .. case[1] .. "]]")
+    eq(text, "[[Page|" .. case[2] .. "]]", "standard HTML target retains literal wiki framing")
+    eq(links, { { col_start = #"[[Page|", col_end = #"[[Page|" + #case[2], url = case[3] } }, "one supported target")
+    local buf, ns = vim.api.nvim_create_buf(false, true), vim.api.nvim_create_namespace "html_alias_targets"
+    display.apply_content_to_buffer(buf, ns, {
+      lines = { text },
+      highlights = { { line = 0, groups = highlights } },
+      link_metadata = { vim.tbl_extend("force", links[1], { line = 0 }) },
+    })
+    local styled_start = #"[[Page|" + (case[3] == "/html" and 0 or #"󰋩 ")
+    eq(
+      vim.tbl_filter(function(hl)
+        return hl.hl == "MdRenderLink"
+      end, highlights),
+      { { col = styled_start, end_col = #"[[Page|" + #case[2], hl = "MdRenderLink" } },
+      "supported target has exact label style bytes"
+    )
+    eq(Links.at(buf, ns, 0, #"[[Page|"), case[3], "HTML target first byte")
+    eq(Links.at(buf, ns, 0, #"[[Page|" + #case[2] - 1), case[3], "HTML target last byte")
+    eq(Links.at(buf, ns, 0, #"[[Page|" - 1), nil, "outer literal prefix is not linked")
+    eq(Links.at(buf, ns, 0, #"[[Page|" + #case[2]), nil, "outer literal suffix is not linked")
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end
+  for _, tag in ipairs { "em", "strong", "code" } do
+    local text, highlights, links = markdown.render("[[Page|<" .. tag .. ">alias</" .. tag .. ">]]")
+    eq(text, "alias", "nonconflicting HTML style alias remains")
+    eq(
+      links,
+      { { col_start = 0, col_end = #"alias", url = "obsidian://advanced-uri?filepath=Page" } },
+      "style alias has its wiki target"
+    )
+    local style = tag == "em" and "Italic" or tag == "strong" and "Bold" or "MdRenderInlineCode"
+    eq(
+      vim.tbl_filter(function(hl)
+        return hl.hl == style
+      end, highlights),
+      { { col = 0, end_col = #"alias", hl = style } },
+      "HTML alias retains exact supported style bytes"
+    )
+  end
+  for _, label in ipairs { "<a>alias</a>", "alias</a>", '<a href="/unpaired">alias' } do
+    local _, _, links = markdown.render("[[Page|" .. label .. "]]")
+    eq(#links, 1, "targetless markup does not invent another target")
+    eq(links[1].url, "obsidian://advanced-uri?filepath=Page", "targetless markup retains the wiki target")
+  end
+end)
+
+test("standard references coexist with outside extensions and literal code URLs", function()
+  local content = build { "[[note]] [[*foo* bar]] ![[attach.md]] $x$", "", '[*foo* bar]: /url "title"' }
+  eq(link_texts(content), {
+    { "📎 attach.md", "obsidian://advanced-uri?filepath=attach.md", 1 },
+    { "note", "obsidian://advanced-uri?filepath=note", 1 },
+    { "foo bar", "/url", 1 },
+  }, "outside targets have exact label bytes")
+  local text, _, links = markdown.render("[x[^n]](/file) [^n]", nil, nil, nil, { n = 1 })
+  eq(text, "x[^n] ¹", "footnotes remain available outside owned standard labels")
+  eq(
+    vim.tbl_map(function(link)
+      return { text:sub(link.col_start + 1, link.col_end), link.url }
+    end, links),
+    { { "¹", "#footnote-def-n" }, { "x[^n]", "/file" } },
+    "footnote and standard targets remain separate"
+  )
+  text, _, links = markdown.render("[^n] [[note]] [x](/file)", nil, nil, nil, { n = 1 })
+  eq(
+    vim.tbl_map(function(link)
+      return { text:sub(link.col_start + 1, link.col_end), link.url }
+    end, links),
+    { { "note", "obsidian://advanced-uri?filepath=note" }, { "¹", "#footnote-def-n" }, { "x", "/file" } },
+    "outside footnotes adjust preceding extension ranges"
+  )
+  local code_builder = Builder.new()
+  code_builder:render_document({ "    [[note]] https://example.test/path" }, { max_width = 1000, indent = "" })
+  content = code_builder:result()
+  eq(content.lines, { "[[note]] https://example.test/path" }, "literal code bytes stay unchanged")
+  eq(
+    link_texts(content),
+    { { "https://example.test/path", "https://example.test/path", 1 } },
+    "literal URL stays active"
+  )
+  local buf, ns = vim.api.nvim_create_buf(false, true), vim.api.nvim_create_namespace "reference_literal_url"
+  display.apply_content_to_buffer(buf, ns, content)
+  eq(Links.at(buf, ns, 0, 9), "https://example.test/path", "literal URL first byte stays active")
+  eq(Links.at(buf, ns, 0, #content.lines[1] - 1), "https://example.test/path", "literal URL last byte stays active")
+  vim.api.nvim_buf_delete(buf, { force = true })
+end)
+
+test("standard priority survives public tab preview rebuild clicks and source toggle", function()
+  local preview = require "md-render.preview"
+  local lines = { "before", "", "[[*foo* bar]]", "", '[*foo* bar]: /url "title"' }
+  local mouse, osc8, open = display.getmousepos, display.supports_osc8, vim.ui.open
+  display.supports_osc8 = function()
+    return false
+  end
+  for _, mode in ipairs { "tab", "toggle" } do
+    local source = vim.api.nvim_create_buf(false, true)
+    vim.bo[source].filetype = "markdown"
+    vim.api.nvim_buf_set_lines(source, 0, -1, false, lines)
+    vim.api.nvim_set_current_buf(source)
+    local tick = vim.api.nvim_buf_get_changedtick(source)
+    local ok, err = pcall(function()
+      if mode == "tab" then
+        preview.show_tab { text_scale = false }
+      else
+        preview.toggle { text_scale = false }
+      end
+      local session = assert(preview._sessions[vim.api.nvim_get_current_buf()], "public session exists")
+      for step = 1, 2 do
+        eq(visible(session.content), { "  before", "  [foo bar]" }, "public exact text")
+        eq(link_texts(session.content), { { "foo bar", "/url", 3 } }, "public link and physical source")
+        eq(vim.api.nvim_buf_get_lines(session.buf, 0, -1, false), session.content.lines, "public buffer rows")
+        local link = assert(session.content.link_metadata[1])
+        eq(Links.at(session.buf, session.ns, link.line, link.col_start), "/url", "public first byte")
+        eq(Links.at(session.buf, session.ns, link.line, link.col_end - 1), "/url", "public last byte")
+        eq(Links.at(session.buf, session.ns, link.line, link.col_start - 1), nil, "outer opening bracket is literal")
+        eq(Links.at(session.buf, session.ns, link.line, link.col_end), nil, "outer closing bracket is literal")
+        local italic = {}
+        for _, row in ipairs(session.content.highlights) do
+          for _, hl in ipairs(row.groups) do
+            if hl.hl == "Italic" then italic[#italic + 1] = { row.line, hl.col, hl.end_col } end
+          end
+        end
+        eq(italic, { { link.line, link.col_start, link.col_start + #"foo" } }, "public italic owns only foo bytes")
+        local opened = {}
+        vim.ui.open = function(url)
+          opened[#opened + 1] = url
+        end
+        display.getmousepos = function()
+          return { winid = session.win, line = link.line + 1, column = link.col_start + 1 }
+        end
+        assert(vim.fn.maparg("<LeftRelease>", "n", false, true).callback)()
+        eq(opened, { "/url" }, "public click dispatches standard destination")
+        vim.api.nvim_win_set_cursor(session.win, { link.line + 1, link.col_start })
+        if step == 1 then session:rebuild() end
+      end
+      if mode == "tab" then
+        preview.show_tab()
+      else
+        preview.toggle()
+        eq(vim.api.nvim_win_get_cursor(0)[1], 3, "source toggle returns to physical reference row")
+        preview.toggle { text_scale = false }
+        eq(
+          link_texts(assert(preview._toggle_sessions[source]).content),
+          { { "foo bar", "/url", 3 } },
+          "source reopen retains target"
+        )
+        preview.toggle()
+      end
+      eq(vim.api.nvim_get_current_buf(), source, "public close returns to original buffer")
+      eq(vim.api.nvim_buf_get_changedtick(source), tick, "public rebuild never changes source")
+    end)
+    if preview._toggle_sessions[source] and vim.api.nvim_get_current_buf() ~= source then preview.toggle() end
+    vim.api.nvim_buf_delete(source, { force = true })
+    assert(ok, err)
+  end
+  display.getmousepos, display.supports_osc8, vim.ui.open = mouse, osc8, open
+end)
+
+test("overlapping reference dispatch follows the full relative filename", function()
+  local preview = require "md-render.preview"
+  local dir = vim.fn.tempname()
+  vim.fn.mkdir(dir, "p")
+  dir = assert(vim.uv.fs_realpath(dir))
+  local lines = { "before", "", "[[*foo* bar]]", "", '[*foo* bar]: <two  spaces.txt> "title"' }
+  vim.fn.writefile({ "destination" }, dir .. "/two  spaces.txt")
+  local source = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_name(source, dir .. "/source.md")
+  vim.bo[source].filetype = "markdown"
+  vim.api.nvim_buf_set_lines(source, 0, -1, false, lines)
+  vim.api.nvim_set_current_buf(source)
+  local ok, err = pcall(function()
+    preview.toggle { text_scale = false }
+    local session = assert(preview._toggle_sessions[source])
+    local link = assert(session.content.link_metadata[1])
+    eq(link.url, "two  spaces.txt", "full relative filename")
+    vim.api.nvim_win_set_cursor(0, { link.line + 1, link.col_start })
+    assert(vim.fn.maparg("gf", "n", false, true).callback)()
+    eq(vim.api.nvim_buf_get_name(0), dir .. "/two  spaces.txt", "gf dispatch opens exact relative file")
+    eq(vim.api.nvim_buf_get_lines(0, 0, -1, false), { "destination" }, "dispatched file contents")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-o>", true, false, true), "x", false)
+    vim.wait(30)
+    eq(vim.api.nvim_get_current_buf(), session.buf, "jump returns to rendered reference")
+    preview.toggle()
+    eq(vim.api.nvim_get_current_buf(), source, "source toggle returns original buffer")
+    eq(vim.api.nvim_win_get_cursor(0)[1], 3, "relative target returns physical source row")
+    eq(vim.api.nvim_buf_get_lines(source, 0, -1, false), lines, "relative dispatch keeps source bytes")
+  end)
+  if preview._toggle_sessions[source] and vim.api.nvim_get_current_buf() ~= source then preview.toggle() end
+  vim.api.nvim_buf_delete(source, { force = true })
+  vim.fn.delete(dir, "rf")
+  assert(ok, err)
+end)
+
 test("public preview preserves source bytes and reference mappings", function()
   local preview = require "md-render.preview"
   local lines = { "[first]:", "/first", "", "[first]", "", "| [HEAD][first] |", "| --- |", "| [BODY][first] |" }

@@ -438,6 +438,59 @@ for _, span in ipairs(requests[doc_batch][1].entries[1].styles) do
 end
 assert(doc_style.fg == link_style.fg and doc_style.underline, "DOC image keeps the ordinary link color and underline")
 
+local quoted_batch = #callbacks + 1
+local quoted_source = { "- item", "  > > ### 界 [DOC](/quoted)", "  > > body" }
+local quoted = build(quoted_source, { indent = "" })
+assert(vim.wait(1000, function()
+  return #callbacks == quoted_batch
+end))
+local quoted_entry = requests[quoted_batch][1].entries[1]
+assert(quoted_entry.text == "界 DOC", "raster content excludes every list, quote and rank marker")
+callbacks[quoted_batch] {
+  code = 0,
+  stdout = vim.json.encode {
+    {
+      lines = {
+        {
+          start = 0,
+          ["end"] = #quoted_entry.text,
+          text = quoted_entry.text,
+          cols = 14,
+          width = 266,
+          height = 88,
+          data = "png",
+          columns = { 0, 0, 0, false, 4, 4, 5, 5, 6, 6, false, false, false, false },
+          transparent = true,
+        },
+      },
+    },
+  },
+}
+assert(vim.wait(1000, function()
+  for _, entry in pairs(quoted.heading_layouts) do
+    if not entry.ready then return false end
+  end
+  return true
+end))
+quoted = build(quoted_source, { indent = "" })
+local quoted_placement = assert(quoted.text_placements[1])
+assert(quoted_placement.col == #"  │ │ ", "image placement uses quote prefix bytes, not display cells")
+local quoted_link = assert(quoted.link_metadata[1])
+assert(quoted.lines[quoted_link.line + 1]:sub(quoted_link.col_start + 1, quoted_link.col_end) == "DOC")
+local quoted_plain = build(quoted_source, { indent = "", text_scale = false })
+local quoted_view =
+  utils.remap_view({ lnum = quoted_link.line + 1, topline = 1, col = quoted_link.col_start + 1 }, quoted, quoted_plain)
+assert(
+  quoted_plain.lines[quoted_view.lnum]:sub(quoted_view.col + 1, quoted_view.col + 1) == "O",
+  "image-to-plain reflow retains the linked character"
+)
+local callout_heading = build { "> [!NOTE]+", "> ### [DOC](/quoted)", "> body" }
+assert(
+  #callout_heading.text_placements == 0,
+  "callout heading keeps text until its background can be rasterized correctly"
+)
+assert(callout_heading.heading_anchors.doc and callout_heading.link_metadata[1].url == "/quoted")
+
 -- Unsupported custom effects keep Neovim's real highlighting and operable text.
 vim.api.nvim_set_hl(0, "MdRenderH2", { reverse = true })
 assert(#build().text_placements == 1)

@@ -1498,7 +1498,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
 
   -- ATX syntax belongs to the content, after its quote containers.
   local heading_level, heading_content
-  if not inline_only and not is_blockquote then
+  if not inline_only then
     heading_level, heading_content = Markdown.parse_atx_heading(rendered_text)
   end
   if heading_level then rendered_text = heading_content end

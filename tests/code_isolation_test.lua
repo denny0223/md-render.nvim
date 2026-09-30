@@ -386,8 +386,8 @@ for _, delimiter in ipairs { ".", ")" } do
       lines = {
         marker .. " outer",
         "",
-        "       " .. marker .. " first",
-        "       " .. marker .. " second",
+        "   " .. marker .. " first",
+        "   " .. marker .. " second",
         "4" .. delimiter .. " last",
       },
       rows = { 1, 2, 3, 4, 5 },
@@ -519,7 +519,11 @@ for _, delimiter in ipairs { ".", ")" } do
       "           continuation",
     })
     c = build(source)
-    assert_eq(c.lines[#c.lines], "           continuation", "generated numbering preserves continuation indentation")
+    assert_eq(
+      c.lines[#c.lines],
+      "       continuation",
+      "literal continuation uses its source item column after display numbering grows"
+    )
     assert_eq(c.source_line_map[#c.lines], #source, "synthetic rows cannot shift continuation source mapping")
   end
 end
@@ -852,13 +856,13 @@ for _, case in ipairs {
 end
 
 -- A list marker and quote opener can share the fence's source row. The marker
--- keeps its existing layout, while all following code uses source ownership.
+-- is retained separately from its accepted child; code uses source ownership.
 for _, case in ipairs {
   {
     first = "- > ```",
     prefix = "  > ",
     display = "  │ ",
-    marker = "• > ```",
+    marker = "• ",
     sibling = "- sibling",
     last = "• sibling",
   },
@@ -866,7 +870,7 @@ for _, case in ipairs {
     first = "3) > ```",
     prefix = "   > ",
     display = "   │ ",
-    marker = "3) > ```",
+    marker = "3) ",
     sibling = "3) sibling",
     last = "4) sibling",
   },
@@ -874,7 +878,7 @@ for _, case in ipairs {
     first = "-\t> ```",
     prefix = "\t> ",
     display = "    │ ",
-    marker = "• > ```",
+    marker = "• ",
     sibling = "- sibling",
     last = "• sibling",
   },
@@ -882,7 +886,7 @@ for _, case in ipairs {
     first = "- > ```",
     prefix = "\t> ",
     display = "  │ ",
-    marker = "• > ```",
+    marker = "• ",
     sibling = "- sibling",
     last = "• sibling",
   },
@@ -890,15 +894,15 @@ for _, case in ipairs {
     first = "- >> ```",
     prefix = "  >> ",
     display = "  │ │ ",
-    marker = "• >> ```",
+    marker = "• ",
     sibling = "- sibling",
     last = "• sibling",
   },
   {
     first = "> - > ```",
     prefix = ">   > ",
-    display = "│ │ ",
-    marker = "│ • > ```",
+    display = "│   │ ",
+    marker = "│ • ",
     sibling = "> - sibling",
     last = "│ • sibling",
   },
@@ -928,7 +932,7 @@ for _, case in ipairs {
   })
   local c, marks = build(lines)
   local name = case.first .. " / " .. case.prefix
-  assert_eq(c.lines[1], case.marker, name .. ": marker layout remains unchanged")
+  assert_eq(c.lines[1], case.marker, name .. ": accepted marker remains visible before its real child fence")
   assert_eq(vim.list_slice(c.lines, 2, #body + 1), expected, name .. ": code bytes stay literal")
   assert_eq(vim.list_slice(c.source_line_map, 2, #body + 1), rows, name .. ": original code rows survive")
   assert_eq(c.lines[#body + 2], case.display .. "after outside", name .. ": closer does not open another fence")
@@ -957,21 +961,17 @@ end
 
 do
   local c = build { "3) > ```", "   > 3) literal", "3) sibling", "3) next" }
-  assert_eq(
-    c.lines,
-    { "3) > ```", "   │ 3) literal", "4) sibling", "5) next" },
-    "real sibling ends compound quote code"
-  )
+  assert_eq(c.lines, { "3) ", "   │ 3) literal", "4) sibling", "5) next" }, "real sibling ends compound quote code")
   c = build { "- >> ```", "  >> 3) literal", "  > *outside*", "3) first", "3) second" }
   assert_eq(
     c.lines,
-    { "• >> ```", "  │ │ 3) literal", "  │ outside", "3) first", "4) second" },
+    { "• ", "  │ │ 3) literal", "  │ outside", "3) first", "4) second" },
     "shallower quote ends compound code ownership"
   )
   c = build { "- > ```", "  > 3) literal", "outside", "3) first", "3) second" }
   assert_eq(
     c.lines,
-    { "• > ```", "  │ 3) literal", "outside 3) first 3) second" },
+    { "• ", "  │ 3) literal", "outside 3) first 3) second" },
     "unmarked text ends compound code ownership"
   )
 end
@@ -979,9 +979,9 @@ end
 -- Fence-looking bytes inside code never open a second block. After the source
 -- closer, real definitions/comments and multiline inline syntax resume.
 for _, case in ipairs {
-  { first = "- > ```", prefix = "  > ", display = "  │ ", marker = "• > ```", close = "```" },
-  { first = "- > ~~~", prefix = "  > ", display = "  │ ", marker = "• > ~~~", close = "~~~" },
-  { first = "- >> ```", prefix = "  >> ", display = "  │ │ ", marker = "• >> ```", close = "```" },
+  { first = "- > ```", prefix = "  > ", display = "  │ ", marker = "• ", close = "```" },
+  { first = "- > ~~~", prefix = "  > ", display = "  │ ", marker = "• ", close = "~~~" },
+  { first = "- >> ```", prefix = "  >> ", display = "  │ │ ", marker = "• ", close = "```" },
   { first = "> ```", prefix = "> ", display = "│ ", close = "```" },
 } do
   local body = { case.close == "~~~" and "```" or "~~~", "```` trailing", "3) a", "3) b", "<!-- literal" }
@@ -1054,7 +1054,7 @@ do
   }
   assert_eq(
     c.lines,
-    { "• > ```", "  │ ~literal~", "  │ ~real code~", "  │ after" },
+    { "• ", "  │ ~literal~", "  │ ~real code~", "  │ after" },
     "a genuine quote fence can follow compound code"
   )
   assert_eq(#c.code_blocks, 1, "genuine post-closer quote fence retains code metadata")
@@ -1066,12 +1066,12 @@ for _, delimiter in ipairs { ".", ")" } do
   for _, case in ipairs {
     {
       source = { "> " .. marker .. " > first", ">    > next", "> " .. marker .. " end" },
-      lines = { "│ " .. marker .. " > first", "│ │ next", "│ 4" .. delimiter .. " end" },
-      rows = { 1, 2, 3 },
+      lines = { "│ " .. marker .. " ", "│    │ first next", "│ 4" .. delimiter .. " end" },
+      rows = { 1, 1, 3 },
     },
     {
       source = { "> " .. marker .. " > ```", ">    > " .. marker .. " literal", ">    > ```", "> " .. marker .. " end" },
-      lines = { "│ " .. marker .. " > ```", "│ │ " .. marker .. " literal", "│ 4" .. delimiter .. " end" },
+      lines = { "│ " .. marker .. " ", "│    │ " .. marker .. " literal", "│ 4" .. delimiter .. " end" },
       rows = { 1, 2, 4 },
     },
   } do
@@ -1331,9 +1331,9 @@ do
     },
     {
       source = { "> 3. > ```lua", ">    > old", ">", ">    > [real]: /safe", ">    >", ">    > [real]" },
-      lines = { "│ 3. > ```lua", "│ │ old", "│ ", "│ │ ", "│ │ real" },
+      lines = { "│ 3. ", "│    │ old", "│ ", "│ │ ", "│ │ real" },
       rows = { 1, 2, 3, 5, 6 },
-      blocks = {},
+      blocks = { { "old" } },
       link_source = 6,
     },
     {

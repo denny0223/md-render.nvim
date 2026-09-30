@@ -1591,7 +1591,7 @@ end
 ---@param ref_links? table<string, string> Optional reference link definitions (normalized label -> URL)
 ---@param footnote_map? table<string, integer>
 ---@param inline_only? boolean Leave block markers literal in cells, captions and other inline contexts
----@param block_context? {heading_level?: integer, list_marker?: boolean, raw_html?: boolean} accepted document block syntax
+---@param block_context? {heading_level?: integer, list_marker?: boolean, raw_html?: boolean, quote_prefix?: string} accepted document block syntax
 ---@return string rendered_text The rendered plain text
 ---@return MdRender.Markdown.Highlight[] highlights
 ---@return MdRender.Markdown.Link[] links
@@ -1626,6 +1626,8 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     quote_prefix = quote_prefix .. "│ "
     is_blockquote = true
   end
+
+  if is_blockquote and block_context and block_context.quote_prefix then quote_prefix = block_context.quote_prefix end
 
   -- ATX syntax belongs to the content, after its quote containers.
   local heading_level, heading_content
@@ -2166,25 +2168,24 @@ Markdown.renumber_ordered_lists = function(
   local result = {}
   local stack = {}
 
-  for i, line in ipairs(lines) do
-    local src = src_indices and src_indices[i] or i
+  local function renumber(line, src, origin, accepted_prefix)
     -- Source container parsing owns marker eligibility; indentation alone
     -- cannot distinguish nested lists from literal code.
-    local excluded = (excluded_lines and excluded_lines[src]) or (list_bases and list_bases[src] == nil)
+    local excluded = not accepted_prefix
+      and ((excluded_lines and excluded_lines[src]) or (list_bases and list_bases[src] == nil))
     local prefix = line:match "^([ \t>]*)"
     local marker_line = line:sub(#prefix + 1)
     local delimiter, num = Markdown.list_marker_type(marker_line)
     if not marker_line:match "^%d" then num = nil end
     local rest = num and marker_line:sub(#num + 2)
-    local source_prefix = (container_indents and container_indents[src] or "") .. prefix
-    local origin = source_origins and source_origins[src]
-    local ancestor_prefix = origin and origin.ancestor_prefix
+    local source_prefix = (not accepted_prefix and container_indents and container_indents[src] or "") .. prefix
+    local ancestor_prefix = not accepted_prefix and origin and origin.ancestor_prefix
     -- Optional spacing after > does not change the quote's identity.
     local container = source_prefix:gsub("> ?", "> ")
     local source_container = ancestor_prefix and (container_indents and container_indents[src] or "") .. ancestor_prefix
       or container
-    local quote_prefix = container:match "^(.*>)" or ""
-    local base = list_bases and list_bases[src]
+    local quote_prefix = source_container:match "^(.*>)" or ""
+    local base = accepted_prefix and origin.base or list_bases and list_bases[src]
     local blank = line:match "^[ \t>]*$"
     local sibling
     while #stack > 0 do
@@ -2218,10 +2219,19 @@ Markdown.renumber_ordered_lists = function(
       if rest:match "^[ \t]*$" then gap = 1 end
       item.content_prefix = source_container .. string.rep(" ", #num + 1 + (gap <= 4 and gap or 1))
       item.quote_prefix = quote_prefix
-      table.insert(result, prefix .. tostring(item.counter) .. delimiter .. rest)
+      return prefix .. tostring(item.counter) .. delimiter .. rest
     else
-      table.insert(result, line)
+      return line
     end
+  end
+
+  for i, line in ipairs(lines) do
+    local src = src_indices and src_indices[i] or i
+    local origin = source_origins and source_origins[src]
+    for _, prefix in ipairs(origin and origin.list_prefixes or {}) do
+      prefix.text = renumber(prefix.text, src, prefix, true)
+    end
+    result[#result + 1] = renumber(line, src, origin)
   end
   return result
 end

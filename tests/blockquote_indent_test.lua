@@ -287,15 +287,15 @@ do
   local c = build { ">\t>\t```markdown", ">\t>\t# literal\t[r]: /wrong", ">\t>\t```", "", "[r]" }
   assert_eq(
     c.lines[1],
-    "│ │   # literal\t[r]: /wrong",
-    "nested quote fences retain unconsumed tab columns and literal bytes"
+    "│ │ # literal\t[r]: /wrong",
+    "nested quote fences remove the opener's tab remainder and retain literal bytes"
   )
   assert_eq(c.heading_anchors.literal, nil, "code text cannot become a quoted heading")
   assert_eq(c.code_blocks[1].prefix_len, #"│ │ ", "nested code prefix uses UTF-8 bytes")
   assert_eq(
     c.code_blocks[1].source_lines,
-    { "  # literal\t[r]: /wrong" },
-    "code metadata preserves physical indentation"
+    { "# literal\t[r]: /wrong" },
+    "code metadata removes only the opening fence's physical indentation"
   )
   assert_eq(c.lines[#c.lines], "[r]", "code-owned definition text cannot bind a reference")
   c = build { " >\t\t# literal", " >\t\t[r]: /hidden", "", "[r]" }

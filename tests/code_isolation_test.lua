@@ -287,9 +287,17 @@ do
   display.supports_osc8 = function()
     return false
   end
+  local original_win, equalalways = vim.api.nvim_get_current_win(), vim.o.equalalways
+  local split, session
   local ok, err = pcall(function()
-    preview.toggle { text_scale = false, max_width = 20 }
-    local session = assert(preview._toggle_sessions[source])
+    vim.o.equalalways = false
+    vim.cmd "vsplit"
+    split = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_width(split, 20)
+    preview.toggle { text_scale = false }
+    session = assert(preview._toggle_sessions[source])
+    assert_eq(vim.api.nvim_win_get_width(session.win), 20, "root code preview uses a real narrow window")
+    assert_eq(session.opts.max_width, 20, "root code automatically uses the narrow window width")
     local expected = { "  prefix https://ex…", "  ", "  - literal", "  [bad]: /bad", "  ", "  [bad]" }
     for step = 1, 2 do
       assert_eq(session.content.lines, expected, "narrow public preview keeps literal payload and interior blank")
@@ -309,6 +317,26 @@ do
       vim.fn.maparg("<LeftRelease>", "n", false, true).callback()
       if step == 1 then session:rebuild() end
     end
+    vim.api.nvim_win_set_width(session.win, 60)
+    session:resize(session.win)
+    session:rebuild()
+    assert_eq(vim.api.nvim_win_get_width(session.win), 60, "root code preview actually widens")
+    assert_eq(session.opts.max_width, 60, "root code render width follows window widening")
+    local wide = { "  prefix " .. url, "  ", "  - literal", "  [bad]: /bad", "  ", "  [bad]" }
+    assert_eq(vim.api.nvim_buf_get_lines(session.buf, 0, -1, false), wide, "wider root code shows the full URL")
+    assert_eq(session.content.link_metadata, {
+      { line = 0, col_start = 9, col_end = 9 + #url, url = url },
+    }, "wider root code expands its actual clickable bytes")
+    vim.api.nvim_win_set_width(session.win, 20)
+    session:resize(session.win)
+    session:rebuild()
+    assert_eq(vim.api.nvim_win_get_width(session.win), 20, "root code preview returns to the narrow window")
+    assert_eq(session.opts.max_width, 20, "root code render width follows window narrowing")
+    assert_eq(
+      vim.api.nvim_buf_get_lines(session.buf, 0, -1, false),
+      expected,
+      "narrowing root code restores truncation"
+    )
     vim.api.nvim_win_set_cursor(0, { 3, 0 })
     preview.toggle()
     assert_eq(vim.api.nvim_get_current_buf(), source, "narrow code toggle restores source")
@@ -316,8 +344,11 @@ do
     preview.toggle()
     assert_eq(session.content.lines, expected, "narrow code toggles back without changing its payload")
     preview.toggle()
-    session:dispose()
   end)
+  if session then session:dispose() end
+  if split and vim.api.nvim_win_is_valid(split) then vim.api.nvim_win_close(split, true) end
+  if vim.api.nvim_win_is_valid(original_win) then vim.api.nvim_set_current_win(original_win) end
+  vim.o.equalalways = equalalways
   vim.ui.open, vim.fn.getmousepos, display.supports_osc8 = open, getmousepos, osc8
   assert_eq(opened, { url, url }, "actual narrow code activation opens the full target across rebuild")
   assert_eq(
@@ -388,7 +419,7 @@ for _, fence in ipairs { "```", "~~~" } do
     { name = "quote", prefix = "> ", before = {}, display = "│ ", code_indent = "" },
     { name = "callout", prefix = "> ", before = { "> [!NOTE]" }, display = "│ ", code_indent = "" },
     { name = "quote in list", prefix = "  > ", before = { "- item", "" }, display = "  │ ", code_indent = "" },
-    { name = "list in quote", prefix = ">   ", before = { "> - item", ">" }, display = "│ ", code_indent = "  " },
+    { name = "list in quote", prefix = ">   ", before = { "> - item", ">" }, display = "│   ", code_indent = "" },
   } do
     local name = fence .. " " .. container.name
     local lines = { "[same]: /outside", "", "1. before", "1. again", "" }
@@ -517,7 +548,7 @@ end
 for _, case in ipairs {
   { before = { "- item", "" }, prefix = "  ", candidate = "  \t  ````", code_indent = "" },
   { before = { "- item", "" }, prefix = "  > ", candidate = "  > \t````", code_indent = "" },
-  { before = { "> - item", ">" }, prefix = ">   ", candidate = ">   \t````", code_indent = "  " },
+  { before = { "> - item", ">" }, prefix = ">   ", candidate = ">   \t````", code_indent = "" },
 } do
   local lines = vim.deepcopy(case.before)
   table.insert(lines, case.prefix .. "````lua")
@@ -1095,7 +1126,7 @@ for _, case in ipairs {
       ">",
       "> *real* [real]",
     },
-    blocks = { { "    old" } },
+    blocks = { { "old" } },
     link_source = 6,
     italics = { { 3, 4, 8 } },
   },
@@ -1109,7 +1140,7 @@ for _, case in ipairs {
       ">    > > *real  ",
       ">    > > across* [real]",
     },
-    blocks = { { "    old" } },
+    blocks = { { "old" } },
     link_source = 7,
     italics = { { 3, 12, 16 }, { 4, 12, 18 } },
   },
@@ -1126,7 +1157,7 @@ for _, case in ipairs {
       ">    > >",
       ">    > > *real* [real]",
     },
-    blocks = { { "    old" }, { "~literal~", "~~~" } },
+    blocks = { { "old" }, { "~literal~", "~~~" } },
     link_source = 10,
     italics = { { 5, 12, 16 } },
   },
@@ -1143,7 +1174,7 @@ for _, case in ipairs {
       ">",
       "> *real* [real]",
     },
-    blocks = { { "    old" }, { "   ~literal~", "   ~~~" } },
+    blocks = { { "old" }, { "~literal~", "~~~" } },
     link_source = 10,
     italics = { { 5, 4, 8 } },
   },
@@ -1273,14 +1304,14 @@ do
       lines = {
         "│ 3. first",
         "│    old",
-        "│ ",
+        "│    ",
         "│    [inside]: /bad",
         "│    ~literal~",
         "│ 4. real [inside]",
         "│ ",
       },
       rows = { 1, 3, 4, 5, 6, 8, 9 },
-      blocks = { { "   old", "", "   [inside]: /bad", "   ~literal~" } },
+      blocks = { { "old", "", "[inside]: /bad", "~literal~" } },
       link_source = 8,
     },
     {
@@ -1295,7 +1326,7 @@ do
       },
       lines = { "│ 3. first", "│    old", "│ │ ", "│ │ ", "│ │ real" },
       rows = { 1, 3, 4, 6, 7 },
-      blocks = { { "   old" } },
+      blocks = { { "old" } },
       link_source = 7,
     },
     {
@@ -1309,7 +1340,7 @@ do
       source = { "> 3. first", ">    ```lua", ">    old", "", "[real]: /safe", "", "[real]" },
       lines = { "│ 3. first", "│    old", "", "real" },
       rows = { 1, 3, 4, 7 },
-      blocks = { { "   old" } },
+      blocks = { { "old" } },
       link_source = 7,
     },
   }

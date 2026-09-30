@@ -3350,7 +3350,7 @@ function ContentBuilder:render_document(lines, opts)
     end
 
     -- Collapse consecutive rendered blank lines (outside regular code blocks)
-    if not in_code_block and is_blank and prev_rendered_blank then goto continue end
+    if not in_code_block and not in_callout_code_block and is_blank and prev_rendered_blank then goto continue end
 
     -- Skip blank lines adjacent to headings (outside code blocks)
     if not in_code_block and not in_callout_code_block and is_blank then
@@ -3755,6 +3755,7 @@ function ContentBuilder:render_document(lines, opts)
           if not in_callout_code_block then
             in_callout_code_block = true
             callout_code_fence = fence_mod.opening(stripped, code_column, fence_containers[src_indices[src_idx]])
+            callout_code_prefix = indent .. quote_prefix .. string.rep(" ", callout_code_fence.container)
             local callout_info = callout_code_fence.lang
             callout_code_lang = callout_info
             -- Split lang:filename (Qiita-style)
@@ -3764,9 +3765,9 @@ function ContentBuilder:render_document(lines, opts)
                 callout_code_lang = (lang_part ~= "") and lang_part or nil
                 local cb_file_icon, cb_icon_hl = get_file_icon(file_part)
                 cb_file_icon = pad_icon(cb_file_icon)
-                local cb_icon_start = #indent + #quote_prefix
+                local cb_icon_start = #callout_code_prefix
                 local cb_icon_end = cb_icon_start + #cb_file_icon
-                local fname_line = indent .. quote_prefix .. cb_file_icon .. " " .. file_part
+                local fname_line = callout_code_prefix .. cb_file_icon .. " " .. file_part
                 local cb_hls = {
                   { col = #indent, end_col = cb_icon_start, hl = "FloatBorder" },
                   { col = cb_icon_end, end_col = #fname_line, hl = "Comment" },
@@ -3783,7 +3784,6 @@ function ContentBuilder:render_document(lines, opts)
                 lines_shown = lines_shown + 1
               end
             end
-            callout_code_prefix = indent .. quote_prefix
             callout_code_depth, callout_code_container = quote_depth, container_indent
             callout_code_start = #self.lines
             callout_code_source_lines = {}
@@ -3794,6 +3794,7 @@ function ContentBuilder:render_document(lines, opts)
           end
           handled = true
         elseif in_callout_code_block then
+          stripped = strip_container_prefix(stripped, #callout_code_fence.indent, code_column)
           table.insert(callout_code_source_lines, stripped)
           local code_line = callout_code_prefix .. stripped
           local display_width = vim.api.nvim_strwidth(code_line)

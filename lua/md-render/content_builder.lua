@@ -1836,6 +1836,18 @@ local function strip_container_indent(lines)
     if not limit and fence_mod.indent_columns(content:match "^[ \t]*", column) <= 3 then
       content = expand_leading_tabs(content, column)
     end
+    -- An accepted list scaffold keeps its physical gaps when the last blank
+    -- quote marker omits its optional following space.
+    if
+      quote
+      and quote.columns
+      and #quote_columns == #quote.columns
+      and content:match "^[ \t]*$"
+      and vim.startswith(quote.ancestor_prefix or "", ancestor_prefix)
+    then
+      quote_columns = vim.deepcopy(quote.columns)
+      column = quote_columns[#quote_columns]
+    end
     origin.quote_columns = quote_columns
     origin.ancestor_prefix = ancestor_prefix
       .. string.rep(" ", fence_mod.indent_columns(content:match "^[ \t]*", column))
@@ -2523,7 +2535,8 @@ function ContentBuilder:render_document(lines, opts)
   local source_list_lines = lines
   local html_lines = {}
   for src, origin in pairs(source_origins) do
-    if origin.html then html_lines[src] = true end
+    -- The accepted opener's list marker is outside its raw HTML payload.
+    if origin.html and not (src == origin.html and list_bases[src] ~= nil) then html_lines[src] = true end
   end
   lines = markdown.renumber_ordered_lists(
     lines,
@@ -2553,18 +2566,22 @@ function ContentBuilder:render_document(lines, opts)
     local src = src_indices[index]
     local origin = source_origins[src]
     if origin.html then
-      local group = html_groups[origin.html] or { lines = {}, sources = {}, blanks = {} }
+      local group = html_groups[origin.html] or { lines = {}, sources = {}, blanks = {}, markers = {} }
       html_groups[origin.html] = group
       local column = origin.column
       for depth = 1, #origin.quote_columns do
         local _
         _, line, column = split_quote_marker(line, column, origin.quote_columns[depth])
       end
+      if origin.list_column and list_bases[src] == nil then
+        line = strip_container_prefix(line, origin.list_column, column)
+      end
       local marker = ""
       if src == origin.html and list_bases[src] ~= nil then
         local source_marker = line:match "^( *[-*+][ \t]+)" or line:match "^( *%d+[.)][ \t]+)"
         if source_marker then
-          marker = markdown.render(source_marker)
+          marker, group.markers[#group.lines + 1] =
+            markdown.render(source_marker, nil, nil, nil, nil, nil, { list_marker = true })
           line = line:sub(#source_marker + 1)
         end
       end
@@ -2579,7 +2596,8 @@ function ContentBuilder:render_document(lines, opts)
     local index = 1
     while index <= #group.lines do
       local level, first = group.lines[index]:match "^%s*<h([1-6])[^>]*>(.*)$"
-      if level then
+      -- Quoted headings use readable raw rows rather than the heading display path.
+      if level and #source_origins[group.sources[index]].quote_columns == 0 then
         local parts, last = {}, index
         while last <= #group.lines do
           local part = last == index and first or group.lines[last]
@@ -2607,8 +2625,8 @@ function ContentBuilder:render_document(lines, opts)
     end
     local row_highlights = distribute_highlights(highlights, rows, starts, "", "", 0)
     for row_index, src in ipairs(group.sources) do
-      html_rows[src] =
-        { text = rows[row_index], highlights = row_highlights[row_index], links = {}, blank = group.blanks[row_index] }
+      local styles = vim.list_extend(row_highlights[row_index] or {}, group.markers[row_index] or {})
+      html_rows[src] = { text = rows[row_index], highlights = styles, links = {}, blank = group.blanks[row_index] }
     end
     for _, link in ipairs(distribute_links(links, rows, starts, "", "", 0, 0)) do
       local row = html_rows[group.sources[link.line + 1]]
@@ -2962,7 +2980,8 @@ function ContentBuilder:render_document(lines, opts)
       render_html_row(
         src,
         base_indent .. (container_indents[src] or ""),
-        string.rep("│ ", #source_origins[src].quote_columns)
+        quote_display_prefix(source_origins[src], list_bases[src] ~= nil and 0 or nil)
+          or string.rep("│ ", #source_origins[src].quote_columns)
       )
     end
     in_html_table, html_table_lines, html_table_sources, html_table_owner = false, {}, {}, nil
@@ -3913,7 +3932,7 @@ function ContentBuilder:render_document(lines, opts)
         if in_details and details_summary_rendered then apply_details_body_prefix(before, #self.lines) end
         lines_shown = lines_shown + #self.lines - before
       elseif not skip_details_body then
-        render_html_row(src_indices[src_idx], indent, string.rep("│ ", quote_depth))
+        render_html_row(src_indices[src_idx], indent, quote_prefix or string.rep("│ ", quote_depth))
       end
       prev_was_heading, prev_was_hr, prev_rendered_blank, prev_list_marker_type =
         html_heading_level ~= nil, false, false, nil

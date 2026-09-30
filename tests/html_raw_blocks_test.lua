@@ -89,6 +89,13 @@ local function urls(marks)
   table.sort(result)
   return result
 end
+local function marker_spans(marks)
+  local result = {}
+  for _, mark in ipairs(marks) do
+    if mark[4].hl_group == "Special" then result[#result + 1] = { mark[2], mark[3], mark[4].end_col } end
+  end
+  return result
+end
 
 local anchor_source = { '<a href="foo">', "*bar*", "</a>" }
 do
@@ -391,6 +398,63 @@ do
   eq(styled(c, "Italic"), { { 4, "parsed" } }, "HTML heading boundary resumes Markdown emphasis")
   eq(c.heading_lines, {}, "a heading collector cannot synthesize a heading across raw owners")
 end
+local quoted_heading_source = { "> <h2>", "> *title*", "> </h2>", "", "after" }
+for _, case in ipairs {
+  {
+    quoted_heading_source,
+    { "│ <h2>", "│ *title*", "│ </h2>", "", "after" },
+    { 1, 2, 3, 4, 5 },
+  },
+  {
+    { "> - > <h4>", ">   > *title*", ">   > </h4>", "> - sibling" },
+    { "│ • ", "│   │ <h4>", "│   │ *title*", "│   │ </h4>", "│ • sibling" },
+    { 1, 1, 2, 3, 4 },
+  },
+  {
+    { "- > <h6>", "  > *title*", "  > </h6>", "- sibling" },
+    { "• ", "  │ <h6>", "  │ *title*", "  │ </h6>", "• sibling" },
+    { 1, 1, 2, 3, 4 },
+  },
+  {
+    { "> <h2>*title*</h2>", "after" },
+    { "│ <h2>*title*</h2>", "after" },
+    { 1, 2 },
+  },
+} do
+  local c = build(case[1])
+  eq(c.lines, case[2], "quoted tag heading retains readable title and closing rows")
+  eq(c.source_line_map, case[3], "quoted tag heading retains every physical source row")
+  eq(c.heading_lines, {}, "quoted tag heading keeps its existing ordinary navigation behavior")
+  eq(styled(c, "Italic"), {}, "quoted tag heading's raw title stars remain literal")
+end
+do
+  local c = build { "<h2>", '<a href="two  spaces.md">*literal*</a> <em>styled</em>', "</h2>", "", "after" }
+  eq(c.lines[1], "##  *literal* styled ", "supported unquoted multiline heading keeps its presentation")
+  eq(c.source_line_map[1], 1, "supported multiline heading keeps its opening-row cursor policy")
+  eq(c.heading_lines[0], true, "supported multiline heading retains navigation metadata")
+  eq(styled(c, "Italic"), { { 1, "styled" } }, "supported multiline heading styles only the HTML em tag")
+  eq(
+    c.link_metadata,
+    { { line = 0, col_start = 4, col_end = 13, url = "two  spaces.md" } },
+    "supported multiline heading keeps exact literal label bytes and its full target"
+  )
+end
+do
+  local c = build { "> <h2>", '> <a href="two  spaces.md">*literal*</a> <em>styled</em>', "> </h2>", "", "after" }
+  eq(
+    c.lines,
+    { "│ <h2>", "│ *literal* styled", "│ </h2>", "", "after" },
+    "quoted heading retains supported title tags"
+  )
+  eq(c.source_line_map, { 1, 2, 3, 4, 5 }, "quoted linked title retains its physical payload row")
+  eq(c.heading_lines, {}, "quoted linked title retains existing ordinary navigation")
+  eq(styled(c, "Italic"), { { 2, "styled" } }, "quoted title styles only the supported em tag")
+  eq(
+    c.link_metadata,
+    { { line = 1, col_start = 4, col_end = 13, url = "two  spaces.md" } },
+    "quoted title keeps exact literal label bytes and its full target"
+  )
+end
 do
   local c = build {
     "<details open>",
@@ -508,9 +572,183 @@ do
   eq(styled(c, "MdRenderMath"), { { 9, "math" } }, "nonconflicting math remains active")
 end
 
+-- Accepted list markers keep their ordinary styling and counters; their raw
+-- payload stays opaque. Physical gaps between quote borders are applied once.
+local interleaved_source = { "> - > <div>", ">   > *raw*", ">   >", "> - sibling" }
+for _, case in ipairs {
+  {
+    interleaved_source,
+    { "│ • ", "│   │ *raw*", "│   │ ", "│ • sibling" },
+    { 1, 2, 3, 4 },
+    { { 0, 4, 8 }, { 3, 4, 8 } },
+  },
+  {
+    { "- - <div>", "    *raw*", "", "- sibling" },
+    { "• ", "  ◦ ", "    *raw*", "", "• sibling" },
+    { 1, 1, 2, 3, 4 },
+    { { 0, 0, 4 }, { 1, 0, 6 }, { 4, 0, 4 } },
+  },
+  {
+    { "1. <div>", "   *raw*", "", "1. sibling" },
+    { "1. ", "   *raw*", "", "2. sibling" },
+    { 1, 2, 3, 4 },
+    { { 0, 0, 3 }, { 3, 0, 3 } },
+  },
+  {
+    { "> 1. <div>", ">    *raw*", ">", "> 1. sibling" },
+    { "│ 1. ", "│    *raw*", "│ ", "│ 2. sibling" },
+    { 1, 2, 3, 4 },
+    { { 0, 4, 7 }, { 3, 4, 7 } },
+  },
+  {
+    { "1. first", "2. <div>", "   *raw*", "", "1. sibling" },
+    { "1. first", "2. ", "   *raw*", "", "3. sibling" },
+    { 1, 2, 3, 4, 5 },
+    { { 0, 0, 3 }, { 1, 0, 3 }, { 4, 0, 3 } },
+  },
+  {
+    { "1. 1. <div>", "      *raw*", "", "   1. inner sibling", "1. outer sibling" },
+    { "1. ", "   1. ", "      *raw*", "", "   2. inner sibling", "2. outer sibling" },
+    { 1, 1, 2, 3, 4, 5 },
+    { { 0, 0, 3 }, { 1, 0, 6 }, { 4, 0, 6 }, { 5, 0, 3 } },
+  },
+  {
+    { "1. <div>", "   8. *raw*", "", "1. sibling" },
+    { "1. ", "   8. *raw*", "", "2. sibling" },
+    { 1, 2, 3, 4 },
+    { { 0, 0, 3 }, { 3, 0, 3 } },
+  },
+  {
+    { "999999999. first", "1. <div>", "   *raw*", "", "1. sibling" },
+    { "999999999. first", "1000000000. ", "   *raw*", "", "1000000001. sibling" },
+    { 1, 2, 3, 4, 5 },
+    { { 0, 0, 11 }, { 1, 0, 12 }, { 4, 0, 12 } },
+  },
+  {
+    { "0) <div>", "   *raw*", "", "9) sibling" },
+    { "0) ", "   *raw*", "", "1) sibling" },
+    { 1, 2, 3, 4 },
+    { { 0, 0, 3 }, { 3, 0, 3 } },
+  },
+  {
+    { "1. <!-- hidden -->", "1. sibling" },
+    { "1. ", "2. sibling" },
+    { 1, 2 },
+    { { 0, 0, 3 }, { 1, 0, 3 } },
+  },
+  {
+    { "1. <!--", "   hidden", "   -->", "1. sibling" },
+    { "1. ", "2. sibling" },
+    { 1, 4 },
+    { { 0, 0, 3 }, { 1, 0, 3 } },
+  },
+  {
+    { "> - > <table>", ">   > *raw*", ">   >", "> - sibling" },
+    { "│ • ", "│   │ <table>", "│   │ *raw*", "│   │ ", "│ • sibling" },
+    { 1, 1, 2, 3, 4 },
+    { { 0, 4, 8 }, { 4, 4, 8 } },
+  },
+} do
+  local c, marks = build(case[1])
+  eq(c.lines, case[2], "HTML list rendering retains accepted marker and body geometry")
+  eq(c.source_line_map, case[3], "HTML list rendering retains each physical source row")
+  eq(marker_spans(marks), case[4], "actual HTML list markers retain the ordinary Special byte spans")
+  eq(styled(c, "Italic"), {}, "raw apparent marker and emphasis stay literal")
+end
+do
+  local c, marks = build {
+    "> - > <div>",
+    '>   > <a href="/raw&#10;x">*raw*</a>',
+    ">   >",
+    "> - sibling [after](/after)",
+  }
+  eq(
+    c.lines,
+    { "│ • ", "│   │ *raw*", "│   │ ", "│ • sibling after" },
+    "raw target uses accepted quote gaps"
+  )
+  eq(c.source_line_map, { 1, 2, 3, 4 }, "raw anchor and sibling retain physical source rows")
+  eq(targets(c), { { 2, "*raw*", "/raw\nx" }, { 4, "after", "/after" } }, "raw and Markdown full targets survive")
+  eq(c.link_metadata, {
+    { line = 1, col_start = 10, col_end = 15, url = "/raw\nx" },
+    { line = 3, col_start = 16, col_end = 21, url = "/after" },
+  }, "raw and Markdown byte edges include the physical prefix exactly once")
+  eq(marker_spans(marks), { { 0, 4, 8 }, { 3, 4, 8 } }, "raw target geometry retains marker styling")
+  eq(styled(c, "Italic"), {}, "stars in linked raw text remain literal")
+end
+for _, blank in ipairs { ">   >", ">   > " } do
+  local c, marks = build {
+    "> - > <div>",
+    ">   > *raw*",
+    blank,
+    ">   >  ```lua",
+    ">   >   x",
+    ">   >  ```",
+    "> - sibling",
+  }
+  eq(
+    c.lines,
+    { "│ • ", "│   │ *raw*", "│   │ ", "│   │  x", "│ • sibling" },
+    "HTML blank releases to quoted code"
+  )
+  eq(c.source_line_map, { 1, 2, 3, 5, 7 }, "literal code keeps its physical payload row")
+  eq(c.code_blocks[1].source_lines, { " x" }, "code payload retains its literal leading space")
+  eq(c.code_blocks[1].prefix_len, 10, "code prefix preserves the accepted interleaved list margin")
+  eq(marker_spans(marks), { { 0, 4, 8 }, { 4, 4, 8 } }, "HTML and sibling markers remain styled across code")
+end
+do
+  local c, marks = build { "- <div>", "  *raw*", "", "  ```lua", "  x", "  ```", "- sibling" }
+  eq(c.lines, { "• ", "  *raw*", "", "  x", "• sibling" }, "root item HTML releases to its own fence")
+  eq(c.source_line_map, { 1, 2, 3, 5, 7 }, "root item HTML and fence retain source rows")
+  eq(c.code_blocks[1].source_lines, { "x" }, "root item fence retains exact payload")
+  eq(c.code_blocks[1].prefix_len, 2, "root item fence keeps its existing list margin")
+  eq(marker_spans(marks), { { 0, 0, 4 }, { 4, 0, 4 } }, "root HTML opener and sibling both have real marker styles")
+end
+do
+  local c, marks = build { "- > - <div>", '  >   <a href="/raw">*raw*</a>', "  >", "  > - sibling" }
+  eq(
+    c.lines,
+    { "• ", "  │ • ", "  │   *raw*", "  │ ", "  │ • sibling" },
+    "margin after the last quote is applied once"
+  )
+  eq(c.source_line_map, { 1, 1, 2, 3, 4 }, "composed item markers and raw payload retain their source rows")
+  eq(targets(c), { { 2, "*raw*", "/raw" } }, "composed raw item keeps its supported full target")
+  eq(
+    c.link_metadata,
+    { { line = 2, col_start = 8, col_end = 13, url = "/raw" } },
+    "remaining item margin shifts the raw target bytes exactly once"
+  )
+  eq(marker_spans(marks), { { 0, 0, 4 }, { 1, 6, 10 }, { 4, 6, 10 } }, "composed raw item markers retain real styling")
+end
+for _, case in ipairs {
+  {
+    { "> > <div>", "> > *raw*", "> >", "> >  ```lua", "> >   x", "> >  ```" },
+    { "│ │ *raw*", "│ │ ", "│ │  x" },
+    { 2, 3, 5 },
+  },
+  {
+    { "> - > <div>", ">   > *raw*", ">  >", ">  >  ```lua", ">  >   x", ">  >  ```", "> - sibling" },
+    { "│ • ", "│   │ *raw*", "│ │ ", "│ │  x", "│ • sibling" },
+    { 1, 2, 3, 5, 7 },
+  },
+} do
+  local c = build(case[1])
+  eq(c.lines, case[2], "ordinary quotes and physically dedented blank markers retain their own geometry")
+  eq(c.source_line_map, case[3], "a different quote scaffold retains exact physical source rows")
+  eq(c.code_blocks[1].source_lines, { " x" }, "dedented quote control preserves literal code payload")
+  eq(c.code_blocks[1].prefix_len, 8, "a different physical scaffold cannot inherit the former item gap")
+end
+
 -- Fresh public tab preview and rebuild use the same source, literal bytes and links.
-for _, source in ipairs { anchor_source, table_boundary, summary_boundary, dl_boundary } do
-  local expected = build(source)
+for _, source in ipairs {
+  anchor_source,
+  table_boundary,
+  summary_boundary,
+  dl_boundary,
+  interleaved_source,
+  quoted_heading_source,
+} do
+  local expected, expected_marks = build(source)
   local preview = require "md-render.preview"
   local source_buf = vim.api.nvim_create_buf(false, true)
   vim.bo[source_buf].filetype = "markdown"
@@ -530,6 +768,14 @@ for _, source in ipairs { anchor_source, table_boundary, summary_boundary, dl_bo
       styled(session.content, "Italic"),
       styled(expected, "Italic"),
       "public tab preview preserves the raw boundary style split"
+    )
+    local marker_edges = vim.tbl_map(function(span)
+      return { span[1], span[2] + 2, span[3] + 2 }
+    end, marker_spans(expected_marks))
+    eq(
+      marker_spans(vim.api.nvim_buf_get_extmarks(session.buf, session.ns, 0, -1, { details = true })),
+      marker_edges,
+      "public preview and rebuild retain actual list-marker byte spans"
     )
     eq(
       vim.api.nvim_buf_get_lines(session.buf, 0, -1, false),

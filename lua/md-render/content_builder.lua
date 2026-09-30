@@ -849,6 +849,7 @@ end
 ---@param autolinks? MdRender.Autolink[]
 ---@param ref_links? table<string, string>
 ---@param source_lines? integer[] original source rows of the paragraph
+---@param block_context? {heading_level?: integer, list_marker?: boolean, raw_html?: boolean} accepted document block syntax
 ---@return string? alert_type Alert type if this line is an alert header
 ---@return string? fold_mod Fold modifier ("+" or "-") if this is a foldable callout
 function ContentBuilder:add_markdown_line(
@@ -859,11 +860,12 @@ function ContentBuilder:add_markdown_line(
   autolinks,
   ref_links,
   footnote_map,
-  source_lines
+  source_lines,
+  block_context
 )
   local markdown = require "md-render.markdown"
   local rendered_text, md_highlights, md_links, special_type, list_marker, alert_type, fold_mod, heading_content, hard_breaks =
-    markdown.render(text, repo_base_url, autolinks, ref_links, footnote_map)
+    markdown.render(text, repo_base_url, autolinks, ref_links, footnote_map, nil, block_context)
 
   local quote_prefix = ""
   if special_type == "blockquote" then
@@ -889,6 +891,9 @@ function ContentBuilder:add_markdown_line(
     for _, link in ipairs(md_links) do
       link.col_start, link.col_end = link.col_start - #heading_quote, link.col_end - #heading_quote
     end
+    for _, boundary in ipairs(hard_breaks) do
+      boundary.col = boundary.col - #heading_quote
+    end
     quote_prefix = ""
   end
 
@@ -897,6 +902,12 @@ function ContentBuilder:add_markdown_line(
   local spec, level
   local heading_text, plain_prefix = rendered_text, ""
   local backend = heading_content and self:heading_renderer() or "plain"
+  if heading_content and #hard_breaks > 0 then
+    if self.text_scale and backend ~= "plain" then
+      self.native_heading_fallback = "heading contains hard line breaks"
+    end
+    backend = "plain"
+  end
   local image_heading = backend == "image"
   local plain_heading = backend == "plain" or not self.text_scale
   if heading_content then
@@ -923,6 +934,9 @@ function ContentBuilder:add_markdown_line(
       md_highlights[1].col = 0
       for _, link in ipairs(md_links) do
         link.col_start, link.col_end = link.col_start + #plain_prefix, link.col_end + #plain_prefix
+      end
+      for _, boundary in ipairs(hard_breaks) do
+        boundary.col = boundary.col + #plain_prefix
       end
     end
   end
@@ -1645,6 +1659,8 @@ local function strip_container_indent(lines)
           table_column = nil
           if is_fence or result[i]:match "^>" then
             paragraph_column = nil
+          elseif paragraph_column == leaf_column and Markdown.parse_setext_underline(leaf) then
+            paragraph_column = nil
           elseif opens_item or not paragraph_column or is_block_start(leaf, true) then
             paragraph_column = not is_block_start(leaf, false) and leaf_column or nil
           end
@@ -1708,6 +1724,7 @@ local function strip_container_indent(lines)
       goto next_source
     end
     quote.table = nil
+    local was_paragraph = quote.paragraph
     local sibling = is_list_item(content)
       and #quote.items > 0
       and #expand_leading_tabs(content, column):match "^ *" < quote.items[#quote.items]
@@ -1756,6 +1773,7 @@ local function strip_container_indent(lines)
       or is_fence
       or (not col and fence_mod.indent_columns(paragraph_leaf:match "^[ \t]*", column + local_base) >= 4)
     quote.paragraph = not origin.code
+      and not (was_paragraph and Markdown.parse_setext_underline(paragraph_leaf))
       and not is_block_start(expand_leading_tabs(paragraph_leaf, column + (col or local_base)), false)
     if quote.paragraph or origin.code_opener then
       quote.ancestor_prefix = ancestor_prefix .. string.rep(" ", col or local_base)
@@ -2589,6 +2607,33 @@ function ContentBuilder:render_document(lines, opts)
     end
   end
 
+  -- Only an accepted paragraph can own an underline in the same physical container.
+  local function setext_level(idx, content, depth)
+    local src, next_src = src_indices[idx], src_indices[idx + 1]
+    local sources, origin, next_origin = paragraph_sources[src], source_origins[src], source_origins[next_src]
+    if
+      not sources
+      or not next_origin
+      or next_src ~= sources[#sources] + 1
+      or origin.code
+      or origin.html
+      or next_origin.code
+      or next_origin.html
+      or is_list_item(content)
+      or (container_indents[src] or "") ~= (container_indents[next_src] or "")
+      or #origin.quote_columns ~= #next_origin.quote_columns
+      or (depth > 0 and next_origin.continuation_depth == depth)
+    then
+      return nil
+    end
+    local underline = lines[idx + 1]
+    for _ = 1, depth do
+      if not underline:match "^>" then return nil end
+      underline = underline:gsub("^>[ \t]?", "", 1)
+    end
+    return markdown.parse_setext_underline(underline)
+  end
+
   for src_idx, line in ipairs(lines) do
     -- src_idx is the post-transform array index; src_indices[src_idx]
     -- is the original buffer line, which is what consumers (cursor sync,
@@ -2777,24 +2822,11 @@ function ContentBuilder:render_document(lines, opts)
       if not line then goto continue end
     end
 
-    -- Detect setext heading: current non-blank line followed by === or ---
-    if
-      not in_code_block
-      and not line:match "^%s*$"
-      and not line:match "^[#>%-%*|%d]"
-      and not fence_mod.opening(line)
-    then
-      local next_line = lines[src_idx + 1]
-      if next_line then
-        if next_line:match "^=+%s*$" then
-          line = "# " .. line
-          skip_next_line = true
-        elseif next_line:match "^%-+%s*$" then
-          line = "## " .. line
-          skip_next_line = true
-        end
-      end
-    end
+    local setext_rank = not in_code_block
+        and not in_callout_code_block
+        and setext_level(src_idx, quote_depth > 0 and quoted_content or line, quote_depth)
+      or nil
+    if setext_rank then skip_next_line = true end
 
     -- Convert HTML headings <h1>-<h6> to markdown format
     -- If heading contains an <img>, split it into separate image + heading lines
@@ -2823,7 +2855,11 @@ function ContentBuilder:render_document(lines, opts)
 
     local is_blank = line:match "^%s*$" ~= nil
     local atx_level, atx_content = parse_atx_heading(quote_depth > 0 and quoted_content or line)
-    local is_heading = not in_code_block and not in_callout_code_block and not origin.code and atx_level ~= nil
+    local is_heading = not in_code_block
+      and not in_callout_code_block
+      and not origin.code
+      and not origin.html
+      and (setext_rank ~= nil or atx_level ~= nil)
 
     -- Handle <details>/<summary> HTML blocks (outside code blocks)
     if not in_code_block and not in_callout_code_block then
@@ -3296,10 +3332,7 @@ function ContentBuilder:render_document(lines, opts)
             skip = parse_atx_heading(lines[k]) ~= nil
             if not skip then skip = is_thematic_break(lines[k]) end
             if not skip then skip = lines[k]:match "^:::$" ~= nil end
-            if not skip and not lines[k]:match "^[#>%-%*`|%d]" then
-              local kk = lines[k + 1]
-              if kk and (kk:match "^=+%s*$" or kk:match "^%-+%s*$") then skip = true end
-            end
+            if not skip then skip = setext_level(k, lines[k], #source_origins[src_indices[k]].quote_columns) ~= nil end
             break
           end
         end
@@ -4050,7 +4083,8 @@ function ContentBuilder:render_document(lines, opts)
             autolinks,
             ref_links,
             footnote_map,
-            paragraph_sources[src_indices[src_idx]]
+            paragraph_sources[src_indices[src_idx]],
+            { heading_level = setext_rank }
           )
           self.text_scale = text_scale
           local lines_after = #self.lines

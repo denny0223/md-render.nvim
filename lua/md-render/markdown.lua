@@ -43,6 +43,14 @@ function Markdown.parse_atx_heading(line)
   return #markers, (content:gsub("^[ \t]+", ""):gsub("[ \t]+$", ""))
 end
 
+--- Parse a container-relative Setext underline; leading tabs are expanded by its owner.
+---@param line string
+---@return integer? level 1 or 2, nil when the underline is ineligible
+function Markdown.parse_setext_underline(line)
+  if line:match "^ ? ? ?=+[ \t]*$" then return 1 end
+  if line:match "^ ? ? ?%-+[ \t]*$" then return 2 end
+end
+
 --- Convert heading text to a URL-safe slug (GitHub-compatible).
 --- Strips inline markdown markers, lowercases, replaces spaces with hyphens.
 ---@param text string raw heading text (after # markers)
@@ -1462,6 +1470,7 @@ end
 ---@param ref_links? table<string, string> Optional reference link definitions (normalized label -> URL)
 ---@param footnote_map? table<string, integer>
 ---@param inline_only? boolean Leave block markers literal in cells, captions and other inline contexts
+---@param block_context? {heading_level?: integer, list_marker?: boolean, raw_html?: boolean} accepted document block syntax
 ---@return string rendered_text The rendered plain text
 ---@return MdRender.Markdown.Highlight[] highlights
 ---@return MdRender.Markdown.Link[] links
@@ -1471,7 +1480,7 @@ end
 ---@return string? fold_mod Callout fold modifier if applicable
 ---@return string? heading_content Original heading content if applicable
 ---@return MdRender.Markdown.Break[] hard_breaks Mandatory row boundaries in the newline-free text
-Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_map, inline_only)
+Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_map, inline_only, block_context)
   inline_only = inline_only == true
   local rendered_text = text
   local highlights = {}
@@ -1499,7 +1508,12 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   -- ATX syntax belongs to the content, after its quote containers.
   local heading_level, heading_content
   if not inline_only then
-    heading_level, heading_content = Markdown.parse_atx_heading(rendered_text)
+    if block_context and block_context.heading_level then
+      heading_level = block_context.heading_level
+      heading_content = rendered_text:gsub("^[ \t]+", ""):gsub("[ \t]+$", "")
+    else
+      heading_level, heading_content = Markdown.parse_atx_heading(rendered_text)
+    end
   end
   if heading_level then rendered_text = heading_content end
 
@@ -1822,7 +1836,7 @@ function Markdown.is_block_start(line, in_paragraph)
   local stripped = line:gsub("%s", "")
   local marker = stripped:sub(1, 1)
   if #stripped >= 3 and marker:match "[-_*]" and stripped == string.rep(marker, #stripped) then return true end
-  if line:match "^[=-]+%s*$" then return true end
+  if in_paragraph and Markdown.parse_setext_underline(line) then return true end
   if line:match "^%[%^.+%]:" then return true end
   if line:match "^%[!%a+%]" then return true end -- callout header (marker already stripped)
   if require("md-render.html_block").start(line, in_paragraph) then return true end

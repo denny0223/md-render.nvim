@@ -68,6 +68,8 @@ md-render.nvim は Neovim 用の Markdown レンダリングエンジンです�
 - Mermaid ダイアグラムを画像としてインライン表示
 - CommonMark の段落（原文で折り返された行はひとつの段落に連結。箇条書き項目の
   継続行や引用の本文も同様。和字同士の連結では半角スペースを入れない）
+- 引用段落の継続行は `>` を省略でき、入れ子やリスト内の引用も同様です。
+  空行や新しいブロックで継続は終了します。
 - インラインマーカー周りの和字空白（一部のパーサに `**` を認識させるためだけに
   置かれた `これは **強調** です。` の空白は詰めて表示。隣が半角文字なら
   `これは **API** です。` のようにそのまま残す）
@@ -950,7 +952,7 @@ ContentBuilder:render_document({lines}, {opts}) ~
 	                              - {url_template} (string)
 	                                例: "https://...JIRA-<num>"
 	                              - {is_alphanumeric} (boolean|nil)
-	    - {fold_state}          (table)   コールアウト折りたたみ状態
+	    - {fold_state}          (table)   元の行番号（1 始まり）別の折りたたみ状態
 	    - {expand_state}        (table)   展開領域状態
 	    - {source_line_offset}  (integer) ソース行オフセット
 
@@ -1044,6 +1046,8 @@ Markdown.parse_reference_links({lines}) ~
 	3 番目の戻り値は、各定義の開始入力行を終了入力行に対応付けます。
 	複数行や引用内の有効な定義は未使用でも非表示です。不正な定義は
 	Markdown として残り、表でも同じ参照情報を使います。
+	文書プレビューでは引用の所属を先に解決し、既存段落の継続テキストが参照定義
+	のように見えても、新しい参照リンクを定義しません。
 
 					     *Markdown.renumber_ordered_lists()*
 Markdown.renumber_ordered_lists({lines}) ~

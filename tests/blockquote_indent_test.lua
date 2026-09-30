@@ -8,6 +8,12 @@
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
 
 local ContentBuilder = require("md-render.content_builder").ContentBuilder
+local display = require "md-render.display_utils"
+local links = require "md-render.links"
+require("md-render.image").supports_kitty = function()
+  return false
+end
+require("md-render").setup_highlights()
 
 local pass_count = 0
 local fail_count = 0
@@ -23,12 +29,28 @@ local function assert_eq(actual, expected, msg)
   end
 end
 
+local function build(lines, opts)
+  local original = vim.deepcopy(lines)
+  local b = ContentBuilder.new()
+  b:render_document(lines, vim.tbl_extend("force", { max_width = 60, indent = "", text_scale = false }, opts or {}))
+  local c = b:result()
+  local buf = vim.api.nvim_create_buf(false, true)
+  local ns = vim.api.nvim_create_namespace "blockquote_test"
+  display.apply_content_to_buffer(buf, ns, c)
+  assert_eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), c.lines, "quote output applies to a real buffer")
+  assert_eq(lines, original, "quote source stays unchanged")
+  for _, link in ipairs(c.link_metadata) do
+    assert_eq(links.at(buf, ns, link.line, link.col_start), link.url, "quoted link starts at its label")
+    assert_eq(links.at(buf, ns, link.line, link.col_end - 1), link.url, "quoted link ends at its label")
+  end
+  vim.api.nvim_buf_delete(buf, { force = true })
+  return c
+end
+
 --- Render and return the non-blank output lines.
 local function render(lines)
-  local b = ContentBuilder.new()
-  b:render_document(lines, { max_width = 60, indent = "" })
   local out = {}
-  for _, line in ipairs(b:result().lines) do
+  for _, line in ipairs(build(lines).lines) do
     if not line:match "^%s*$" then table.insert(out, line) end
   end
   return out
@@ -39,7 +61,7 @@ end
 -- single blockquote.
 do
   local out = render { "   > # Foo", "   > bar", " > baz" }
-  assert_eq(out, { "│ # Foo", "│ bar baz" }, "0-3 spaces should still be one blockquote, flush left")
+  assert_eq(out, { "│ # Foo", "│ bar baz" }, "indented quote preserves separate source blocks")
 end
 
 -- Test 2: four spaces is too many (spec example 231) — an indented code
@@ -103,9 +125,174 @@ do
   local out = render { "- a", "  > 引用。", "普通の段落。", "> トップの引用。" }
   assert_eq(
     out,
-    { "• a", "  │ 引用。", "普通の段落。", "│ トップの引用。" },
+    { "• a", "  │ 引用。普通の段落。", "│ トップの引用。" },
     "a quote after the list should render flush left"
   )
+  out = render { "- a", "  > 引用。", "", "普通の段落。", "> トップの引用。" }
+  assert_eq(
+    out,
+    { "• a", "  │ 引用。", "普通の段落。", "│ トップの引用。" },
+    "a blank ends the lazy paragraph"
+  )
+end
+
+-- CommonMark 228/232/233/238/250/251: only an open paragraph permits omitted markers.
+do
+  local c = build { "> # Foo", "> bar", "baz" }
+  assert_eq(c.lines[#c.lines], "│ bar baz", "a later paragraph admits lazy text after a heading")
+  assert_eq(c.source_line_map[#c.lines], 2, "joined paragraph retains its first physical row")
+  c = build { "> \t## Tab heading", "outside" }
+  assert_eq(c.lines[#c.lines], "outside", "a tab-indented heading cannot admit lazy text")
+  for _, case in ipairs {
+    { { "> bar", "baz", "> foo" }, "│ bar baz foo" },
+    { { "> > > foo", "bar" }, "│ │ │ foo bar" },
+    { { ">>> foo", "> bar", ">>baz" }, "│ │ │ foo bar baz" },
+    { { "> foo", "    - bar" }, "│ foo - bar" },
+    { { "> foo", "\t# literal" }, "│ foo # literal" },
+    { { "> ***foo", "bar***" }, "│ foo bar" },
+    { { "> first", "> 3) literal", "> tail" }, "│ first 3) literal tail" },
+  } do
+    assert_eq(build(case[1]).lines, { case[2] }, "accepted leaf continuation keeps all quote levels")
+  end
+  for _, source in ipairs {
+    { "> bar", "", "outside" },
+    { "> bar", ">", "outside" },
+    { "> # Heading", "outside" },
+    { "> #", "outside" },
+    { "> ```lua", "> literal", "> ```", "outside" },
+    { "> <!-- hidden -->suffix", "outside" },
+    { "> [!NOTE]", "outside" },
+    { "> h | v", "> --- | ---", "> x | y", "outside" },
+    { "> Heading", "> ===", "outside" },
+    { "> - # Heading", "outside" },
+  } do
+    c = build(source)
+    assert_eq(c.lines[#c.lines], "outside", "a non-paragraph leaf cannot admit lazy text")
+    assert_eq(c.source_line_map[#c.lines], #source, "outside text retains its actual row")
+  end
+  c = build { "- a", "  > first", "lazy", "  > last" }
+  assert_eq(c.lines, { "• a", "  │ first lazy last" }, "lazy text preserves the enclosing list for resumed markers")
+  c = build { "- a", "  - b", "    > first", "lazy", "    > last" }
+  assert_eq(c.lines, { "• a", "  ◦ b", "    │ first lazy last" }, "nested list ownership survives lazy text")
+  c = build { "> 3) first", "> 3) second", "", "> 7) new", "> 7) next" }
+  assert_eq(
+    c.lines,
+    { "│ 3) first", "│ 4) second", "", "│ 7) new", "│ 8) next" },
+    "existing quoted lists keep sibling numbering"
+  )
+end
+
+-- Invalid ordered markers are paragraph text, including empty-looking markers.
+for _, delimiter in ipairs { ".", ")" } do
+  for _, suffix in ipairs { " literal", "" } do
+    local number = "1234567890" .. delimiter .. suffix
+    local c = build { "> first", number, "> tail" }
+    assert_eq(c.lines, { "│ first " .. number .. " tail" }, "ten-digit text cannot open an outside list")
+    assert_eq(c.source_line_map, { 1 }, "invalid marker keeps the quoted paragraph source")
+  end
+end
+
+-- A complete type-7 HTML tag cannot interrupt an existing marked paragraph.
+for _, tag in ipairs { "<span>", "</span>", '<span class="note">' } do
+  local c = build { "> first", "> " .. tag, "last" }
+  assert_eq(c.lines, { "│ first " .. tag .. " last" }, "marked inline HTML preserves lazy quote ownership")
+  assert_eq(c.source_line_map, { 1 }, "marked inline HTML remains in one source paragraph")
+end
+do
+  local c = build { "> > first", "> > <span>", "last" }
+  assert_eq(c.lines, { "│ │ first <span> last" }, "inline HTML preserves all quote levels")
+  c = build { "> *first  ", "> <span>", "last* [doc](/right)" }
+  assert_eq(c.lines, { "│ first", "│ <span> last doc" }, "inline HTML stays in the paragraph across a hard break")
+  assert_eq(c.source_line_map, { 1, 2 }, "hard-break segments keep physical source rows")
+  local italics = {}
+  for _, info in ipairs(c.highlights) do
+    for _, group in ipairs(info.groups) do
+      if group.hl == "Italic" then italics[#italics + 1] = c.lines[info.line + 1]:sub(group.col + 1, group.end_col) end
+    end
+  end
+  assert_eq(italics, { "first", "<span> last" }, "emphasis spans inline HTML without styling quote borders")
+  for _, source in ipairs {
+    { "> first", "<span>", "last" },
+    { "> first", "> <div>", "last" },
+    { "> first", "> <span>", "", "last" },
+    { "> # Heading", "> <span>", "last" },
+  } do
+    c = build(source)
+    assert_eq(c.lines[#c.lines], "last", "a new HTML block, blank or heading cannot admit lazy text")
+    assert_eq(c.source_line_map[#c.lines], #source, "outside text retains its physical source row")
+  end
+end
+
+-- Definitions are parsed after quote ownership, using their original row IDs.
+do
+  local c = build { "> [DOC][r]", "[r]: /wrong" }
+  assert_eq(c.lines, { "│ [DOC][r] [r]: /wrong" }, "definition-looking continuation remains paragraph text")
+  assert_eq(#c.link_metadata, 0, "a lazy continuation cannot define a reference inside an existing paragraph")
+  c = build { "> [r]:", "/right", "", "[DOC][r]", "", "[r]: /wrong" }
+  assert_eq(c.lines[2], "DOC", "lazy text can complete a reference definition")
+  assert_eq(c.link_metadata[1].url, "/right", "first definition retains precedence")
+  c = build { "> [r]: /right", "outside [DOC][r]" }
+  assert_eq(c.lines, { "│ outside DOC" }, "a provisional definition row can still admit a following lazy paragraph")
+  c = build { "<b>", "earlier", "</b>", "", "> [r]:", "/right", "", "[DOC][r]" }
+  assert_eq(c.lines[#c.lines], "DOC", "earlier HTML joins cannot change quote reference ownership")
+  assert_eq(c.source_line_map[#c.lines], 8, "reference projection retains the original row after HTML grouping")
+  assert_eq(c.link_metadata[1].url, "/right", "projected lazy definition retains its destination")
+end
+
+do
+  local c = build({ "> [甲乙\\", "丙丁](/dest) *tail*", "> next" }, { max_width = 12, source_line_offset = 20 })
+  assert_eq(c.lines, { "│ 甲乙", "│ 丙丁 tail", "│ next" }, "hard breaks and wrapping retain quote ownership")
+  assert_eq(c.source_line_map, { 21, 22, 22 }, "mandatory segments and wrapped rows retain physical source rows")
+  local labels = {}
+  for _, link in ipairs(c.link_metadata) do
+    labels[#labels + 1] = c.lines[link.line + 1]:sub(link.col_start + 1, link.col_end)
+  end
+  assert_eq(labels, { "甲乙", "丙丁" }, "quote bars stay outside UTF-8 link byte spans")
+  c = build { "> *alpha  ", "beta*", "> tail" }
+  assert_eq(c.lines, { "│ alpha", "│ beta tail" }, "emphasis spans a lazy hard break")
+  c = build { "> `alpha  ", "beta`", "> tail" }
+  assert_eq(c.lines, { "│ alpha   beta tail" }, "code spans suppress source hard breaks")
+end
+
+-- Physical tab stops belong to source markers; generated prefixes consume no columns.
+do
+  local c = build { ">\t>\t```markdown", ">\t>\t# literal\t[r]: /wrong", ">\t>\t```", "", "[r]" }
+  assert_eq(
+    c.lines[1],
+    "│ │   # literal\t[r]: /wrong",
+    "nested quote fences retain unconsumed tab columns and literal bytes"
+  )
+  assert_eq(c.heading_anchors.literal, nil, "code text cannot become a quoted heading")
+  assert_eq(c.code_blocks[1].prefix_len, #"│ │ ", "nested code prefix uses UTF-8 bytes")
+  assert_eq(
+    c.code_blocks[1].source_lines,
+    { "  # literal\t[r]: /wrong" },
+    "code metadata preserves physical indentation"
+  )
+  assert_eq(c.lines[#c.lines], "[r]", "code-owned definition text cannot bind a reference")
+  c = build { " >\t\t# literal", " >\t\t[r]: /hidden", "", "[r]" }
+  assert_eq(
+    c.lines,
+    { "│  \t# literal", "│  \t[r]: /hidden", "", "[r]" },
+    "tab-indented quote code keeps literal rows separate"
+  )
+  assert_eq(c.source_line_map, { 1, 2, 3, 4 }, "indented quote code retains each original row")
+  assert_eq(c.heading_anchors.literal, nil, "indented quote code cannot become a heading")
+  assert_eq(#c.link_metadata, 0, "indented quote definition text cannot bind a reference")
+  c = build { "> > ```markdown", "> > # literal", "> outside" }
+  assert_eq(c.lines, { "│ │ # literal", "│ outside" }, "quoted fence stops at its actual quote depth")
+  assert_eq(c.code_blocks[1].source_lines, { "# literal" }, "terminated quote fence retains its code metadata")
+end
+
+do
+  local source = { "> one", "two", "", "> [!NOTE]- Fold", "> body", "lazy", "> tail", "", "outside" }
+  local c = build(source)
+  assert_eq(c.callout_folds[1].source_line, 4, "callout keys use original rows after earlier joins")
+  assert_eq(c.lines[#c.lines], "outside", "collapsed callout ends at the blank boundary")
+  c = build(source, { fold_state = { [4] = false } })
+  assert_eq(vim.list_contains(c.lines, "│ body lazy tail"), true, "original fold override reveals the lazy body")
+  c = build { "- item", "  > [!NOTE]- Fold", "  > hidden", "> visible" }
+  assert_eq(c.lines[#c.lines], "│ visible", "a collapsed callout cannot hide another list container's quote")
 end
 
 -- Test 8: a quote inside a fenced code block is content, not a quote

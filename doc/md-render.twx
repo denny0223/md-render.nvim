@@ -61,6 +61,8 @@ md-render.nvim 是 Neovim 的 Markdown 渲染引擎，能將 Markdown 原始文�
 - PlantUML 圖表：透過本機工具或你指定的伺服器轉為圖片，顯示在文件中。
 - CommonMark 段落：將原始文字中屬於同一段落的換行合併，包括清單項目的接續行
   與引用內容；中日韓字元之間不會插入多餘空白。
+- 引用段落可省略接續行的 `>`，包括巢狀引用與清單內的引用；空白行或新區塊
+  會結束接續。
 - 中日韓文字與行內標記之間的空白：例如 `これは **強調** です。` 中，僅為讓
   剖析器辨識 `**` 而加入的空白會收起；若相鄰字元是半形，則會保留空白，例如
   `これは **API** です。`。
@@ -877,7 +879,7 @@ ContentBuilder:render_document({lines}, {opts}) ~
 	                              - {url_template} (string)，例如
 	                                "https://...JIRA-<num>"。
 	                              - {is_alphanumeric} (boolean|nil)。
-	    - {fold_state}          (table) 提示區塊的摺疊狀態。
+	    - {fold_state}          (table) 以原始行號（從 1 起算）對應提示摺疊狀態。
 	    - {expand_state}        (table) 可展開區域的狀態。
 	    - {source_line_offset}  (integer) 來源行偏移量。
 
@@ -969,6 +971,7 @@ Markdown.parse_reference_links({lines}) ~
 	第三個回傳值將每個定義的起始輸入行號對應至結束行號。
 	多行與引用內的有效定義即使未使用也會隱藏；無效定義保留為 Markdown。
 	表格使用同一份參照連結對照表。
+	文件預覽會先判斷引用歸屬；既有段落內看似定義的接續文字不會建立參照連結。
 
                                            *Markdown.renumber_ordered_lists()*
 Markdown.renumber_ordered_lists({lines}) ~

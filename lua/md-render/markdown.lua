@@ -1487,24 +1487,24 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     return rendered_text, highlights, links, special_type, list_marker, alert_type, fold_mod, heading_content, breaks
   end
 
-  -- Heading (# ## ### etc.) - detect level and strip markers, process inline elements below
-  local heading_level, heading_content
-  if not inline_only then
-    heading_level, heading_content = Markdown.parse_atx_heading(rendered_text)
-  end
-  if heading_level then rendered_text = heading_content end
-
   -- Blockquote (> ) - extract prefix
   local quote_prefix = ""
   local is_blockquote = false
-  while not inline_only and not heading_level and rendered_text:match "^>%s?" do
-    rendered_text = rendered_text:gsub("^>%s?", "", 1)
+  while not inline_only and rendered_text:match "^>[ \t]?" do
+    rendered_text = rendered_text:gsub("^>[ \t]?", "", 1)
     quote_prefix = quote_prefix .. "│ "
     is_blockquote = true
   end
 
+  -- ATX syntax belongs to the content, after its quote containers.
+  local heading_level, heading_content
+  if not inline_only and not is_blockquote then
+    heading_level, heading_content = Markdown.parse_atx_heading(rendered_text)
+  end
+  if heading_level then rendered_text = heading_content end
+
   -- Detect alert/callout syntax [!TYPE], [!TYPE]+, [!TYPE]- with optional title
-  if is_blockquote then
+  if is_blockquote and not heading_level then
     local alert_key, fold_mod, custom_title
     -- Try: [!TYPE]+/- Title
     alert_key, fold_mod, custom_title = rendered_text:match "^%[!(%a+)%]([+-])%s+(.+)$"
@@ -1730,7 +1730,8 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     rendered_text = icon .. rendered_text
     local hl_group = "MdRenderH" .. heading_level
     table.insert(highlights, 1, { col = 0, end_col = #rendered_text, hl = hl_group })
-    return finish("heading", nil, nil, nil, heading_content)
+    if is_blockquote then rendered_text = apply_blockquote_prefix(rendered_text, quote_prefix, highlights, links) end
+    return finish(is_blockquote and "blockquote" or "heading", nil, nil, nil, heading_content)
   end
 
   -- Add list marker and checkbox highlight
@@ -1812,10 +1813,15 @@ end
 ---@return boolean
 function Markdown.is_block_start(line, in_paragraph)
   if line:match "^%s*$" then return true end
+  -- Four-column indentation cannot introduce a new block inside a paragraph.
+  if in_paragraph and line:match "^    " then return false end
   if Markdown.parse_atx_heading(line) then return true end
-  if Markdown.list_marker_type(line) then return true end
+  local list_marker, number = Markdown.list_marker_type(line)
+  if list_marker and (not number or not in_paragraph or tonumber(number) == 1) then return true end
   if line:match "^>" then return true end
-  if line:match "^%s*[-_*]%s*[-_*]%s*[-_*]" then return true end
+  local stripped = line:gsub("%s", "")
+  local marker = stripped:sub(1, 1)
+  if #stripped >= 3 and marker:match "[-_*]" and stripped == string.rep(marker, #stripped) then return true end
   if line:match "^[=-]+%s*$" then return true end
   if line:match "^%[%^.+%]:" then return true end
   if line:match "^%[!%a+%]" then return true end -- callout header (marker already stripped)
@@ -1856,10 +1862,12 @@ end
 --- Parse definitions at paragraph starts, retaining input indices for consumption.
 --- Masked code/comment rows must remain blank input rows, never disappear.
 ---@param lines string[]
+---@param origins? table original physical columns and accepted container continuations
+---@param src_indices? integer[] original row for each input line
 ---@return table<string, string> refs normalized source label to decoded URL
 ---@return table<integer, boolean> consumed 1-based input rows owned by valid definitions
 ---@return table<integer, integer> definition_ends definition's first input row to its last
-Markdown.parse_reference_links = function(lines)
+Markdown.parse_reference_links = function(lines, origins, src_indices)
   local refs, consumed, definition_ends = {}, {}, {}
   local first = 1
   while first <= #lines do
@@ -1890,7 +1898,8 @@ Markdown.parse_reference_links = function(lines)
         until row > #parts or starts[row] > finish
         definition_ends[start] = first + row - 2
       else
-        paragraph = not Markdown.is_block_start(line, paragraph)
+        local origin = origins and origins[src_indices and src_indices[first + row - 1] or first + row - 1]
+        paragraph = (origin and origin.continuation_depth == depth) or not Markdown.is_block_start(line, paragraph)
         row = row + 1
       end
     end
@@ -1929,8 +1938,16 @@ end
 ---@param src_indices? integer[] original source row for each input line
 ---@param container_indents? table<integer, string> removed source container indentation
 ---@param list_bases? table<integer, integer> source parent content columns of eligible list markers
+---@param source_origins? table quote identity with source indentation and physical columns
 ---@return string[]
-Markdown.renumber_ordered_lists = function(lines, excluded_lines, src_indices, container_indents, list_bases)
+Markdown.renumber_ordered_lists = function(
+  lines,
+  excluded_lines,
+  src_indices,
+  container_indents,
+  list_bases,
+  source_origins
+)
   local result = {}
   local stack = {}
 
@@ -1945,8 +1962,12 @@ Markdown.renumber_ordered_lists = function(lines, excluded_lines, src_indices, c
     if not marker_line:match "^%d" then num = nil end
     local rest = num and marker_line:sub(#num + 2)
     local source_prefix = (container_indents and container_indents[src] or "") .. prefix
+    local origin = source_origins and source_origins[src]
+    local ancestor_prefix = origin and origin.ancestor_prefix
     -- Optional spacing after > does not change the quote's identity.
     local container = source_prefix:gsub("> ?", "> ")
+    local source_container = ancestor_prefix and (container_indents and container_indents[src] or "") .. ancestor_prefix
+      or container
     local quote_prefix = container:match "^(.*>)" or ""
     local base = list_bases and list_bases[src]
     local blank = line:match "^[ \t>]*$"
@@ -1957,7 +1978,7 @@ Markdown.renumber_ordered_lists = function(lines, excluded_lines, src_indices, c
         and not excluded
         and quote_prefix == item.quote_prefix
         and (base ~= nil and base == item.base or base == nil and container == item.prefix)
-      local nested = vim.startswith(container, item.content_prefix)
+      local nested = vim.startswith(source_container, item.content_prefix)
       -- Unmarked blank rows end quotes, but keep ordinary loose lists open.
       if sibling or nested or (blank and vim.startswith(container, item.quote_prefix)) then break end
       table.remove(stack)
@@ -1972,8 +1993,14 @@ Markdown.renumber_ordered_lists = function(lines, excluded_lines, src_indices, c
         table.insert(stack, item)
       end
       -- Container widths belong to the source marker, even when 9 becomes 10.
-      local gap = fence_mod.indent_columns(rest:match "^[ \t]*", #source_prefix + #num + 1)
-      item.content_prefix = container .. string.rep(" ", #num + 1 + (gap <= 4 and gap or 1))
+      local column = origin and origin.quote_columns[#origin.quote_columns]
+      if column then
+        -- The display prefix includes one generated space after the last >.
+        local indent = (prefix:match "[ \t]*$"):sub(2)
+        column = column + fence_mod.indent_columns(indent, column)
+      end
+      local gap = fence_mod.indent_columns(rest:match "^[ \t]*", (column or #source_prefix) + #num + 1)
+      item.content_prefix = source_container .. string.rep(" ", #num + 1 + (gap <= 4 and gap or 1))
       item.quote_prefix = quote_prefix
       table.insert(result, prefix .. tostring(item.counter) .. delimiter .. rest)
     else

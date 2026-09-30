@@ -74,8 +74,9 @@ end
 
 --- A table ends at a blank line or another block, not an inline construct.
 ---@param line string
+---@param in_paragraph? boolean complete type-7 HTML tags cannot interrupt an existing paragraph
 ---@return boolean
-function MarkdownTable.is_body_row(line)
+function MarkdownTable.is_body_row(line, in_paragraph)
   local indent, text = line:match "^([ \t]*)(.*)$"
   if fence_mod.indent_columns(indent) >= 4 or text == "" then return false end
   if text:sub(1, 1) == "|" then return true end
@@ -91,7 +92,7 @@ function MarkdownTable.is_body_row(line)
       " address article aside base basefont blockquote body caption center col colgroup dd details dialog dir div dl dt fieldset figcaption figure footer form frame frameset h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu menuitem nav noframes ol optgroup option p param pre script search section source style summary table tbody td textarea tfoot th thead title tr track ul "
     if tag and block_tags:find(" " .. tag .. " ", 1, true) then return false end
     local finish = inline.html_end(text, 1)
-    return not (finish and text:sub(finish + 1):match "^%s*$")
+    return in_paragraph == true or not (finish and text:sub(finish + 1):match "^%s*$")
   end
   if text:match "^!%[" or text:match "^=+%s*$" then return true end
   if text:match "^[%-%*%+]%s*$" then return false end

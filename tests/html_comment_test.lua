@@ -75,10 +75,10 @@ for _, tag in ipairs { "div", "span" } do
   assert_eq(c.lines, { "after" }, "wrapped multiline comment contents stay hidden")
   assert_eq(c.source_line_map, { 5 }, "wrapped comment retains the following source position")
   c = build { opening .. "<!-- foo", "```lua", "-->*tail*", closing, "   > quote", "*after*" }
-  assert_eq(c.lines, { "*tail*", "│ quote", "after" }, "wrapped comment cannot leak fence or container state")
-  assert_eq(c.source_line_map, { 3, 5, 6 }, "wrapped suffix and following blocks retain source positions")
+  assert_eq(c.lines, { "*tail*", "│ quote after" }, "wrapped comment cannot leak fence or container state")
+  assert_eq(c.source_line_map, { 3, 5 }, "wrapped suffix and following blocks retain source positions")
   assert_eq(#c.code_blocks, 0, "a fence inside a wrapped comment never becomes code")
-  assert_eq(styled_text(c, "Italic"), { { 3, "after" } }, "only following Markdown receives emphasis")
+  assert_eq(styled_text(c, "Italic"), { { 2, "after" } }, "only following Markdown receives emphasis")
   c = build { opening .. "<!-- foo -->*tail*" .. closing, "*after*" }
   assert_eq(c.lines, { "*tail*", "after" }, "single-line wrapper is removed without parsing the raw suffix")
   c = build { opening .. "<!-- foo", closing .. "-->tail", "*after*" }
@@ -243,7 +243,7 @@ for _, open in ipairs { false, true } do
   assert_eq(c.lines[#c.lines], "after", "details closing line remains functional after a comment")
 end
 
--- Quote recursion owns comment state, including literal suffixes and container exit.
+-- Quote recursion owns comments and literal suffixes; a later paragraph admits lazy text (CommonMark 247).
 for _, prefix in ipairs { "> ", "> > " } do
   local bars = prefix:gsub("> ", "│ ")
   for _, body in ipairs { { "<!-- foo -->*bar*" }, { "<!-- foo", "```", "-->*bar*" } } do
@@ -254,10 +254,10 @@ for _, prefix in ipairs { "> ", "> > " } do
     local c = build(lines)
     assert_eq(
       c.lines,
-      { bars .. "*bar*", bars .. "baz", "after" },
+      { bars .. "*bar*", bars .. "baz after" },
       "quoted comments hide their body and retain literal suffixes"
     )
-    assert_eq(c.source_line_map, { #body, #body + 1, #body + 2 }, "quoted comment source rows survive recursion")
+    assert_eq(c.source_line_map, { #body, #body + 1 }, "quoted comment source rows survive recursion")
     assert_eq(styled_text(c, "Italic"), { { 2, "baz" } }, "quoted suffixes do not parse emphasis")
     assert_eq(styled_text(c, "FloatBorder"), { { 1, bars }, { 2, bars } }, "quoted suffix retains its border highlight")
     assert_eq(#c.code_blocks, 0, "hidden quoted fences cannot start code blocks")
@@ -277,10 +277,10 @@ do
   c = build { "> - item", ">", ">   <!-- hidden", ">   -->*tail*", ">   *next*", "after" }
   assert_eq(
     c.lines,
-    { "│ • item", "│ ", "│   *tail*", "│   next", "after" },
+    { "│ • item", "│ ", "│   *tail*", "│   next after" },
     "a list inside a quote retains its own comment indentation"
   )
-  assert_eq(c.source_line_map, { 1, 2, 4, 5, 6 }, "quote-local list comments preserve source positions")
+  assert_eq(c.source_line_map, { 1, 2, 4, 5 }, "quote-local list comments preserve source positions")
   c = build({ "> <!-- hidden -->*raw* text", "> *next*" }, { max_width = 10, source_line_offset = 20 })
   assert_eq(c.lines, { "│ *raw*", "│ text", "│ next" }, "wrapped literal suffix repeats the quote prefix")
   assert_eq(c.source_line_map, { 21, 21, 22 }, "wrapped quoted suffix preserves source offset")
@@ -361,8 +361,8 @@ do
   local c = build { "<!--", "%%", "-->*raw*", "*visible*" }
   assert_eq(c.lines, { "*raw*", "visible" }, "Obsidian delimiters inside HTML comments stay opaque")
   c = build { "> %%", "> <!-- unterminated", "> %%", "> *visible*", "after" }
-  assert_eq(c.lines, { "│ visible", "after" }, "Obsidian comment boundaries also apply inside quote containers")
-  assert_eq(c.source_line_map, { 4, 5 }, "quoted Obsidian comments preserve following source positions")
+  assert_eq(c.lines, { "│ visible after" }, "Obsidian comment boundaries also apply inside quote containers")
+  assert_eq(c.source_line_map, { 4 }, "quoted Obsidian comments preserve following source positions")
   c = build { "```text", "%%", "<!--", "%%", "```", "*visible*" }
   assert_eq(c.lines, { "%%", "<!--", "%%", "visible" }, "fenced literals retain both comment syntaxes")
   assert_eq(

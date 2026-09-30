@@ -68,6 +68,9 @@ Features: ~
 - CommonMark paragraphs (soft-wrapped source lines are joined into one
   paragraph, including a list item's continuation lines and a blockquote
   body; no extra space is inserted between CJK characters)
+- An open quoted paragraph can continue without every `>` marker, including
+  nested quotes and quotes inside list items. Blank lines and new blocks end
+  continuation.
 - CJK spacing around inline markers (the spaces in `これは **強調** です。`,
   written only so that lenient parsers notice the `**`, are closed up; they
   stay when a neighbour is narrow, as in `これは **API** です。`)
@@ -1012,7 +1015,7 @@ ContentBuilder:render_document({lines}, {opts}) ~
 	                              - {url_template} (string)
 	                                e.g. "https://...JIRA-<num>"
 	                              - {is_alphanumeric} (boolean|nil)
-	    - {fold_state}          (table)   Callout fold states
+	    - {fold_state}          (table)   Callout states by original 1-based row
 	    - {expand_state}        (table)   Expandable region states
 	    - {source_line_offset}  (integer) Source line offset
 
@@ -1106,6 +1109,8 @@ Markdown.parse_reference_links({lines}) ~
 	The third return maps each definition's first input row to its last.
 	Multiline and quoted definitions are consumed even when unused; invalid
 	definitions remain Markdown. Tables use the same reference context.
+	Document previews resolve quote ownership first: definition-looking
+	continuation text cannot define a reference inside an existing paragraph.
 
 					     *Markdown.renumber_ordered_lists()*
 Markdown.renumber_ordered_lists({lines}) ~

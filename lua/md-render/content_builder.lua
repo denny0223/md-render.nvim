@@ -1480,7 +1480,9 @@ local function quote_paragraph_line(line, column, missing_marker, container)
     return false
   end
   -- Reuse the table leaf recognizer for inline HTML, images and autolinks.
-  if line:match "^ *[<!]" then return markdown_table.is_body_row(line, not missing_marker) end
+  if line:match "^ *[<!]" then return markdown_table.is_body_row(line, true) end
+  -- An omitted quote marker makes a possible underline paragraph text, never a heading.
+  if missing_marker and Markdown.parse_setext_underline(line) and not is_thematic_break(line) then return true end
   return not is_block_start(line, true)
 end
 

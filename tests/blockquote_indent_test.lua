@@ -39,9 +39,20 @@ local function build(lines, opts)
   display.apply_content_to_buffer(buf, ns, c)
   assert_eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), c.lines, "quote output applies to a real buffer")
   assert_eq(lines, original, "quote source stays unchanged")
+  for row, source_row in ipairs(c.source_line_map) do
+    local offset = opts and opts.source_line_offset or 0
+    assert(source_row > offset and source_row <= #lines + offset and c.lines[row], "original quote source rows")
+  end
+  for _, info in ipairs(c.highlights) do
+    for _, group in ipairs(info.groups) do
+      local last = group.end_col == -1 and #c.lines[info.line + 1] or group.end_col
+      assert(group.col >= 0 and group.col <= last and last <= #c.lines[info.line + 1], "quote highlight byte bounds")
+    end
+  end
   for _, link in ipairs(c.link_metadata) do
     assert_eq(links.at(buf, ns, link.line, link.col_start), link.url, "quoted link starts at its label")
     assert_eq(links.at(buf, ns, link.line, link.col_end - 1), link.url, "quoted link ends at its label")
+    assert_eq(links.at(buf, ns, link.line, link.col_end), nil, "byte after quoted link has no target")
   end
   vim.api.nvim_buf_delete(buf, { force = true })
   return c
@@ -207,11 +218,13 @@ for _, delimiter in ipairs { ".", ")" } do
   end
 end
 
--- A complete type-7 HTML tag cannot interrupt an existing marked paragraph.
-for _, tag in ipairs { "<span>", "</span>", '<span class="note">' } do
-  local c = build { "> first", "> " .. tag, "last" }
-  assert_eq(c.lines, { "│ first " .. tag .. " last" }, "marked inline HTML preserves lazy quote ownership")
-  assert_eq(c.source_line_map, { 1 }, "marked inline HTML remains in one source paragraph")
+-- A complete type-7 HTML tag cannot interrupt an open paragraph, including lazy rows.
+for _, tag in ipairs { "<span>", "</span>", '<span class="note">', "<custom-tag>" } do
+  for _, marker in ipairs { "> ", "" } do
+    local c = build { "> first", marker .. tag, "last" }
+    assert_eq(c.lines, { "│ first " .. tag .. " last" }, "inline HTML preserves lazy quote ownership")
+    assert_eq(c.source_line_map, { 1 }, "inline HTML remains in one source paragraph")
+  end
 end
 do
   local c = build { "> > first", "> > <span>", "last" }
@@ -227,7 +240,7 @@ do
   end
   assert_eq(italics, { "first", "<span> last" }, "emphasis spans inline HTML without styling quote borders")
   for _, source in ipairs {
-    { "> first", "<span>", "last" },
+    { "> first", "<div>", "last" },
     { "> first", "> <div>", "last" },
     { "> first", "> <span>", "", "last" },
     { "> # Heading", "> <span>", "last" },
@@ -297,6 +310,145 @@ do
   c = build { "> > ```markdown", "> > # literal", "> outside" }
   assert_eq(c.lines, { "│ │ # literal", "│ outside" }, "quoted fence stops at its actual quote depth")
   assert_eq(c.code_blocks[1].source_lines, { "# literal" }, "terminated quote fence retains its code metadata")
+end
+
+-- CommonMark 93/GFM63: a missing quote marker cannot promote a possible Setext underline.
+-- https://spec.commonmark.org/0.31.2/#example-93 (CC BY-SA 4.0)
+-- https://github.com/denny0223/md-render.nvim/issues/35
+do
+  for _, case in ipairs {
+    { { "> foo", "bar", "===" }, { "│ foo bar ===" }, 1 },
+    { { "> foo", "bar", "   === \t" }, { "│ foo bar ===" }, 1 },
+    { { "> > foo", "bar", "===" }, { "│ │ foo bar ===" }, 2 },
+    { { "> > foo", "> bar", "===" }, { "│ │ foo bar ===" }, 2 },
+    { { "- item", "  > foo", "bar", "===" }, { "• item", "  │ foo bar ===" }, 1 },
+    { { "> foo", "bar", "--" }, { "│ foo bar --" }, 1 },
+  } do
+    local c = build(case[1])
+    assert_eq(c.lines, case[2], "possible underline stays inside its lazy paragraph")
+    assert_eq(c.heading_lines, {}, "lazy underline creates no heading metadata")
+    assert_eq(c.heading_anchors, {}, "lazy underline creates no heading anchor")
+    for _, token in ipairs { "foo", "bar", case[1][#case[1]]:match "[=-]+" } do
+      local found = false
+      for row, line in ipairs(c.lines) do
+        local first = line:find(token, 1, true)
+        if first then
+          local _, depth = line:sub(1, first - 1):gsub("│ ", "")
+          assert_eq(depth, case[3], "every intended substring retains its quote depth")
+          assert_eq(c.source_line_map[row], #case[1] == 4 and 2 or 1, "joined quote uses its paragraph source row")
+          found = true
+        end
+      end
+      assert_eq(found, true, "lazy paragraph retains " .. token)
+    end
+  end
+  -- A genuine thematic break exits the quote, while one dash opens an empty list.
+  local c = build { "> foo", "---" }
+  assert_eq(c.lines, { "│ foo", "", string.rep("─", 60) }, "CM92/GFM62 thematic break remains outside")
+  assert_eq(c.source_line_map, { 1, 2, 2 }, "outside thematic break physical row")
+  assert_eq(c.heading_lines, {}, "CM92 creates no heading")
+  c = build { "> foo", "-" }
+  assert_eq(c.lines[1], "│ foo", "single dash ends the quote paragraph")
+  assert_eq(c.lines[#c.lines]:find("│", 1, true), nil, "empty list marker stays outside the quote")
+  assert_eq(c.source_line_map[#c.lines], 2, "empty list retains its physical source row")
+  -- Explicit underlines still form headings; actual block starts and blanks still end laziness.
+  c = build { "> foo", "bar", "> ===", "outside" }
+  assert_eq(c.lines[1], "│ # foo bar", "explicit quoted underline owns its title")
+  assert_eq(c.heading_lines[0], true, "explicit quote control remains a heading")
+  assert_eq(c.lines[#c.lines], "outside", "finished heading cannot accept lazy text")
+  for _, source in ipairs {
+    { "> foo", "bar", "", "===" },
+    { "> foo", "bar", ">", "===" },
+    { "> foo", "bar", "# heading", "outside" },
+    { "> foo", "bar", "```", "outside", "```" },
+    { "- item", "  > foo", "bar", "", "===" },
+  } do
+    c = build(source)
+    assert_eq(
+      c.lines[1]:find("foo bar", 1, true) ~= nil or c.lines[2]:find("foo bar", 1, true) ~= nil,
+      true,
+      "prior quote paragraph remains intact"
+    )
+    assert_eq(c.lines[#c.lines]:find("│", 1, true), nil, "blank or block start ends quote ownership")
+    assert_eq(
+      c.source_line_map[#c.lines],
+      source[#source] == "```" and #source - 1 or #source,
+      "outside block source row"
+    )
+  end
+end
+do
+  local source = { "> *甲乙  ", "丙丁* [連結](https://example.invalid/a?x=1&amp;y=2)", "===" }
+  local c = build(source)
+  assert_eq(c.lines, { "│ 甲乙", "│ 丙丁 連結 ===" }, "Unicode hard breaks preserve the lazy underline")
+  assert_eq(c.source_line_map, { 1, 2 }, "hard-break segments retain physical source rows")
+  local italics = {}
+  for _, info in ipairs(c.highlights) do
+    for _, group in ipairs(info.groups) do
+      if group.hl == "Italic" then italics[#italics + 1] = { info.line, group.col, group.end_col } end
+    end
+  end
+  assert_eq(italics, { { 0, #"│ ", #"│ 甲乙" }, { 1, #"│ ", #"│ 丙丁" } }, "exact UTF-8 italic byte spans")
+  assert_eq(c.link_metadata, {
+    { line = 1, col_start = #"│ 丙丁 ", col_end = #"│ 丙丁 連結", url = "https://example.invalid/a?x=1&y=2" },
+  }, "exact quoted link bytes and full destination")
+  c = build { "> [!NOTE]- Fold", "> foo", "bar", "===", "", "outside" }
+  assert_eq(c.callout_folds[1].source_line, 1, "callout fold keeps its original source row")
+  assert_eq(c.lines[#c.lines], "outside", "collapsed fold stops at container exit")
+  c = build({ "> [!NOTE]- Fold", "> foo", "bar", "===", "", "outside" }, { fold_state = { [1] = false } })
+  assert_eq(vim.list_contains(c.lines, "│ foo bar ==="), true, "expanded callout retains lazy underline")
+  c = build { "> ```markdown", "> foo", "> ===", "> ```", "outside" }
+  assert_eq(c.lines, { "│ foo", "│ ===", "outside" }, "quoted code remains literal and cannot become a heading")
+  assert_eq(c.heading_lines, {}, "quoted literal code has no heading")
+
+  local preview = require "md-render.preview"
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[buf].filetype = "markdown"
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, source)
+  vim.api.nvim_set_current_buf(buf)
+  vim.cmd "vsplit"
+  local win = vim.api.nvim_get_current_win()
+  local mouse, supports, open = display.getmousepos, display.supports_osc8, vim.ui.open
+  local ok, err = pcall(function()
+    preview.toggle { text_scale = false }
+    local session = assert(preview._toggle_sessions[buf])
+    display.supports_osc8 = function()
+      return false
+    end
+    for _, width in ipairs { 60, 14 } do
+      vim.api.nvim_win_set_width(win, width)
+      session:resize(win)
+      session:rebuild()
+      c = session.content
+      assert_eq(vim.api.nvim_win_get_width(win), width, "requested lazy preview window width")
+      assert_eq(session.opts.max_width, width, "lazy renderer uses actual preview width")
+      if width == 14 then assert(#c.lines > 2, "narrow lazy preview reflows the literal underline") end
+      assert_eq(vim.api.nvim_buf_get_lines(session.buf, 0, -1, false), c.lines, "lazy quote public preview buffer")
+      assert_eq(c.heading_lines, {}, "preview lazy underline has no heading")
+      for _, line in ipairs(c.lines) do
+        if line:find("===", 1, true) then
+          assert_eq(line:match "^%s*(│ )", "│ ", "rebuild keeps underline quoted")
+        end
+      end
+      local activated = {}
+      vim.ui.open = function(url)
+        activated[#activated + 1] = url
+      end
+      for _, link in ipairs(c.link_metadata) do
+        display.getmousepos = function()
+          return { winid = vim.api.nvim_get_current_win(), line = link.line + 1, column = link.col_start + 1 }
+        end
+        vim.fn.maparg("<LeftRelease>", "n", false, true).callback()
+      end
+      assert_eq(activated, { "https://example.invalid/a?x=1&y=2" }, "lazy quoted link activates exact destination")
+    end
+  end)
+  display.getmousepos, display.supports_osc8, vim.ui.open = mouse, supports, open
+  if preview._toggle_sessions[buf] then preview.toggle() end
+  assert_eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), source, "lazy public preview keeps source unchanged")
+  vim.api.nvim_win_close(win, true)
+  vim.api.nvim_buf_delete(buf, { force = true })
+  assert(ok, err)
 end
 
 do

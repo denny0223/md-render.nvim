@@ -9,6 +9,18 @@
 | 3. Terminal | What the terminal actually *holds* | Scaled text drawn wrong, or not at all | CI (push/PR **and weekly**) | `tests/terminal_test.py` |
 | 4. Visual regression | What the terminal actually *draws* | Clipped glyphs, images that never paint | Local only | `./tests/run_visual_test.sh` |
 
+### Offline CommonMark/GFM corpus
+
+The [corpus test](compat_corpus_test.lua) replays every [pinned official input](fixtures/specs/README.md) through ContentBuilder and a real Neovim buffer as part of `make test`. From the repository root, replay the inputs and export a local case-level report:
+
+```sh
+NVIM_LOG_FILE=/tmp/md-render-corpus.log MD_RENDER_CORPUS_REPORT=/tmp/md-render-corpus-report.json make tests/compat_corpus_test.lua
+```
+
+The gate checks physical output rows, buffer/content equality, highlight/link UTF-8 endpoints, source-map bounds and unchanged source bytes/changedtick. Invalid witnesses verify the checks. The report records fixture metadata and each example's invariant status/reason; broader semantics remain `unverified`. Named subject tests separately cover their explicitly asserted payload, ownership, target and interaction cases.
+
+The corpus runs headless at width 1000 with plain headings and text-only image fallback. It does not compare the expected HTML or prove complete block/inline semantics, list/quote/table ownership, HTML/tag filtering, image/link/title semantics, code-language metadata or empty-code identity. Bounds alone establish neither intended substrings nor source-row correspondence. Narrow wrapping, heading backends, terminal pixels and interactions need their separate tests. Executed-input counts are not a conformance percentage.
+
 Layer 2 exists because of a silent breakage: FFmpeg 9 removed `-vsync`, frame extraction failed for every video and animated GIF, and nothing noticed — the emitted escape sequences were still correct and no commit had touched the code. The failure mode was the toolchain moving, so the test runs on a schedule, not just on push.
 
 ## Running all CI tests locally

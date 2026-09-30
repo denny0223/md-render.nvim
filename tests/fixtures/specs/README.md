@@ -8,4 +8,4 @@ The CommonMark specification is by [John MacFarlane](https://github.com/jgm); th
 
 Fixture updates are explicit: retrieve the sources, verify their displayed versions, record new source hashes and retrieval time, apply the documented extraction rules without trimming or normalizing payloads, and review the input/expectation diff together with the updated fixture hash and counts. Never replace the fixture during a test run. In particular, JSON `\t` and `\n` encode real tabs and newlines; an editor's whitespace cleanup must not change them. A newer GFM page at the same URL is a new fixture revision, not an implicit update.
 
-The expected HTML is a reference for named semantic assertions. The all-input corpus gate checks product invariants through a real Neovim buffer; it does not compare a complete HTML/AST representation.
+The expected HTML is a reference for named semantic assertions. The all-input corpus gate checks product invariants through a real Neovim buffer; it does not compare a complete HTML/AST representation. See [offline replay](../../README.md#offline-commonmarkgfm-corpus) for the command and coverage limits.

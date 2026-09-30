@@ -61,7 +61,11 @@ end
 -- single blockquote.
 do
   local out = render { "   > # Foo", "   > bar", " > baz" }
-  assert_eq(out, { "│ # Foo", "│ bar baz" }, "indented quote preserves separate source blocks")
+  assert_eq(
+    out,
+    { "│ # Foo", "│ " .. string.rep("═", 58), "│ bar baz" },
+    "indented quoted H1 retains its rank and rule"
+  )
 end
 
 -- Test 2: four spaces is too many (spec example 231) — an indented code
@@ -136,12 +140,23 @@ do
   )
 end
 
+-- An ATX heading owns callout-shaped title text before alert detection.
+for _, title in ipairs { "[!NOTE]", "[!NOTE]- Fold", "[!WARNING] Title" } do
+  local c = build { "> ### " .. title, "> tail" }
+  assert_eq(c.lines, { "│ ### " .. title, "│ tail" }, "quoted heading preserves its callout-shaped title")
+  assert_eq(c.heading_lines[0], true, "callout-shaped title remains a quoted heading")
+  assert_eq(#c.callout_folds, 0, "heading title cannot create a callout fold")
+end
+
 -- CommonMark 228/232/233/238/250/251: only an open paragraph permits omitted markers.
 do
   local c = build { "> # Foo", "> bar", "baz" }
+  assert_eq(c.heading_anchors.foo, 0, "quoted H1 has an undecorated anchor")
+  assert_eq(c.heading_lines[0], true, "quoted H1 has heading metadata")
   assert_eq(c.lines[#c.lines], "│ bar baz", "a later paragraph admits lazy text after a heading")
   assert_eq(c.source_line_map[#c.lines], 2, "joined paragraph retains its first physical row")
   c = build { "> \t## Tab heading", "outside" }
+  assert_eq(c.heading_anchors["tab-heading"], 0, "leading structural tab uses the physical quote column")
   assert_eq(c.lines[#c.lines], "outside", "a tab-indented heading cannot admit lazy text")
   for _, case in ipairs {
     { { "> bar", "baz", "> foo" }, "│ bar baz foo" },

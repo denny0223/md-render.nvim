@@ -171,6 +171,60 @@ assert(
   "plain to native keeps the same title character"
 )
 
+-- Quote bars consume display cells for wrapping, but metadata keeps UTF-8 bytes.
+for _, case in ipairs {
+  { { "> ###### 甲乙丙丁戊己庚辛壬癸" }, "│ ", 1 },
+  { { "> > ###### 甲乙丙丁戊己庚辛壬癸" }, "│ │ ", 1 },
+  { { "- item", "  > ###### 甲乙丙丁戊己庚辛壬癸" }, "  │ ", 2 },
+} do
+  local native = preview.build_content(case[1], { max_width = 80, indent = "" })
+  local ordinary = preview.build_content(case[1], { max_width = 20, indent = "", text_scale = false })
+  local placement = assert(native.text_placements[1], "quoted heading uses native layout")
+  assert(placement.col == #case[2], "native placement excludes unscaled quote bars using byte columns")
+  local mapped =
+    display.remap_view({ lnum = placement.line + 1, topline = 1, col = placement.col + 18 }, native, ordinary)
+  assert(
+    ordinary.lines[mapped.lnum]:sub(mapped.col + 1, mapped.col + 3) == "庚",
+    "quoted reflow keeps the title character"
+  )
+  mapped = display.remap_view(mapped, ordinary, native)
+  assert(
+    native.lines[mapped.lnum]:sub(mapped.col + 1, mapped.col + 3) == "庚",
+    "quoted native restoration keeps the character"
+  )
+  for row, point in pairs(ordinary.heading_positions) do
+    assert(ordinary.source_line_map[row] == case[3], "wrapped quoted title retains its source row")
+    assert(
+      ordinary.lines[row]:sub(point.col + 1, point.col + point.length)
+        == ("甲乙丙丁戊己庚辛壬癸"):sub(point.byte + 1, point.byte + point.length),
+      "heading positions exclude every quote and rank byte"
+    )
+  end
+  for _, line in ipairs(ordinary.lines) do
+    assert(vim.fn.strdisplaywidth(line) <= 20, "quoted heading wrap counts each quote cell")
+  end
+end
+
+local quote_source = { "> > # Parent", "> > ##### Child" }
+local quoted_narrow = preview.build_content(quote_source, { max_width = 20, indent = "" })
+local quoted_plain = preview.build_content(quote_source, { max_width = 20, indent = "", text_scale = false })
+assert(vim.deep_equal(quoted_narrow.lines, quoted_plain.lines), "narrow quoted native headings keep plain geometry")
+assert(quoted_narrow.heading_backend == "plain", "unsupported quoted native geometry has document fallback")
+local quoted_control = preview.build_content({ "> ###### A\tB" }, { max_width = 80, indent = "" })
+assert(
+  quoted_control.heading_backend == "plain" and #quoted_control.text_placements == 0,
+  "quoted tabs retain usable native text"
+)
+local quoted_empty = preview.build_content(
+  { "> ######", "outside" },
+  { max_width = 20, indent = "", text_scale = false }
+)
+assert(
+  quoted_empty.heading_lines[0] and next(quoted_empty.heading_anchors) == nil,
+  "empty quoted headings retain metadata without anchors"
+)
+assert(quoted_empty.lines[#quoted_empty.lines] == "outside", "empty quoted heading cannot admit lazy text")
+
 local unbroken = preview.build_content({ "###### " .. string.rep("x", 60) }, {
   max_width = 20,
   indent = "",

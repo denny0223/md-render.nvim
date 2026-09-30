@@ -875,6 +875,23 @@ function ContentBuilder:add_markdown_line(
     quote_prefix = rendered_text:sub(1, pos - 1)
   end
 
+  local heading_quote = ""
+  if heading_content and quote_prefix ~= "" then
+    heading_quote = quote_prefix
+    indent = indent .. heading_quote
+    rendered_text = rendered_text:sub(#heading_quote + 1)
+    md_highlights = vim.tbl_filter(function(hl)
+      return hl.hl ~= "FloatBorder"
+    end, md_highlights)
+    for _, hl in ipairs(md_highlights) do
+      hl.col, hl.end_col = hl.col - #heading_quote, hl.end_col - #heading_quote
+    end
+    for _, link in ipairs(md_links) do
+      link.col_start, link.col_end = link.col_start - #heading_quote, link.col_end - #heading_quote
+    end
+    quote_prefix = ""
+  end
+
   -- A scaled heading wraps at 1/ratio of the usual width and reserves
   -- `s - 1` rows under each of its lines for the taller glyphs.
   local spec, level
@@ -883,7 +900,7 @@ function ContentBuilder:add_markdown_line(
   local image_heading = backend == "image"
   local plain_heading = backend == "plain" or not self.text_scale
   if heading_content then
-    level = parse_atx_heading(text)
+    level = tonumber(md_highlights[1].hl:match "^MdRenderH(%d)$")
     if self.text_scale and backend == "native" and rendered_text ~= "" then
       -- OSC 66 cannot preserve Neovim's tab/control-character display.
       if rendered_text:find "%c" then
@@ -955,7 +972,7 @@ function ContentBuilder:add_markdown_line(
       if row == lines_before_fn or line ~= "" then
         self.heading_lines[row] = true
         local prefix = row == lines_before_fn and (indent .. plain_prefix .. markdown.heading_icon_prefix(level))
-          or (line:match "^%s*" or "")
+          or (indent .. (line:sub(#indent + 1):match "^%s*" or ""))
         local fragment = line:sub(#prefix + 1)
         local first = heading_text:find(fragment, offset + 1, true)
         if first and fragment ~= "" then
@@ -969,6 +986,17 @@ function ContentBuilder:add_markdown_line(
       local rule = indent
         .. string.rep(char, math.max(0, math.floor((max_width - indent_w) / vim.fn.strdisplaywidth(char))))
       self:add_line(rule, { { col = #indent, end_col = #rule, hl = "FloatBorder" } })
+    end
+  end
+
+  if heading_quote ~= "" then
+    for row = lines_before_fn + 1, #self.lines do
+      if self.lines[row] ~= "" then
+        table.insert(self.highlights, {
+          line = row - 1,
+          groups = { { col = #indent - #heading_quote, end_col = #indent, hl = "FloatBorder" } },
+        })
+      end
     end
   end
 

@@ -2222,7 +2222,7 @@ local function join_paragraph_continuations(
       end
       local was_in_comment = comment_state ~= nil
       local comment_suffix
-      if not open_fence and not literal_code then
+      if not open_fence and not literal_code and (comment_state or not line_origin.html_token_continuation) then
         comment_state, comment_suffix = block_comment_step(comment_state, line, line_origin.html)
       end
       if comment_suffix ~= nil then
@@ -2404,7 +2404,7 @@ local function preprocess_multiline_html(lines, src_indices, container_indents, 
       reference_end = definition_ends[idx] or 0
       if reference_end >= idx then goto next_row end
     end
-    if not open_fence then
+    if not open_fence and (comment_state or not origin.html_token_continuation) then
       local suffix
       comment_state, suffix = block_comment_step(comment_state, line, origin.html)
       if suffix ~= nil then
@@ -2463,7 +2463,7 @@ local function fenced_code_lines(
       code_lines[src] = true
       goto next_line
     end
-    if not open_fence then
+    if not open_fence and (comment_state or not origin.html_token_continuation) then
       comment_state, comment_suffix = block_comment_step(comment_state, line, origin.html)
     end
     if comment_suffix ~= nil then
@@ -2538,6 +2538,68 @@ local function definition_lines(lines, src_indices, comments, code_lines, opaque
   return result
 end
 
+-- Read the accepted HTML payload before display transforms or list numbering.
+local function html_source_line(line, origin, src, list_bases)
+  local column = origin.column
+  for depth = 1, #origin.quote_columns do
+    local _
+    _, line, column = split_quote_marker(line, column, origin.quote_columns[depth])
+  end
+  if origin.list_column and list_bases[src] == nil then
+    line = strip_container_prefix(line, origin.list_column, column)
+  end
+  local marker = ""
+  if src == origin.html and list_bases[src] ~= nil then
+    marker = line:match "^( *[-*+][ \t]+)" or line:match "^( *%d+[.)][ \t]+)" or ""
+    line = line:sub(#marker + 1)
+  end
+  return line, marker
+end
+
+-- A physical row beginning inside a complete token cannot start new syntax.
+-- Count table tags once, on the row where their real token ends.
+local function mark_html_token_rows(lines, source_origins, list_bases)
+  local groups = {}
+  for src, line in ipairs(lines) do
+    local origin = source_origins[src]
+    if origin.html then
+      local group = groups[origin.html] or { lines = {}, sources = {} }
+      groups[origin.html] = group
+      group.lines[#group.lines + 1] = html_source_line(line, origin, src, list_bases)
+      group.sources[#group.sources + 1] = src
+    end
+  end
+  for _, group in pairs(groups) do
+    local kind = html_block.start(group.lines[1], false)
+    -- Types 1–5 have their own literal closing-line and suffix contract.
+    if kind and kind >= 6 then
+      local starts, offset = {}, 1
+      for row, line in ipairs(group.lines) do
+        starts[row], offset = offset, offset + #line + 1
+        source_origins[group.sources[row]].html_table_delta = 0
+        source_origins[group.sources[row]].html_summary_end = false
+      end
+      local row = 1
+      for first, last, token in inline.html_tags(table.concat(group.lines, "\n")) do
+        while starts[row + 1] and starts[row + 1] <= first do
+          row = row + 1
+        end
+        local end_row = row
+        while starts[end_row + 1] and starts[end_row + 1] <= last do
+          end_row = end_row + 1
+        end
+        for continuation = row + 1, end_row do
+          source_origins[group.sources[continuation]].html_token_continuation = true
+        end
+        local origin = source_origins[group.sources[end_row]]
+        origin.html_table_delta = origin.html_table_delta + table_depth_change(token)
+        if token:match "^</summary%s*>$" then origin.html_summary_end = true end
+        row = end_row
+      end
+    end
+  end
+end
+
 function ContentBuilder:render_document(lines, opts)
   opts = opts or {}
   local markdown = require "md-render.markdown"
@@ -2556,6 +2618,7 @@ function ContentBuilder:render_document(lines, opts)
   local fence_containers = {}
   local comments, table_rows
   lines, container_indents, source_origins, list_bases = strip_container_indent(lines)
+  mark_html_token_rows(lines, source_origins, list_bases)
   lines, src_indices, comments, table_rows =
     preprocess_multiline_html(lines, src_indices, container_indents, source_origins)
   local code_lines =
@@ -2620,63 +2683,59 @@ function ContentBuilder:render_document(lines, opts)
     if origin.html then
       local group = html_groups[origin.html] or { lines = {}, sources = {}, blanks = {}, markers = {} }
       html_groups[origin.html] = group
-      local column = origin.column
-      for depth = 1, #origin.quote_columns do
-        local _
-        _, line, column = split_quote_marker(line, column, origin.quote_columns[depth])
-      end
-      if origin.list_column and list_bases[src] == nil then
-        line = strip_container_prefix(line, origin.list_column, column)
-      end
-      local marker = ""
-      if src == origin.html and list_bases[src] ~= nil then
-        local source_marker = line:match "^( *[-*+][ \t]+)" or line:match "^( *%d+[.)][ \t]+)"
-        if source_marker then
-          marker, group.markers[#group.lines + 1] =
-            markdown.render(source_marker, nil, nil, nil, nil, nil, { list_marker = true })
-          line = line:sub(#source_marker + 1)
-        end
+      local marker
+      line, marker = html_source_line(line, origin, src, list_bases)
+      if marker ~= "" then
+        marker, group.markers[#group.lines + 1] =
+          markdown.render(marker, nil, nil, nil, nil, nil, { list_marker = true })
       end
       group.blanks[#group.lines + 1] = line:match "^[ \t]*$" ~= nil
-      line = unwrap_html_wrapper(line) or ""
-      local p_content, p_rest = html_pair(line, "p")
-      if p_content and line:match "^%s*<p[%s>]" and p_rest:match "^%s*$" then
-        p_content = p_content:match "^%s*(.-)%s*$"
-      else
-        p_content = nil
+      if not origin.html_token_continuation then
+        line = unwrap_html_wrapper(line) or ""
+        local p_content, p_rest = html_pair(line, "p")
+        if p_content and line:match "^%s*<p[%s>]" and p_rest:match "^%s*$" then
+          line = p_content:match "^%s*(.-)%s*$"
+        end
       end
-      group.lines[#group.lines + 1] = marker .. (p_content or line)
+      group.lines[#group.lines + 1] = marker .. line
       group.sources[#group.sources + 1] = src
     end
   end
   for _, group in pairs(html_groups) do
+    local html = table.concat(group.lines, "\n")
+    local source_starts, source_offset = {}, 1
+    for row, line in ipairs(group.lines) do
+      source_starts[row], source_offset = source_offset, source_offset + #line + 1
+    end
     local index = 1
     while index <= #group.lines do
       local tag, first = html_opening(group.lines[index], "h[1-6]")
       local level = tag and tag:match "^<h([1-6])"
       -- Quoted headings use readable raw rows rather than the heading display path.
-      if level and #source_origins[group.sources[index]].quote_columns == 0 then
-        local parts, last = {}, index
-        while last <= #group.lines do
-          local part = last == index and first or group.lines[last]
-          local close_first, close_last = inline.html_closing(part, "h" .. level)
-          local before = close_first and part:sub(close_last + 1):match "^%s*$" and part:sub(1, close_first - 1)
-          parts[#parts + 1] = before or part
-          if before then
+      local origin = source_origins[group.sources[index]]
+      if level and #origin.quote_columns == 0 and not origin.html_token_continuation then
+        local body_start = source_starts[index] + #group.lines[index] - #first
+        local close_first, close_last = inline.html_closing(html, "h" .. level, body_start)
+        if close_first then
+          local last = index
+          while source_starts[last + 1] and source_starts[last + 1] <= close_last do
+            last = last + 1
+          end
+          local row_end = (source_starts[last + 1] or (#html + 2)) - 2
+          if html:sub(close_last + 1, row_end):match "^%s*$" then
+            local parts = vim.split(html:sub(body_start, close_first - 1), "\n", { plain = true })
             html_headings[group.sources[index]] =
               { level = tonumber(level), content = wrap_mod.join_source_lines(parts) }
             for row = index + 1, last do
               html_heading_rows[group.sources[row]] = true
             end
             index = last
-            break
           end
-          last = last + 1
         end
       end
       index = index + 1
     end
-    local text, highlights, links = markdown.render_html(table.concat(group.lines, "\n"))
+    local text, highlights, links = markdown.render_html(html)
     local rows = vim.split(text, "\n", { plain = true })
     local starts, offset = {}, 0
     for row_index, row in ipairs(rows) do
@@ -3551,7 +3610,8 @@ function ContentBuilder:render_document(lines, opts)
     if not origin.html and not in_code_block and markdown.is_footnote_def(line) then goto continue end
 
     -- Strip wrapper tags before ordinary block processing.
-    if not in_code_block and not in_callout_code_block then
+    local display_html = not in_code_block and not in_callout_code_block and not origin.html_token_continuation
+    if display_html then
       line = unwrap_html_wrapper(line)
       if not line then goto continue end
     end
@@ -3565,7 +3625,7 @@ function ContentBuilder:render_document(lines, opts)
     -- Convert HTML headings <h1>-<h6> to markdown format
     -- If heading contains an <img>, split it into separate image + heading lines
     local html_heading_level
-    if not in_code_block then
+    if display_html then
       local heading = line:match "^%s*<h[1-6]" and html_headings[src_indices[src_idx]]
       local h_content, h_rest, h_tag = html_pair(line, "h[1-6]")
       local h_level = h_tag and h_rest:match "^%s*$" and h_tag:match "^<h([1-6])"
@@ -3614,9 +3674,9 @@ function ContentBuilder:render_document(lines, opts)
       and (html_heading_level ~= nil or (not origin.html and (setext_rank ~= nil or atx_level ~= nil)))
 
     -- Handle <details>/<summary> HTML blocks (outside code blocks)
-    if not in_code_block and not in_callout_code_block then
+    if display_html or in_details_summary then
       -- Handle </details> end tag
-      if line:match "^%s*</details>%s*$" then
+      if display_html and line:match "^%s*</details>%s*$" then
         if in_details_summary then finish_details_summary(src_indices[src_idx]) end
         if in_details then
           if details_depth > 0 then
@@ -3638,7 +3698,10 @@ function ContentBuilder:render_document(lines, opts)
       end
 
       -- Handle <details> opening tag
-      local details_tag, details_rest = html_opening(line, "details")
+      local details_tag, details_rest
+      if display_html then
+        details_tag, details_rest = html_opening(line, "details")
+      end
       if details_tag then
         if in_details then
           details_depth = details_depth + 1
@@ -3655,8 +3718,14 @@ function ContentBuilder:render_document(lines, opts)
         -- Check for inline <summary>...</summary>
         for first, _, token in inline.html_tags(details_rest) do
           if token == "<summary>" then
-            local s = html_pair(details_rest:sub(first), "summary")
-            if s then render_details_summary(s ~= "" and s or "Details", origin.html ~= nil) end
+            local s = origin.html_summary_end ~= false and html_pair(details_rest:sub(first), "summary")
+            if s then
+              render_details_summary(s ~= "" and s or "Details", origin.html ~= nil)
+            else
+              in_details_summary = true
+              details_summary_parts = { details_rest:sub(first + #token) }
+              details_summary_owner, details_summary_src = origin.html, src_indices[src_idx]
+            end
             break
           end
         end
@@ -3667,19 +3736,27 @@ function ContentBuilder:render_document(lines, opts)
       if in_details and not details_summary_rendered then
         if in_details_summary then
           -- Accumulating multi-line summary
-          local before = line:match "^(.-)</summary>%s*$"
-          if before then
-            if before ~= "" then table.insert(details_summary_parts, before) end
-            finish_details_summary(src_indices[src_idx])
-            goto continue
-          end
           table.insert(details_summary_parts, line)
+          -- Only the full accepted source can identify a real closing row.
+          if origin.html_summary_end ~= false then
+            local text = table.concat(details_summary_parts, "\n")
+            local first, last = inline.html_closing(text, "summary")
+            if first and text:sub(last + 1):match "^%s*$" then
+              local body = text:sub(1, first - 1):gsub("\n$", "")
+              details_summary_parts = vim.split(body, "\n", { plain = true })
+              finish_details_summary(src_indices[src_idx])
+              goto continue
+            end
+          end
           goto continue
         end
 
         -- Single-line <summary>text</summary>
-        local s = line:match "^%s*<summary>(.-)</summary>%s*$"
-        if s then
+        local s, summary_rest
+        if origin.html_summary_end ~= false and line:match "^%s*<summary>" then
+          s, summary_rest = html_pair(line, "summary")
+        end
+        if s and summary_rest:match "^%s*$" then
           render_details_summary(s ~= "" and s or "Details", origin.html ~= nil)
           goto continue
         end
@@ -3706,7 +3783,7 @@ function ContentBuilder:render_document(lines, opts)
     -- Lines inside <figure> pass through normally (e.g. <img> lines are rendered
     -- by the standalone image detector below). Only the <figure>, </figure>, and
     -- <figcaption> wrapper tags are consumed here.
-    if not in_code_block and not in_callout_code_block then
+    if display_html then
       if in_figure then
         if line:match "^%s*</figure>%s*$" then
           in_figure = false
@@ -3739,7 +3816,7 @@ function ContentBuilder:render_document(lines, opts)
     -- Handle <p> blocks (outside code blocks)
     -- Strip <p>/<p align="..."> wrapper tags and let inner content (e.g. <img>,
     -- <em>) fall through to normal processing, similar to <figure>.
-    if not in_code_block and not in_callout_code_block then
+    if display_html then
       if in_p_tag then
         if line:match "^%s*</p>%s*$" then
           in_p_tag = false
@@ -3761,7 +3838,7 @@ function ContentBuilder:render_document(lines, opts)
     end
 
     -- Handle <dl> definition lists (outside code blocks)
-    if not in_code_block and not in_callout_code_block then
+    if display_html then
       if in_dl then
         if line:match "^%s*</dl>%s*$" then
           in_dl = false
@@ -3883,7 +3960,11 @@ function ContentBuilder:render_document(lines, opts)
         table.insert(html_table_lines, line)
         table.insert(html_table_sources, src_indices[src_idx])
         -- Track nested <table> depth
-        html_table_depth = html_table_depth + table_depth_change(line)
+        local src = src_indices[src_idx]
+        local delta = src ~= html_table_sources[#html_table_sources - 1]
+            and (origin.html_table_delta or table_depth_change(line))
+          or 0
+        html_table_depth = html_table_depth + delta
         if html_table_depth <= 0 then
           in_html_table = false
           -- Convert HTML table to pipe-table lines and render
@@ -3944,10 +4025,10 @@ function ContentBuilder:render_document(lines, opts)
         goto continue
       end
 
-      if html_opening(line, "table") then
+      if display_html and html_opening(line, "table") then
         flush_table()
         in_html_table = true
-        html_table_depth = table_depth_change(line)
+        html_table_depth = origin.html_table_delta or table_depth_change(line)
         html_table_lines = { line }
         html_table_sources = { src_indices[src_idx] }
         html_table_owner = origin.html
@@ -3980,7 +4061,7 @@ function ContentBuilder:render_document(lines, opts)
 
     -- Handle <hr> as horizontal rule
     local hr_tag, hr_rest = html_opening(line, "hr")
-    if not in_code_block and hr_tag and hr_rest:match "^%s*$" then
+    if display_html and hr_tag and hr_rest:match "^%s*$" then
       flush_table()
       if lines_shown > 0 and not prev_was_hr then
         self:add_line(indent)
@@ -4000,7 +4081,10 @@ function ContentBuilder:render_document(lines, opts)
     end
 
     -- Handle markdown thematic breaks (---, ***, ___, etc.)
-    if origin.html and not html_image_tag(line) and not line:match "^%s*<video[%s>].-</video>%s*$" then
+    if
+      origin.html_token_continuation
+      or (origin.html and not html_image_tag(line) and not line:match "^%s*<video[%s>].-</video>%s*$")
+    then
       if prev_was_hr and not is_blank then
         self:add_line(indent)
         lines_shown = lines_shown + 1

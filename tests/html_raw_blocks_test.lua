@@ -204,6 +204,103 @@ do
   end
 end
 
+-- Physical rows inside a complete multi-line token retain its literal ownership.
+local multiline_attribute_source =
+  { "<div>", "<a", 'href="x', '<!-- trap -->y">*BODY*</a>', "*raw*", "</div>", "", "*after*" }
+do
+  local c = build(multiline_attribute_source)
+  eq(c.lines, { "*BODY*", "*raw*", "", "after" }, "a quoted comment-looking row cannot hide the anchor or body")
+  eq(c.source_line_map, { 4, 5, 7, 8 }, "multi-line anchor body and resumed paragraph keep physical rows")
+  eq(targets(c), { { 4, "*BODY*", "x\n<!-- trap -->y" } }, "multi-line quoted href retains all source bytes")
+  eq(styled(c, "Italic"), { { 8, "after" } }, "only the paragraph after the raw boundary parses emphasis")
+  local literal = { '<div title="a >', "<!-- trap", 'b">BODY</div>', "", "*after*" }
+  local raw = build(literal)
+  eq(
+    raw.lines,
+    { literal[1], literal[2], literal[3], "", "after" },
+    "a comment-looking attribute cannot erase raw rows"
+  )
+  eq(raw.source_line_map, { 1, 2, 3, 4, 5 }, "readable multi-line opener preserves every physical row")
+end
+for _, source in ipairs {
+  { "<div>", '<a title="a', "VALUE", 'b" href="real">*別*</a>', "</div>", "", "*after*" },
+  { "> <div>", '> <a title="a', "> VALUE", '> b" href="real">*別*</a>', "> </div>", "", "*after*" },
+  { "- <div>", '  <a title="a', "  VALUE", '  b" href="real">*別*</a>', "  </div>", "", "*after*" },
+  { "> - <div>", '>   <a title="a', ">   VALUE", '>   b" href="real">*別*</a>', ">   </div>", "", "*after*" },
+  { "<table>", '<tr><td title="a', "VALUE", 'b">*別*</td></tr>', "</table>", "", "*after*" },
+  { "<h2>", '<a title="a', "VALUE", 'b" href="real">*別*</a>', "</h2>" },
+  {
+    "<details open>",
+    "<summary>",
+    '<a title="a',
+    "VALUE",
+    'b" href="real">*別*</a>',
+    "</summary>",
+    "*body*",
+    "</details>",
+  },
+  { "<details open>", '<summary><a title="VALUE', 'tail" href="real">*別*</a>', "</summary>", "*body*", "</details>" },
+  { '<details open><summary><a title="VALUE', 'tail" href="real">*別*</a>', "</summary>", "*body*", "</details>" },
+  {
+    "<details open>",
+    "<summary>",
+    '<a title="a',
+    "VALUE",
+    'b" href="real">*別*</a></summary>',
+    "*body*",
+    "</details>",
+  },
+} do
+  local function replace(value)
+    return vim.tbl_map(function(line)
+      return (line:gsub("VALUE", value))
+    end, source)
+  end
+  local control = build(replace "plain")
+  for _, token_text in ipairs {
+    "<!-- trap -->",
+    "</table><table><tr><td>TRAP</td></tr>",
+    "<div><p><details open><img src=evil>",
+    "</h2></summary></details>",
+    "</summary>",
+    "</details>",
+  } do
+    local c = build(replace(token_text))
+    eq(c.lines, control.lines, "cross-line attribute syntax cannot change display structure")
+    eq(c.source_line_map, control.source_line_map, "cross-line token ownership remains physical")
+    eq(targets(c), targets(control), "cross-line attribute syntax cannot change real targets")
+    eq(styled(c, "Italic"), styled(control, "Italic"), "cross-line attribute syntax cannot add emphasis")
+    eq(c.heading_lines, control.heading_lines, "fake cross-line closer cannot retire the heading")
+    eq(c.callout_folds, control.callout_folds, "fake cross-line closer cannot retire details")
+    eq(c.image_placements, control.image_placements, "fake cross-line image cannot create media")
+  end
+end
+
+-- Inline-started comments are opaque to both raw display and block presentation.
+local multiline_comment_source = { "<div>", "prefix <!--", "<h2>TRAP</h2>", "-->", "*raw*", "</div>", "", "*after*" }
+for _, payload in ipairs {
+  { "<h2>TRAP</h2>" },
+  { "<details open>", "<summary>TRAP</summary>", "</details>" },
+  { "<table><tr><td>TRAP</td></tr></table>" },
+  { '<img src="evil.png" alt="TRAP">' },
+} do
+  local source = { "<div>", "prefix <!--" }
+  vim.list_extend(source, payload)
+  vim.list_extend(source, { "-->", "*raw*", "</div>", "", "*after*" })
+  local c = build(source)
+  eq(c.lines, { "prefix ", "*raw*", "", "after" }, "inline-started comment payload never reaches display handlers")
+  eq(
+    c.source_line_map,
+    { 2, #source - 3, #source - 1, #source },
+    "hidden comment rows preserve following physical owners"
+  )
+  eq(c.heading_lines, {}, "comment headings cannot create a heading presentation")
+  eq(c.callout_folds, {}, "comment details cannot create a fold")
+  eq(c.image_placements, {}, "comment images cannot create a placement")
+  eq(targets(c), {}, "comment payload cannot create a target")
+  eq(styled(c, "Italic"), { { #source, "after" } }, "emphasis resumes only after the raw owner ends")
+end
+
 do
   local c, marks = build(anchor_source)
   eq(c.lines, { "*bar*" }, "CM162 preserves stars in HTML anchor text")
@@ -978,6 +1075,16 @@ end
 for _, source in ipairs {
   anchor_source,
   quoted_href_source,
+  multiline_attribute_source,
+  multiline_comment_source,
+  {
+    "<details open>",
+    '<summary><a title="</summary>',
+    'tail" href="real">*別*</a>',
+    "</summary>",
+    "*body*",
+    "</details>",
+  },
   heading_attribute_source,
   ordered_heading_images_source,
   mixed_heading_images_source,

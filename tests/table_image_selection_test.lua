@@ -15,14 +15,16 @@ end
 
 local root = vim.fn.getcwd()
 local paths = { root .. "/tests/fixtures/test_4x4.png", root .. "/assets/demo/test.png" }
-local left_caption = "地球測試ABCDEFGHIJKLMNOPQRSTUV"
+local left_caption = "地球測試ABCDEFGHIJKLMNOPQRSTUV，完整標題的句尾必須保留 CAPTION73"
 local right_caption = "這是第二張圖片的很長中文標題"
 vim.bo.filetype = "markdown"
 vim.api.nvim_buf_set_lines(0, 0, -1, false, {
   "| A quite long left cell header needing width | Cat in Space (http.cat) |",
   "|---|---|",
   "| ![" .. left_caption .. "](" .. paths[1] .. ") | ![HTTP 200](" .. paths[2] .. ") |",
-  "| Plain text | ![Mixed](" .. paths[1] .. ") |",
+  "| Plain text with a long explanation that must remain readable through the final keyword TEXT73 | ![Mixed]("
+    .. paths[1]
+    .. ") |",
   "",
   "| A | " .. right_caption .. "與更多說明 |",
   "|---|---|",
@@ -74,10 +76,15 @@ end
 local expected_paths = { paths[1], paths[2], paths[1], paths[2], paths[1], paths[1], paths[2] }
 for idx, label in ipairs { left_caption, "HTTP 200", "Mixed", "First", right_caption, "Nested left", "Nested right" } do
   local p = placements[idx]
-  local caption = session.content.lines[p.line]
-  local at = assert(caption:find(label, 1, true)) - 1
-  enter(p.line, at, expected_paths[idx])
-  enter(p.line, at + vim.fn.byteidx(label, vim.fn.strchars(label) - 1), expected_paths[idx])
+  local pieces = {}
+  for row = p.line - p.label_rows + 1, p.line do
+    local first = vim.fn.virtcol2col(session.win, row, p.cell_col + 1) - 1
+    local last = vim.fn.virtcol2col(session.win, row, p.cell_col + p.cell_cols + 1) - 1
+    pieces[#pieces + 1] = session.content.lines[row]:sub(first + 1, last):gsub("%s", "")
+    enter(row, first, expected_paths[idx])
+    enter(row, vim.fn.virtcol2col(session.win, row, p.cell_col + p.cell_cols) - 1, expected_paths[idx])
+  end
+  assert(table.concat(pieces):find(label:gsub("%s", ""), 1, true), "every caption retains its full text")
   -- Image placeholders have multibyte table borders before the image's display column.
   for _, col in ipairs { p.col, p.col + p.cols - 1 } do
     for _, row in ipairs { p.line + 1, p.line + p.rows } do
@@ -86,6 +93,11 @@ for idx, label in ipairs { left_caption, "HTTP 200", "Mixed", "First", right_cap
     end
   end
 end
+assert(placements[1].label_rows > 1, "long image captions must wrap")
+assert(placements[3].label_rows > 1, "text sharing an image row must wrap")
+assert(#session.content.expandable_regions == 0, "image tables need no expansion")
+assert(vim.fn.search("CAPTION73", "nw") > 0, "image caption tail is searchable initially")
+assert(vim.fn.search("TEXT73", "nw") > 0, "text beside an image remains searchable initially")
 
 -- Details adds a border after HTML table layout; image and hit bounds must follow it.
 local nested_caption = session.content.lines[placements[6].line]
@@ -105,7 +117,8 @@ end
 -- An unloaded selected image must not open a different ready image.
 session.image_state.objects[2] = nil
 local right = placements[2]
-enter(right.line, assert(session.content.lines[right.line]:find("HTTP 200", 1, true)) - 1, nil)
+local right_label_row = right.line - right.label_rows + 1
+enter(right_label_row, vim.fn.virtcol2col(session.win, right_label_row, right.cell_col + 1) - 1, nil)
 
 local standalone = placements[8]
 enter(standalone.line, 0, paths[1])
@@ -117,7 +130,8 @@ local shorter = placements[1]
 local below = shorter.line + shorter.rows + 1
 enter(below, vim.fn.virtcol2col(session.win, below, shorter.col + 1) - 1, nil)
 local mixed = session.content.image_placements[3]
-enter(mixed.line, assert(session.content.lines[mixed.line]:find("Plain text", 1, true)) - 1, nil)
+local mixed_label_row = mixed.line - mixed.label_rows + 1
+enter(mixed_label_row, assert(session.content.lines[mixed_label_row]:find("Plain text", 1, true)) - 1, nil)
 local first = session.content.image_placements[1]
 local caption = session.content.lines[first.line]
 enter(first.line, assert(caption:find("│", 1, true)) - 1, nil)

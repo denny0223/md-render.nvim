@@ -152,4 +152,11 @@ for _, case in ipairs {
   end
 end
 
-print(string.format("Wrap width: %d layout cases and formatting/link offsets passed", checked))
+for _, glyph in ipairs { "é", "👩‍💻", "👍🏽", "🇹🇼" } do
+  local glyph_text = glyph .. " " .. glyph
+  local lines, starts = wrap.wrap_words(glyph_text, vim.fn.strdisplaywidth(glyph))
+  assert(vim.deep_equal(lines, { glyph, glyph }), "wrapping must retain complete combining and emoji sequences")
+  assert(vim.deep_equal(starts, { 0, #glyph + 1 }), "glyph wrapping retains source byte offsets")
+end
+
+print(string.format("Wrap width: %d layout cases, complete glyphs and formatting/link offsets passed", checked))

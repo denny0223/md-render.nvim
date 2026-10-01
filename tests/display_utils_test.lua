@@ -237,24 +237,22 @@ test("entity line endings produce writable paragraphs and table cells", function
       { input },
       { "| value |", "| --- |", "| " .. input .. " |", "| `" .. input .. "` |" },
     } do
-      for _, expanded in ipairs { false, true } do
-        local builder = Builder.new()
-        builder:render_document(lines, { max_width = 30, text_scale = false, expand_state = { [1] = expanded } })
-        local content = builder:result()
-        display_utils.apply_content_to_buffer(buf, ns, content)
-        assert_eq(
-          vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), content.lines),
-          true,
-          "both collapsed and expanded content can be written exactly"
-        )
-        vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
-      end
+      local builder = Builder.new()
+      builder:render_document(lines, { max_width = 30, text_scale = false })
+      local content = builder:result()
+      display_utils.apply_content_to_buffer(buf, ns, content)
+      assert_eq(
+        vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), content.lines),
+        true,
+        "rendered paragraphs and cells can be written exactly"
+      )
+      vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
     end
   end
   vim.api.nvim_buf_delete(buf, { force = true })
 end)
 
-test("public previews preserve entity text, ranges, and sources across table toggles", function()
+test("public previews preserve entity text, ranges, and sources in fully wrapped tables", function()
   local preview = require "md-render.preview"
   local image = require "md-render.image"
   local supports_kitty = image.supports_kitty
@@ -305,18 +303,19 @@ test("public previews preserve entity text, ranges, and sources across table tog
         end
         if case.bold or not case.expected then assert_eq(table.concat(bold), "&", "only the first entity is bold") end
         if not case.expected then
-          assert_eq(table.concat(code), "&#10; &amp;", "table code preserves literal entities")
+          assert_eq(table.concat(code, " "), "&#10; &amp;", "wrapped code preserves literal entities")
           local labels = {}
           for _, link in ipairs(content.link_metadata) do
             labels[#labels + 1] = content.lines[link.line + 1]:sub(link.col_start + 1, link.col_end)
             assert_eq(link.url, "https://example.com", "table link destination stays intact")
           end
-          assert_eq(table.concat(labels), step == 2 and "TARGET" or "TARG", "expanded/collapsed link coverage")
+          assert_eq(table.concat(labels), "TARGET", "complete link coverage without expansion")
+          assert_eq(vim.fn.search("TARGET", "nw") > 0, true, "native preview search sees the keyword initially")
           if step < 3 then
-            local region = assert(content.expandable_regions[1], "expandable table missing")
-            vim.api.nvim_win_set_cursor(session.win, { region.start_line + 1, 0 })
-            vim.fn.maparg("<CR>", "n", false, true).callback()
-            assert_eq(session.expand_state[region.block_id], step == 1, "Enter toggles the actual table")
+            assert_eq(#content.expandable_regions, 0, "table is never an expandable region")
+            vim.api.nvim_win_set_cursor(session.win, { 3, 0 })
+            vim.fn.maparg(step == 1 and "<CR>" or "za", "n", false, true).callback()
+            assert_eq(next(session.expand_state), nil, "table Enter and za preserve the full content")
           end
         end
       end

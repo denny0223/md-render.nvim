@@ -40,6 +40,7 @@
 ---@field cols integer display width in cells
 ---@field cell_col? integer 0-indexed display column of the table cell interior
 ---@field cell_cols? integer table cell width including padding, excluding borders
+---@field label_rows? integer number of caption rows before a table image
 ---@field img_w? integer source image width in pixels
 ---@field img_h? integer source image height in pixels
 ---@field animated? boolean true if animated GIF
@@ -55,6 +56,7 @@
 ---@field code_blocks MdRender.CodeBlock[]
 ---@field callout_folds MdRender.CalloutFold[]
 ---@field expandable_regions MdRender.ExpandableRegion[]
+---@field table_lines table<integer, boolean> table rows (0-indexed) requiring intact borders
 ---@field image_placements MdRender.ImagePlacement[]
 ---@field text_placements MdRender.TextPlacement[]
 ---@field heading_layouts table<string, table> shared image layouts
@@ -77,6 +79,7 @@
 ---@field code_blocks MdRender.CodeBlock[]
 ---@field callout_folds MdRender.CalloutFold[]
 ---@field expandable_regions MdRender.ExpandableRegion[]
+---@field table_lines table<integer, boolean>
 ---@field image_placements MdRender.ImagePlacement[]
 ---@field text_placements MdRender.TextPlacement[]
 ---@field footnote_anchors table<string, integer>
@@ -93,6 +96,7 @@ function ContentBuilder.new()
     code_blocks = {},
     callout_folds = {},
     expandable_regions = {},
+    table_lines = {},
     image_placements = {},
     text_placements = {},
     heading_layouts = {},
@@ -152,6 +156,7 @@ function ContentBuilder:result()
     code_blocks = self.code_blocks,
     callout_folds = self.callout_folds,
     expandable_regions = self.expandable_regions,
+    table_lines = self.table_lines,
     image_placements = self.image_placements,
     text_placements = self.text_placements,
     heading_layouts = self.heading_layouts,
@@ -517,7 +522,6 @@ function ContentBuilder:add_table(
   max_width,
   repo_base_url,
   autolinks,
-  expanded,
   buf_dir,
   per_row_source,
   ref_links,
@@ -543,7 +547,7 @@ function ContentBuilder:add_table(
     return
   end
   local lines, per_line_hls, per_line_links, tbl_image_placements, src_offsets =
-    markdown_table.render(parsed, indent, max_width, expanded, buf_dir)
+    markdown_table.render(parsed, indent, max_width, buf_dir)
   local base_line = #self.lines
   -- For pipe tables, table_lines[i] corresponds to source line
   -- (caller's _current_source_line + i - 1). Use the offset returned by
@@ -554,6 +558,7 @@ function ContentBuilder:add_table(
       self._current_source_line = saved_src_line + src_offsets[i]
     end
     self:add_line(line, #per_line_hls[i] > 0 and per_line_hls[i] or nil)
+    self.table_lines[#self.lines - 1] = true
     for _, link in ipairs(per_line_links[i] or {}) do
       table.insert(self.link_metadata, {
         line = base_line + i - 1,
@@ -576,6 +581,7 @@ function ContentBuilder:add_table(
         cols = p.cols,
         cell_col = p.cell_col,
         cell_cols = p.cell_cols,
+        label_rows = p.label_rows,
         src_url = p.src_url,
         img_w = p.img_w,
         img_h = p.img_h,
@@ -2754,6 +2760,7 @@ function ContentBuilder:render_document(lines, opts)
   end
 
   local base_max_width = opts.max_width or 80
+  local base_table_max_width = opts.table_max_width or base_max_width
   local base_indent = opts.indent or "  "
   local max_lines = opts.max_lines or math.huge
   local repo_base_url = opts.repo_base_url
@@ -2863,7 +2870,6 @@ function ContentBuilder:render_document(lines, opts)
   local function flush_table()
     if #table_buf > 0 then
       local lines_before_tbl = #self.lines
-      local tbl_expanded = table_buf_start_idx and expand_state[table_buf_start_idx]
       -- The trigger line (e.g. the blank after the table) has already
       -- advanced _current_source_line. Stamp the table's first source
       -- line so add_table's emissions land in source_line_map under the
@@ -2873,10 +2879,9 @@ function ContentBuilder:render_document(lines, opts)
       self:add_table(
         table_buf,
         base_indent .. table_buf_indent,
-        math.max(1, base_max_width - #table_buf_indent),
+        base_table_max_width,
         repo_base_url,
         autolinks,
-        tbl_expanded or false,
         buf_dir,
         true,
         ref_links
@@ -2884,23 +2889,6 @@ function ContentBuilder:render_document(lines, opts)
       self._current_source_line = saved_src_line
       local lines_added = #self.lines - lines_before_tbl
       lines_shown = lines_shown + lines_added
-      local has_truncation = false
-      if not tbl_expanded then
-        for li = lines_before_tbl + 1, #self.lines do
-          if self.lines[li] and self.lines[li]:match "…" then
-            has_truncation = true
-            break
-          end
-        end
-      end
-      if has_truncation or tbl_expanded then
-        table.insert(self.expandable_regions, {
-          start_line = lines_before_tbl,
-          end_line = #self.lines - 1,
-          block_id = table_buf_start_idx,
-          expanded = tbl_expanded or false,
-        })
-      end
       table_buf = {}
       table_buf_start_idx = nil
       table_buf_indent = ""
@@ -3956,6 +3944,10 @@ function ContentBuilder:render_document(lines, opts)
 
     -- Handle HTML <table> blocks (outside code blocks)
     if not in_code_block and not in_callout_code_block then
+      local table_width = base_table_max_width
+      if in_details and details_summary_rendered and not skip_details_body then
+        table_width = table_width - vim.api.nvim_strwidth "│ "
+      end
       if in_html_table then
         table.insert(html_table_lines, line)
         table.insert(html_table_sources, src_indices[src_idx])
@@ -3976,18 +3968,16 @@ function ContentBuilder:render_document(lines, opts)
               lines_shown = lines_shown + 1
             end
             local tbl_lines_before = #self.lines
-            local tbl_expanded = html_table_src_idx and expand_state[html_table_src_idx]
             -- Same source-line stamping rationale as flush_table above.
             local saved_src_line = self._current_source_line
             if html_table_src_idx then self._current_source_line = html_table_src_idx + source_line_offset end
             self:add_table(
               pipe_lines,
               indent,
-              max_width,
+              math.max(1, table_width),
               repo_base_url,
               autolinks,
-              tbl_expanded or false,
-              nil,
+              buf_dir,
               nil,
               ref_links,
               true
@@ -3995,23 +3985,6 @@ function ContentBuilder:render_document(lines, opts)
             self._current_source_line = saved_src_line
             local tbl_lines_added = #self.lines - tbl_lines_before
             lines_shown = lines_shown + tbl_lines_added
-            local has_truncation = false
-            if not tbl_expanded then
-              for li = tbl_lines_before + 1, #self.lines do
-                if self.lines[li] and self.lines[li]:match "…" then
-                  has_truncation = true
-                  break
-                end
-              end
-            end
-            if has_truncation or tbl_expanded then
-              table.insert(self.expandable_regions, {
-                start_line = tbl_lines_before,
-                end_line = #self.lines - 1,
-                block_id = html_table_src_idx,
-                expanded = tbl_expanded or false,
-              })
-            end
             if in_details and details_summary_rendered and not skip_details_body then
               apply_details_body_prefix(tbl_lines_before, #self.lines)
             end
@@ -4044,7 +4017,17 @@ function ContentBuilder:render_document(lines, opts)
               lines_shown = lines_shown + 1
             end
             local tbl_lines_before = #self.lines
-            self:add_table(pipe_lines, indent, max_width, repo_base_url, autolinks, nil, buf_dir, nil, ref_links, true)
+            self:add_table(
+              pipe_lines,
+              indent,
+              math.max(1, table_width),
+              repo_base_url,
+              autolinks,
+              buf_dir,
+              nil,
+              ref_links,
+              true
+            )
             lines_shown = lines_shown + (#self.lines - tbl_lines_before)
             if in_details and details_summary_rendered and not skip_details_body then
               apply_details_body_prefix(tbl_lines_before, #self.lines)
@@ -4942,6 +4925,7 @@ end
 
 ---@class MdRender.RenderDocumentOpts
 ---@field max_width? integer Maximum display width (default: 80)
+---@field table_max_width? integer Table display width (default: max_width; previews use available window width)
 ---@field indent? string Indentation prefix (default: "  ")
 ---@field max_lines? integer Maximum number of rendered lines (default: unlimited)
 ---@field repo_base_url? string Repository base URL for issue/PR references

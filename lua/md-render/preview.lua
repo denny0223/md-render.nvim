@@ -30,6 +30,29 @@ local function usable_win_width(win)
   return math.max(1, total - textoff)
 end
 
+-- Preserve soft wrapping for ordinary text. Only overflowing tables and
+-- expanded regions need horizontal scrolling.
+local function set_preview_wrap(buf, content)
+  local expanded = false
+  for _, region in ipairs(content.expandable_regions or {}) do
+    if region.expanded then
+      expanded = true
+      break
+    end
+  end
+  for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+    local should_wrap = not expanded
+    local width = usable_win_width(win)
+    for row in pairs(content.table_lines or {}) do
+      if vim.api.nvim_strwidth(content.lines[row + 1]) > width then
+        should_wrap = false
+        break
+      end
+    end
+    vim.wo[win].wrap = should_wrap
+  end
+end
+
 --- Parse simple YAML frontmatter lines into key-value pairs
 ---@param fm_lines string[]
 ---@return {key: string, value: string}[]
@@ -108,7 +131,7 @@ MdPreview.build_content = function(lines, opts)
           { col = 2, end_col = 2 + #"Properties", hl = "Title" },
         })
         -- Unique block id per overflowing frontmatter entry. Negative so it
-        -- can never collide with table expand ids, which are positive source
+        -- can never collide with code-block expand ids, which are positive source
         -- line numbers. Stable across rebuilds because entries parse
         -- deterministically, so expand_state persists per entry.
         local fm_block_counter = 0
@@ -126,7 +149,7 @@ MdPreview.build_content = function(lines, opts)
             local start_line = #b.lines
             if expanded then
               -- Wrap the value across lines, aligning continuation lines
-              -- under the value's start column (like a table cell expand).
+              -- under the value's start column.
               local value_width = math.max(1, max_width - value_col)
               local wrapped = wrap.wrap_words(entry.value, value_width)
               local cont_indent = string.rep(" ", value_col)
@@ -185,6 +208,7 @@ MdPreview.build_content = function(lines, opts)
 
   b:render_document(body_lines, {
     max_width = max_width,
+    table_max_width = opts.table_max_width,
     indent = opts.indent,
     fold_state = opts.fold_state,
     expand_state = opts.expand_state,
@@ -427,16 +451,7 @@ function Session:rebuild()
     end
   end
 
-  if self.win and vim.api.nvim_win_is_valid(self.win) then
-    local any_expanded = false
-    for _, v in pairs(self.expand_state) do
-      if v then
-        any_expanded = true
-        break
-      end
-    end
-    vim.api.nvim_set_option_value("wrap", not any_expanded, { win = self.win })
-  end
+  set_preview_wrap(self.buf, new_content)
   self.content = new_content
   self.dirty = false
   -- Rendered line numbers have just moved, so "this window still shows what
@@ -574,13 +589,16 @@ function Session:resize(win)
   local snacks = require("md-render.image").config().backend == "snacks"
   local width = self._explicit_max_width and self.opts.max_width
     or math.min(usable_win_width(win), snacks and math.huge or DEFAULT_MAX_WIDTH)
+  local table_width = self._explicit_max_width and self.opts.max_width or usable_win_width(win)
   local height = snacks and math.max(1, vim.api.nvim_win_get_height(win) - 6) or nil
   local normal = vim.api.nvim_win_get_config(win).relative ~= "" and "NormalFloat" or "Normal"
   local changed = width ~= (self.opts.max_width or DEFAULT_MAX_WIDTH)
+    or table_width ~= self.opts.table_max_width
     or height ~= self.opts.image_max_height
     or normal ~= self.opts.heading_normal
   self.opts.heading_normal = normal
   self.opts.max_width, self.opts.image_max_height = width, height
+  self.opts.table_max_width = table_width
   return changed
 end
 
@@ -601,6 +619,7 @@ function Session:bind_window(win, layout)
     self.opts.indent = layout.indent
   end
   if self:resize(win) or self.dirty then self:rebuild() end
+  set_preview_wrap(self.buf, self.content)
   -- Own teardown before the renderers' WinClosed handlers, so they are
   -- detached once and cannot queue work while this window is closing.
   self._win_closed = vim.api.nvim_create_autocmd("WinClosed", {
@@ -693,7 +712,7 @@ function Session:install_float_keymaps(close_handle, keymap_opts)
       local col = vim.fn.virtcol "." - 1
       for idx, p in ipairs(self.content.image_placements or {}) do
         if
-          row >= p.line - 1
+          row >= p.line - (p.label_rows or 1)
           and row < p.line + p.rows
           and (not p.cell_col or (col >= p.cell_col and col < p.cell_col + p.cell_cols))
         then
@@ -1745,6 +1764,7 @@ local function install_win_resize_handler(session)
     callback = function()
       local render_wins = vim.fn.win_findbuf(session.buf)
       if #render_wins == 0 then return end
+      set_preview_wrap(session.buf, session.content)
 
       local win = render_wins[1]
       if not vim.api.nvim_win_is_valid(win) then return end
@@ -1809,7 +1829,10 @@ local function install_render_buf_guards(session)
         -- firing BufWriteCmd, so doing so would break our :w forwarding.
       end
       local win = vim.api.nvim_get_current_win()
-      if vim.api.nvim_win_get_buf(win) == session.buf then apply_render_win_opts(win) end
+      if vim.api.nvim_win_get_buf(win) == session.buf then
+        apply_render_win_opts(win)
+        set_preview_wrap(session.buf, session.content)
+      end
 
       -- Mirror the stale-content check from get_or_create_session
       -- so paths that swap to the render buf without going through
@@ -2815,7 +2838,7 @@ MdPreview.show_demo = function()
       "| Feature | Description | Syntax |",
       "|---------|-------------|--------|",
       "| **Bold** / ~~strike~~ | Inline formatting is rendered inside table cells | `**text**` / `~~text~~` |",
-      "| Truncation | Cells that exceed the available width are automatically truncated with an ellipsis | Long content is gracefully handled |",
+      "| Wrapping | Long cells wrap to the available column width | Headers and image captions also wrap |",
       "",
       "### Lists",
       "",
@@ -3009,14 +3032,7 @@ MdPreview.show_demo = function()
     vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
     display_utils.apply_content_to_buffer(buf, ns, new_content)
     vim.api.nvim_set_option_value("modifiable", false, { buf = buf })
-    local any_expanded = false
-    for _, v in pairs(expand_state) do
-      if v then
-        any_expanded = true
-        break
-      end
-    end
-    vim.api.nvim_set_option_value("wrap", not any_expanded, { win = win })
+    set_preview_wrap(buf, new_content)
     vim.api.nvim_win_call(win, function()
       vim.fn.winrestview(display_utils.remap_view(view, content, new_content))
     end)
@@ -3035,6 +3051,7 @@ MdPreview.show_demo = function()
     position = "center",
     enter = true,
   })
+  set_preview_wrap(buf, content)
 
   for _, fold in ipairs(content.callout_folds) do
     fold_state[fold.source_line] = fold.collapsed

@@ -69,6 +69,8 @@ local function open(mode, lines, opts)
     preview.show(opts)
   elseif mode == "tab" then
     preview.show_tab(opts)
+  elseif mode == "pager" then
+    preview.show_pager(opts)
   elseif mode == "split" then
     preview.split(opts)
     for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
@@ -83,7 +85,7 @@ local function open(mode, lines, opts)
   return dir, source, source_win, vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
 end
 
-for _, mode in ipairs { "toggle", "split", "float", "tab" } do
+for _, mode in ipairs { "toggle", "split", "float", "tab", "pager" } do
   local lines =
     { "# Source", "", "> [!NOTE]- Details", "> Keep this fold", "", "```", string.rep("code ", 40), "```", "" }
   for i = 1, 65 do
@@ -159,7 +161,7 @@ for _, mode in ipairs { "toggle", "split", "float", "tab" } do
   eq(vim.api.nvim_get_current_buf(), render, mode .. " editing return restores render")
   eq(session.fold_state, folds, mode .. " editing return retains folds")
   eq(session.expand_state, expansions, mode .. " editing return retains expansions")
-  eq(vim.fn.maparg("q", "n"), "", mode .. " returned editor window has no preview-close mapping")
+  eq(vim.fn.maparg("q", "n") ~= "", mode == "pager", mode .. " restores presentation's exit mapping")
   eq(vim.bo[editor].modified, true, mode .. " preserves editor changes")
   feed "<C-i>"
   eq(vim.api.nvim_get_current_buf(), editor, mode .. " forward returns to editor")
@@ -170,7 +172,7 @@ for _, mode in ipairs { "toggle", "split", "float", "tab" } do
 end
 
 -- Repeated visits must not replace an older native jump's cursor or viewport.
-for _, mode in ipairs { "toggle", "split", "float", "tab" } do
+for _, mode in ipairs { "toggle", "split", "float", "tab", "pager" } do
   local lines = { "# A", "" }
   for i = 1, 20 do
     vim.list_extend(lines, { "Early paragraph " .. i, "" })
@@ -770,7 +772,7 @@ end
 vim.cmd.packadd "netrw"
 vim.cmd.runtime "plugin/netrwPlugin.vim"
 vim.api.nvim_exec_autocmds("VimEnter", { group = "FileExplorer" })
-for _, mode in ipairs { "toggle", "split", "float", "tab" } do
+for _, mode in ipairs { "toggle", "split", "float", "tab", "pager" } do
   for _, href in ipairs { "docs/", "docs.md/" } do
     local dir, _, source_win, render_win, render = open(mode, { "[browse](" .. href .. ")" })
     vim.fn.mkdir(dir .. "/" .. href, "p")
@@ -794,9 +796,123 @@ for _, mode in ipairs { "toggle", "split", "float", "tab" } do
   end
 end
 
+-- Pager shares file navigation, but owns chrome only while focused. Other
+-- buffers retain native mappings, modified-buffer guards and editor options.
+do
+  vim.cmd.enew()
+  local editor_ui = { showtabline = 2, laststatus = 3, cmdheight = 2, ruler = true, showcmd = true }
+  local pager_ui = { showtabline = 0, laststatus = 0, cmdheight = 0, ruler = false, showcmd = false }
+  local function ui()
+    local values = {}
+    for name in pairs(editor_ui) do
+      values[name] = vim.o[name]
+    end
+    return values
+  end
+  for name, value in pairs(editor_ui) do
+    vim.o[name] = value
+  end
+  local dir, source, win, _, render = open("pager", {
+    "# Pager",
+    "",
+    "[edit](notes.txt)",
+    "",
+    "[missing](missing.md)",
+    "",
+    "![image](" .. vim.fn.getcwd() .. "/tests/fixtures/test_4x4.png)",
+  })
+  local session = preview._sessions[render]
+  vim.fn.writefile({ "notes" }, dir .. "/notes.txt")
+  local notes = vim.fn.bufadd(dir .. "/notes.txt")
+  vim.fn.bufload(notes)
+  vim.keymap.set("n", "q", "<Nop>", { buffer = notes })
+  eq(ui(), pager_ui, "loading a hidden target does not change pager chrome")
+  eq(vim.bo[render].bufhidden, "hide", "pager retains native return targets")
+  eq(vim.fn.maparg("<C-o>", "n"), "", "pager keeps native backwards jumps")
+  eq(vim.fn.maparg("<C-i>", "n"), "", "pager keeps native forwards jumps")
+  local before = #warnings
+  follow "missing.md"
+  eq(vim.api.nvim_get_current_buf(), render, "missing pager link keeps rendered document")
+  eq(#warnings, before + 1, "missing pager link reports failure")
+  eq(ui(), pager_ui, "failed navigation retains pager chrome")
+  follow "notes.txt"
+  eq(vim.api.nvim_get_current_win(), win, "pager opens editor in the same window")
+  eq(ui(), editor_ui, "pager restores editor chrome")
+  eq(vim.fn.maparg("q", "n"), "<Nop>", "editor retains its own q mapping")
+  local latest_ui = vim.tbl_extend("force", editor_ui, { showtabline = 1, cmdheight = 1, ruler = false })
+  for name, value in pairs(latest_ui) do
+    vim.o[name] = value
+  end
+  vim.api.nvim_buf_set_lines(notes, -1, -1, false, { "UNSAVED" })
+  vim.o.hidden = false
+  local returned, return_err = pcall(vim.cmd.buffer, render)
+  eq(returned, false, "modified editor blocks returning to pager")
+  eq(tostring(return_err):find("E37", 1, true) ~= nil, true, "return preserves native abandonment error")
+  eq(vim.api.nvim_get_current_buf(), notes, "modified editor blocks native return without hidden")
+  eq(ui(), latest_ui, "blocked return keeps editor chrome")
+  vim.o.hidden = true
+  feed "<C-o>"
+  eq(vim.api.nvim_get_current_buf(), render, "hidden permits pager return without discarding edits")
+  eq(ui(), pager_ui, "return restores pager chrome")
+  local images = session.image_state
+  local quit_ok = pcall(vim.fn.maparg("q", "n", false, true).callback)
+  eq(quit_ok, false, "pager q respects unsaved-buffer protection")
+  eq(session.image_state, images, "refused q retains renderer resources")
+  eq(images.closed, false, "refused q leaves renderer active")
+  eq(vim.bo[notes].modified, true, "refused q preserves editor changes")
+  eq(ui(), pager_ui, "refused q keeps pager chrome")
+  feed "<C-i>"
+  eq(vim.api.nvim_get_current_buf(), notes, "refused q preserves forward return to unsaved editor")
+  eq(ui(), latest_ui, "next editor visit retains updated chrome settings")
+  eq(vim.fn.maparg("q", "n"), "<Nop>", "next editor visit restores its q mapping")
+  vim.cmd.buffer(render)
+  preview.toggle()
+  eq(vim.api.nvim_get_current_buf(), source, "pager can toggle to its source")
+  eq(ui(), latest_ui, "manual source entry restores chrome")
+  eq(vim.fn.maparg("q", "n"), "", "source does not inherit pager q")
+end
+
+do
+  local _, source, _, _, render = open("pager", { "# Initial pager" })
+  preview.toggle()
+  eq(vim.api.nvim_get_current_buf(), source, "initial pager can toggle to source before navigating")
+  preview.toggle()
+  eq(vim.api.nvim_get_current_buf(), render, "toggle back reuses initial pager session")
+  eq(vim.o.showtabline, 0, "toggle back restores pager chrome")
+  eq(vim.fn.maparg("q", "n", false, true).buffer, 1, "toggle back restores pager q")
+end
+
+-- Native copies of a pager edit in the operated window. New editors restore
+-- chrome even while the original rendered window is retained.
+for _, command in ipairs { "split", "tab split", "new", "tabnew" } do
+  local dir, _, _, original, render = open("pager", {
+    "[edit](notes.txt)",
+    "",
+    "![image](" .. vim.fn.getcwd() .. "/tests/fixtures/test_4x4.png)",
+  })
+  vim.fn.writefile({ "notes" }, dir .. "/notes.txt")
+  local session = preview._sessions[render]
+  vim.cmd(command)
+  local copy = vim.api.nvim_get_current_win()
+  if command:find("split", 1, true) then follow "notes.txt" end
+  eq(vim.api.nvim_get_current_win(), copy, command .. " pager copy keeps the operated window")
+  eq(vim.wo.number, true, command .. " restores editor window options")
+  eq(vim.o.showtabline, 1, command .. " restores editor tabline")
+  eq(vim.fn.maparg("q", "n"), "", command .. " editor does not inherit pager q")
+  eq(vim.api.nvim_win_get_buf(original), render, command .. " original pager remains rendered")
+  eq(session.win, original, command .. " original renderer owns its window")
+  eq(session.image_state.closed, false, command .. " original renderer remains usable")
+  vim.api.nvim_set_current_win(original)
+  eq(vim.o.showtabline, 0, command .. " focusing pager hides chrome")
+  eq(vim.fn.maparg("q", "n", false, true).buffer, 1, command .. " focused pager has local exit mapping")
+  vim.api.nvim_set_current_win(copy)
+  vim.api.nvim_win_close(original, true)
+  eq(vim.o.showtabline, 1, command .. " closing retained pager preserves editor chrome")
+end
+
 -- stdin/unnamed links use an absolute base captured at entry, including an
 -- explicit buf_dir override. Named destinations then use their own directory.
-for mode, show in ipairs { preview.toggle } do
+for mode, show in ipairs { preview.toggle, preview.show_pager } do
   local cwd = vim.fn.getcwd()
   for _, explicit in ipairs { false, true } do
     local base, other = root .. "/stdin-base-" .. mode, root .. "/other-cwd-" .. mode
@@ -836,6 +952,29 @@ for mode, show in ipairs { preview.toggle } do
     )
   end
   vim.cmd.cd(cwd)
+end
+
+do
+  vim.cmd.enew()
+  vim.bo.filetype = "markdown"
+  vim.api.nvim_buf_set_lines(0, 0, -1, false, { "# Unsaved entry" })
+  local source = vim.api.nvim_get_current_buf()
+  local renders = {}
+  for buf in pairs(preview._sessions) do
+    renders[buf] = true
+  end
+  vim.o.hidden = false
+  local ok, err = pcall(preview.show_pager)
+  eq(ok, false, "initial pager entry respects modified-buffer protection")
+  eq(tostring(err):find("E37", 1, true) ~= nil, true, "entry preserves native abandonment error")
+  eq(vim.api.nvim_get_current_buf(), source, "blocked entry retains source")
+  eq(vim.bo[source].modified, true, "blocked entry preserves unsaved content")
+  local remaining = {}
+  for buf in pairs(preview._sessions) do
+    remaining[buf] = true
+  end
+  eq(remaining, renders, "blocked entry leaves no orphaned render session")
+  vim.o.hidden = true
 end
 
 vim.fn.delete(root, "rf")

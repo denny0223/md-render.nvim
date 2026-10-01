@@ -284,7 +284,7 @@ Inside the preview window, the following keys are available:
 	`<CR>`		Open the image under the cursor (Snacks backend), or
 			toggle the callout fold / expandable region
 	`gf`		Follow a local file link; Markdown targets stay rendered
-			(toggle, split, floating, and tab previews)
+			(toggle, split, floating, tab, and pager previews)
 	`<LeftMouse>`	Click links, toggle folds, expand regions
 	`<MouseMove>`	Hover a link to peek its full URL in a small floating
 			window at the bottom of the editor.  Requires
@@ -307,20 +307,21 @@ document with its reading position and folds. After editing another file,
 the rendered return uses the source window. Outside links, native `gf` and
 counts such as `2gf` retain their usual behavior.
 
-Directories open in the original source window through the configured
-directory browser (such as netrw), closing floating/tab previews. The browser
+Outside pager mode, directories open in the original source window through
+the configured directory browser (such as netrw), closing floating/tab previews. The browser
 retains its own navigation and buffer lifecycle.
 
 `Ctrl-O` and `Ctrl-I` remain native Neovim commands. Each window has its own
-jumplist. After opening another file in the source editing window, only the
-immediately preceding rendered document is guaranteed on return. Earlier
+jumplist. When a preview hands off to the original source editing window,
+only the immediately preceding rendered document is guaranteed on return. Earlier
 preview history is not merged into that window.
 
 Supported destinations are relative paths, POSIX absolute paths, and local
 `file:///` URLs, including encoded filenames, inline/reference links, and
 optional titles. Missing or unreadable targets leave the preview unchanged.
-Fragments do not yet select headings. Pager navigation and Windows/UNC paths
-are outside this feature's initial scope.
+Fragments do not yet select headings. Windows/UNC paths remain outside this
+feature's scope. Pager uses the operated window for files and directories; see
+|:MdRender-pager|.
 
 ==============================================================================
 COMMANDS						    *md-render-commands*
@@ -522,6 +523,18 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 	  alias mdless='nvim +"MdRender pager"'
 	  mdless README.md
 <
+	`gf` follows local links: Markdown stays rendered; other files and
+	directories open normally in the operated window. Native Ctrl-O / Ctrl-I
+	retain document history, reading position and folds. Editing buffers
+	restore the editor UI and normal keys; returning to pager hides UI again.
+	`q` runs :keepjumps qa and honors unsaved changes. Neovim may show the
+	buffer that needs saving.
+
+	Named files use their source directory for relative links. Unnamed/stdin
+	Markdown uses the working directory captured at pager entry, unaffected
+	by later :cd. Set filetype=markdown for stdin; {buf_dir} can override
+	the base through |MdPreview.show_pager()|. Neovim marks stdin modified:
+	`q` protects it too. Save it to a file or use :qa! to discard it explicitly.
 
 							  *:MdRender-textsize*
 :MdRender textsize [on|off|toggle|auto|image|native|status] ~
@@ -895,11 +908,12 @@ MdPreview.show_tab({opts}) ~
 							*MdPreview.show_pager()*
 MdPreview.show_pager({opts}) ~
 	Show the current Markdown buffer in pager mode (full-screen, minimal
-	UI, `q` to quit Neovim).
+	UI, `q` to quit with normal unsaved-buffer protection).
 
 	Parameters: ~
 	  {opts}  (table|nil) Optional settings:
 		  - {max_width}  (integer) Maximum rendering width
+		  - {buf_dir}  (string) Base directory for relative links/images
 
 	Example: >lua
 	  require("md-render").preview.show_pager()

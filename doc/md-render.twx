@@ -283,16 +283,17 @@ Markdown 目標沿用目前的預覽視窗；其他檔案在原始編輯視窗�
 檔案返回時，會在原始編輯視窗恢復渲染。游標不在連結上時，仍使用原生 `gf`，
 也支援 `2gf` 等數字前綴。
 
-目錄會在原始編輯視窗交給已設定的目錄瀏覽器（例如 netrw）開啟，浮動／
-分頁預覽會先關閉。目錄畫面的導覽與緩衝區生命週期沿用該瀏覽器的行為。
+Pager 以外的模式會在原始編輯視窗交給已設定的目錄瀏覽器（例如 netrw）
+開啟目錄，浮動／分頁預覽會先關閉。目錄畫面的導覽與緩衝區生命週期沿用該瀏覽器的行為。
 
 `Ctrl-O` 與 `Ctrl-I` 維持 Neovim 原生行為。每個視窗各自保留 jumplist。
-在來源編輯視窗開啟其他檔案後，只保證返回緊接在前的渲染文件；較早的
+預覽交接至原始編輯視窗時，只保證返回緊接在前的渲染文件；較早的
 預覽歷史不會合併到該視窗。
 
 支援相對路徑、POSIX 絕對路徑及本機 `file:///` URL，包含編碼檔名、行內／
 參照連結及選用標題。檔案不存在或無法讀取時會留在原預覽。Fragment 目前
-不會定位到標題；pager 導覽及 Windows／UNC 路徑不在首版支援範圍。
+不會定位到標題；Windows／UNC 路徑仍不在支援範圍。Pager 在目前操作的視窗
+開啟檔案與目錄，詳見 |:MdRender-pager|。
 
 ==============================================================================
 指令                                                      *md-render-commands*
@@ -465,6 +466,16 @@ Markdown 目標沿用目前的預覽視窗；其他檔案在原始編輯視窗�
 	  alias mdless='nvim +"MdRender pager"'
 	  mdless README.md
 <
+	`gf` 跟隨本機連結：Markdown 維持渲染；其他檔案與目錄在目前操作的
+	視窗正常開啟。原生 Ctrl-O／Ctrl-I 保留文件歷史、閱讀位置與摺疊狀態。
+	焦點進入編輯緩衝區時恢復介面與原有按鍵；返回 pager 時再次隱藏介面。
+	`q` 執行 :keepjumps qa，保留正常的未儲存保護；Neovim 可能切到需要
+	儲存的緩衝區。
+
+	具名檔案依來源目錄解析相對連結。未命名／stdin Markdown 固定使用啟動
+	pager 時的工作目錄，不受後續 :cd 影響。stdin 須設定 filetype=markdown；
+	可透過 |MdPreview.show_pager()| 的 {buf_dir} 覆寫基準。Neovim 會將 stdin
+	標為已修改，`q` 也會保護它；可先儲存至檔案，或自行 :qa! 放棄內容。
 
                                                           *:MdRender-textsize*
 :MdRender textsize [on|off|toggle|auto|image|native|status] ~
@@ -774,6 +785,7 @@ MdPreview.show_pager({opts}) ~
 	參數：~
 	  {opts}  (table|nil) 選用設定：
 	    - {max_width}  (integer) 最大渲染寬度。
+	    - {buf_dir}  (string) 相對連結與圖片的基準目錄。
 
 	範例： >lua
 	  require("md-render").preview.show_pager()

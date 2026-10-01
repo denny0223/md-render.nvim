@@ -498,6 +498,18 @@ Snacks を設定済みの場合は、その設定に image オプションを統
 	  alias mdless='nvim +"MdRender pager"'
 	  mdless README.md
 <
+	`gf` でローカルリンクを開きます。Markdown はレンダリングを維持し、
+	その他のファイルやディレクトリは操作中のウィンドウで通常どおり開きます。
+	ネイティブの Ctrl-O / Ctrl-I で履歴、閲覧位置、折りたたみを維持します。
+	編集バッファでは UI と通常のキーが復元され、戻ると UI を再び隠します。
+	`q` は :keepjumps qa を実行し、未保存の変更を保護します。保存の必要な
+	バッファが表示される場合があります。
+
+	相対リンクはソースのディレクトリが基準です。名前のないバッファ / stdin
+	は開始時の作業ディレクトリを使い、後の :cd でも変わりません。stdin には
+	filetype=markdown を設定します。|MdPreview.show_pager()| の {buf_dir} で
+	基準を指定できます。stdin は変更済みとして扱われ、`q` でも保護されます。
+	ファイルに保存するか、明示的に :qa! で破棄してください。
 
 							  *:MdRender-textsize*
 :MdRender textsize [on|off|toggle|auto|image|native|status] ~
@@ -894,6 +906,7 @@ MdPreview.show_pager({opts}) ~
 	パラメータ: ~
 	  {opts}  (table|nil) オプション設定:
 		  - {max_width}  (integer) 最大レンダリング幅
+		  - {buf_dir}  (string) 相対リンクと画像の基準ディレクトリ
 
 	使用例: >lua
 	  require("md-render").preview.show_pager()

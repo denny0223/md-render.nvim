@@ -264,5 +264,173 @@ test("pager mouse links follow the surviving renderer", function(_, _, _, source
   vim.api.nvim_win_close(survivor, true)
 end)
 
+test("pager return replaces resources and ignores late image and heading callbacks", function(_, _, _, source_win)
+  vim.api.nvim_set_current_win(source_win)
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    if win ~= source_win then vim.api.nvim_win_close(win, true) end
+  end
+  vim.wait(30)
+  local source = vim.api.nvim_get_current_buf()
+  vim.api.nvim_buf_set_lines(source, 0, -1, false, { "## Pager", "", "![Fixture](" .. image_path .. ")" })
+  vim.bo[source].modified = false
+  local path = vim.fn.tempname() .. ".txt"
+  vim.fn.writefile({ "ordinary editor" }, path)
+  local layout = require "md-render.heading_layout"
+  local request, cell, status = layout.request, image.get_cell_size, image.png_status
+  local transmit, png, delete, put = image.transmit_image_async, image.transmit_png, image.delete_image, image.put_image
+  local static_jobs, heading_jobs, deleted, puts, serial = {}, {}, {}, 0, 1000
+  local chrome, colors = vim.o.laststatus, vim.o.termguicolors
+  local tmux, pane = vim.env.TMUX, vim.env.TMUX_PANE
+  local ok, err = pcall(function()
+    vim.env.TMUX, vim.env.TMUX_PANE = nil, nil
+    vim.o.termguicolors = true
+    image.get_cell_size = function()
+      return { cell_w = 19, cell_h = 44 }
+    end
+    image.png_status = function()
+      return { supported = true }
+    end
+    -- The external rasterizer is ready; terminal transmissions remain pending.
+    layout.request = function(input)
+      local text = input.entries[1].text
+      local columns = {}
+      for byte = 0, #text - 1 do
+        columns[#columns + 1] = byte
+      end
+      return {
+        key = text,
+        ready = true,
+        output = {
+          lines = {
+            {
+              start = 0,
+              ["end"] = #text,
+              text = text,
+              data = "png",
+              cols = #text,
+              width = #text * 19,
+              height = 44,
+              columns = columns,
+            },
+          },
+        },
+      }
+    end
+    image.transmit_image_async = function(_, callback)
+      static_jobs[#static_jobs + 1] = callback
+    end
+    image.transmit_png = function(_, callback)
+      serial = serial + 1
+      heading_jobs[#heading_jobs + 1] = callback
+      return serial
+    end
+    image.delete_image = function(id)
+      deleted[id] = true
+    end
+    image.put_image = function(...)
+      puts = puts + 1
+      return put(...)
+    end
+    text_size.setup { backend = "image" }
+    preview.show_pager()
+    local session = preview._sessions[vim.api.nvim_get_current_buf()]
+    local old_images, old_headings = session.image_state, session.text_size_state
+    assert(
+      old_headings and old_headings.image_headings and #static_jobs > 0 and #heading_jobs > 0,
+      "pending renderers missing"
+    )
+    local rebuild, rebuilds = session.rebuild, 0
+    session.rebuild = function(self)
+      rebuilds = rebuilds + 1
+      return rebuild(self)
+    end
+    session:follow_file(path)
+    local editor = vim.api.nvim_get_current_buf()
+    assert(old_images.closed and old_headings.closed, "entering editor kept old renderers")
+    local old_static_count, old_heading_count = #static_jobs, #heading_jobs
+    puts = 0
+    for index = 1, old_static_count do
+      static_jobs[index](2000 + index, 4, 4)
+    end
+    for index = 1, old_heading_count do
+      heading_jobs[index]()
+    end
+    vim.wait(200)
+    assert(rebuilds == 0 and puts == 0, "late callbacks rebuilt or painted the editor")
+    assert(deleted[2001], "late static image ID leaked")
+    assert(vim.api.nvim_get_current_buf() == editor and vim.api.nvim_get_current_line() == "ordinary editor")
+    vim.api.nvim_feedkeys(vim.keycode "<C-o>", "x", false)
+    vim.wait(30)
+    assert(vim.api.nvim_get_current_buf() == session.buf, "native return lost rendered document")
+    local new_images, new_headings = session.image_state, session.text_size_state
+    assert(new_images ~= old_images and not new_images.closed, "return did not recreate inline images")
+    assert(new_headings ~= old_headings and not new_headings.closed, "return did not recreate image headings")
+    for index = old_static_count + 1, #static_jobs do
+      static_jobs[index](2000 + index, 4, 4)
+    end
+    for index = old_heading_count + 1, #heading_jobs do
+      heading_jobs[index]()
+    end
+    vim.wait(30)
+    assert(
+      new_images.image_ids[image_path] and new_headings.entries[1].ready,
+      "returned renderers did not become ready"
+    )
+    vim.api.nvim_buf_delete(source, { force = true })
+    vim.wait(30)
+    assert(new_images.closed and new_headings.closed, "source wipe left renderers alive")
+    assert(not vim.api.nvim_buf_is_valid(session.buf), "source wipe retained pager buffer")
+    assert(vim.o.laststatus == chrome, "source wipe retained pager chrome: " .. vim.o.laststatus .. " ~= " .. chrome)
+  end)
+  layout.request, image.get_cell_size, image.png_status = request, cell, status
+  image.transmit_image_async, image.transmit_png, image.delete_image, image.put_image = transmit, png, delete, put
+  text_size.setup { backend = "native" }
+  vim.o.termguicolors = colors
+  vim.env.TMUX, vim.env.TMUX_PANE = tmux, pane
+  vim.fn.delete(path)
+  assert(ok, err)
+end)
+
+test("pager restores tab-local command heights in an attached UI", function()
+  local child = vim.fn.jobstart(
+    { vim.v.progpath, "--embed", "--headless", "-n", "-u", "NONE", "--noplugin", "-i", "NONE" },
+    { rpc = true }
+  )
+  local function lua(code)
+    return vim.rpcrequest(child, "nvim_exec_lua", code, {})
+  end
+  local ok, err = pcall(function()
+    -- cmdheight is stored per tab during UI updates; one headless Lua turn
+    -- cannot reliably observe it after tab switches.
+    vim.rpcrequest(child, "nvim_ui_attach", 120, 40, { rgb = true })
+    lua [[
+      package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
+      vim.o.hidden, vim.o.swapfile = true, false
+      require("md-render.text_size").setup { enabled = false }
+      _G.preview = require "md-render.preview"
+      vim.bo.filetype = "markdown"
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, { "# Pager" })
+      vim.o.cmdheight, vim.o.laststatus, vim.o.showtabline = 2, 3, 2
+    ]]
+    for _, step in ipairs {
+      { "preview.show_pager()", 0 },
+      { "preview.toggle()", 2 },
+      { "vim.cmd('tab split')", 2 },
+      { "vim.o.cmdheight = 4", 4 },
+      { "preview.show_pager()", 0 },
+      { "vim.cmd.tabprevious()", 2 },
+      { "vim.cmd.tabnext()", 0 },
+      { "preview.toggle()", 4 },
+      { "vim.cmd.tabprevious()", 2 },
+    } do
+      lua(step[1])
+      assert(lua "return vim.o.cmdheight" == step[2], "wrong tab command height after " .. step[1])
+    end
+    assert(lua "return vim.o.laststatus == 3 and vim.o.showtabline == 2", "source chrome was not restored")
+  end)
+  vim.fn.jobstop(child)
+  assert(ok, err)
+end)
+
 assert(failures == 0, failures .. " preview window tests failed")
-print "preview_window_test: 13 passed"
+print "preview_window_test: 15 passed"

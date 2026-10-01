@@ -252,7 +252,7 @@ Use the `<leader>ms` example from the Markdown source window to open a preview o
 
 ### In-preview keys
 
-Inside a rendered preview (floating, tab, split, or in-place toggle), these buffer-local keys are set automatically:
+Inside a rendered preview (floating, tab, split, in-place toggle, or pager), these buffer-local keys are set automatically:
 
 | Key | Action |
 |---|---|
@@ -261,14 +261,15 @@ Inside a rendered preview (floating, tab, split, or in-place toggle), these buff
 | `gf` | Follow the local file link under the cursor; Markdown targets stay rendered |
 | `<LeftMouse>` | Toggle folds, expand regions, and open links by clicking |
 | `q` / `<Esc>` / `<C-c>` | Close the window (floating / tab mode only) |
+| `q` | Quit Neovim with unsaved-buffer protection (pager only) |
 
-`gf` resolves the link destination relative to its source Markdown file, independently of the working directory. Markdown targets keep the current preview window; other files open for editing in the original source window, closing floating/tab previews. `Ctrl-O` returns to the preceding rendered document with its reading position and folds; after editing another file, that rendered return uses the source window. Outside a link, native `gf` and counts such as `2gf` still work.
+`gf` resolves the link destination relative to its source Markdown file, independently of the working directory. Markdown targets keep the current preview window; other files open for editing in the original source window, closing floating/tab previews. Pager opens other files and directories in the currently operated window. `Ctrl-O` returns to the preceding rendered document with its reading position and folds; after editing another file, that rendered return uses the source window. Outside a link, native `gf` and counts such as `2gf` still work.
 
-Directories open in the original source window through the configured directory browser (such as netrw), closing floating/tab previews. The browser retains its own navigation and buffer lifecycle.
+Outside pager mode, directories open in the original source window through the configured directory browser (such as netrw), closing floating/tab previews. The browser retains its own navigation and buffer lifecycle.
 
-`Ctrl-O` and `Ctrl-I` remain native Neovim commands. Each window keeps its own jumplist: after opening another file in the source editing window, only the immediately preceding rendered document is guaranteed on return. Earlier preview history is not merged into that window.
+`Ctrl-O` and `Ctrl-I` remain native Neovim commands. Each window keeps its own jumplist: when a preview hands off to the original source editing window, only the immediately preceding rendered document is guaranteed on return. Earlier preview history is not merged into that window.
 
-Local links support relative paths, POSIX absolute paths, and `file:///` URLs, including encoded filenames, inline/reference links, and optional titles. Missing or unreadable files leave the preview unchanged. Fragments do not yet select a heading; pager navigation and Windows/UNC paths are outside this feature's initial scope.
+Local links support relative paths, POSIX absolute paths, and `file:///` URLs, including encoded filenames, inline/reference links, and optional titles. Missing or unreadable files leave the preview unchanged. Fragments do not yet select a heading; Windows/UNC paths remain outside this feature's scope.
 
 Reference links use the first valid definition, match labels with Unicode case folding and normalized whitespace, and resolve in table headers and cells. Valid definitions, including multiline and quoted definitions, are hidden even when unused; malformed definitions remain ordinary Markdown.
 
@@ -440,6 +441,10 @@ Add a shell alias for convenience:
 alias mdless='nvim +"MdRender pager"'
 mdless README.md
 ```
+
+In pager mode, `gf` follows local links: Markdown stays rendered, while other files and directories open normally in the same window. Native `Ctrl-O` / `Ctrl-I` preserve the document history, reading position and folds. Focusing an editing buffer restores the editor UI and its normal keys; returning to pager hides the UI again. `q` runs `:keepjumps qa`, respecting unsaved changes; Neovim may show the buffer that needs saving.
+
+Named files resolve relative links from their source directory. Unnamed/stdin Markdown uses the working directory captured when pager starts, even after `:cd`; set `filetype=markdown` for stdin. The Lua API's `buf_dir` option overrides that base. Neovim marks stdin content as modified, so `q` protects it too; save it to a file or explicitly use `:qa!` to discard it.
 
 ## Telescope Integration
 

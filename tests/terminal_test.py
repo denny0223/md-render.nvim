@@ -123,7 +123,7 @@ def run_kitty(kitty, enabled, workdir, mode="float"):
     env = dict(
         os.environ,
         MD_RENDER_E2E_ENABLED="1" if enabled else "0",
-        MD_RENDER_E2E_MODE=mode,
+        MD_RENDER_E2E_MODE="toggle" if mode == "pager" else mode,
         MD_RENDER_E2E_SIGNAL=str(signal),
         MD_RENDER_E2E_DIAG=str(diag),
         # Kitty needs a GL context; CI has no GPU.
@@ -212,6 +212,16 @@ def run_kitty(kitty, enabled, workdir, mode="float"):
         def screen(ansi=False):
             return remote("get-text", "--extent", "screen", *(["--ansi"] if ansi else []))
 
+        def expr(value):
+            result = subprocess.run(
+                ["nvim", "--server", str(server), "--remote-expr", f"json_encode({value})"],
+                capture_output=True, check=True, env=env, text=True, timeout=10,
+            )
+            return json.loads(result.stdout)
+
+        def lua(code):
+            return expr(f"luaeval({json.dumps(code)})")
+
         out = screen(ansi=True)
         plain = screen().decode("utf-8", "replace")
         if any(icon in plain for icon in HEADING_ICONS):
@@ -256,14 +266,11 @@ def run_kitty(kitty, enabled, workdir, mode="float"):
                 ):
                     remote("send-text", "--", f"{row}G{col}|")
                     time.sleep(0.5)
-                    cursor = subprocess.run(
-                        ["nvim", "--server", str(server), "--remote-expr", "json_encode(getcurpos()[1:2])"],
-                        capture_output=True, check=True, env=env, text=True, timeout=10,
-                    ).stdout
-                    if json.loads(cursor) == [row, col]:
+                    cursor = expr("getcurpos()[1:2]")
+                    if cursor == [row, col]:
                         ok(f"cursor reached {context}")
                     else:
-                        bad(f"cursor reached {context}", cursor.strip())
+                        bad(f"cursor reached {context}", repr(cursor))
                     check_heading(1, scaled, context)
                     check_heading(2, True, context)
                     actual = body_rows()
@@ -271,6 +278,90 @@ def run_kitty(kitty, enabled, workdir, mode="float"):
                         ok(f"body rows survive cursor movement {context}")
                     else:
                         bad(f"body rows survive cursor movement {context}", repr(actual))
+
+        if mode == "pager":
+            source = workdir / "pager-source.md"
+            target = workdir / "pager-target.md"
+            notes = workdir / "pager-notes.txt"
+            source.write_text("# Pager origin\n\n" + "\n\n".join(
+                f"Origin paragraph {index}." for index in range(1, 71)
+            ) + "\n\n[Target document](pager-target.md)\n")
+            target.write_text("## Pager target\n\nTarget body.\n\n[Edit notes](pager-notes.txt)\n")
+            notes.write_text("EDITOR CONTENT\n")
+            lua("(function() "
+                "local p = require('md-render.preview'); p.toggle(); "
+                f"vim.cmd.edit({json.dumps(str(source))}); "
+                "vim.bo.filetype = 'markdown'; vim.o.hidden = true; "
+                "vim.o.laststatus = 2; vim.o.showtabline = 2; vim.o.cmdheight = 1; "
+                "vim.o.ruler = true; vim.o.showcmd = true; vim.wo.number = true; "
+                "vim.wo.statusline = 'PAGER EDITOR STATUS'; vim.wo.winbar = 'PAGER EDITOR BAR'; "
+                "p.show_pager(); vim.cmd('normal! G0wzt'); return true end)()")
+
+            def state():
+                return lua("(function() "
+                           "local s = require('md-render.preview')._sessions[vim.api.nvim_get_current_buf()]; "
+                           "return {buf=vim.api.nvim_get_current_buf(),win=vim.api.nvim_get_current_win(), "
+                           "pager=not not (s and s.pager),view=vim.fn.winsaveview(), "
+                           "ui={vim.o.laststatus,vim.o.showtabline,vim.o.cmdheight,vim.o.ruler,vim.o.showcmd}} "
+                           "end)()")
+
+            def send(keys):
+                remote("send-text", "--", keys)
+                time.sleep(0.5)
+
+            origin = state()
+            assert origin["pager"] and origin["ui"] == [0, 0, 0, False, False], origin
+            ok("pager hides chrome")
+            assert "Target document" in screen().decode(), "pager source link is not visible"
+            send("gf")
+            destination = state()
+            assert destination["pager"] and destination["buf"] != origin["buf"], destination
+            assert destination["win"] == origin["win"], destination
+            assert "Pager target" in screen().decode(), "local Markdown target is not visible"
+            ok("pager gf opens rendered Markdown in the same window")
+            send("\x0f")
+            returned = state()
+            assert returned["buf"] == origin["buf"] and returned["view"] == origin["view"], returned
+            ok("pager Ctrl-O restores the reading view")
+            send("\x09")
+            send("G0wgf")
+            editor = state()
+            assert not editor["pager"] and editor["win"] == origin["win"], editor
+            assert editor["ui"] == [2, 2, 1, True, True], editor
+            assert expr("&modifiable && &number && empty(maparg('q', 'n'))"), editor
+            visible = screen().decode()
+            assert all(text in visible for text in ("EDITOR CONTENT", "PAGER EDITOR STATUS", "PAGER EDITOR BAR")), visible
+            assert not OSC66.findall(screen(ansi=True)), "heading paint remains in the editor"
+            ok("pager opens an ordinary editor with restored chrome and keys")
+            send("iUNSAVED NOTES \x1b")
+            send("\x0f")
+            returned = state()
+            assert returned["pager"] and returned["buf"] == destination["buf"], returned
+            assert returned["ui"] == [0, 0, 0, False, False], returned
+            assert "Pager target" in screen().decode() and "PAGER EDITOR STATUS" not in screen().decode()
+            ok("editor Ctrl-O restores the rendered pager and hides chrome")
+            send("q")
+            assert proc.poll() is None, "pager q discarded unsaved editor changes"
+            refusal = screen().decode()
+            assert "No write since last change" in refusal, refusal
+            send("\r\x1b")  # The normal unsaved-change error requires dismissing hit-enter.
+            assert expr(f"getbufvar({json.dumps(str(notes))}, '&modified')"), "editor changes were discarded"
+            blocked = state()
+            assert not blocked["pager"] and blocked["ui"] == [2, 2, 1, True, True], blocked
+            assert expr("expand('%:p')") == str(notes), "unsaved-change refusal did not reveal the editor"
+            ok("pager q refuses to discard unsaved editor changes")
+            send(":write\r\x0f")
+            assert notes.read_text() == "UNSAVED NOTES EDITOR CONTENT\n", "editor changes were not saved"
+            saved_return = state()
+            assert saved_return["pager"] and saved_return["buf"] == destination["buf"], saved_return
+            ok("saving the revealed editor and Ctrl-O returns to the pager")
+            remote("send-text", "--", "q")
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired as error:
+                raise AssertionError(f"pager q did not exit:\n{screen().decode()}") from error
+            assert proc.returncode == 0, f"pager exit failed: {proc.returncode}"
+            ok("pager q exits Neovim after changes are resolved")
     finally:
         if not logf.closed:
             logf.close()
@@ -396,6 +487,9 @@ def main():
 
         print("\ncursor movement in an in-place preview:")
         run_kitty(args.kitty, True, workdir, "toggle")
+
+        print("\npager local-file navigation and editing:")
+        run_kitty(args.kitty, True, workdir, "pager")
 
     print(f"\nterminal_test: {passed} passed, {failed} failed")
     return 1 if failed else 0

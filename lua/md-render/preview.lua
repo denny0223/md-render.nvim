@@ -234,6 +234,7 @@ end
 ---@field views? table<integer, table> -- last reading view per window, for close synchronization
 ---@field jump_views? table<integer, table<string, table>> -- viewports keyed by native jump position
 ---@field cache? table<integer, MdRender.Session> -- documents within this preview presentation
+---@field pager? boolean             -- full-screen reading presentation
 local Session = {}
 Session.__index = Session
 
@@ -704,6 +705,13 @@ function Session:install_float_keymaps(close_handle, keymap_opts)
       return false
     end,
   })
+  if self.pager then
+    -- Let :qa handle unsaved buffers, including showing the editor that
+    -- needs saving. Do not tear down renderers before exit is accepted.
+    vim.keymap.set("n", "q", function()
+      vim.cmd { cmd = "quitall", mods = { keepjumps = true } }
+    end, { buffer = self.buf, silent = true, desc = "Quit pager (preserve unsaved edits)" })
+  end
 end
 
 --- Show status info (source file name, position in the source buffer) on the
@@ -867,125 +875,6 @@ MdPreview.show_tab = function(opts)
   session:scroll_to_source_line(source_cursor_line)
   session:install_float_keymaps(tab_win)
   session:install_navigation(source_win, tab_win)
-end
-
--- =====================================================================
--- show_pager: full-screen pager mode (existing behavior)
--- =====================================================================
-
---- Show markdown in pager mode (full-screen, minimal UI, q to quit Neovim)
----@param opts? { max_width?: integer }
-MdPreview.show_pager = function(opts)
-  local bufnr = vim.api.nvim_get_current_buf()
-  local ok, warn = check_markdown_buffer(bufnr)
-  if not ok then
-    vim.notify(warn, vim.log.levels.WARN)
-    return
-  end
-
-  local session = Session.new(bufnr, "md_render_pager", opts)
-
-  local win = vim.api.nvim_get_current_win()
-  vim.api.nvim_win_set_buf(win, session.buf)
-
-  -- Hide all chrome for pager feel
-  vim.o.showtabline = 0
-  vim.o.laststatus = 0
-  vim.o.cmdheight = 0
-  vim.o.ruler = false
-  vim.o.showcmd = false
-
-  vim.wo[win].number = false
-  vim.wo[win].relativenumber = false
-  vim.wo[win].signcolumn = "no"
-  vim.wo[win].foldcolumn = "0"
-  vim.wo[win].statuscolumn = ""
-  vim.wo[win].cursorline = true
-  vim.wo[win].wrap = true
-  vim.wo[win].spell = false
-  vim.wo[win].list = false
-
-  vim.bo[session.buf].modifiable = false
-  vim.bo[session.buf].bufhidden = "wipe"
-  vim.bo[session.buf].buftype = "nofile"
-
-  session:bind_window(win)
-
-  -- q quits Neovim (pager behavior)
-  vim.keymap.set("n", "q", function()
-    session:cleanup_images()
-    vim.cmd "qa!"
-  end, { buffer = session.buf, noremap = true, silent = true })
-
-  -- Click handling (links, folds, expand)
-  vim.keymap.set("n", "<LeftRelease>", function()
-    local target_win = session.win
-    local mouse, projected = display_utils.getmousepos(true)
-    if mouse.winid ~= target_win or mouse.line <= 0 then return end
-    if projected then vim.api.nvim_win_set_cursor(target_win, { mouse.line, mouse.column - 1 }) end
-
-    local click_line = mouse.line - 1
-    local click_col = mouse.column - 1
-
-    local function try_open_url()
-      local url = require("md-render.links").at(session.buf, session.ns, click_line, click_col)
-      if url then
-        local anchor = url:match "^#(.+)$"
-        if anchor then
-          if session.content.footnote_anchors then
-            local target_line = session.content.footnote_anchors[anchor]
-            if target_line then
-              vim.api.nvim_win_set_cursor(target_win, { target_line + 1, 0 })
-              return true
-            end
-          end
-          if session.content.heading_anchors then
-            local target_line = session.content.heading_anchors[anchor]
-            if target_line then
-              vim.api.nvim_win_set_cursor(target_win, { target_line + 1, 0 })
-              return true
-            end
-          end
-          return true
-        end
-        if url:match "^obsidian://" then
-          vim.notify("Opening: " .. url, vim.log.levels.INFO)
-          vim.ui.open(url)
-          return true
-        end
-        if display_utils.supports_osc8() then return false end
-        vim.notify("Opening: " .. url, vim.log.levels.INFO)
-        vim.ui.open(url)
-        return true
-      end
-      return false
-    end
-
-    if session.content.callout_folds then
-      for _, fold in ipairs(session.content.callout_folds) do
-        if fold.header_line == click_line then
-          session.fold_state[fold.source_line] = not fold.collapsed
-          session:rebuild()
-          session:refresh_images()
-          return
-        end
-      end
-    end
-
-    if session.content.expandable_regions then
-      for _, region in ipairs(session.content.expandable_regions) do
-        if click_line >= region.start_line and click_line <= region.end_line then
-          if try_open_url() then return end
-          session.expand_state[region.block_id] = not region.expanded
-          session:rebuild()
-          session:refresh_images()
-          return
-        end
-      end
-    end
-
-    try_open_url()
-  end, { buffer = session.buf, noremap = true, silent = true })
 end
 
 -- =====================================================================
@@ -2137,6 +2026,31 @@ local navigation_windows = {}
 local pending_views = {}
 local enter_navigation
 
+local pager_options = { showtabline = 0, laststatus = 0, cmdheight = 0, ruler = false, showcmd = false }
+local saved_pager_options
+
+-- Global chrome belongs to the focused presentation, including native window
+-- and tab switches. Capture editor changes again on each new pager entry.
+local function update_pager_ui(session)
+  if session and session.pager then
+    if not saved_pager_options then
+      saved_pager_options = {}
+      for name in pairs(pager_options) do
+        saved_pager_options[name] = vim.o[name]
+      end
+    end
+    if saved_pager_options.cmdheight == nil then saved_pager_options.cmdheight = vim.o.cmdheight end
+    for name, value in pairs(pager_options) do
+      vim.o[name] = value
+    end
+  elseif saved_pager_options then
+    for name, value in pairs(saved_pager_options) do
+      vim.o[name] = value
+    end
+    saved_pager_options = nil
+  end
+end
+
 local function view_key(line, col)
   return line .. ":" .. col
 end
@@ -2282,6 +2196,7 @@ function Session:follow_file(path)
       opts.buf_dir = nil
       opts.max_width = self._explicit_max_width and self.opts.max_width or nil
       local next_session = get_or_create_session(target, opts, self.cache)
+      next_session.pager = self.pager
       -- Mark the target Session for navigation so BufEnter can adopt it.
       next_session.views = next_session.views or {}
       vim.cmd.buffer(next_session.buf)
@@ -2289,7 +2204,7 @@ function Session:follow_file(path)
     end
   end
 
-  local source_win = context.source_win
+  local source_win = self.pager and win or context.source_win
   if not vim.api.nvim_win_is_valid(source_win) then error "source editing window was closed" end
   if source_win ~= win then
     -- A jumplist belongs to a window. Seed the source window with the current
@@ -2324,6 +2239,17 @@ function Session:follow_file(path)
 end
 
 local navigation_group = vim.api.nvim_create_augroup("md_render_navigation", { clear = true })
+vim.api.nvim_create_autocmd("TabLeave", {
+  group = navigation_group,
+  callback = function()
+    -- cmdheight is tab-local: restore the departing tab before switching,
+    -- without writing its value into the next tab's editor.
+    if saved_pager_options and saved_pager_options.cmdheight ~= nil then
+      vim.o.cmdheight = saved_pager_options.cmdheight
+      saved_pager_options.cmdheight = nil
+    end
+  end,
+})
 vim.on_key(function()
   -- Finish a native return before the next key, including scroll commands in
   -- a macro. Scheduling alone would restore over that subsequent command.
@@ -2348,10 +2274,14 @@ vim.api.nvim_create_autocmd("BufLeave", {
 
 enter_navigation = function()
   local win = vim.api.nvim_get_current_win()
+  -- bufload()/buf_call() can enter a temporary autocmd window. It does not
+  -- change the reader's focus and must not resize the real pager's chrome.
+  if vim.fn.win_gettype(win) == "autocmd" then return end
   local buf = vim.api.nvim_get_current_buf()
   local context = navigation_windows[win]
   local session = MdPreview._sessions[buf]
   if session and not session.views then session = nil end
+  update_pager_ui(session)
   if session and context and context.session == session and session.win == win then
     if context.close_handle and context.close_handle.win ~= win then
       context.close_handle:setup(win, { auto_close = false })
@@ -2405,6 +2335,15 @@ vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter" }, {
   end,
 })
 
+vim.api.nvim_create_autocmd("BufWipeout", {
+  group = navigation_group,
+  callback = function()
+    -- Source disposal can replace the focused render from an autocmd window,
+    -- without a real BufEnter. Recheck focus after the deletion finishes.
+    if saved_pager_options then vim.schedule(enter_navigation) end
+  end,
+})
+
 vim.api.nvim_create_autocmd("WinClosed", {
   group = navigation_group,
   callback = function(ev)
@@ -2448,6 +2387,40 @@ vim.api.nvim_create_autocmd("WinClosed", {
     end)
   end,
 })
+
+--- Show Markdown in a full-screen pager, retaining native navigation history.
+---@param opts? { max_width?: integer, buf_dir?: string }
+MdPreview.show_pager = function(opts)
+  local bufnr = vim.api.nvim_get_current_buf()
+  local ok, warn = check_markdown_buffer(bufnr)
+  if not ok then
+    vim.notify(warn, vim.log.levels.WARN)
+    return
+  end
+
+  opts = vim.tbl_extend("force", {}, opts or {})
+  if opts.buf_dir then opts.buf_dir = vim.fn.fnamemodify(opts.buf_dir, ":p") end
+  local win = vim.api.nvim_get_current_win()
+  local source_wo = save_render_win_opts(win)
+  local session = get_or_create_session(bufnr, opts, {})
+  session.pager = true
+  -- Respect normal modified-buffer protections, including on initial entry.
+  local switched, err = pcall(vim.cmd.buffer, session.buf)
+  if not switched then
+    session:dispose()
+    error(err)
+  end
+  update_pager_ui(session)
+  apply_render_win_opts(win)
+  vim.wo[win].cursorline = true
+  vim.wo[win].wrap = true
+  vim.wo[win].spell = false
+  vim.wo[win].winbar = ""
+  session:bind_window(win)
+  session:install_navigation(win, nil, source_wo)
+  set_win_state(win, { source_buf = bufnr, render_buf = session.buf, mode = "render", source_wo = source_wo })
+  enter_navigation()
+end
 
 --- Toggle between source and render mode in the current window.
 ---@param opts? { max_width?: integer }

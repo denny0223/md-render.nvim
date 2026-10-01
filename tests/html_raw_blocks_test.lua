@@ -628,6 +628,38 @@ do
   eq(markdown.render("*inline*", nil, nil, nil, nil, true), "inline", "inline_only still parses ordinary Markdown")
 end
 
+-- Generated pipe syntax cannot split literal HTML cells or mutate their data.
+for count = 0, 3 do
+  local value = "L" .. string.rep("\\", count) .. "|R"
+  local body = build { "<table><tr><td>" .. value .. "</td><td>right</td></tr></table>" }
+  eq(
+    body.lines,
+    { "│ " .. value .. " │ right │" },
+    "literal cell pipes preserve prior backslashes and two columns"
+  )
+  local header = build {
+    "<table><tr><th>" .. value .. "</th><th>right</th></tr><tr><td>data</td><td>other</td></tr></table>",
+  }
+  local width = math.max(#value, 4)
+  eq(header.lines, {
+    "│ " .. value .. string.rep(" ", width - #value) .. " │ right │",
+    "│" .. string.rep("─", width + 2) .. "│───────│",
+    "│ data" .. string.rep(" ", width - 4) .. " │ other │",
+  }, "literal header pipes preserve the actual header/body column structure")
+  local target = "/L" .. string.rep("\\", count) .. "|R"
+  local c = build { '<table><tr><td><a href="' .. target .. '">label</a></td></tr></table>' }
+  eq(c.lines, { "│ label │" }, "literal href pipes keep the supported label cell intact")
+  eq(targets(c), { { 1, "label", target } }, "literal href pipes preserve the full original target bytes")
+end
+do
+  local c = build { '<table><tr><td><a href="/a|b|c">*L|R*</a></td><td>right</td></tr></table>' }
+  eq(c.lines, { "│ *L|R* │ right │" }, "multiple pipes in attributes and raw labels remain cell data")
+  eq(targets(c), { { 1, "*L|R*", "/a|b|c" } }, "multiple literal target pipes remain interactive")
+  eq(styled(c, "Italic"), {}, "literal Markdown markers in HTML cells remain opaque")
+  local entity = build { "<table><tr><td>*a&vert;b*</td><td>right</td></tr></table>" }
+  eq(entity.lines, { "│ *a|b* │ right │" }, "an encoded pipe decodes once inside its original HTML cell")
+end
+
 -- Negative owners: existing code and nonconflicting extensions remain active.
 do
   local c =
@@ -819,6 +851,8 @@ for _, source in ipairs {
   quoted_heading_source,
   { "<div>", "%%", "*raw*", "", "*after*" },
   { "<div>", "<!--", "*raw*", "", "*after*" },
+  { "<table><tr><td>left|part</td><td>right</td></tr></table>" },
+  { '<table><tr><td><a href="/a|b">label</a></td></tr></table>' },
 } do
   local expected, expected_marks = build(source)
   local preview = require "md-render.preview"

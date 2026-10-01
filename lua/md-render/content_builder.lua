@@ -1236,6 +1236,7 @@ local function html_table_to_pipe(html_lines)
       -- Preserve the cell content as-is (inline HTML like <img>, <em> will be
       -- processed later by markdown.render / process_html_tags)
       local cell = content:gsub("^%s+", ""):gsub("%s+$", "")
+      cell = cell:gsub("|", "\\|") -- Protect cell data from the generated table delimiters.
       table.insert(cells, { text = cell, is_header = tag == "th" })
     end
     if #cells > 0 then table.insert(rows, { cells = cells, aligns = aligns }) end

@@ -176,6 +176,36 @@ for _, opening in ipairs { "<div>", "<search>", "<source>", '<custom-tag key="va
   eq(styled(eof, "Italic"), {}, "type 6/7 owns literal payload through EOF " .. opening)
 end
 
+-- Raw HTML payload cannot open a second block-comment namespace.
+for _, marker in ipairs { "%%", "<!--" } do
+  for _, container in ipairs {
+    { "<div>", "", "" },
+    { "> <div>", "> ", ">" },
+    { "- <div>", "  ", "" },
+    { "> - > <div>", ">   > ", ">   >" },
+  } do
+    local c = build { container[1], container[2] .. marker, container[2] .. "*raw*", container[3], "*after*" }
+    eq(styled(c, "Italic"), { { 5, "after" } }, "raw comment-looking payload ends at its HTML owner boundary")
+    if marker == "%%" then
+      local raw_row
+      for row, text in ipairs(c.lines) do
+        if text:find("*raw*", 1, true) then raw_row = c.source_line_map[row] end
+      end
+      eq(raw_row, 3, "raw Obsidian-looking payload remains literal and physically mapped")
+    end
+  end
+end
+for _, source in ipairs {
+  { "<div>", "%%", "*raw*", "%%", "</div>", "", "*after*" },
+  { "<pre>", "%%", "*raw*", "</pre>", "*after*" },
+  { "<div>%%", "*raw*", "", "*after*" },
+  { "> <div>%%", "> *raw*", ">", "*after*" },
+} do
+  local c = build(source)
+  eq(styled(c, "Italic"), { { #source, "after" } }, "raw Obsidian markers cannot hide later Markdown")
+  eq(table.concat(c.lines, "\n"):find("*raw*", 1, true) ~= nil, true, "raw Obsidian markers preserve literal payload")
+end
+
 do
   local source = {
     "<div>",
@@ -747,6 +777,8 @@ for _, source in ipairs {
   dl_boundary,
   interleaved_source,
   quoted_heading_source,
+  { "<div>", "%%", "*raw*", "", "*after*" },
+  { "<div>", "<!--", "*raw*", "", "*after*" },
 } do
   local expected, expected_marks = build(source)
   local preview = require "md-render.preview"

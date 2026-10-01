@@ -1180,17 +1180,23 @@ end
 --- A nil suffix means this line is outside a comment; an empty one is hidden.
 ---@param state? 'html'|'obsidian'
 ---@param line string
+---@param html_owner? integer accepted raw HTML owner
 ---@return 'html'|'obsidian'|nil state, string? suffix
-local function block_comment_step(state, line)
+local function block_comment_step(state, line, html_owner)
   if state == "obsidian" then
     local content = unwrap_html_wrapper(line)
     if content and content:match "^%s*%%%%%s*$" then return nil, "" end
     return state, ""
   end
   if not state then
+    local kind = not html_owner and html_block.start(line, false)
+    if kind and kind ~= 2 then return nil, nil end
     line = unwrap_html_wrapper(line)
     if not line then return nil, nil end
-    if line:match "^%s*%%%%%s*$" then return "obsidian", "" end
+    if line:match "^%s*%%%%%s*$" then
+      if html_owner then return nil, nil end
+      return "obsidian", ""
+    end
     if not line:match "^%s*<!%-%-" then return nil, nil end
   end
   local _, close_end = line:find("-->", 1, true)
@@ -2121,7 +2127,7 @@ local function join_paragraph_continuations(
   local item_cols = {}
   local open_fence = nil
   local in_math = false
-  local comment_state
+  local comment_state, comment_owner
   local comment_indent = 0
 
   local function flush_para()
@@ -2137,6 +2143,7 @@ local function join_paragraph_continuations(
     local line = lines[idx]
     local src = src_indices[idx]
     local line_origin = source_origins[src]
+    if comment_state == "html" and comment_owner ~= line_origin.html then comment_state = nil end
     if line_origin.list_prefixes then flush_para() end
     if
       #para > 0
@@ -2174,7 +2181,7 @@ local function join_paragraph_continuations(
       local was_in_comment = comment_state ~= nil
       local comment_suffix
       if not open_fence and not literal_code then
-        comment_state, comment_suffix = block_comment_step(comment_state, line)
+        comment_state, comment_suffix = block_comment_step(comment_state, line, line_origin.html)
       end
       if comment_suffix ~= nil then
         if not was_in_comment then
@@ -2184,6 +2191,7 @@ local function join_paragraph_continuations(
           suffix = comment_suffix,
           prefix = quote_prefix and (quote_prefix .. string.rep(" ", comment_indent)) or "",
         }
+        comment_owner = line_origin.html
         flush_para()
         table.insert(result, line)
         table.insert(result_indices, src)
@@ -2337,9 +2345,9 @@ local function preprocess_multiline_html(lines, src_indices, container_indents, 
   for idx, line in ipairs(lines) do
     local src = src_indices[idx]
     local origin = source_origins[src]
+    if comment_state == "html" and comment_owner ~= origin.html then comment_state = nil end
     if origin.code then goto next_row end
     if idx <= reference_end then goto next_row end
-    if comment_state == "html" and comment_owner ~= origin.html then comment_state = nil end
     local math_boundary = not origin.html and not open_fence and not comment_state and line:match "^%$%$$"
     if math_boundary then in_math = not in_math end
     if in_math or math_boundary or table_rows[src] then goto next_row end
@@ -2356,7 +2364,7 @@ local function preprocess_multiline_html(lines, src_indices, container_indents, 
     end
     if not open_fence then
       local suffix
-      comment_state, suffix = block_comment_step(comment_state, line)
+      comment_state, suffix = block_comment_step(comment_state, line, origin.html)
       if suffix ~= nil then
         comments[src] = { suffix = suffix, prefix = "" }
         comment_owner = origin.html
@@ -2385,7 +2393,7 @@ local function fenced_code_lines(
 )
   quote_depth = quote_depth or 0
   code_lines = code_lines or {}
-  local open_fence, comment_state
+  local open_fence, comment_state, comment_owner
   local in_math_block = false
   local comment_indent = 0
   local item_cols = {}
@@ -2393,6 +2401,7 @@ local function fenced_code_lines(
   while idx <= #lines do
     local line, src = lines[idx], src_indices[idx]
     local origin = source_origins[src]
+    if comment_state == "html" and comment_owner ~= origin.html then comment_state = nil end
     if origin.code == false then open_fence = nil end
     local column = source_column(source_origins, src, quote_depth)
     local was_in_comment = comment_state ~= nil
@@ -2413,7 +2422,7 @@ local function fenced_code_lines(
       goto next_line
     end
     if not open_fence then
-      comment_state, comment_suffix = block_comment_step(comment_state, line)
+      comment_state, comment_suffix = block_comment_step(comment_state, line, origin.html)
     end
     if comment_suffix ~= nil then
       if not was_in_comment then
@@ -2423,6 +2432,7 @@ local function fenced_code_lines(
         suffix = comment_suffix,
         prefix = quote_prefix and (quote_prefix .. string.rep(" ", comment_indent)) or "",
       }
+      comment_owner = origin.html
     elseif origin.html and quote_depth == #origin.quote_columns then
       goto next_line
     else

@@ -3533,19 +3533,31 @@ function ContentBuilder:render_document(lines, opts)
       end
       if h_level then
         html_heading_level = tonumber(h_level)
-        local img_first = h_content:find "<img%s"
-        local img_last = img_first and inline.html_end(h_content, img_first)
-        local img_tag = img_last and h_content:sub(img_first, img_last)
-        if img_tag then
-          -- Extract the img tag as a standalone line, render it before the heading
-          local remaining = (h_content:sub(1, img_first - 1) .. h_content:sub(img_last + 1))
-            :gsub("^%s+", "")
-            :gsub("%s+$", "")
-          -- The synthetic image shares the heading's physical source row.
+        local heading_parts, image_tags, pos = {}, {}, 1
+        while pos <= #h_content do
+          local first = h_content:find("<", pos, true)
+          if not first then break end
+          heading_parts[#heading_parts + 1] = h_content:sub(pos, first - 1)
+          local last = inline.html_end(h_content, first) or first
+          local token = h_content:sub(first, last)
+          if token:match "^<img%s" then
+            image_tags[#image_tags + 1] = token
+          else
+            heading_parts[#heading_parts + 1] = token
+          end
+          pos = last + 1
+        end
+        heading_parts[#heading_parts + 1] = h_content:sub(pos)
+        if #image_tags > 0 then
+          local remaining = table.concat(heading_parts):gsub("^%s+", ""):gsub("%s+$", "")
+          -- Render actual images after the heading, in their source order.
+          -- The synthetic images share the heading's physical source row.
           -- Keep source classification and row indices aligned with it.
-          table.insert(lines, src_idx + 1, img_tag)
-          table.insert(source_list_lines, src_idx + 1, img_tag)
-          table.insert(src_indices, src_idx + 1, src_indices[src_idx])
+          for offset, img_tag in ipairs(image_tags) do
+            table.insert(lines, src_idx + offset, img_tag)
+            table.insert(source_list_lines, src_idx + offset, img_tag)
+            table.insert(src_indices, src_idx + offset, src_indices[src_idx])
+          end
           if remaining ~= "" then
             line = remaining
           else

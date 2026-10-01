@@ -99,6 +99,12 @@ end
 
 local anchor_source = { '<a href="foo">', "*bar*", "</a>" }
 local quoted_href_source = { '<a href="two<!--keep-->spaces.md">', "*別*", "</a>" }
+local heading_attribute_target = "foo<img src='evil.png' alt='trap'>bar"
+local heading_attribute_source = { '<h1><a href="' .. heading_attribute_target .. '">label</a></h1>' }
+local ordered_heading_images_source = { '<h1><img src="a.png" alt="first"><img src="b.png" alt="second"></h1>' }
+local mixed_heading_images_source = {
+  '<h1><a href="' .. heading_attribute_target .. '">label</a><img src="a.png" alt="actual"></h1>',
+}
 do
   local c, marks = build(anchor_source)
   eq(c.lines, { "*bar*" }, "CM162 preserves stars in HTML anchor text")
@@ -399,6 +405,35 @@ do
   local heading = build { '<h1>title<img src="a.png" alt="a>b"></h1>' }
   eq(heading.lines[#heading.lines], label, "heading image extraction retains the complete quoted tag")
   eq(heading.source_line_map[#heading.lines], 1, "synthetic heading image keeps its physical source row")
+end
+do
+  local icons = require "md-render.icons"
+  local image_icon = icons.pad_icon(icons.get_image_icon "a.png") .. " "
+  local heading_lines = { "# label", string.rep("═", 100) }
+  for _, source in ipairs { heading_attribute_source, mixed_heading_images_source } do
+    local c = build(source)
+    local expected = vim.deepcopy(heading_lines)
+    if source == mixed_heading_images_source then expected[#expected + 1] = image_icon .. "actual" end
+    eq(c.lines, expected, "heading attributes cannot manufacture image rows or change heading presentation")
+    eq(
+      targets(c),
+      { { 1, "label", heading_attribute_target } },
+      "heading image extraction preserves the full quoted href"
+    )
+    eq(
+      c.source_line_map,
+      source == heading_attribute_source and { 1, 1 } or { 1, 1, 1 },
+      "heading and media retain their original source row"
+    )
+  end
+  local ordered = build(ordered_heading_images_source)
+  eq(
+    ordered.lines,
+    { image_icon .. "first", image_icon .. "second" },
+    "actual heading images preserve their source order"
+  )
+  eq(ordered.source_line_map, { 1, 1 }, "every synthetic heading image retains its original physical source row")
+  eq(ordered.link_metadata, {}, "heading media preserves the standalone image link policy")
 end
 do
   local c = build { "<div>", "<b>*literal* <em>styled</em></b>", '<a href="/a?x=1&amp;y=2">**label**</a>', "</div>" }
@@ -844,6 +879,9 @@ end
 for _, source in ipairs {
   anchor_source,
   quoted_href_source,
+  heading_attribute_source,
+  ordered_heading_images_source,
+  mixed_heading_images_source,
   table_boundary,
   summary_boundary,
   dl_boundary,
@@ -854,7 +892,7 @@ for _, source in ipairs {
   { "<table><tr><td>left|part</td><td>right</td></tr></table>" },
   { '<table><tr><td><a href="/a|b">label</a></td></tr></table>' },
 } do
-  local expected, expected_marks = build(source)
+  local expected, expected_marks = build(source, { max_width = 98 }) -- Public preview reserves two indent columns.
   local preview = require "md-render.preview"
   local source_buf = vim.api.nvim_create_buf(false, true)
   vim.bo[source_buf].filetype = "markdown"

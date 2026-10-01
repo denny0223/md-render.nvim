@@ -585,70 +585,6 @@ local function join_source_lines(lines, ref_links)
   return text
 end
 
---- Vowel lookup for English syllable-like word splitting.
-local ascii_vowels = {
-  [string.byte "a"] = true,
-  [string.byte "e"] = true,
-  [string.byte "i"] = true,
-  [string.byte "o"] = true,
-  [string.byte "u"] = true,
-  [string.byte "A"] = true,
-  [string.byte "E"] = true,
-  [string.byte "I"] = true,
-  [string.byte "O"] = true,
-  [string.byte "U"] = true,
-}
-
---- Split a long ASCII word into syllable-like segments at vowel→consonant
---- transitions (V|C boundaries).  This provides natural break points for
---- line wrapping in narrow contexts (e.g. table cells) while having no
---- visual impact in wide contexts since wrap_words reassembles segments
---- that fit on the same line.
----
---- Example: "Truncation" → ["Tru", "nca", "tion"]
----          "automatically" → ["au", "to", "ma", "ti", "ca", "lly"]
----@param word string ASCII word (≥ 7 characters)
----@param word_start integer 0-indexed byte position of word in original text
----@param leading_space boolean whether this word had a leading space
----@return {text: string, byte_pos: integer, has_leading_space: boolean}[]
-local function split_ascii_syllables(word, word_start, leading_space)
-  local result = {}
-  local seg_start = 1
-  local first = true
-
-  for i = 2, #word - 2 do
-    local b = word:byte(i)
-    local b_next = word:byte(i + 1)
-    -- Break after a vowel when followed by an alphabetic consonant,
-    -- ensuring at least 2 chars remain on each side
-    if
-      ascii_vowels[b]
-      and b_next
-      and not ascii_vowels[b_next]
-      and ((b_next >= 65 and b_next <= 90) or (b_next >= 97 and b_next <= 122))
-      and i - seg_start >= 1
-      and #word - i >= 2
-    then
-      table.insert(result, {
-        text = word:sub(seg_start, i),
-        byte_pos = word_start + seg_start - 1,
-        has_leading_space = first and leading_space or false,
-      })
-      seg_start = i + 1
-      first = false
-    end
-  end
-
-  -- Remaining tail
-  table.insert(result, {
-    text = word:sub(seg_start),
-    byte_pos = word_start + seg_start - 1,
-    has_leading_space = first and leading_space or false,
-  })
-
-  return result
-end
-
 --- Split text into segments for wrapping.
 --- CJK runs are segmented using BudouX for natural word-boundary splitting.
 --- ASCII words are accumulated as single segments (split at spaces).
@@ -716,7 +652,7 @@ local function split_segments(text)
       -- Kinsoku rules in wrap_words still apply for proper line breaking.
       local chunk_byte = cjk_run_start
       local first = true
-      for char in cjk_run:gmatch "[%z\1-\127\194-\253][\128-\191]*" do
+      for _, char in ipairs(vim.fn.split(cjk_run, "\\zs")) do
         table.insert(segments, {
           text = char,
           byte_pos = chunk_byte,
@@ -730,19 +666,26 @@ local function split_segments(text)
     has_leading_space = false
   end
 
-  for char in text:gmatch "[%z\1-\127\194-\253][\128-\191]*" do
+  for _, char in ipairs(vim.fn.split(text, "\\zs")) do
     if char:match "%s" then
       flush_ascii()
       flush_cjk()
       has_leading_space = true
     elseif is_cjk_or_kinsoku(char) then
       flush_ascii()
-      if cjk_run == "" then
+      if vim.fn.strchars(char) > 1 then
+        -- Keep complete emoji/combining sequences outside BudouX's code-point splitting.
+        flush_cjk()
+        table.insert(segments, { text = char, byte_pos = byte_pos, has_leading_space = has_leading_space })
+        has_leading_space = false
+      elseif cjk_run == "" then
         cjk_run_start = byte_pos
         cjk_leading_space = has_leading_space
         has_leading_space = false
+        cjk_run = char
+      else
+        cjk_run = cjk_run .. char
       end
-      cjk_run = cjk_run .. char
     else
       -- ASCII/narrow character: accumulate into word
       flush_cjk()
@@ -902,7 +845,6 @@ function M.wrap_words(text, max_width, measure)
 end
 
 -- Export tables for content_builder (which needs them for its own logic)
-M.split_ascii_syllables = split_ascii_syllables
 M.NO_BREAK_START = NO_BREAK_START
 M.NO_BREAK_END = NO_BREAK_END
 M.AMBIGUOUS_QUOTE = AMBIGUOUS_QUOTE

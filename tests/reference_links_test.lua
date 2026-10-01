@@ -540,13 +540,13 @@ test("nested labels use existing link precedence", function()
     "nested targets"
   )
 end)
-test("table headers and expanded rows receive references with exact byte ranges", function()
+test("table headers and wrapped rows receive references with exact byte ranges", function()
   local source =
     { "[r]: /url", "", "| [標題][r] | other |", "| --- | --- |", "| [長標籤 alpha beta gamma][r] | tail |" }
   local wide = build(source)
   eq(link_texts(wide), { { "標題", "/url", 3 }, { "長標籤 alpha beta gamma", "/url", 5 } }, "wide table")
-  for _, expanded in ipairs { false, true } do
-    local content = build(source, { max_width = 24, expand_state = { [3] = expanded } })
+  for _, width in ipairs { 24, 40 } do
+    local content = build(source, { max_width = width })
     local pieces, headers = {}, {}
     for _, link in ipairs(link_texts(content)) do
       eq(link[2], "/url", "wrapped target")
@@ -559,11 +559,7 @@ test("table headers and expanded rows receive references with exact byte ranges"
       assert(not link[1]:find("…", 1, true), "ellipsis is not clickable")
     end
     eq(headers, { "標題" }, "narrow table keeps its linked header")
-    if expanded then
-      eq(table.concat(pieces):gsub(" ", ""), "長標籤alphabetagamma", "all wrapped label bytes")
-    else
-      eq(pieces, { "長標籤 alpha " }, "truncated body keeps its visible linked text")
-    end
+    eq(table.concat(pieces):gsub(" ", ""), "長標籤alphabetagamma", "all wrapped label bytes")
   end
 end)
 test("comment definitions stay hidden and footnotes and wikilinks remain separate", function()

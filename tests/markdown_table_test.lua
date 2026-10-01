@@ -203,7 +203,7 @@ test("an earlier paragraph and a later comment do not absorb or merge tables", f
   eq(content.source_line_map[#content.lines], 6, "following source")
 end)
 
-test("unpiped reference and direct cells retain byte spans across expansion", function()
+test("unpiped reference and direct cells retain complete byte spans across widths", function()
   local source = {
     "[r]: /reference",
     "",
@@ -218,7 +218,7 @@ test("unpiped reference and direct cells retain byte spans across expansion", fu
   for i = 3, 6 do
     canonical[i] = "| " .. canonical[i] .. " |"
   end
-  for _, opts in ipairs { {}, { max_width = 24 }, { max_width = 24, expand_state = { [3] = true } } } do
+  for _, opts in ipairs { {}, { max_width = 24 } } do
     local content, expected = build(source, opts), build(canonical, opts)
     for _, field in ipairs { "lines", "highlights", "link_metadata", "source_line_map", "expandable_regions" } do
       eq(content[field], expected[field], "outer pipes do not affect " .. field)
@@ -267,9 +267,7 @@ test("unpiped reference and direct cells retain byte spans across expansion", fu
       end
     end
     assert(#pieces > 0, "unpiped link remains interactive")
-    if opts.expand_state or not opts.max_width then
-      eq(table.concat(pieces):gsub(" ", ""), "unpipedalphabetagamma", "all expanded link text")
-    end
+    eq(table.concat(pieces):gsub(" ", ""), "unpipedalphabetagamma", "all wrapped link text")
   end
 end)
 
@@ -403,6 +401,100 @@ test("earlier table ownership rejects multiline cell definitions", function()
       eq(link.url, "/good", "all references choose the real definition instead of the earlier cell")
     end
   end
+end)
+
+test("tables preserve complete headers, cells and glyphs at every width", function()
+  local source = {
+    "| ID | CPU | 很長的欄位說明與完整表頭 |",
+    "| --- | ---: | --- |",
+    "| A | 12.5 | **完整內容（不能省略）。** [LABEL73](/target) é 👩‍💻 👍🏽 🇹🇼 |",
+    "| B | 8 | BCDFGHJKLMNPQRSTVWXYZ 與句尾資訊 ANCHOR73。 |",
+  }
+  local parsed = assert(Table.parse(source))
+  for _, width in ipairs { 1, 12, 40, 80, 120 } do
+    local lines, _, _, _, offsets = Table.render(parsed, "", width)
+    local cells = {}
+    for i, line in ipairs(lines) do
+      assert(not line:find("…", 1, true), "table text must never be truncated")
+      eq(vim.fn.strdisplaywidth(line), vim.fn.strdisplaywidth(lines[1]), "all table borders align")
+      if offsets[i] ~= 1 and not line:find("─", 1, true) then
+        local row = offsets[i]
+        cells[row] = cells[row] or { "", "", "" }
+        local parts = vim.split(line, "│", { plain = true })
+        for col = 1, 3 do
+          cells[row][col] = cells[row][col] .. vim.trim(parts[col + 1])
+        end
+      end
+    end
+    for row, expected in pairs { [0] = parsed.headers, [2] = parsed.rows[1], [3] = parsed.rows[2] } do
+      for col, cell in ipairs(expected) do
+        eq(cells[row][col]:gsub("%s", ""), cell.text:gsub("%s", ""), "complete cell at width " .. width)
+      end
+    end
+    build(source, { max_width = width }) -- Apply real link/highlight spans to a Neovim buffer.
+    if width >= 40 then
+      assert(table.concat(lines, "\n"):find("12.5", 1, true), "short numeric cells keep their width")
+    end
+  end
+end)
+
+test("single-line and multiline HTML wrap identically without expandable regions", function()
+  local source = {
+    "<table>",
+    "<tr><th>項目</th><th>很長的欄位說明與完整表頭</th></tr>",
+    "<tr><td>離線回寫</td><td>裝置可以暫存離線期間建立的紀錄；必須確認伺服器回應正常，最後保留 HTML73。</td></tr>",
+    "</table>",
+  }
+  for _, width in ipairs { 40, 80, 120 } do
+    local multiline = build(source, { max_width = width })
+    local single = build({ table.concat(source) }, { max_width = width })
+    eq(single.lines, multiline.lines, "HTML source formatting does not affect rendered text")
+    eq(single.expandable_regions, {}, "single-line HTML needs no expansion")
+    eq(multiline.expandable_regions, {}, "multiline HTML needs no expansion")
+    local text = table.concat(single.lines, "\n")
+    assert(not text:find("…", 1, true), "HTML retains complete text")
+    assert(text:find("HTML73", 1, true), "HTML tail keyword is visible initially")
+  end
+end)
+
+test("table width counts container indentation and details bars exactly once", function()
+  local text = string.rep("word ", 50) .. "TAIL73"
+  local pipe = { "| ID | Details |", "| --- | --- |", "| A | " .. text .. " |" }
+  local html = {
+    "<table>",
+    "<tr><th>ID</th><th>Details</th></tr>",
+    "<tr><td>A</td><td>" .. text .. "</td></tr>",
+    "</table>",
+  }
+  for _, source in ipairs { pipe, html, { table.concat(html) } } do
+    for _, nested in ipairs { false, true } do
+      local lines = source
+      if nested then
+        lines = { "1. list", "" }
+        for _, line in ipairs(source) do
+          lines[#lines + 1] = "   " .. line
+        end
+      end
+      local content = build(lines, { max_width = 20, table_max_width = 80 })
+      assert(next(content.table_lines), "rendered table rows have layout metadata")
+      for row in pairs(content.table_lines) do
+        eq(vim.api.nvim_strwidth(content.lines[row + 1]), 80, "table uses its full budget including indent")
+      end
+    end
+  end
+  local ambiwidth = vim.o.ambiwidth
+  for _, mode in ipairs { "single", "double" } do
+    vim.o.ambiwidth = mode
+    for _, source in ipairs { html, { table.concat(html) } } do
+      local lines = vim.list_extend({ "<details open>", "<summary>More</summary>" }, source)
+      lines[#lines + 1] = "</details>"
+      local content = build(lines, { max_width = 20, table_max_width = 40 })
+      for row in pairs(content.table_lines) do
+        eq(vim.api.nvim_strwidth(content.lines[row + 1]), 40, "details prefix fits within table width")
+      end
+    end
+  end
+  vim.o.ambiwidth = ambiwidth
 end)
 
 print(string.format("markdown_table_test: %d passed, %d failed", passed, failed))

@@ -81,6 +81,85 @@ assert(session.opts.max_width == 100, "resizing does not override explicit text 
 check(session, 28, 14) -- Height must still respond when max_width was explicit.
 close(session, win)
 
+-- Tables use available width without changing native paragraph/image limits.
+for _, backend in ipairs { "kitty", "snacks" } do
+  session, win = open(backend)
+  local table_source = { "| ID | Details |", "| --- | --- |", "| A | " .. string.rep("word ", 40) .. "TAIL73 |" }
+  vim.api.nvim_buf_set_lines(session.source_bufnr, 0, -1, false, table_source)
+  session:refresh_source()
+  session:rebuild()
+  assert(session.opts.table_max_width == 120, "both backends give tables the available width")
+  local function table_width()
+    local width = 0
+    for _, line in ipairs(session.content.lines) do
+      width = math.max(width, vim.fn.strdisplaywidth(line))
+    end
+    return width
+  end
+  assert(table_width() == 120, "long cells use all available table width")
+  resize(session, win, 100, 50)
+  assert(table_width() == 100, "table-only width changes trigger a rebuild")
+  assert(session.opts.max_width == (backend == "kitty" and 80 or 100), "ordinary text retains its existing width")
+  assert(vim.wo[win].wrap, "fitting tables retain soft wrapping for ordinary text")
+  vim.api.nvim_buf_set_lines(session.source_bufnr, 0, -1, false, {
+    "| 節點 | CPU | RAM | 容量 | 延遲 | 重試 | 逾時 | 狀態 |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    "| N1 | 4 | 8 | 128 | 12 | 2 | 30 | 就緒 |",
+  })
+  session:refresh_source()
+  resize(session, win, 20, 50)
+  assert(table_width() > 20, "glyph minima may exceed an extremely narrow window")
+  assert(not vim.wo[win].wrap, "overflowing tables preserve borders and allow horizontal scrolling")
+  vim.api.nvim_win_call(win, function()
+    vim.cmd "normal! $zl"
+    assert(vim.fn.winsaveview().leftcol > 0, "native horizontal scrolling reveals table overflow")
+  end)
+  vim.api.nvim_buf_set_lines(session.source_bufnr, 0, -1, false, { "Identifier: " .. string.rep("x", 160) .. "TAIL73" })
+  session:refresh_source()
+  session:rebuild()
+  assert(vim.wo[win].wrap, "ordinary long tokens retain native soft wrapping after removing a wide table")
+  assert(table.concat(session.content.lines):find("TAIL73", 1, true), "ordinary text retains its tail")
+  close(session, win)
+
+  session, win = open(backend, { max_width = 50 })
+  assert(session.opts.table_max_width == 50, "explicit max_width also limits table layout")
+  vim.api.nvim_win_set_config(win, { width = 40 })
+  vim.api.nvim_exec_autocmds("WinResized", { pattern = tostring(win), modeline = false })
+  assert(session.opts.table_max_width == 50, "resizing retains the explicit table width")
+  close(session, win)
+end
+
+-- A shared render buffer must preserve borders in every window, including
+-- a resized window whose explicit render width does not trigger a rebuild.
+local shared_source = vim.api.nvim_create_buf(false, true)
+vim.bo[shared_source].filetype = "markdown"
+vim.api.nvim_win_set_buf(0, shared_source)
+vim.api.nvim_buf_set_lines(shared_source, 0, -1, false, {
+  "| ID | Details |",
+  "| --- | --- |",
+  "| A | " .. string.rep("word ", 40) .. "TAIL73 |",
+})
+preview.toggle { max_width = 80 }
+local shared = assert(preview._toggle_sessions[shared_source])
+local primary = vim.api.nvim_get_current_win()
+vim.cmd "rightbelow vsplit"
+local secondary = vim.api.nvim_get_current_win()
+vim.api.nvim_win_set_width(secondary, 20)
+vim.api.nvim_exec_autocmds("WinResized", { pattern = tostring(secondary), modeline = false })
+for _, current in ipairs(vim.fn.win_findbuf(shared.buf)) do
+  assert(
+    vim.wo[current].wrap == (vim.api.nvim_win_get_width(current) >= 80),
+    "every window preserves wide table borders"
+  )
+end
+vim.wo[secondary].wrap = true
+vim.api.nvim_exec_autocmds("BufEnter", { buffer = shared.buf, modeline = false })
+assert(not vim.wo[secondary].wrap, "direct entry reapplies overflow handling")
+vim.api.nvim_win_close(secondary, true)
+vim.api.nvim_set_current_win(primary)
+preview.toggle()
+vim.api.nvim_buf_delete(shared_source, { force = true })
+
 vim.fn.delete(path)
 
 -- Local native limitations must not make H5 larger than its plain H3 parent.

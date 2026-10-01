@@ -370,7 +370,7 @@ test("code immediately after a bare URL stays outside its link and width budget"
   end
 end)
 
-test("public table expansion preserves code spaces and adjacent URLs", function()
+test("public wrapped tables preserve code spaces and adjacent URLs", function()
   local lines = {
     "| C | L |",
     "| --- | --- |",
@@ -395,12 +395,12 @@ test("public table expansion preserves code spaces and adjacent URLs", function(
         labels[#labels + 1] = link[4]
         assert_eq(link[5], "/right", "table link destination")
       end
-      assert_eq(table.concat(labels), step == 2 and "RIGHT-TARGET-DOCUMENT" or "RIGHT-TARGE", "table link coverage")
+      assert_eq(table.concat(labels), "RIGHT-TARGET-DOCUMENT", "complete table link coverage")
       if step < 3 then
-        local region = assert(content.expandable_regions[1], "expandable table missing")
-        vim.api.nvim_win_set_cursor(session.win, { region.start_line + 1, 0 })
-        assert(vim.fn.maparg("<CR>", "n", false, true).callback)()
-        assert_eq(session.expand_state[region.block_id], step == 1, "real Enter mapping toggles table expansion")
+        assert_eq(content.expandable_regions, {}, "tables require no expansion")
+        vim.api.nvim_win_set_cursor(session.win, { 3, 0 })
+        assert(vim.fn.maparg(step == 1 and "<CR>" or "za", "n", false, true).callback)()
+        assert_eq(session.expand_state, {}, "table Enter and za leave expansion state unchanged")
       end
     end
   end)

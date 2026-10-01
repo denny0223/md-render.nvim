@@ -388,6 +388,39 @@ for _, reference in ipairs { false, true } do
   eq(preview._sessions[vim.api.nvim_get_current_buf()].source_lines[1], "# Exact destination", "literal href spaces")
 end
 
+-- Quoted HTML attributes own comment-looking bytes through real file dispatch.
+do
+  local target = "two<!--keep-->spaces.md"
+  local source_lines = { "before", "", '<a href="' .. target .. '">', "*別*", "</a>", "", "after" }
+  local dir, source, _, _, render = open("toggle", source_lines, { text_scale = false })
+  local tick = vim.api.nvim_buf_get_changedtick(source)
+  vim.fn.writefile({ "expected file" }, dir .. "/" .. target)
+  vim.fn.writefile({ "wrong file" }, dir .. "/twospaces.md")
+  local session = preview._sessions[render]
+  for step = 1, 2 do
+    eq(session.content.link_metadata, {
+      { line = 2, col_start = 2, col_end = 7, url = target },
+    }, "raw HTML href preserves the full quoted target and UTF-8 label bytes")
+    eq(session.content.source_line_map[3], 4, "raw HTML label retains its physical source row")
+    follow(target)
+    local target_session = assert(preview._sessions[vim.api.nvim_get_current_buf()])
+    eq(target_session.source_lines, { "expected file" }, "raw HTML gf selects the intended file")
+    eq(
+      vim.api.nvim_buf_get_name(target_session.source_bufnr),
+      dir .. "/" .. target,
+      "raw HTML gf retains exact filename bytes"
+    )
+    feed "<C-o>"
+    eq(vim.api.nvim_get_current_buf(), render, "raw HTML gf returns to the same rendered document")
+    if step == 1 then session:rebuild() end
+  end
+  preview.toggle { text_scale = false }
+  eq(vim.api.nvim_get_current_buf(), source, "raw HTML toggle returns to the source buffer")
+  eq(vim.api.nvim_win_get_cursor(0)[1], 4, "raw HTML toggle returns to the physical source label row")
+  eq(vim.api.nvim_buf_get_lines(source, 0, -1, false), source_lines, "raw HTML navigation preserves source bytes")
+  eq(vim.api.nvim_buf_get_changedtick(source), tick, "raw HTML navigation preserves source changedtick")
+end
+
 -- Native gf and count handling, using native path/suffix search on plain text.
 for count = 1, 2 do
   local native_dir, _, _, _, native_render = open("toggle", { "needle" })

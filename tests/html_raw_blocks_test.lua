@@ -98,6 +98,7 @@ local function marker_spans(marks)
 end
 
 local anchor_source = { '<a href="foo">', "*bar*", "</a>" }
+local quoted_href_source = { '<a href="two<!--keep-->spaces.md">', "*別*", "</a>" }
 do
   local c, marks = build(anchor_source)
   eq(c.lines, { "*bar*" }, "CM162 preserves stars in HTML anchor text")
@@ -361,6 +362,44 @@ do
 end
 
 -- Supported terminal tags retain semantics; their payload never becomes Markdown.
+for _, case in ipairs {
+  { "two<!--keep-->spaces.md", "two<!--keep-->spaces.md" },
+  { "two&amp;<!--keep-->spaces.md", "two&<!--keep-->spaces.md" },
+  { "two&lt;!--keep--&gt;spaces.md", "two<!--keep-->spaces.md" },
+  { "two&amp;lt;!--keep--&amp;gt;spaces.md", "two&lt;!--keep--&gt;spaces.md" },
+  { "two\\<!--keep-->spaces.md", "two\\<!--keep-->spaces.md" },
+  { "two>spaces.md", "two>spaces.md" },
+} do
+  local c = build { '<a href="' .. case[1] .. '">', "*別*", "</a>" }
+  eq(c.lines, { "*別*" }, "quoted HTML attributes preserve literal tag-looking bytes")
+  eq(targets(c), { { 2, "*別*", case[2] } }, "quoted HTML target remains complete and decodes once")
+  eq(styled(c, "Italic"), {}, "literal stars in raw anchor text do not activate emphasis")
+end
+do
+  local tag = '<x attr="a<!--keep-->b>c">'
+  eq(build({ tag }).lines, { tag }, "unsupported complete tag keeps every quoted attribute byte")
+  eq(build({ "<!-- hidden -->" .. tag }).lines, { tag }, "comment closing suffix preserves quoted attributes")
+  local c = build { "<div>", '<a href="two<!--keep-->spaces.md">*別*</a><!-- hidden -->' }
+  eq(targets(c), { { 2, "*別*", "two<!--keep-->spaces.md" } }, "real comment outside attributes remains hidden")
+end
+for _, case in ipairs { { "a>b", "a>b" }, { "a&gt;b", "a>b" }, { "a<!--keep-->b", "a<!--keep-->b" } } do
+  local icons = require "md-render.icons"
+  local label = icons.pad_icon(icons.get_image_icon "a.png") .. " " .. case[2]
+  local c = build { "<div>", 'before <img src="a.png" alt="' .. case[1] .. '"> after', "</div>" }
+  eq(c.lines, { "before " .. label .. " after" }, "complete image attribute supplies the literal label")
+  eq(targets(c), { { 2, label, "a.png" } }, "inline image preserves its target and displayed label range")
+  eq(styled(c, "MdRenderLink"), { { 2, case[2] } }, "inline image target color covers the displayed label")
+end
+do
+  local icons = require "md-render.icons"
+  local label = icons.pad_icon(icons.get_image_icon "a.png") .. " a>b"
+  local c = build { '<img src="a.png" alt="a>b">' }
+  eq(c.lines, { label }, "standalone image keeps its existing media header presentation")
+  eq(c.link_metadata, {}, "standalone media header preserves its existing link policy")
+  local heading = build { '<h1>title<img src="a.png" alt="a>b"></h1>' }
+  eq(heading.lines[#heading.lines], label, "heading image extraction retains the complete quoted tag")
+  eq(heading.source_line_map[#heading.lines], 1, "synthetic heading image keeps its physical source row")
+end
 do
   local c = build { "<div>", "<b>*literal* <em>styled</em></b>", '<a href="/a?x=1&amp;y=2">**label**</a>', "</div>" }
   eq(c.lines, { "*literal* styled", "**label**" }, "supported paired tags preserve literal Markdown punctuation")
@@ -772,6 +811,7 @@ end
 -- Fresh public tab preview and rebuild use the same source, literal bytes and links.
 for _, source in ipairs {
   anchor_source,
+  quoted_href_source,
   table_boundary,
   summary_boundary,
   dl_boundary,
@@ -816,7 +856,7 @@ for _, source in ipairs {
     )
     eq(
       urls(vim.api.nvim_buf_get_extmarks(session.buf, session.ns, 0, -1, { details = true })),
-      source == anchor_source and { "foo" } or {},
+      urls(expected_marks),
       "public actual URL marks match supported anchors"
     )
     if step == 1 then session:rebuild() end

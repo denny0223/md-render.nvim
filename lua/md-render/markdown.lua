@@ -1179,10 +1179,12 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
   while i <= #text do
     if text:sub(i, i) == "<" then
       local rest = text:sub(i)
+      local tag_end = inline.html_end(text, i)
+      local opening_tag = tag_end and text:sub(i, tag_end)
       local matched = false
 
       -- Try <a href="...">text</a>
-      local a_tag = rest:match "^(<a%s[^>]*>)"
+      local a_tag = opening_tag and opening_tag:match "^<a%s" and opening_tag
       if a_tag then
         local href = inline.html_target(a_tag)
         local close_start, close_end = text:find("</a>", i + #a_tag, true)
@@ -1202,7 +1204,7 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
 
       -- Try <img src="..." alt="...">
       if not matched then
-        local img_tag = rest:match "^(<img%s[^>]*>)"
+        local img_tag = opening_tag and opening_tag:match "^<img%s" and opening_tag
         if img_tag then
           local src = inline.html_target(img_tag)
           if src then
@@ -1264,7 +1266,7 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
           local lower_tag = tag_name:lower()
           local hl = HTML_TAG_HIGHLIGHTS[lower_tag]
           if hl ~= nil then
-            local open_tag = rest:match("^(<" .. tag_name .. "[^>]*>)")
+            local open_tag = opening_tag
             if open_tag then
               local close_tag = "</" .. tag_name .. ">"
               local close_start = text:find(close_tag, i + #open_tag, true)
@@ -1451,8 +1453,9 @@ local function strip_html_tags(text, highlights)
   local i = 1
   while i <= #text do
     if text:sub(i, i) == "<" then
-      local tag = text:sub(i):match "^(</?%a[^>]*>)"
-      if tag and not inline.autolink_end(text, i) then
+      local tag_end = inline.html_end(text, i)
+      local tag = tag_end and text:sub(i, tag_end)
+      if tag and tag:match "^</?%a" and not inline.autolink_end(text, i) then
         local start_col = #processed
         processed = processed .. tag
         table.insert(highlights, { col = start_col, end_col = start_col + #tag, hl = "Comment" })
@@ -1475,9 +1478,7 @@ function Markdown.render_html(text)
   text = text:gsub("\r\n", "\n"):gsub("\r", "\n")
   local entities
   text, entities = protect_entities(text, text, true)
-  text = text:gsub("<!%-%-.-%-%->", function(comment)
-    return comment:gsub("[^\n]", "")
-  end)
+  text = inline.hide_html_comments(text)
   local highlights, links = {}, {}
   repeat
     local previous = text

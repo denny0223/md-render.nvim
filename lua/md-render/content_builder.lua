@@ -222,6 +222,7 @@ local wrap_mod = require "md-render.wrap"
 local icons = require "md-render.icons"
 local fence_mod = require "md-render.fence"
 local html_block = require "md-render.html_block"
+local inline = require "md-render.inline"
 
 local wrap_words = wrap_mod.wrap_words
 
@@ -1175,6 +1176,13 @@ local function unwrap_html_wrapper(line)
   return line
 end
 
+--- A standalone image tag consumes its quoted attributes as one token.
+local function html_image_tag(line)
+  local first = line:match "^%s*()<img%s"
+  local last = first and inline.html_end(line, first)
+  if last and line:sub(last + 1):match "^%s*$" then return line:sub(first, last) end
+end
+
 --- Both comment syntaxes are opaque to every preprocessing pass. A type-2
 --- HTML block also owns the entire closing line, whose suffix remains literal.
 --- A nil suffix means this line is outside a comment; an empty one is hidden.
@@ -1203,7 +1211,7 @@ local function block_comment_step(state, line, html_owner)
   if not close_end then return "html", "" end
   -- Other complete comments on the closing line are hidden too. The remaining
   -- text is still HTML-block content, so callers must not parse it as Markdown.
-  local suffix = line:sub(close_end + 1):gsub("<!%-%-.-%-%->", "")
+  local suffix = inline.hide_html_comments(line:sub(close_end + 1))
   return nil, suffix
 end
 
@@ -3524,10 +3532,14 @@ function ContentBuilder:render_document(lines, opts)
       end
       if h_level then
         html_heading_level = tonumber(h_level)
-        local img_tag = h_content:match "(<img%s[^>]*>)"
+        local img_first = h_content:find "<img%s"
+        local img_last = img_first and inline.html_end(h_content, img_first)
+        local img_tag = img_last and h_content:sub(img_first, img_last)
         if img_tag then
           -- Extract the img tag as a standalone line, render it before the heading
-          local remaining = h_content:gsub("<img%s[^>]*>", ""):gsub("^%s+", ""):gsub("%s+$", "")
+          local remaining = (h_content:sub(1, img_first - 1) .. h_content:sub(img_last + 1))
+            :gsub("^%s+", "")
+            :gsub("%s+$", "")
           -- The synthetic image shares the heading's physical source row.
           -- Keep source classification and row indices aligned with it.
           table.insert(lines, src_idx + 1, img_tag)
@@ -3930,7 +3942,7 @@ function ContentBuilder:render_document(lines, opts)
     end
 
     -- Handle markdown thematic breaks (---, ***, ___, etc.)
-    if origin.html and not line:match "^%s*<img%s[^>]*>%s*$" and not line:match "^%s*<video[%s>].-</video>%s*$" then
+    if origin.html and not html_image_tag(line) and not line:match "^%s*<video[%s>].-</video>%s*$" then
       if prev_was_hr and not is_blank then
         self:add_line(indent)
         lines_shown = lines_shown + 1
@@ -4336,7 +4348,7 @@ function ContentBuilder:render_document(lines, opts)
           -- HTML img: <img src="path" alt="alt"> as sole content on line
           -- Also matches inside headings: # <img ...> or ## <img ...>
           if not img_path then
-            local img_tag = image_text:match "^%s*(<img%s[^>]*>)%s*$"
+            local img_tag = html_image_tag(image_text)
             if img_tag then
               img_path = img_tag:match 'src="([^"]*)"' or img_tag:match "src='([^']*)'"
               img_alt = img_tag:match 'alt="([^"]*)"' or img_tag:match "alt='([^']*)'"
@@ -4368,7 +4380,6 @@ function ContentBuilder:render_document(lines, opts)
           -- Obsidian embed: ![[file]] or ![[file|caption]]
           if not img_path then
             local first, embed, last = line:match "^%s*()!%[%[(.-)%]%]()%s*$"
-            local inline = require "md-render.inline"
             local pipe = embed and embed:find("|", 1, true)
             local target_end = embed and (pipe and first + 2 + pipe or last - 1)
             if

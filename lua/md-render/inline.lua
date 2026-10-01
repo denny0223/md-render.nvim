@@ -114,6 +114,22 @@ function M.html_end(text, start)
   end
 end
 
+--- Hide complete comment tokens while preserving tags and physical rows.
+function M.hide_html_comments(text)
+  local parts, pos = {}, 1
+  while pos <= #text do
+    local first = text:find("<", pos, true)
+    if not first then break end
+    parts[#parts + 1] = text:sub(pos, first - 1)
+    local last = M.html_end(text, first) or first
+    local token = text:sub(first, last)
+    parts[#parts + 1] = token:sub(1, 4) == "<!--" and token:gsub("[^\n]", "") or token
+    pos = last + 1
+  end
+  parts[#parts + 1] = text:sub(pos)
+  return table.concat(parts)
+end
+
 --- Existing supported HTML semantics use quoted href/src values.
 function M.html_target(tag)
   local name = tag:match "^<(%a+)[%s>]"

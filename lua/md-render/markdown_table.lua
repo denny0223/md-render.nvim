@@ -12,6 +12,7 @@
 local MarkdownTable = {}
 local wrap_mod = require "md-render.wrap"
 local fence_mod = require "md-render.fence"
+local inline = require "md-render.inline"
 
 --- Split a table row into cell strings (trim leading/trailing whitespace)
 ---@param line string
@@ -351,7 +352,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, expanded, buf_dir
   ---@param text string
   ---@return string
   local function strip_html_comments(text)
-    return text:gsub("<!%-%-.-%-%->", ""):match "^%s*(.-)%s*$"
+    return inline.hide_html_comments(text):match "^%s*(.-)%s*$"
   end
 
   --- Check if a cell contains only an image reference ![alt](url), <img>, or <video> tag
@@ -367,7 +368,8 @@ function MarkdownTable.render(parsed_table, indent, max_width, expanded, buf_dir
       return alt, url, image_mod.is_video_file(url)
     end
     -- Try <img src="..." alt="..."> tag
-    local img_tag = stripped:match "^(<img%s[^>]*>)%s*$"
+    local img_end = stripped:match "^<img%s" and inline.html_end(stripped, 1)
+    local img_tag = img_end and stripped:sub(img_end + 1):match "^%s*$" and stripped:sub(1, img_end)
     if img_tag then
       local src = img_tag:match 'src="([^"]*)"' or img_tag:match "src='([^']*)'"
       if src then

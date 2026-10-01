@@ -3066,6 +3066,20 @@ function ContentBuilder:render_document(lines, opts)
     end
   end
 
+  local function discard_code_rows()
+    for _ = code_block_start + 1, #self.lines do
+      table.remove(self.lines)
+      table.remove(self.source_line_map)
+    end
+    -- Highlights are sparse; remove metadata by rendered row, not entry count.
+    self.highlights = vim.tbl_filter(function(hl)
+      return hl.line < code_block_start
+    end, self.highlights)
+    self.link_metadata = vim.tbl_filter(function(link)
+      return link.line < code_block_start
+    end, self.link_metadata)
+  end
+
   local function finish_code_block(indent, max_width)
     -- Mermaid code blocks: render as image if possible
     local mermaid_handled = false
@@ -3073,12 +3087,7 @@ function ContentBuilder:render_document(lines, opts)
       local image = require "md-render.image"
       if image.supports_kitty() and image.has_mmdc() then
         local mermaid_source = table.concat(code_source_lines, "\n")
-        -- Remove the code lines that were already added as text
-        local lines_to_remove = #self.lines - code_block_start
-        for _ = 1, lines_to_remove do
-          table.remove(self.lines)
-          table.remove(self.highlights)
-        end
+        discard_code_rows()
 
         -- Only use cached result synchronously; otherwise render async
         local cached = image.get_mermaid_cached(mermaid_source)
@@ -3151,12 +3160,7 @@ function ContentBuilder:render_document(lines, opts)
       local image = require "md-render.image"
       if image.supports_kitty() and image.has_plantuml() then
         local plantuml_source = table.concat(code_source_lines, "\n")
-        -- Remove the code lines that were already added as text
-        local lines_to_remove = #self.lines - code_block_start
-        for _ = 1, lines_to_remove do
-          table.remove(self.lines)
-          table.remove(self.highlights)
-        end
+        discard_code_rows()
 
         -- Only use cached result synchronously; otherwise render async
         local cached = image.get_plantuml_cached(plantuml_source)

@@ -5,6 +5,7 @@ package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/in
 local Builder = require("md-render.content_builder").ContentBuilder
 local display = require "md-render.display_utils"
 local image = require "md-render.image"
+local links = require "md-render.links"
 local cached, enabled = false, true
 local cache_sources = {}
 image.supports_kitty = function()
@@ -40,14 +41,7 @@ local function test(name, fn)
     print("FAIL " .. name .. ": " .. tostring(err))
   end
 end
-local function build(lang, list, details, ending, payload, opts)
-  local source = details and { "<details open>", "<summary>Diagram</summary>", "" } or {}
-  local opener = #source + 1
-  local margin = list and "  " or ""
-  source[#source + 1] = (list and "- " or "") .. "```" .. lang
-  source[#source + 1] = margin .. payload
-  if ending == "closed" then source[#source + 1] = margin .. "```" end
-  if ending == "dedented" then source[#source + 1] = "root text" end
+local function render(source, opts, check)
   local original = vim.deepcopy(source)
   local previous_buf = vim.api.nvim_get_current_buf()
   local source_buf = vim.api.nvim_create_buf(false, true)
@@ -59,9 +53,11 @@ local function build(lang, list, details, ending, payload, opts)
     local b = Builder.new()
     b:render_document(source, vim.tbl_extend("force", { max_width = 48, indent = "", text_scale = false }, opts or {}))
     local content = b:result()
+    eq(#content.source_line_map, #content.lines, "one source owner per rendered row")
     local ns = vim.api.nvim_create_namespace "diagram_fence_layout_test"
     display.apply_content_to_buffer(buf, ns, content)
     eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), content.lines, "actual buffer rows")
+    if check then check(content, buf, ns) end
     eq(source, original, "source array bytes stay unchanged")
     eq(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), original, "source buffer bytes stay unchanged")
     eq(vim.api.nvim_buf_get_changedtick(source_buf), tick, "source buffer changedtick stays unchanged")
@@ -71,7 +67,17 @@ local function build(lang, list, details, ending, payload, opts)
   vim.api.nvim_buf_delete(buf, { force = true })
   vim.api.nvim_buf_delete(source_buf, { force = true })
   assert(ok, c)
-  return c, opener
+  return c
+end
+local function build(lang, list, details, ending, payload, opts)
+  local source = details and { "<details open>", "<summary>Diagram</summary>", "" } or {}
+  local opener = #source + 1
+  local margin = list and "  " or ""
+  source[#source + 1] = (list and "- " or "") .. "```" .. lang
+  source[#source + 1] = margin .. payload
+  if ending == "closed" then source[#source + 1] = margin .. "```" end
+  if ending == "dedented" then source[#source + 1] = "root text" end
+  return render(source, opts), opener
 end
 
 for _, lang in ipairs { "mermaid", "plantuml" } do
@@ -122,6 +128,47 @@ for _, lang in ipairs { "mermaid", "plantuml" } do
             if ending == "dedented" then
               eq(c.lines[#c.lines], (details and "│ " or "") .. "root text", "dedent starts the following paragraph")
             end
+          end
+        end)
+
+        test(string.format("%s metadata list=%s details=%s cached=%s", lang, list, details, cache_hit), function()
+          cached, enabled = cache_hit, true
+          for _, ending in ipairs(endings) do
+            local source = details and { "<details open>", "<summary>Diagram</summary>", "" } or {}
+            local marker, margin = list and "- " or "", list and "  " or ""
+            local before_url, tail_url = "https://before.test", "./tail.md"
+            source[#source + 1] = marker .. "**BEFORE** [BEFORE](" .. before_url .. ")"
+            source[#source + 1] = marker .. "```" .. lang
+            source[#source + 1] = margin .. "https://literal.test/a"
+            if ending == "closed" then source[#source + 1] = margin .. "```" end
+            if ending ~= "eof" then source[#source + 1] = marker .. "[TAIL](" .. tail_url .. ")" end
+            render(source, nil, function(c, buf, ns)
+              local expected_urls, actual_urls = { before_url }, {}
+              if ending ~= "eof" then expected_urls[#expected_urls + 1] = tail_url end
+              for _, link in ipairs(c.link_metadata) do
+                actual_urls[#actual_urls + 1] = link.url
+                local label = link.url == before_url and "BEFORE" or "TAIL"
+                eq(c.lines[link.line + 1]:sub(link.col_start + 1, link.col_end), label, ending .. " link bytes")
+                eq(links.at(buf, ns, link.line, link.col_start), link.url, ending .. " actual link start")
+                eq(links.at(buf, ns, link.line, link.col_end), nil, ending .. " actual link end")
+              end
+              eq(actual_urls, expected_urls, ending .. " only visible links survive diagram replacement")
+              local bold = {}
+              for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })) do
+                if mark[4].hl_group == "Bold" then
+                  bold[#bold + 1] = c.lines[mark[2] + 1]:sub(mark[3] + 1, mark[4].end_col)
+                end
+              end
+              eq(bold, { "BEFORE" }, ending .. " preceding style survives sparse highlight cleanup")
+              local header_row = c.image_placements[1].line - 1
+              for col = 0, #c.lines[header_row + 1] - 1 do
+                eq(links.at(buf, ns, header_row, col), nil, ending .. " diagram header has no removed URL target")
+              end
+              if ending ~= "eof" then
+                local tail = c.link_metadata[#c.link_metadata]
+                eq(c.source_line_map[tail.line + 1], #source, ending .. " trailing sibling physical source row")
+              end
+            end)
           end
         end)
       end

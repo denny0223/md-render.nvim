@@ -794,6 +794,50 @@ for _, mode in ipairs { "toggle", "split", "float", "tab" } do
   end
 end
 
+-- stdin/unnamed links use an absolute base captured at entry, including an
+-- explicit buf_dir override. Named destinations then use their own directory.
+for mode, show in ipairs { preview.toggle } do
+  local cwd = vim.fn.getcwd()
+  for _, explicit in ipairs { false, true } do
+    local base, other = root .. "/stdin-base-" .. mode, root .. "/other-cwd-" .. mode
+    vim.fn.mkdir(base .. "/docs", "p")
+    vim.fn.mkdir(other, "p")
+    vim.fn.writefile({ "[next](next.md)" }, base .. "/docs/target.md")
+    vim.fn.writefile({ "# Correct target" }, base .. "/docs/next.md")
+    vim.fn.writefile({ "# Wrong target" }, other .. "/target.md")
+    vim.cmd.enew()
+    vim.bo.filetype = "markdown"
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { "[target](docs/target.md)" })
+    local source = vim.api.nvim_get_current_buf()
+    vim.cmd.cd(explicit and other or base)
+    show(explicit and { buf_dir = base } or nil)
+    vim.cmd.cd(other)
+    follow "docs/target.md"
+    eq(preview._sessions[vim.api.nvim_get_current_buf()].source_lines[1], "[next](next.md)", "frozen stdin base")
+    follow "next.md"
+    eq(
+      preview._sessions[vim.api.nvim_get_current_buf()].source_lines[1],
+      "# Correct target",
+      "named target has its own base"
+    )
+    feed "2<C-o>"
+    eq(preview._sessions[vim.api.nvim_get_current_buf()].source_bufnr, source, "returns to unnamed rendered input")
+    preview.toggle()
+    local named = root .. (explicit and "/explicit-saveas-" or "/auto-saveas-") .. mode
+    vim.fn.mkdir(named .. "/docs", "p")
+    vim.fn.writefile({ "# Renamed target" }, named .. "/docs/target.md")
+    vim.cmd.saveas(named .. "/source.md")
+    preview.toggle()
+    follow "docs/target.md"
+    eq(
+      preview._sessions[vim.api.nvim_get_current_buf()].source_lines[1],
+      explicit and "[next](next.md)" or "# Renamed target",
+      "saveas uses the named source directory unless buf_dir was explicitly overridden"
+    )
+  end
+  vim.cmd.cd(cwd)
+end
+
 vim.fn.delete(root, "rf")
 print("gf_test: " .. checks .. " passed")
 vim.cmd "qa!"

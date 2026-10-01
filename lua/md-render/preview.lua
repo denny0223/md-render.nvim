@@ -298,7 +298,10 @@ function Session.new(source_bufnr, ns_name, opts)
   local effective_opts = vim.tbl_extend("force", {}, opts or {})
   local explicit_buf_dir = effective_opts.buf_dir ~= nil
   local source_name = vim.api.nvim_buf_get_name(source_bufnr)
-  effective_opts.buf_dir = effective_opts.buf_dir or vim.fn.fnamemodify(source_name, ":h")
+  -- Unnamed input keeps its entry cwd until it acquires a filename. Only an
+  -- explicit buf_dir override stays fixed after :saveas.
+  effective_opts.buf_dir = effective_opts.buf_dir
+    or (source_name == "" and vim.fn.getcwd() or vim.fn.fnamemodify(source_name, ":h"))
 
   local self = setmetatable({}, Session)
   self.source_bufnr = source_bufnr

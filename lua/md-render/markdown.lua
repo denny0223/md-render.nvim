@@ -1513,7 +1513,7 @@ local function display_soft_breaks(text, highlights, links)
   if not text:find("\n", 1, true) then return text end
   local starts, ends = span_boundaries(highlights, links)
   local removals = {}
-  local rendered = text:gsub("()(\n+)", function(pos, breaks)
+  local rendered = text:gsub("()([ \t]*\n+)", function(pos, breaks)
     local replacement = " "
     if
       not (ends[pos - 1] and starts[pos + #breaks - 1])

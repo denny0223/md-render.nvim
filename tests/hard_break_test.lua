@@ -291,6 +291,30 @@ local rich_links = {
 -- Exact byte spans also check the existing quote/list and CJK presentation.
 local cases = {
   {
+    "slash followed by one source space is a soft break",
+    { "*left\\ ", "right* [旁](<two  spaces.md>)" },
+    { "left\\ right 旁" },
+    { 1 },
+    italic = { { 0, 0, 11, "left\\ right" } },
+    links = { { 0, 12, 15, "旁", "two  spaces.md" } },
+  },
+  {
+    "slash followed by a source tab is a soft break",
+    { "*left\\\t", "right* [旁](<two  spaces.md>)" },
+    { "left\\ right 旁" },
+    { 1 },
+    italic = { { 0, 0, 11, "left\\ right" } },
+    links = { { 0, 12, 15, "旁", "two  spaces.md" } },
+  },
+  {
+    "slash before two source spaces stays literal at a hard break",
+    { "*left\\  ", "right* [旁](<two  spaces.md>)" },
+    { "left\\", "right 旁" },
+    { 1, 2 },
+    italic = { { 0, 0, 5, "left\\" }, { 1, 0, 5, "right" } },
+    links = { { 1, 6, 9, "旁", "two  spaces.md" } },
+  },
+  {
     "CM638",
     { "*foo  ", "bar*" },
     { "foo", "bar" },

@@ -571,8 +571,9 @@ local function join_source_lines(lines, ref_links)
   local parts = vim.split(protected, "\n", { plain = true })
   for i, line in ipairs(parts) do
     if i > 1 then line = line:gsub("^%s+", "") end
-    -- Source hard-break spaces must survive until inline ownership is known.
-    if i == #parts or not line:match "  +$" then line = line:gsub("%s+$", "") end
+    -- Removing whitespace before a newline can turn a literal slash into a break.
+    -- Inline parsing must settle ownership before display whitespace is folded.
+    if i == #parts then line = line:gsub("%s+$", "") end
     parts[i] = line
   end
   local text = table.concat(parts, "\n")

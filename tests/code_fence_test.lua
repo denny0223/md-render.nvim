@@ -160,13 +160,20 @@ end
 -- Exercise the full rendering path, including the buffer API and source rows.
 local function assert_code_case(case)
   local before = vim.deepcopy(case.lines)
-  local content = build(case.lines)
+  local content = build(case.lines, case.opts)
   assert_eq(case.lines, before, case.name .. ": source stays unchanged")
   assert_eq(#content.code_blocks, 1, case.name .. ": one code block")
   local block = content.code_blocks[1]
   if block then
     assert_eq(block.source_lines, case.code, case.name .. ": literal code content")
     assert_eq(block.prefix_len, case.prefix, case.name .. ": highlighting prefix")
+    if case.display then
+      assert_eq(
+        content.lines[block.start_line + 1],
+        case.display .. case.code[1],
+        case.name .. ": code prefix geometry"
+      )
+    end
     local source_rows = {}
     for row = block.start_line, block.end_line do
       table.insert(source_rows, content.source_line_map[row + 1])
@@ -182,11 +189,16 @@ local function assert_code_case(case)
     local rows = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
     assert_eq(rows, content.lines, case.name .. ": buffer text")
     if block then
-      local payload, strings, keywords = {}, {}, {}
+      local payload, strings, keywords, captures = {}, {}, {}, {}
       for row = block.start_line, block.end_line do
         payload[#payload + 1] = rows[row + 1]:sub(block.prefix_len + 1)
       end
       for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })) do
+        local group = mark[4].hl_group
+        if case.captures and case.captures[group] and mark[2] >= block.start_line and mark[2] <= block.end_line then
+          captures[group] = captures[group] or {}
+          table.insert(captures[group], rows[mark[2] + 1]:sub(mark[3] + 1, mark[4].end_col))
+        end
         if mark[2] >= block.start_line and mark[2] <= block.end_line and mark[4].hl_group == "String" then
           strings[#strings + 1] = rows[mark[2] + 1]:sub(math.max(mark[3], block.prefix_len) + 1, mark[4].end_col)
         elseif mark[2] >= block.start_line and mark[2] <= block.end_line and mark[4].hl_group == "@keyword.lua" then
@@ -198,9 +210,11 @@ local function assert_code_case(case)
       if case.keyword then
         assert_eq(keywords, { "local" }, case.name .. ": Treesitter keyword stays on literal bytes")
       end
+      if case.captures then assert_eq(captures, case.captures, case.name .. ": actual Treesitter payload spans") end
     end
   end
   vim.api.nvim_buf_delete(buf, { force = true })
+  return content
 end
 
 for _, case in ipairs {
@@ -355,6 +369,53 @@ for _, case in ipairs {
   },
 } do
   assert_code_case(case)
+end
+
+-- Details paint their body prefix before quote-code metadata is finalized.
+-- Root and same-row list quotes must account for those UTF-8 bytes at every exit.
+for _, details in ipairs { false, true } do
+  for _, list in ipairs { false, true } do
+    for _, callout in ipairs { false, true } do
+      for _, ending in ipairs { "closed", "dedented", "eof" } do
+        local lines = details and { "<details open>", "<summary>Code</summary>", "" } or {}
+        local marker, margin = list and "- " or "", list and "  " or ""
+        if callout then lines[#lines + 1] = marker .. "> [!NOTE]+ Code" end
+        lines[#lines + 1] = (callout and margin or marker) .. "> ```lua"
+        local payload_source = #lines + 1
+        lines[#lines + 1] = margin .. "> local x = 1"
+        if ending == "closed" then lines[#lines + 1] = margin .. "> ```" end
+        if ending ~= "eof" then lines[#lines + 1] = marker .. "after" end
+        local tail_source = #lines
+        if details and ending ~= "eof" then vim.list_extend(lines, { "", "</details>" }) end
+        local source = vim.api.nvim_create_buf(false, true)
+        local previous = vim.api.nvim_get_current_buf()
+        vim.api.nvim_buf_set_lines(source, 0, -1, false, lines)
+        vim.api.nvim_set_current_buf(source)
+        local tick = vim.api.nvim_buf_get_changedtick(source)
+        local name = string.format("quote details=%s list=%s callout=%s %s", details, list, callout, ending)
+        local content = assert_code_case {
+          name = name,
+          lines = lines,
+          opts = { indent = "  " },
+          code = { "local x = 1" },
+          display = "  " .. (details and "│ " or "") .. margin .. "│ ",
+          prefix = 2 + #margin + #"│ " + (details and #"│ " or 0),
+          sources = { payload_source },
+          captures = { ["@keyword.lua"] = { "local" }, ["@variable.lua"] = { "x" }, ["@number.lua"] = { "1" } },
+        }
+        if ending ~= "eof" then
+          local tail = "  " .. (details and "│ " or "") .. (list and "• " or "") .. "after"
+          local tail_row = vim.fn.index(content.lines, tail) + 1
+          assert_eq(tail_row > 0, true, name .. ": exit preserves the following sibling geometry")
+          assert_eq(content.source_line_map[tail_row], tail_source, name .. ": following sibling physical row")
+        end
+        assert_eq(vim.api.nvim_buf_get_lines(source, 0, -1, false), lines, name .. ": source buffer stays unchanged")
+        assert_eq(vim.api.nvim_buf_get_changedtick(source), tick, name .. ": source changedtick stays unchanged")
+        if vim.api.nvim_buf_is_valid(previous) then vim.api.nvim_set_current_buf(previous) end
+        vim.api.nvim_buf_delete(source, { force = true })
+      end
+    end
+  end
 end
 
 -- Opening indentation is removed after the owning quote/list container.

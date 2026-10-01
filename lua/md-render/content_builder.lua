@@ -2719,11 +2719,13 @@ function ContentBuilder:render_document(lines, opts)
 
   local function finish_quote_code()
     if callout_code_lang and callout_code_start < #self.lines then
+      local cb_prefix = #callout_code_prefix
+      if in_details and details_summary_rendered then cb_prefix = cb_prefix + #"│ " end
       table.insert(self.code_blocks, {
         language = callout_code_lang,
         start_line = callout_code_start,
         end_line = #self.lines - 1,
-        prefix_len = #callout_code_prefix,
+        prefix_len = cb_prefix,
         source_lines = callout_code_source_lines,
       })
     end

@@ -128,15 +128,28 @@ session.image_state = nil
 do
   local directory = vim.fn.tempname()
   vim.fn.mkdir(directory, "p")
-  local exact_path = directory .. "/two<!--keep-->spaces.png"
+  local exact_path = directory .. "/two>part<!--keep-->spaces.png"
   assert(vim.uv.fs_copyfile(paths[1], exact_path))
   assert(vim.uv.fs_copyfile(paths[1], directory .. "/twospaces.png"))
   for _, case in ipairs {
     { paths[1], "a>b" },
     { paths[1], "a<!--keep-->b" },
     { exact_path, "label" },
+    { exact_path, "標題", true },
   } do
     local source_lines = { '<table><tr><td><img src="' .. case[1] .. '" alt="' .. case[2] .. '"></td></tr></table>' }
+    if case[3] then
+      source_lines = {
+        '<details title="a > b" open>',
+        "<summary>Images</summary>",
+        '<table><tr><td title="a > </table>"><img title=\'src="trap.png" alt="trap"\' src="'
+          .. case[1]
+          .. '" alt="'
+          .. case[2]
+          .. '"></td></tr></table>',
+        "</details>",
+      }
+    end
     local source_buf = vim.api.nvim_create_buf(false, true)
     vim.bo[source_buf].filetype = "markdown"
     vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, source_lines)
@@ -149,7 +162,10 @@ do
       local placement = session.content.image_placements[1]
       assert(placement.path == case[1], "table media keeps the full literal source filename")
       local label_at = assert(session.content.lines[placement.line]:find(case[2], 1, true)) - 1
-      assert(session.content.source_line_map[placement.line] == 1, "table caption retains its physical source row")
+      assert(
+        session.content.source_line_map[placement.line] == (case[3] and 3 or 1),
+        "table caption retains its physical source row"
+      )
       assert(vim.deep_equal(vim.api.nvim_buf_get_lines(session.buf, 0, -1, false), session.content.lines))
       session.image_state = { snacks = true, objects = {} }
       session.image_state.objects[1] = {
@@ -158,7 +174,7 @@ do
         end,
       }
       enter(placement.line, label_at, case[1])
-      enter(placement.line, label_at + #case[2] - 1, case[1])
+      enter(placement.line, label_at + vim.fn.byteidx(case[2], vim.fn.strchars(case[2]) - 1), case[1])
       session.image_state = nil
       if step == 1 then session:rebuild() end
     end

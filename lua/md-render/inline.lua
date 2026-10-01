@@ -65,8 +65,8 @@ local function www_end(text, start, source_label)
 end
 
 --- HTML and code have equal precedence: the first complete construct wins.
-function M.html_end(text, start)
-  local rest = text:sub(start)
+local function html_end(text, start, attributes)
+  local rest = text:sub(start, start + 8)
   if rest:sub(1, 5) == "<!-->" then return start + 4 end
   if rest:sub(1, 6) == "<!--->" then return start + 5 end
   for _, pair in ipairs { { "<!--", "-->" }, { "<?", "?>" }, { "<![CDATA[", "]]>" } } do
@@ -75,8 +75,8 @@ function M.html_end(text, start)
       return finish
     end
   end
-  local simple = rest:match "^<![A-Za-z]+[^>]*>"
-  if simple then return start + #simple - 1 end
+  local declaration_end = text:match("^<![A-Za-z]+[^>]*>()", start)
+  if declaration_end then return declaration_end - 1 end
   local closing = text:match("^</[A-Za-z][A-Za-z0-9%-]*()", start)
   if closing then
     closing = skip_space(text, closing)
@@ -92,6 +92,8 @@ function M.html_end(text, start)
     if next_pos == pos then return end
     local name_end = text:match("^[A-Za-z_:][A-Za-z0-9:._%-]*()", next_pos)
     if not name_end then return end
+    local name = attributes and text:sub(next_pos, name_end - 1):lower()
+    local value, quoted = true, false
     pos = skip_space(text, name_end)
     if text:sub(pos, pos) == "=" then
       pos = skip_space(text, pos + 1)
@@ -99,6 +101,7 @@ function M.html_end(text, start)
       if quote == '"' or quote == "'" then
         local finish = text:find(quote, pos + 1, true)
         if not finish then return end
+        value, quoted = text:sub(pos + 1, finish - 1), true
         pos = finish + 1
       else
         local first = pos
@@ -107,22 +110,54 @@ function M.html_end(text, start)
           pos = pos + 1
         end
         if pos == first then return end
+        value = text:sub(first, pos - 1)
       end
     else
       pos = name_end
     end
+    if attributes and attributes[name] == nil then attributes[name] = { value = value, quoted = quoted } end
+  end
+end
+
+function M.html_end(text, start)
+  return html_end(text, start)
+end
+
+--- Read an actual attribute of the first complete opening tag, in source spelling.
+--- Boolean attributes return true; duplicate names keep their first value.
+function M.html_attribute(tag, name)
+  local attributes = {}
+  if not html_end(tag, 1, attributes) then return end
+  local attribute = attributes[name:lower()]
+  if attribute then return attribute.value, attribute.quoted end
+end
+
+--- Iterate complete HTML tokens, keeping quoted attributes and comments opaque.
+function M.html_tags(text, pos)
+  pos = pos or 1
+  return function()
+    while pos <= #text do
+      local first = text:find("<", pos, true)
+      if not first then return end
+      local last = M.html_end(text, first)
+      pos = (last or first) + 1
+      if last then return first, last, text:sub(first, last) end
+    end
+  end
+end
+
+--- Find a real closing tag outside attributes and comments.
+function M.html_closing(text, name, start)
+  for first, last, token in M.html_tags(text, start) do
+    if token:match("^</" .. name .. "%s*>$") then return first, last end
   end
 end
 
 --- Hide complete comment tokens while preserving tags and physical rows.
 function M.hide_html_comments(text)
   local parts, pos = {}, 1
-  while pos <= #text do
-    local first = text:find("<", pos, true)
-    if not first then break end
+  for first, last, token in M.html_tags(text) do
     parts[#parts + 1] = text:sub(pos, first - 1)
-    local last = M.html_end(text, first) or first
-    local token = text:sub(first, last)
     parts[#parts + 1] = token:sub(1, 4) == "<!--" and token:gsub("[^\n]", "") or token
     pos = last + 1
   end
@@ -134,7 +169,18 @@ end
 function M.html_target(tag)
   local name = tag:match "^<(%a+)[%s>]"
   local attribute = name == "a" and "href" or (name == "img" or name == "video") and "src"
-  if attribute then return tag:match(attribute .. '="([^"]*)"') or tag:match(attribute .. "='([^']*)'") end
+  if attribute then
+    local value, quoted = M.html_attribute(tag, attribute)
+    if quoted then return value end
+    if name == "video" then
+      for _, _, token in M.html_tags(tag) do
+        if token:match "^<source%s" then
+          value, quoted = M.html_attribute(token, "src")
+          if quoted then return value end
+        end
+      end
+    end
+  end
 end
 
 --- First byte after a valid destination (angle delimiters included).
@@ -334,9 +380,9 @@ local function scan(text, refs, wanted_link, source_label, bare_url)
       if finish then
         local tag = text:sub(pos, finish)
         local target = angle_link or M.html_target(tag)
-        if tag:match "^<a%s" and not text:find("</a>", finish + 1, true) then target = nil end
+        if tag:match "^<a%s" and not M.html_closing(text, "a", finish + 1) then target = nil end
         if tag:match "^<video[%s>]" then
-          local _, video_end = text:find("</video>", finish + 1, true)
+          local _, video_end = M.html_closing(text, "video", finish + 1)
           target = video_end and M.html_target(text:sub(pos, video_end)) or nil
         end
         standard_ranges[#standard_ranges + 1] = { start = pos, finish = finish, link = target ~= nil or nil }

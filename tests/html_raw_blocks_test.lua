@@ -105,6 +105,105 @@ local ordered_heading_images_source = { '<h1><img src="a.png" alt="first"><img s
 local mixed_heading_images_source = {
   '<h1><a href="' .. heading_attribute_target .. '">label</a><img src="a.png" alt="actual"></h1>',
 }
+
+-- Attribute contents never supply wrapper, table, media or fold syntax.
+local token_body = '*別* <em>斜體</em> <a href="two>part<!--keep-->spaces.md">連結</a>'
+for _, source in ipairs {
+  { '<div title="VALUE">' .. token_body .. "</div>" },
+  { "<span title='VALUE'>" .. token_body .. "</span>" },
+  { '<p title="VALUE">' .. token_body .. "</p>" },
+  { '<h2 title="VALUE">' .. token_body .. "</h2>" },
+  { '<div title="VALUE">', token_body, "</div>" },
+  { '<table title="VALUE"><tr><th>' .. token_body .. "</th></tr></table>" },
+  { '<table><tr title="VALUE"><th>' .. token_body .. "</th></tr></table>" },
+  { "<table>", '<tr><th title="VALUE">' .. token_body .. "</th></tr>", "</table>" },
+  { "<table>", '<tr><td title="VALUE">' .. token_body .. "</td></tr>", "</table>" },
+  { '<figure title="VALUE">', "<figcaption>" .. token_body .. "</figcaption>", "</figure>" },
+  { '<details title="VALUE" open>', "<summary>" .. token_body .. "</summary>", "*raw*", "</details>" },
+  { '<hr title="VALUE">' },
+} do
+  local function replace(value)
+    return vim.tbl_map(function(line)
+      return (line:gsub("VALUE", value))
+    end, source)
+  end
+  local control = build(replace "plain")
+  local c = build(replace "a > </table></tr></th></td><tr><td>TRAP</td></tr> <img src=evil>")
+  eq(c.lines, control.lines, "quoted syntax cannot change supported HTML presentation")
+  eq(c.source_line_map, control.source_line_map, "complete tokens retain physical source ownership")
+  eq(targets(c), targets(control), "attribute syntax cannot create or truncate a target")
+  eq(styled(c, "Italic"), styled(control, "Italic"), "real HTML styles retain exact UTF-8 label bytes")
+  eq(c.heading_lines, control.heading_lines, "heading rank is independent of quoted syntax")
+  eq(c.callout_folds, control.callout_folds, "fold state is independent of quoted syntax")
+end
+do
+  local c = build { '<a title=\'href="trap"\' href="real">別</a>' }
+  eq(c.lines, { "別" }, "anchor displays its body")
+  eq(targets(c), { { 1, "別", "real" } }, "only the actual href supplies the complete target")
+  for _, attrs in ipairs { 'title="open"', 'title="a > open"', 'data-open="true"' } do
+    local folded = build { "<details " .. attrs .. ">", "<summary>標題</summary>", "*body*", "</details>" }
+    eq(folded.lines, { "▶ 標題" }, "open-looking attribute values do not expand details")
+    eq(folded.callout_folds[1].collapsed, true, "details without an open attribute defaults closed")
+  end
+  for _, attrs in ipairs { 'title="a > b" open', 'open="false"', "OPEN" } do
+    local expanded = build { "<details " .. attrs .. ">", "<summary>標題</summary>", "*body*", "</details>" }
+    eq(expanded.lines, { "▼ 標題", "│ *body*" }, "the actual boolean open attribute expands details")
+    eq(expanded.callout_folds[1].collapsed, false, "present open uses HTML boolean semantics")
+  end
+  local plain = build { '<table><tr><th align="left">Longheading</th></tr><tr><td>x</td></tr></table>' }
+  local attrs =
+    build { '<table><tr><th title=\'align="right"\' align="left">Longheading</th></tr><tr><td>x</td></tr></table>' }
+  eq(attrs.lines, plain.lines, "alignment comes from the actual quoted attribute")
+  local commented = build { "<table><!-- <tr><th>TRAP</th></tr> --><tr><th>Longheading</th></tr></table>" }
+  local bare = build { "<table><tr><th>Longheading</th></tr></table>" }
+  eq(commented.lines, bare.lines, "comment payload never creates table rows or cells")
+  local literal = '<custom title="<em>TRAP</em><img src=evil>">*BODY*</custom>'
+  local unsupported = build { "<div>", literal, "</div>" }
+  eq(unsupported.lines, { literal }, "unsupported complete tokens remain readable and intact")
+  eq(styled(unsupported, "Italic"), {}, "a fake supported tag inside an attribute cannot add a style")
+  eq(unsupported.image_placements, {}, "a fake image inside an attribute cannot create media")
+  for _, line in ipairs { '<div title="unclosed>BODY</div>', "<division>BODY</division>", "<detailsx>BODY</detailsx>" } do
+    eq(build({ line }).lines, { line }, "invalid tokens and lookalike names are not display wrappers")
+  end
+end
+
+for _, name in ipairs { "dt", "dd" } do
+  local href = "x</" .. name .. ">y<br>z"
+  local c = build { "<dl>", "<" .. name .. '><a href="' .. href .. '">名</a></' .. name .. ">", "</dl>" }
+  eq(
+    c.lines,
+    { (name == "dd" and "  " or "") .. "名", "" },
+    "only real definition-list closing and break tokens split text"
+  )
+  eq(targets(c), { { 2, "名", href } }, "definition-list anchors preserve fake structural bytes in their target")
+end
+do
+  local c = build { "<dl>", '<dt><a href="x<br>y">名</a><br>Second</dt>', "</dl>" }
+  eq(c.lines, { "名", "Second", "" }, "a real br splits definition text after the complete anchor")
+  eq(targets(c), { { 2, "名", "x<br>y" } }, "quoted br data does not split the anchor target")
+  for _, source in ipairs { "<p/>KEEP", "<p>KEEP", '<p title="a > b">KEEP', "<p/>KEEP</p>" } do
+    eq(build({ source }).lines, { source }, "unsupported paragraph forms retain their complete readable payload")
+  end
+  for _, name in ipairs { "a", "video" } do
+    local attrs = name == "a" and 'href="real"' or 'src="clip.mp4"'
+    local wiki =
+      build { "[[outer|<" .. name .. " " .. attrs .. '>BODY<custom title="</' .. name .. '>">tail</custom>]]' }
+    eq(#wiki.link_metadata, 1, "a fake closer cannot block the eligible wiki target")
+    eq(
+      wiki.link_metadata[1].url,
+      "obsidian://advanced-uri?filepath=outer",
+      "missing real closer preserves extension eligibility"
+    )
+    local actual = build { "[[outer|<" .. name .. " " .. attrs .. ">BODY</" .. name .. " >]]" }
+    eq(#actual.link_metadata, 1, "a real whitespace closing tag retains standard target priority")
+    eq(
+      actual.link_metadata[1].url,
+      name == "a" and "real" or "clip.mp4",
+      "supported HTML target owns the competing label"
+    )
+  end
+end
+
 do
   local c, marks = build(anchor_source)
   eq(c.lines, { "*bar*" }, "CM162 preserves stars in HTML anchor text")

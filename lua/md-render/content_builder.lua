@@ -1140,47 +1140,70 @@ local function is_thematic_break(line)
   return stripped == string.rep(ch, #stripped)
 end
 
+-- Display readers consume the same complete tokens as the inline scanner.
+local function html_opening(text, name)
+  local first = text:match("^%s*()<" .. name .. "[%s/>]")
+  local last = first and inline.html_end(text, first)
+  if last then return text:sub(first, last), text:sub(last + 1) end
+end
+
+local function html_pair(text, name)
+  local tag, rest = html_opening(text, name)
+  if not tag then return end
+  local first, last = inline.html_closing(rest, tag:match "^<([A-Za-z][A-Za-z0-9%-]*)")
+  if first then return rest:sub(1, first - 1), rest:sub(last + 1), tag end
+end
+
+local function html_breaks(text)
+  local parts, pos = {}, 1
+  for first, last, token in inline.html_tags(text) do
+    if token:match "^<br%s*/?>$" then
+      parts[#parts + 1], pos = text:sub(pos, first - 1), last + 1
+    end
+  end
+  parts[#parts + 1] = text:sub(pos)
+  return parts
+end
+
+local function table_depth_change(text)
+  local depth = 0
+  for _, _, token in inline.html_tags(text) do
+    local lower = token:lower()
+    if lower:match "^<table[%s/>]" then
+      depth = depth + 1
+    elseif lower:match "^</table%s*>$" then
+      depth = depth - 1
+    end
+  end
+  return depth
+end
+
 --- Strip the display wrapper tags supported by the renderer.
 --- A nil result means a wrapper-only line with no display content.
 ---@param line string
 ---@return string?
 local function unwrap_html_wrapper(line)
-  -- Closing </div> or </span> on its own line
-  if line:match "^%s*</div>%s*$" or line:match "^%s*</span>%s*$" then return nil end
-  -- Opening <div>/<span> with no content on the same line
-  if
-    (line:match "^%s*<div>%s*$" or line:match "^%s*<div%s[^>]*>%s*$")
-    or (line:match "^%s*<span>%s*$" or line:match "^%s*<span%s[^>]*>%s*$")
-  then
-    return nil
-  end
-  -- Single-line <div>...</div>: extract inner content
-  local div_inner = line:match "^%s*<div[^>]*>%s*(.-)%s*</div>%s*$"
-  if div_inner and div_inner:match "%S" then
-    line = div_inner -- Fall through with extracted content
-  end
-  -- Single-line <span>...</span>: extract inner content
-  local span_inner = line:match "^%s*<span[^>]*>%s*(.-)%s*</span>%s*$"
-  if span_inner and span_inner:match "%S" then
-    line = span_inner -- Fall through with extracted content
-  end
-  -- Opening <div>/<span> with content after the tag (no closing on same line)
-  local div_rest = line:match "^%s*<div[^>]*>%s*(.+)$"
-  if div_rest and not line:match "</div>" then
-    line = div_rest -- Fall through with extracted content
-  end
-  local span_rest = line:match "^%s*<span[^>]*>%s*(.+)$"
-  if span_rest and not line:match "</span>" then
-    line = span_rest -- Fall through with extracted content
+  for _, name in ipairs { "div", "span" } do
+    if line:match("^%s*</" .. name .. ">%s*$") then return nil end
+    local tag, rest = html_opening(line, name)
+    if tag and tag:sub(-2) ~= "/>" then
+      if rest:match "^%s*$" then return nil end
+      local first, last = inline.html_closing(rest, name)
+      if first and rest:sub(last + 1):match "^%s*$" then
+        local inner = rest:sub(1, first - 1):match "^%s*(.-)%s*$"
+        if inner:match "%S" then line = inner end
+      elseif not first then
+        line = rest:gsub("^%s+", "")
+      end
+    end
   end
   return line
 end
 
 --- A standalone image tag consumes its quoted attributes as one token.
 local function html_image_tag(line)
-  local first = line:match "^%s*()<img%s"
-  local last = first and inline.html_end(line, first)
-  if last and line:sub(last + 1):match "^%s*$" then return line:sub(first, last) end
+  local tag, rest = html_opening(line, "img")
+  if tag and tag:match "^<img%s" and rest:match "^%s*$" then return tag end
 end
 
 --- Both comment syntaxes are opaque to every preprocessing pass. A type-2
@@ -1225,21 +1248,31 @@ local function html_table_to_pipe(html_lines)
 
   -- Extract rows from <tr>...</tr>
   local rows = {}
-  for tr_content in html:gmatch "<tr[^>]*>(.-)</tr>" do
-    local cells = {}
-    local aligns = {}
-    -- Match <th> or <td> with optional attributes
-    for tag, attrs, content in tr_content:gmatch "<(t[hd])([^>]*)>(.-)</%1>" do
-      -- Extract align attribute
-      local align = attrs:match 'align%s*=%s*"([^"]*)"' or attrs:match "align%s*=%s*'([^']*)'"
-      table.insert(aligns, align or "")
-      -- Preserve the cell content as-is (inline HTML like <img>, <em> will be
-      -- processed later by markdown.render / process_html_tags)
-      local cell = content:gsub("^%s+", ""):gsub("%s+$", "")
-      cell = cell:gsub("|", "\\|") -- Protect cell data from the generated table delimiters.
-      table.insert(cells, { text = cell, is_header = tag == "th" })
+  local row_pos = 1
+  for first, last, token in inline.html_tags(html) do
+    if first >= row_pos and token:match "^<tr[%s>]" then
+      local close_first, close_last = inline.html_closing(html, "tr", last + 1)
+      if close_first then
+        local tr_content = html:sub(last + 1, close_first - 1)
+        local cells, aligns, cell_pos = {}, {}, 1
+        for cell_first, cell_last, cell_tag in inline.html_tags(tr_content) do
+          local name = cell_tag:match "^<(t[hd])[%s>]"
+          if name and cell_first >= cell_pos then
+            local end_first, end_last = inline.html_closing(tr_content, name, cell_last + 1)
+            if end_first then
+              local align, quoted = inline.html_attribute(cell_tag, "align")
+              aligns[#aligns + 1] = quoted and align or ""
+              local cell = tr_content:sub(cell_last + 1, end_first - 1):match "^%s*(.-)%s*$"
+              cell = cell:gsub("|", "\\|") -- Protect cell data from the generated table delimiters.
+              cells[#cells + 1] = { text = cell, is_header = name == "th" }
+              cell_pos = end_last + 1
+            end
+          end
+        end
+        if #cells > 0 then rows[#rows + 1] = { cells = cells, aligns = aligns } end
+        row_pos = close_last + 1
+      end
     end
-    if #cells > 0 then table.insert(rows, { cells = cells, aligns = aligns }) end
   end
 
   if #rows == 0 then return {} end
@@ -2606,7 +2639,12 @@ function ContentBuilder:render_document(lines, opts)
       end
       group.blanks[#group.lines + 1] = line:match "^[ \t]*$" ~= nil
       line = unwrap_html_wrapper(line) or ""
-      local p_content = line:match "^%s*<p[^>]*>%s*(.-)%s*</p>%s*$"
+      local p_content, p_rest = html_pair(line, "p")
+      if p_content and line:match "^%s*<p[%s>]" and p_rest:match "^%s*$" then
+        p_content = p_content:match "^%s*(.-)%s*$"
+      else
+        p_content = nil
+      end
       group.lines[#group.lines + 1] = marker .. (p_content or line)
       group.sources[#group.sources + 1] = src
     end
@@ -2614,13 +2652,15 @@ function ContentBuilder:render_document(lines, opts)
   for _, group in pairs(html_groups) do
     local index = 1
     while index <= #group.lines do
-      local level, first = group.lines[index]:match "^%s*<h([1-6])[^>]*>(.*)$"
+      local tag, first = html_opening(group.lines[index], "h[1-6]")
+      local level = tag and tag:match "^<h([1-6])"
       -- Quoted headings use readable raw rows rather than the heading display path.
       if level and #source_origins[group.sources[index]].quote_columns == 0 then
         local parts, last = {}, index
         while last <= #group.lines do
           local part = last == index and first or group.lines[last]
-          local before = part:match("^(.-)</h" .. level .. ">%s*$")
+          local close_first, close_last = inline.html_closing(part, "h" .. level)
+          local before = close_first and part:sub(close_last + 1):match "^%s*$" and part:sub(1, close_first - 1)
           parts[#parts + 1] = before or part
           if before then
             html_headings[group.sources[index]] =
@@ -3527,19 +3567,16 @@ function ContentBuilder:render_document(lines, opts)
     local html_heading_level
     if not in_code_block then
       local heading = line:match "^%s*<h[1-6]" and html_headings[src_indices[src_idx]]
-      local h_level, h_content = line:match "^%s*<h([1-6])[^>]*>(.-)</h%1>%s*$"
+      local h_content, h_rest, h_tag = html_pair(line, "h[1-6]")
+      local h_level = h_tag and h_rest:match "^%s*$" and h_tag:match "^<h([1-6])"
       if heading then
         h_level, h_content = heading.level, heading.content
       end
       if h_level then
         html_heading_level = tonumber(h_level)
         local heading_parts, image_tags, pos = {}, {}, 1
-        while pos <= #h_content do
-          local first = h_content:find("<", pos, true)
-          if not first then break end
+        for first, last, token in inline.html_tags(h_content) do
           heading_parts[#heading_parts + 1] = h_content:sub(pos, first - 1)
-          local last = inline.html_end(h_content, first) or first
-          local token = h_content:sub(first, last)
           if token:match "^<img%s" then
             image_tags[#image_tags + 1] = token
           else
@@ -3596,30 +3633,32 @@ function ContentBuilder:render_document(lines, opts)
 
       -- Skip body of collapsed <details>
       if skip_details_body then
-        if line:match "^%s*<details" then details_depth = details_depth + 1 end
+        if html_opening(line, "details") then details_depth = details_depth + 1 end
         goto continue
       end
 
       -- Handle <details> opening tag
-      if line:match "^%s*<details" then
+      local details_tag, details_rest = html_opening(line, "details")
+      if details_tag then
         if in_details then
           details_depth = details_depth + 1
           goto continue
         end
-        local attrs = line:match "^%s*<details(.-)>" or ""
         in_details = true
         details_src_idx = src_idx
-        details_default_open = attrs:match "open" ~= nil
+        details_default_open = inline.html_attribute(details_tag, "open") ~= nil
         details_summary_rendered = false
         details_depth = 0
         in_details_summary = false
         details_summary_parts = {}
 
         -- Check for inline <summary>...</summary>
-        local rest = line:match "^%s*<details.->(.+)$"
-        if rest then
-          local s = rest:match "<summary>(.-)</summary>"
-          if s then render_details_summary(s ~= "" and s or "Details", origin.html ~= nil) end
+        for first, _, token in inline.html_tags(details_rest) do
+          if token == "<summary>" then
+            local s = html_pair(details_rest:sub(first), "summary")
+            if s then render_details_summary(s ~= "" and s or "Details", origin.html ~= nil) end
+            break
+          end
         end
         goto continue
       end
@@ -3676,7 +3715,11 @@ function ContentBuilder:render_document(lines, opts)
           goto continue
         end
         -- Extract <figcaption> content for rendering when </figure> is reached
-        local cap = line:match "^%s*<figcaption>(.-)</figcaption>%s*$"
+        local cap, cap_rest
+        if line:match "^%s*<figcaption>" then
+          cap, cap_rest = html_pair(line, "figcaption")
+        end
+        if cap_rest and not cap_rest:match "^%s*$" then cap = nil end
         if cap and cap:match "%S" then
           figure_caption = cap
           figure_caption_src = src_indices[src_idx]
@@ -3685,7 +3728,8 @@ function ContentBuilder:render_document(lines, opts)
         -- Other lines inside <figure> (e.g. <img>) fall through to normal processing
       end
 
-      if line:match "^%s*<figure[^>]*>%s*$" then
+      local figure_tag, figure_rest = html_opening(line, "figure")
+      if figure_tag and figure_rest:match "^%s*$" then
         in_figure = true
         figure_owner, figure_indent, figure_width = origin.html, indent, max_width
         goto continue
@@ -3704,14 +3748,15 @@ function ContentBuilder:render_document(lines, opts)
         -- Inner content falls through to normal processing
       end
 
-      if line:match "^%s*<p[%s>]" and not line:match "</p>" then
+      local p_tag, p_rest = html_opening(line, "p")
+      if p_tag and p_tag:match "^<p[%s>]" and p_rest:match "^%s*$" then
         in_p_tag = true
         goto continue
       end
       -- Single-line <p>...</p>: extract inner content and process it
-      local p_inner = line:match "^%s*<p[^>]*>%s*(.-)%s*</p>%s*$"
-      if p_inner and p_inner:match "%S" then
-        line = p_inner -- Fall through with extracted content
+      local p_inner, p_after = html_pair(line, "p")
+      if p_inner and line:match "^%s*<p[%s>]" and p_after:match "^%s*$" and p_inner:match "%S" then
+        line = p_inner:match "^%s*(.-)%s*$" -- Fall through with extracted content
       end
     end
 
@@ -3736,12 +3781,15 @@ function ContentBuilder:render_document(lines, opts)
         if rest:match "^%s*$" then goto continue end
         while rest and rest ~= "" do
           -- Try to match <dt>...</dt> or <dt>...
-          local dt_content = rest:match "^%s*<dt>(.-)</dt>"
+          local dt_content, dt_rest
+          if rest:match "^%s*<dt>" then
+            dt_content, dt_rest = html_pair(rest, "dt")
+          end
           if dt_content then
-            rest = rest:match "^%s*<dt>.-</dt>%s*(.*)" or ""
+            rest = dt_rest:gsub("^%s+", "")
             -- Split on <br> / <br/> / <br /> and render each segment
             local dt_lines_before = #self.lines
-            for _, seg in ipairs(vim.split(dt_content, "<br%s*/?>", { plain = false, trimempty = true })) do
+            for _, seg in ipairs(html_breaks(dt_content)) do
               seg = seg:gsub("^%s+", ""):gsub("%s+$", "")
               if seg ~= "" then
                 local dt_rendered, dt_hls, dt_links = markdown.render(
@@ -3763,9 +3811,12 @@ function ContentBuilder:render_document(lines, opts)
             lines_shown = lines_shown + (#self.lines - dt_lines_before)
           end
           -- Try to match <dd>...</dd> or <dd>... (may not have closing tag)
-          local dd_content = rest:match "^%s*<dd>(.-)</dd>"
+          local dd_content, dd_rest
+          if rest:match "^%s*<dd>" then
+            dd_content, dd_rest = html_pair(rest, "dd")
+          end
           if dd_content then
-            rest = rest:match "^%s*<dd>.-</dd>%s*(.*)" or ""
+            rest = dd_rest:gsub("^%s+", "")
           else
             dd_content = rest:match "^%s*<dd>(.*)"
             if dd_content then rest = "" end
@@ -3775,7 +3826,7 @@ function ContentBuilder:render_document(lines, opts)
             local dd_width = math.max(1, base_max_width - vim.api.nvim_strwidth(dd_indent))
             local dd_lines_before = #self.lines
             -- Split on <br> / <br/> / <br /> and render each segment
-            for _, seg in ipairs(vim.split(dd_content, "<br%s*/?>", { plain = false, trimempty = true })) do
+            for _, seg in ipairs(html_breaks(dd_content)) do
               seg = seg:gsub("^%s+", ""):gsub("%s+$", "")
               if seg ~= "" then
                 local dd_rendered, dd_hls, dd_links = markdown.render(
@@ -3813,7 +3864,7 @@ function ContentBuilder:render_document(lines, opts)
         goto continue
       end
 
-      if line:match "^%s*<dl[^>]*>" then
+      if html_opening(line, "dl") then
         flush_table()
         -- Ensure blank line before <dl> block
         if lines_shown > 0 and not prev_rendered_blank then
@@ -3832,13 +3883,7 @@ function ContentBuilder:render_document(lines, opts)
         table.insert(html_table_lines, line)
         table.insert(html_table_sources, src_indices[src_idx])
         -- Track nested <table> depth
-        local ll = line:lower()
-        for _ in ll:gmatch "<table[%s>]" do
-          html_table_depth = html_table_depth + 1
-        end
-        for _ in ll:gmatch "</table" do
-          html_table_depth = html_table_depth - 1
-        end
+        html_table_depth = html_table_depth + table_depth_change(line)
         if html_table_depth <= 0 then
           in_html_table = false
           -- Convert HTML table to pipe-table lines and render
@@ -3899,17 +3944,16 @@ function ContentBuilder:render_document(lines, opts)
         goto continue
       end
 
-      if line:match "^%s*<table[^>]*>" then
+      if html_opening(line, "table") then
         flush_table()
         in_html_table = true
-        html_table_depth = 1
+        html_table_depth = table_depth_change(line)
         html_table_lines = { line }
         html_table_sources = { src_indices[src_idx] }
         html_table_owner = origin.html
         html_table_src_idx = src_indices[src_idx]
         -- Check if </table> is on the same line
-        if line:lower():match "</table" then
-          html_table_depth = 0
+        if html_table_depth <= 0 then
           -- will be handled on next iteration; re-process
           in_html_table = false
           local pipe_lines = html_table_to_pipe(html_table_lines)
@@ -3935,7 +3979,8 @@ function ContentBuilder:render_document(lines, opts)
     end
 
     -- Handle <hr> as horizontal rule
-    if not in_code_block and line:match "^%s*<hr[^>]*>%s*$" then
+    local hr_tag, hr_rest = html_opening(line, "hr")
+    if not in_code_block and hr_tag and hr_rest:match "^%s*$" then
       flush_table()
       if lines_shown > 0 and not prev_was_hr then
         self:add_line(indent)
@@ -4363,19 +4408,18 @@ function ContentBuilder:render_document(lines, opts)
           if not img_path then
             local img_tag = html_image_tag(image_text)
             if img_tag then
-              img_path = img_tag:match 'src="([^"]*)"' or img_tag:match "src='([^']*)'"
-              img_alt = img_tag:match 'alt="([^"]*)"' or img_tag:match "alt='([^']*)'"
+              img_path = inline.html_target(img_tag)
+              local quoted
+              img_alt, quoted = inline.html_attribute(img_tag, "alt")
+              if not quoted then img_alt = nil end
             end
           end
           -- HTML video: <video src="url">...</video> or <video><source src="url">...</video>
           if not img_path then
-            local video_tag = line:match "^%s*(<video[%s>].-</video>)%s*$"
+            local video_body, video_rest, video_open = html_pair(line, "video")
+            local video_tag = video_rest and video_rest:match "^%s*$" and video_open .. video_body .. "</video>"
             if video_tag then
-              img_path = video_tag:match 'src="([^"]*)"' or video_tag:match "src='([^']*)'"
-              -- If no src on <video>, check for <source src="...">
-              if not img_path then
-                img_path = video_tag:match '<source[^>]*src="([^"]*)"' or video_tag:match "<source[^>]*src='([^']*)'>"
-              end
+              img_path = inline.html_target(video_tag)
               if img_path then img_alt = img_path:match "([^/]+)$" or img_path end
             end
           end

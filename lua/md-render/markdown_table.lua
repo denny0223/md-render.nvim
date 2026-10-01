@@ -371,20 +371,21 @@ function MarkdownTable.render(parsed_table, indent, max_width, expanded, buf_dir
     local img_end = stripped:match "^<img%s" and inline.html_end(stripped, 1)
     local img_tag = img_end and stripped:sub(img_end + 1):match "^%s*$" and stripped:sub(1, img_end)
     if img_tag then
-      local src = img_tag:match 'src="([^"]*)"' or img_tag:match "src='([^']*)'"
+      local src = inline.html_target(img_tag)
       if src then
-        alt = img_tag:match 'alt="([^"]*)"' or img_tag:match "alt='([^']*)'" or ""
+        local quoted
+        alt, quoted = inline.html_attribute(img_tag, "alt")
+        if not quoted then alt = "" end
         local image_mod = require "md-render.image"
         return alt, src, image_mod.is_video_file(src)
       end
     end
     -- Try <video src="...">...</video> or <video><source src="...">...</video>
-    local video_tag = stripped:match "^(<video[%s>].-</video>)%s*$"
+    local video_start = stripped:match "^<video[%s>]" and inline.html_end(stripped, 1)
+    local video_end = video_start and select(2, inline.html_closing(stripped, "video", video_start + 1))
+    local video_tag = video_end and stripped:sub(video_end + 1):match "^%s*$" and stripped:sub(1, video_end)
     if video_tag then
-      local src = video_tag:match 'src="([^"]*)"' or video_tag:match "src='([^']*)'"
-      if not src then
-        src = video_tag:match '<source[^>]*src="([^"]*)"' or video_tag:match "<source[^>]*src='([^']*)'>"
-      end
+      local src = inline.html_target(video_tag)
       if src then
         alt = src:match "([^/]+)$" or src
         return alt, src, true

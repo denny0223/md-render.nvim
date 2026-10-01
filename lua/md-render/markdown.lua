@@ -1187,12 +1187,12 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
       local a_tag = opening_tag and opening_tag:match "^<a%s" and opening_tag
       if a_tag then
         local href = inline.html_target(a_tag)
-        local close_start, close_end = text:find("</a>", i + #a_tag, true)
+        local close_start, close_end = inline.html_closing(text, "a", i + #a_tag)
         if href and close_start then
           href = decode_url(href)
           local content = text:sub(i + #a_tag, close_start - 1)
           processed = processed .. remove_tag(i - 1, a_tag)
-          remove_tag(close_start - 1, "</a>")
+          remove_tag(close_start - 1, text:sub(close_start, close_end))
           local start_col = #processed
           processed = processed .. content
           add_link_highlight(highlights, start_col, start_col + #content, href)
@@ -1210,7 +1210,8 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
           if src then
             local display_name = src:match "([^/]+)$" or src
             src = decode_url(src)
-            local alt = img_tag:match 'alt="([^"]*)"' or img_tag:match "alt='([^']*)'"
+            local alt, quoted = inline.html_attribute(img_tag, "alt")
+            if not quoted then alt = nil end
             local icons_mod = require "md-render.icons"
             local raw_img_icon, img_icon_hl = icons_mod.get_image_icon(src)
             local img_icon = icons_mod.pad_icon(raw_img_icon) .. " "
@@ -1233,7 +1234,10 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
 
       -- Try <video src="...">...</video> or <video><source src="...">...</video>
       if not matched then
-        local video_tag = rest:match "^(<video[%s>].-</video>)"
+        local video_end = opening_tag
+          and opening_tag:match "^<video[%s>]"
+          and select(2, inline.html_closing(text, "video", i + #opening_tag))
+        local video_tag = video_end and text:sub(i, video_end)
         if video_tag then
           local src = inline.html_target(video_tag)
           if src then
@@ -1268,20 +1272,18 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
           if hl ~= nil then
             local open_tag = opening_tag
             if open_tag then
-              local close_tag = "</" .. tag_name .. ">"
-              local close_start = text:find(close_tag, i + #open_tag, true)
+              local close_start, close_end = inline.html_closing(text, tag_name, i + #open_tag)
               if not close_start and tag_name ~= lower_tag then
-                close_tag = "</" .. lower_tag .. ">"
-                close_start = text:find(close_tag, i + #open_tag, true)
+                close_start, close_end = inline.html_closing(text, lower_tag, i + #open_tag)
               end
               if close_start then
                 local content = text:sub(i + #open_tag, close_start - 1)
                 processed = processed .. remove_tag(i - 1, open_tag)
-                remove_tag(close_start - 1, close_tag)
+                remove_tag(close_start - 1, text:sub(close_start, close_end))
                 local start_col = #processed
                 processed = processed .. content
                 if hl then table.insert(highlights, { col = start_col, end_col = start_col + #content, hl = hl }) end
-                i = close_start + #close_tag
+                i = close_end + 1
                 matched = true
               end
             end
@@ -1290,8 +1292,9 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
       end
 
       if not matched then
-        processed = processed .. text:sub(i, i)
-        i = i + 1
+        local literal = opening_tag or text:sub(i, i)
+        processed = processed .. literal
+        i = i + #literal
       end
     else
       processed = processed .. text:sub(i, i)

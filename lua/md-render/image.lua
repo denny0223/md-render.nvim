@@ -548,6 +548,20 @@ local function build_mmdc_cmd(cmd_prefix, input_path, output_path)
   return cmd
 end
 
+--- Publish only completed diagram output; cache readers must never see a partial file.
+local function render_diagram_file(cache_path, render)
+  -- Keep the temporary output on the cache filesystem, with a name unique to this run.
+  local tmp_output = cache_path .. "." .. vim.fn.sha256(vim.fn.tempname()):sub(1, 16) .. ".png"
+  local ok, result = pcall(render, tmp_output)
+  local installed = ok
+    and result.code == 0
+    and vim.fn.filereadable(tmp_output) == 1
+    and uv.fs_rename(tmp_output, cache_path)
+  os.remove(tmp_output)
+  if not ok then vim.notify("md-render: " .. tostring(result), vim.log.levels.ERROR) end
+  return installed and cache_path or nil
+end
+
 --- Check if a mermaid diagram is already cached (no rendering).
 ---@param source string mermaid diagram source code
 ---@return string? cached_path
@@ -573,12 +587,11 @@ function M.render_mermaid(source)
   f:write(source)
   f:close()
 
-  local cmd = build_mmdc_cmd(cmd_prefix, tmp_input, cache_path)
-  vim.system(cmd, { text = true, timeout = 30000 }):wait()
+  local path = render_diagram_file(cache_path, function(output)
+    return vim.system(build_mmdc_cmd(cmd_prefix, tmp_input, output), { text = true, timeout = 30000 }):wait()
+  end)
   os.remove(tmp_input)
-
-  if vim.fn.filereadable(cache_path) == 1 then return cache_path end
-  return nil
+  return path
 end
 
 --- Render mermaid source code to a PNG image (asynchronous, cached).
@@ -604,9 +617,11 @@ function M.render_mermaid_async(source, callback)
     f:write(source)
     f:close()
 
-    async.system(build_mmdc_cmd(cmd_prefix, tmp_input, cache_path), { text = true, timeout = 30000 })
+    local path = render_diagram_file(cache_path, function(output)
+      return async.system(build_mmdc_cmd(cmd_prefix, tmp_input, output), { text = true, timeout = 30000 })
+    end)
     os.remove(tmp_input)
-    return vim.fn.filereadable(cache_path) == 1 and cache_path or nil
+    return path
   end, callback)
 end
 
@@ -703,11 +718,10 @@ local function render_plantuml_remote(source, cache_path)
   local server = M.config().plantuml_server
   if not server or vim.fn.executable "curl" ~= 1 then return nil end
   local url = server:gsub("/+$", "") .. "/png/~h" .. plantuml_encode_hex(source)
-  local cmd = { "curl", "-sfL", "--max-time", "15", "--max-filesize", "20000000", "-o", cache_path, url }
-  async.system(cmd, { text = true })
-  if vim.fn.filereadable(cache_path) == 1 then return cache_path end
-  os.remove(cache_path)
-  return nil
+  return render_diagram_file(cache_path, function(output)
+    local cmd = { "curl", "-sfL", "--max-time", "15", "--max-filesize", "20000000", "-o", output, url }
+    return async.system(cmd, { text = true })
+  end)
 end
 
 --- Render PlantUML source code to a PNG image (asynchronous, cached).
@@ -728,7 +742,7 @@ function M.render_plantuml_async(source, callback)
 
     local cmd = vim.list_extend(vim.list_extend({}, cmd_prefix), { "-tpng", "-pipe" })
     local result = async.system(cmd, { stdin = source, text = false, timeout = 30000 })
-    if result.stdout and #result.stdout > 0 then
+    if result.code == 0 and result.stdout and #result.stdout > 0 then
       local f = io.open(cache_path, "wb")
       if f then
         f:write(result.stdout)

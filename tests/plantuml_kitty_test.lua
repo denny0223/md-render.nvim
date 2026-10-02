@@ -11,6 +11,7 @@
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
 
 local image = require "md-render.image"
+local decode_png = dofile "tests/decode_png.lua"
 
 local pass_count = 0
 local fail_count = 0
@@ -147,12 +148,23 @@ end
 -- ============================================================================
 -- Fixture: render a PlantUML diagram once, reuse across tests.
 --
--- Requires a local plantuml binary or network access to the remote server.
--- When neither is available the rendering tests are skipped rather than
--- failed, matching how the rest of the suite treats absent external tools.
+-- An absent renderer may skip. An installed/configured renderer must render;
+-- a broken executable, timeout or bad PNG is a test failure, never a skip.
 -- ============================================================================
 
 local diagram_source = "@startuml\nAlice -> Bob: kitty protocol test\n@enduml"
+
+if not image.has_plantuml() then
+  print "SKIP: no local PlantUML renderer or configured server"
+  return
+end
+
+-- Force a cold render without touching the user's persistent cache.
+local cache = vim.fn.tempname()
+local stdpath = vim.fn.stdpath
+vim.fn.stdpath = function(kind)
+  return kind == "cache" and cache or stdpath(kind)
+end
 
 local function render_fixture()
   local done, result = false, nil
@@ -160,17 +172,27 @@ local function render_fixture()
     result = path
     done = true
   end)
-  vim.wait(30000, function()
-    return done
-  end, 100)
-  return result
+  assert(
+    vim.wait(45000, function()
+      return done
+    end, 100),
+    "installed/configured PlantUML renderer timed out"
+  )
+  local path = assert(result, "installed/configured PlantUML renderer failed")
+  local decoded, err = decode_png(path)
+  assert(decoded ~= false, "PlantUML output is not a readable PNG: " .. (err or ""))
+  if not decoded then return nil, err end
+  local width, height = image.image_dimensions(path)
+  assert(width and height and width > 0 and height > 0, "PlantUML output is not a readable PNG")
+  return path
 end
 
-local plantuml_png = render_fixture()
-
-if not plantuml_png then
-  print "SKIP: no local PlantUML renderer and no reachable remote server"
-  print "\n0 passed, 0 failed (skipped)"
+local rendered, plantuml_png, reason = pcall(render_fixture)
+if not rendered or not plantuml_png then
+  vim.fn.stdpath = stdpath
+  vim.fn.delete(cache, "rf")
+  if not rendered then error(plantuml_png) end
+  print("SKIP PlantUML PNG validation: " .. reason)
   return
 end
 
@@ -341,4 +363,6 @@ end)
 -- ============================================================================
 
 print(string.format("\n%d passed, %d failed", pass_count, fail_count))
+vim.fn.stdpath = stdpath
+vim.fn.delete(cache, "rf")
 if fail_count > 0 then os.exit(1) end

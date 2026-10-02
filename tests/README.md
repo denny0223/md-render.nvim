@@ -70,11 +70,23 @@ Two details make it meaningful rather than decorative:
 
 The test prints the version of each tool it found; when the matrix goes red the first useful question is which toolchain it went red on.
 
+`plantuml_kitty_test.lua` skips when no renderer is installed or configured. Once a renderer is available, a cold render must succeed; command failure and timeout fail even if a PNG was written. ImageMagick (`magick` or `convert`) or macOS `sips` then decodes the PNG before the protocol checks run. If no decoder is installed, the test explicitly skips PNG validation without reporting those checks as passed. Its cache is temporary.
+
 ### FFmpeg matrix
 
 `.github/workflows/media.yml` runs the suite against FFmpeg 6.1, 7.1, 8.1, 9.0 and master, plus a weekly `schedule`.
 
 Spanning majors is the point. Ubuntu 24.04 still ships FFmpeg 6.1, so a job that ran `apt-get install ffmpeg` would have stayed green through the entire `-vsync` incident. The 8.x/9.x/master entries point at BtbN's rolling `latest` release, so the scheduled run picks up new point releases and reports drift; 6.1 and 7.1 come from a pinned older autobuild, because BtbN drops EOL branches from `latest` while keeping the release assets reachable.
+
+### Real Mermaid renderer
+
+The explicit Mermaid integration check renders a small diagram through the plugin from an empty temporary cache. The output must pass real PNG decoding with positive dimensions. Missing tools and a broken browser fail this explicit integration check:
+
+```sh
+nvim --headless -u NONE --noplugin -l tests/mermaid_integration.lua
+```
+
+Install `mmdc`, its browser and a PNG decoder (ImageMagick or macOS `sips`) before running it locally. The ordinary `make test` target does not invoke this check or install a browser.
 
 ## Optional image heading tests
 

@@ -514,7 +514,7 @@ do
   eq(vim.api.nvim_buf_get_lines(float_render, 0, -1, false), float_lines, "focus preserves float layout")
   eq(vim.fn.maparg("q", "n"), "", "split has no close key")
   vim.api.nvim_set_current_win(float_win)
-  eq(vim.fn.maparg("q", "n"), ":close<CR>", "floating preview has close key")
+  eq(type(vim.fn.maparg("q", "n", false, true).callback), "function", "floating preview has close key")
   eq(split_session.image_state, split_images, "float never replaces split image attachment")
   vim.api.nvim_buf_set_lines(shared_source, -1, -1, false, { "", "UPDATED SOURCE" })
   vim.api.nvim_exec_autocmds("TextChanged", { buffer = shared_source })

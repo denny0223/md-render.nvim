@@ -551,24 +551,46 @@ end
 ---@param content MdRender.Content
 ---@param close_handle MdRender.FloatWin|MdRender.TabWin|nil
 ---@param opts? { close_line_idx?: integer, close_keys?: string[], on_fold_toggle?: fun(source_line: integer, collapsed: boolean), on_expand_toggle?: fun(block_id: integer, expanded: boolean), on_image_open?: fun(row: integer): boolean, get_content?: fun(): MdRender.Content }
----@return fun(win: integer) rebind Update the target window without replacing buffer mappings.
+---@return fun(win: integer, close_handle?: table, opts?: table) rebind Update context without replacing user mappings.
 function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
   opts = opts or {}
-  local close_line_idx = opts.close_line_idx
-  local on_fold_toggle = opts.on_fold_toggle
-  local on_expand_toggle = opts.on_expand_toggle
-  local get_content = opts.get_content or function()
-    return content
+  local function get_content()
+    return opts.get_content and opts.get_content() or content
   end
-
-  local close_keys = opts.close_keys or { "q", "<Esc>", "<C-c>" }
-  local cr_is_close = vim.tbl_contains(close_keys, "<CR>")
-  for _, key in ipairs(close_keys) do
-    -- <CR> activates content under the cursor before falling back to closing.
-    if key ~= "<CR>" then
-      vim.api.nvim_buf_set_keymap(buf, "n", key, ":close<CR>", { noremap = true, silent = true })
+  local close_maps, cr_is_close = {}, false
+  local function close_current()
+    vim.cmd.close()
+  end
+  local function update_close_maps()
+    local wanted = {}
+    for _, key in ipairs(opts.close_keys or { "q", "<Esc>", "<C-c>" }) do
+      wanted[key] = true
+    end
+    cr_is_close = wanted["<CR>"] or false
+    wanted["<CR>"] = nil
+    local maps = {}
+    for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+      maps[vim.keycode(map.lhs)] = map
+    end
+    for key, active in pairs(close_maps) do
+      local map = maps[vim.keycode(key)]
+      if active and (not map or map.callback ~= close_current) then
+        close_maps[key] = "user"
+      elseif not wanted[key] and active == true then
+        vim.keymap.del("n", key, { buffer = buf })
+        close_maps[key] = false
+      end
+    end
+    for key in pairs(wanted) do
+      if close_maps[key] == nil and maps[vim.keycode(key)] then
+        close_maps[key] = "user"
+      elseif close_maps[key] ~= "user" and not maps[vim.keycode(key)] then
+        vim.keymap.set("n", key, close_current, { buffer = buf, silent = true })
+        close_maps[key] = true
+      end
     end
   end
+  update_close_maps()
 
   UrlHover.attach(buf, ns, win)
 
@@ -577,7 +599,7 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
   ---@return MdRender.CalloutFold?
   local function fold_at(line)
     local cur_content = get_content()
-    if on_fold_toggle and cur_content.callout_folds then
+    if opts.on_fold_toggle and cur_content.callout_folds then
       for _, fold in ipairs(cur_content.callout_folds) do
         if fold.header_line == line then return fold end
       end
@@ -589,7 +611,7 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
   ---@return MdRender.ExpandableRegion?
   local function region_at(line)
     local cur_content = get_content()
-    if on_expand_toggle and cur_content.expandable_regions then
+    if opts.on_expand_toggle and cur_content.expandable_regions then
       for _, region in ipairs(cur_content.expandable_regions) do
         if line >= region.start_line and line <= region.end_line then return region end
       end
@@ -603,12 +625,12 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
     local line = vim.api.nvim_win_get_cursor(0)[1] - 1
     local fold = fold_at(line)
     if fold then
-      on_fold_toggle(fold.source_line, not fold.collapsed)
+      opts.on_fold_toggle(fold.source_line, not fold.collapsed)
       return true
     end
     local region = region_at(line)
     if region then
-      on_expand_toggle(region.block_id, not region.expanded)
+      opts.on_expand_toggle(region.block_id, not region.expanded)
       return true
     end
     return false
@@ -618,12 +640,26 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
   -- it buffer-locally also suppresses Vim's default "E490: No fold found".
   vim.keymap.set("n", "za", toggle_at_cursor, { buffer = buf, noremap = true, silent = true })
 
+  local function activate_anchor(url, target_win)
+    local anchor = url and url:match "^#(.*)$"
+    if anchor == nil then return false end
+    anchor = vim.uri_decode(anchor)
+    local current = get_content()
+    local target = anchor == "" and 0
+      or (current.footnote_anchors or {})[anchor]
+      or (current.heading_anchors or {})[anchor]
+    if target then vim.api.nvim_win_set_cursor(target_win or vim.api.nvim_get_current_win(), { target + 1, 0 }) end
+    return true
+  end
+
   -- `<CR>` opens an image or toggles a block and is otherwise a no-op: it is
   -- not a close key by default (closing on Enter is unintuitive — use q / <Esc>
   -- / <C-c>). It still falls back to closing when a caller opts <CR> into
   -- close_keys explicitly (cr_is_close).
   vim.keymap.set("n", "<CR>", function()
-    if opts.on_image_open and opts.on_image_open(vim.api.nvim_win_get_cursor(0)[1] - 1) then return end
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    if activate_anchor(Links.at(buf, ns, cursor[1] - 1, cursor[2])) then return end
+    if opts.on_image_open and opts.on_image_open(cursor[1] - 1) then return end
     if toggle_at_cursor() then return end
     if cr_is_close then vim.cmd.close() end
   end, { buffer = buf, noremap = true, silent = true })
@@ -632,12 +668,11 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
     local mouse, projected = M.getmousepos(true)
     if mouse.winid == win and mouse.line > 0 then
       if projected then vim.api.nvim_win_set_cursor(win, { mouse.line, mouse.column - 1 }) end
-      if close_line_idx and close_handle and mouse.line == close_line_idx + 1 then
+      if opts.close_line_idx and close_handle and mouse.line == opts.close_line_idx + 1 then
         close_handle:close_if_valid()
         return
       end
 
-      local cur_content = get_content()
       local click_line = mouse.line - 1 -- 0-indexed
       local click_col = mouse.column - 1
 
@@ -646,26 +681,7 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
         local url = Links.at(buf, ns, click_line, click_col)
         if url then
           -- Handle internal anchor links by scrolling
-          local anchor = url:match "^#(.+)$"
-          if anchor then
-            -- Footnote anchors
-            if cur_content.footnote_anchors then
-              local target_line = cur_content.footnote_anchors[anchor]
-              if target_line then
-                vim.api.nvim_win_set_cursor(win, { target_line + 1, 0 })
-                return true
-              end
-            end
-            -- Heading anchors
-            if cur_content.heading_anchors then
-              local target_line = cur_content.heading_anchors[anchor]
-              if target_line then
-                vim.api.nvim_win_set_cursor(win, { target_line + 1, 0 })
-                return true
-              end
-            end
-            return true
-          end
+          if activate_anchor(url, win) then return true end
           -- Obsidian links: always open via system handler
           if url:match "^obsidian://" then
             vim.notify("Opening: " .. url, vim.log.levels.INFO)
@@ -684,7 +700,7 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
       -- Check for foldable callout header click
       local fold = fold_at(click_line)
       if fold then
-        on_fold_toggle(fold.source_line, not fold.collapsed)
+        opts.on_fold_toggle(fold.source_line, not fold.collapsed)
         return
       end
 
@@ -693,7 +709,7 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
       if region then
         -- If click is on a URL, open it instead of toggling expansion
         if try_open_url() then return end
-        on_expand_toggle(region.block_id, not region.expanded)
+        opts.on_expand_toggle(region.block_id, not region.expanded)
         return
       end
 
@@ -702,8 +718,12 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
     end
   end, { buffer = buf, noremap = true, silent = true })
 
-  return function(new_win)
+  return function(new_win, new_close_handle, new_opts)
     win = new_win
+    if new_opts then
+      close_handle, opts = new_close_handle, new_opts
+      update_close_maps()
+    end
     UrlHover.attach(buf, ns, win)
   end
 end

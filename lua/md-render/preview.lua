@@ -17,6 +17,13 @@ local get_or_create_session
 --- render windows here while still adapting downward in narrow splits.
 local DEFAULT_MAX_WIDTH = 80
 
+local function close_timer(timer)
+  if timer and not timer:is_closing() then
+    timer:stop()
+    timer:close()
+  end
+end
+
 --- Usable text-area width of a window, excluding the gutter (signcolumn,
 --- number column, foldcolumn, statuscolumn). `nvim_win_get_width` returns the
 --- full window width including these, which would mis-size content centered
@@ -424,11 +431,16 @@ end
 
 --- Refresh source_lines from the source buffer (call before rebuild when
 --- the source may have changed).
+---@return boolean changed
 function Session:refresh_source()
   if vim.api.nvim_buf_is_valid(self.source_bufnr) then
-    self.source_lines = vim.api.nvim_buf_get_lines(self.source_bufnr, 0, -1, false)
-    self.opts.buf_dir = self:source_directory()
+    local lines = vim.api.nvim_buf_get_lines(self.source_bufnr, 0, -1, false)
+    local directory = self:source_directory()
+    local changed = directory ~= self.opts.buf_dir or not vim.deep_equal(lines, self.source_lines)
+    self.source_lines, self.opts.buf_dir = lines, directory
+    return changed
   end
+  return false
 end
 
 --- Rebuild render content from the current source_lines and apply it.
@@ -715,10 +727,13 @@ end
 ---@param keymap_opts? { close_keys?: string[], close_line_idx?: integer }
 function Session:install_float_keymaps(close_handle, keymap_opts)
   keymap_opts = keymap_opts or {}
-  for _, key in ipairs { "q", "<Esc>", "<C-c>" } do
-    pcall(vim.keymap.del, "n", key, { buffer = self.buf })
+  if self._rebind_keymaps then
+    self._keymap_opts.close_keys = keymap_opts.close_keys
+    self._keymap_opts.close_line_idx = keymap_opts.close_line_idx
+    self._rebind_keymaps(self.win, close_handle, self._keymap_opts)
+    return
   end
-  self._rebind_keymaps = display_utils.setup_float_keymaps(self.buf, self.ns, self.win, self.content, close_handle, {
+  self._keymap_opts = {
     close_keys = keymap_opts.close_keys,
     close_line_idx = keymap_opts.close_line_idx,
     get_content = function()
@@ -750,7 +765,9 @@ function Session:install_float_keymaps(close_handle, keymap_opts)
       end
       return false
     end,
-  })
+  }
+  self._rebind_keymaps =
+    display_utils.setup_float_keymaps(self.buf, self.ns, self.win, self.content, close_handle, self._keymap_opts)
   if self.pager then
     -- Let :qa handle unsaved buffers, including showing the editor that
     -- needs saving. Do not tear down renderers before exit is accepted.
@@ -884,9 +901,13 @@ end
 --- Show a tab previewing the current buffer's markdown content
 ---@param opts? { max_width?: integer }
 MdPreview.show_tab = function(opts)
-  if tab_win:close_if_valid() then return end
-
   local bufnr = vim.api.nvim_get_current_buf()
+  if tab_win.win and vim.api.nvim_win_is_valid(tab_win.win) then
+    local previous = MdPreview._sessions[vim.api.nvim_win_get_buf(tab_win.win)]
+    local same_document = vim.api.nvim_get_current_win() == tab_win.win or (previous and previous.source_bufnr == bufnr)
+    tab_win:close_if_valid()
+    if same_document then return end
+  end
   local ok, warn = check_markdown_buffer(bufnr)
   if not ok then
     vim.notify(warn, vim.log.levels.WARN)
@@ -1019,24 +1040,25 @@ local function schedule_live_rebuild(session)
   if not vim.api.nvim_buf_is_valid(session.source_bufnr) then return end
   if not vim.api.nvim_buf_is_valid(session.buf) then return end
 
-  if session._debounce_timer then
-    session._debounce_timer:stop()
-    session._debounce_timer = nil
-  end
+  close_timer(session._debounce_timer)
+  session._debounce_timer = nil
   if not session:is_visible() then
-    session:refresh_source()
-    session:rebuild()
+    if session:refresh_source() or session.dirty then session:rebuild() end
     return
   end
 
-  session._debounce_timer = vim.defer_fn(function()
+  local timer
+  timer = vim.defer_fn(function()
+    if session._debounce_timer ~= timer then return end
     session._debounce_timer = nil
     if not vim.api.nvim_buf_is_valid(session.source_bufnr) then return end
     if not vim.api.nvim_buf_is_valid(session.buf) then return end
-    session:refresh_source()
-    session:rebuild()
-    if session:is_visible() then session:refresh_images() end
+    if session:refresh_source() or session.dirty then
+      session:rebuild()
+      if session:is_visible() then session:refresh_images() end
+    end
   end, 150)
+  session._debounce_timer = timer
 end
 
 --- Listen for source buffer changes and trigger debounced live rebuilds.
@@ -1129,11 +1151,14 @@ local function install_scroll_sync(session)
   local function with_sync_lock(fn)
     session._syncing = true
     local ok, err = pcall(fn)
-    if session._sync_unlock_timer then session._sync_unlock_timer:stop() end
-    session._sync_unlock_timer = vim.defer_fn(function()
+    close_timer(session._sync_unlock_timer)
+    local timer
+    timer = vim.defer_fn(function()
+      if session._sync_unlock_timer ~= timer then return end
       session._syncing = false
       session._sync_unlock_timer = nil
     end, SYNC_UNLOCK_MS)
+    session._sync_unlock_timer = timer
     if not ok then error(err) end
   end
 
@@ -1795,7 +1820,10 @@ local function install_win_resize_handler(session)
 
       local win = render_wins[1]
       if not vim.api.nvim_win_is_valid(win) then return end
-      if session:resize(win) then schedule_live_rebuild(session) end
+      if session:resize(win) then
+        session.dirty = true
+        schedule_live_rebuild(session)
+      end
     end,
   })
 end
@@ -1942,8 +1970,10 @@ end
 
 --- Release one rendered document; source watchers may still serve other previews.
 function Session:dispose()
-  if self._debounce_timer then self._debounce_timer:stop() end
-  if self._sync_unlock_timer then self._sync_unlock_timer:stop() end
+  close_timer(self._debounce_timer)
+  close_timer(self._sync_unlock_timer)
+  self._debounce_timer, self._sync_unlock_timer = nil, nil
+  deferred_rebuilds[self.buf] = nil
   self:cleanup_images()
   self.win = nil
   if self.cache and self.cache[self.source_bufnr] == self then self.cache[self.source_bufnr] = nil end
@@ -1976,8 +2006,8 @@ local function install_source_watcher(session)
     callback = function()
       local astate = _auto_state[source_bufnr]
       if astate then
-        if astate.in_timer then astate.in_timer:stop() end
-        if astate.leave_timer then astate.leave_timer:stop() end
+        close_timer(astate.in_timer)
+        close_timer(astate.leave_timer)
         _auto_state[source_bufnr] = nil
       end
       for _, current in pairs(MdPreview._sessions) do
@@ -2202,6 +2232,8 @@ function Session:install_navigation(source_win, close_handle, source_wo)
     layout = { max_width = self._explicit_max_width and self.opts.max_width or nil, indent = self.opts.indent },
     session = self,
   }
+  -- The callback follows the current window; rebinding must preserve user maps.
+  if self._gf_installed then return end
   vim.keymap.set("n", "gf", function()
     local cursor = vim.api.nvim_win_get_cursor(0)
     local links = require "md-render.links"
@@ -2227,6 +2259,7 @@ function Session:install_navigation(source_win, close_handle, source_wo)
     local ok, err = pcall(self.follow_file, self, path)
     if not ok then vim.notify("md-render: cannot open " .. path .. ": " .. tostring(err), vim.log.levels.WARN) end
   end, { buffer = self.buf, desc = "Follow rendered file link" })
+  self._gf_installed = true
 end
 
 function Session:follow_file(path)
@@ -2694,23 +2727,37 @@ end
 local function schedule_auto_transition(bufnr, target_mode)
   local state = _auto_state[bufnr]
   if not state then return end
+  local win, tab = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_tabpage()
+  local owner_buf = vim.api.nvim_win_get_buf(win)
   local key = (target_mode == "source") and "in_timer" or "leave_timer"
-  if state[key] then state[key]:stop() end
-  state[key] = vim.defer_fn(function()
+  close_timer(state[key])
+  local timer
+  timer = vim.defer_fn(function()
+    if _auto_state[bufnr] ~= state or state[key] ~= timer then return end
     state[key] = nil
     if not vim.api.nvim_buf_is_valid(bufnr) then return end
     if not vim.b[bufnr].md_render_auto then return end
+    if
+      not vim.api.nvim_win_is_valid(win)
+      or vim.api.nvim_get_current_win() ~= win
+      or vim.api.nvim_get_current_tabpage() ~= tab
+      or vim.api.nvim_win_get_buf(win) ~= owner_buf
+    then
+      return
+    end
 
-    local win = vim.api.nvim_get_current_win()
     local cur_buf = vim.api.nvim_win_get_buf(win)
     local win_state = get_win_state(win)
 
     if target_mode == "source" then
       if win_state and win_state.mode == "render" and win_state.source_buf == bufnr then MdPreview.toggle() end
     else -- "render"
-      if cur_buf == bufnr and (not win_state or win_state.mode ~= "render") then MdPreview.toggle() end
+      if vim.api.nvim_get_mode().mode == "n" and cur_buf == bufnr and (not win_state or win_state.mode ~= "render") then
+        MdPreview.toggle()
+      end
     end
   end, 50)
+  state[key] = timer
 end
 
 --- Enable auto-toggle for the current buffer and immediately swap to render.
@@ -2758,8 +2805,8 @@ function MdPreview.auto_off()
   vim.b[bufnr].md_render_auto = nil
   local state = _auto_state[bufnr]
   if state then
-    if state.in_timer then state.in_timer:stop() end
-    if state.leave_timer then state.leave_timer:stop() end
+    close_timer(state.in_timer)
+    close_timer(state.leave_timer)
     _auto_state[bufnr] = nil
   end
   pcall(vim.api.nvim_del_augroup_by_name, auto_augroup(bufnr))

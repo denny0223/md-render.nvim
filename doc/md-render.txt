@@ -81,8 +81,8 @@ Features: ~
   text)
 - CJK-aware word wrapping (JIS X 4051 kinsoku shori + optional BudouX phrase
   segmentation)
-- Clickable links (mouse click to open URLs; mouse hover peeks the full URL
-  in a subtle floating window; OSC 8 hyperlink support)
+- Clickable links (mouse click to open URLs; mouse hover previews the
+  destination, shortening long URLs; OSC 8 hyperlink support)
 - `<details>` support (collapsible sections; toggle by click or `za` / `<CR>`)
 - Library API for programmatic use from other plugins
 
@@ -283,17 +283,21 @@ Inside the preview window, the following keys are available:
 	`q` / `<Esc>` / `<C-c>`	Close the floating/tab preview window
 	`za`		Toggle the callout fold / expandable region under the
 			cursor (no-op when the cursor is not on one)
-	`<CR>`		Open the image under the cursor (Snacks backend), or
-			toggle the callout fold / expandable region
+	`<CR>`		Follow a heading/footnote link within the document, open
+			an image (Snacks), or toggle a fold / expandable region
 	`gf`		Follow a local file link; Markdown targets stay rendered
 			(toggle, split, floating, tab, and pager previews)
 	`<LeftMouse>`	Click links, toggle folds, expand regions
-	`<MouseMove>`	Hover a link to peek its full URL in a small floating
-			window at the bottom of the editor.  Requires
+	`<MouseMove>`	Hover a link to preview its destination in a small
+			float at the bottom; long URLs are shortened. Requires
 			'mousemoveevent' (md-render enables it automatically
 			whenever a preview window is open).
 
 For a split preview, switch to its window and close it with `:q` or `<C-w>c`.
+
+Enter follows links such as #heading and footnote references within the
+document. Percent-encoded fragments work; # goes to the top. Native gx opens
+external URLs.
 
 Inside a render-mode buffer opened with |:MdRender-toggle|, `q` / `<Esc>` /
 `<C-c>` are NOT bound to close — call |:MdRender-toggle| again to return to
@@ -321,8 +325,8 @@ preview history is not merged into that window.
 Supported destinations are relative paths, POSIX absolute paths, and local
 `file:///` URLs, including encoded filenames, inline/reference links, and
 optional titles. Missing or unreadable targets leave the preview unchanged.
-Fragments do not yet select headings. Windows/UNC paths remain outside this
-feature's scope. Pager uses the operated window for files and directories; see
+Fragments on links to another file do not yet select headings. Windows/UNC
+paths remain outside this feature's scope. Pager uses the operated window; see
 |:MdRender-pager|.
 
 ==============================================================================
@@ -367,6 +371,9 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 							       *:MdRender-tab*
 :MdRender tab ~
 	Toggle a tab preview for the current Markdown buffer.
+	The preview stays open when switching tabs, including to an image tab;
+	q in the image tab returns to the document. Invoked from another
+	Markdown source, this replaces the previous document's tab preview.
 
 							    *:MdRender-toggle*
 :MdRender toggle ~
@@ -598,7 +605,7 @@ reliably and headings inside <details> or callouts retain text. These local limi
 affect only that heading. Search, selection and cursor feedback reveal usable
 text; hovering does not change layout.
 
-Open internal anchors with an ordinary click and local file links with gf.
+Open internal anchors with Enter or an ordinary click; use gf for local files.
 External links use the terminal's OSC 8 shortcut (Ctrl+Shift+click in Kitty).
 
 For terminal Shift-drag copying, use :MdRender textsize off to select rendered

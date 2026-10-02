@@ -225,5 +225,140 @@ test("attach: updates one registration and cleans up on close", function()
 end)
 
 -- Summary
+test("hover observes mouse events without replacing mappings and detaches on buffer change", function()
+  local previous_option = vim.o.mousemoveevent
+  vim.o.mousemoveevent = false
+  local calls = 0
+  local custom = function()
+    calls = calls + 1
+  end
+  for _, mode in ipairs { "n", "i", "v" } do
+    vim.keymap.set(mode, "<MouseMove>", custom)
+  end
+  local buf, ns = make_buf_with_url("link", "https://example.org/current", 0, 4)
+  local win = vim.api.nvim_open_win(buf, false, { relative = "editor", width = 10, height = 2, row = 1, col = 1 })
+  UrlHover.attach(buf, ns, win)
+  assert_eq(vim.o.mousemoveevent, true, "active hover enables mouse events")
+  for _, mode in ipairs { "n", "i", "v" } do
+    assert_eq(
+      vim.fn.maparg("<MouseMove>", mode, false, true).callback,
+      custom,
+      "existing mapping is preserved while active"
+    )
+  end
+  local display = require "md-render.display_utils"
+  local getmousepos = display.getmousepos
+  display.getmousepos = function()
+    return { winid = win, line = 1, column = 1 }
+  end
+  vim.api.nvim_feedkeys(vim.keycode "<MouseMove>", "xt", false)
+  vim.wait(internal.DEBOUNCE_MS + 100)
+  assert_eq(calls, 1, "the original mouse mapping still runs")
+  assert_eq(
+    internal.state.current_url,
+    "https://example.org/current",
+    "observer sees the event over an unfocused preview"
+  )
+  local other = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(win, other)
+  vim.wait(20)
+  assert_eq(internal.registered[win], nil, "changing the displayed buffer drops registration")
+  assert_eq(internal.state.hover_win, nil, "changing buffers closes the stale hover")
+  assert_eq(vim.o.mousemoveevent, false, "last preview leaving restores mouse events")
+  internal.handle_mouse_move()
+  vim.wait(internal.DEBOUNCE_MS + 20)
+  assert_eq(internal.state.hover_win, nil, "old extmarks cannot reopen a hover on another buffer")
+  display.getmousepos = getmousepos
+  vim.api.nvim_win_close(win, true)
+  for _, mode in ipairs { "n", "i", "v" } do
+    assert_eq(vim.fn.maparg("<MouseMove>", mode, false, true).callback, custom, "teardown preserves user mappings")
+    vim.keymap.del(mode, "<MouseMove>")
+  end
+  vim.o.mousemoveevent = previous_option
+end)
+
+test("teardown does not override a later mouse option or mapping change", function()
+  local saved = vim.o.mousemoveevent
+  vim.o.mousemoveevent = true
+  local buf, ns = make_buf_with_url("link", "https://example.org", 0, 4)
+  local win = vim.api.nvim_open_win(buf, false, { relative = "editor", width = 10, height = 2, row = 1, col = 1 })
+  UrlHover.attach(buf, ns, win)
+  local later = function() end
+  vim.keymap.set("n", "<MouseMove>", later)
+  vim.o.mousemoveevent = false
+  UrlHover.detach(win)
+  assert_eq(vim.o.mousemoveevent, false, "later option setting is preserved")
+  assert_eq(vim.fn.maparg("<MouseMove>", "n", false, true).callback, later, "later mapping is preserved")
+  vim.keymap.del("n", "<MouseMove>")
+  vim.api.nvim_win_close(win, true)
+  vim.o.mousemoveevent = saved
+end)
+
+test("pending and existing hovers belong to the current tab", function()
+  local display = require "md-render.display_utils"
+  local getmousepos = display.getmousepos
+  local first_buf, ns = make_buf_with_url("first", "https://example.org/first", 0, 5)
+  local first_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(first_win, first_buf)
+  UrlHover.attach(first_buf, ns, first_win)
+  display.getmousepos = function()
+    return { winid = first_win, line = 1, column = 1 }
+  end
+  internal.handle_mouse_move()
+  vim.cmd.tabnew()
+  local second_tab = vim.api.nvim_get_current_tabpage()
+  vim.wait(internal.DEBOUNCE_MS + 20)
+  assert_eq(internal.state.hover_win, nil, "departing tab's pending URL never paints in the new tab")
+  assert_eq(internal.registered[first_win] ~= nil, true, "background preview retains its registration")
+
+  vim.api.nvim_set_current_win(first_win)
+  internal.handle_mouse_move()
+  assert_eq(
+    vim.wait(500, function()
+      return internal.state.hover_win ~= nil
+    end),
+    true,
+    "returning to preview can show a hover"
+  )
+  local first_hover = internal.state.hover_win
+  vim.api.nvim_set_current_tabpage(second_tab)
+  assert_eq(vim.api.nvim_win_is_valid(first_hover), false, "tab leave closes the old hover float")
+  local second_buf, second_ns = make_buf_with_url("second", "https://example.org/second", 0, 6)
+  local second_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(second_win, second_buf)
+  UrlHover.attach(second_buf, second_ns, second_win)
+  display.getmousepos = function()
+    return { winid = second_win, line = 1, column = 1 }
+  end
+  internal.handle_mouse_move()
+  assert_eq(
+    vim.wait(500, function()
+      return internal.state.current_url == "https://example.org/second"
+    end),
+    true,
+    "new tab shows its own URL"
+  )
+  assert_eq(
+    vim.api.nvim_win_get_tabpage(internal.state.hover_win),
+    second_tab,
+    "new hover is visible in its owning tab"
+  )
+
+  -- The callback still validates tab ownership when an external command has
+  -- suppressed TabLeave; valid window and buffer IDs alone are insufficient.
+  internal.close_hover()
+  internal.handle_mouse_move()
+  local eventignore = vim.o.eventignore
+  vim.o.eventignore = "TabLeave"
+  vim.api.nvim_set_current_win(first_win)
+  vim.o.eventignore = eventignore
+  vim.wait(internal.DEBOUNCE_MS + 20)
+  assert_eq(internal.state.hover_win, nil, "late callback rejects a source in another tab")
+  display.getmousepos = getmousepos
+  UrlHover.detach(first_win)
+  UrlHover.detach(second_win)
+  vim.api.nvim_win_close(second_win, true)
+end)
+
 print(string.format("\n%d passed, %d failed", pass_count, fail_count))
 if fail_count > 0 then os.exit(1) end

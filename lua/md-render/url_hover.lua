@@ -7,6 +7,8 @@ local Links = require "md-render.links"
 local DEBOUNCE_MS = 100
 local WINBLEND = 15
 local AUGROUP = "md_render_url_hover"
+local KEY_NS = vim.api.nvim_create_namespace "md_render_url_hover_keys"
+local close_autocmds = {}
 
 ---@type table<integer, { buf: integer, ns: integer }>
 local registered = {}
@@ -22,11 +24,14 @@ local state = {
   current_win = nil,
   ---@type string?
   pending_url = nil,
+  pending_win = nil,
   ---@type table?
   pending_token = nil,
 }
 
 local augroup_initialized = false
+local saved_mousemoveevent
+local mouse_scheduled = false
 
 local function ensure_hover_buf()
   if state.hover_buf and vim.api.nvim_buf_is_valid(state.hover_buf) then return state.hover_buf end
@@ -59,6 +64,7 @@ end
 local function cancel_pending()
   state.pending_token = nil
   state.pending_url = nil
+  state.pending_win = nil
 end
 
 local function close_hover()
@@ -88,6 +94,15 @@ end
 ---@param url string
 ---@param source_win integer
 local function show_hover(url, source_win)
+  if
+    state.hover_win
+    and (
+      not vim.api.nvim_win_is_valid(state.hover_win)
+      or vim.api.nvim_win_get_tabpage(state.hover_win) ~= vim.api.nvim_get_current_tabpage()
+    )
+  then
+    close_hover()
+  end
   if state.current_url == url and state.current_win == source_win then return end
 
   local max_width = math.max(1, math.floor(vim.o.columns / 2))
@@ -141,7 +156,8 @@ local function handle_mouse_move()
   local mouse = require("md-render.display_utils").getmousepos()
   local entry = registered[mouse.winid]
 
-  if not entry then
+  if not entry or not vim.api.nvim_win_is_valid(mouse.winid) or vim.api.nvim_win_get_buf(mouse.winid) ~= entry.buf then
+    if entry then M.detach(mouse.winid) end
     cancel_pending()
     close_hover()
     return
@@ -160,18 +176,27 @@ local function handle_mouse_move()
     return
   end
 
-  if state.pending_url == url then return end
+  if state.pending_url == url and state.pending_win == mouse.winid then return end
 
   local token = {}
   state.pending_token = token
   state.pending_url = url
+  state.pending_win = mouse.winid
   local source_win = mouse.winid
 
   vim.defer_fn(function()
     if state.pending_token ~= token then return end
-    state.pending_token = nil
-    state.pending_url = nil
-    if not registered[source_win] then return end
+    cancel_pending()
+    local current = registered[source_win]
+    if
+      not current
+      or current ~= entry
+      or not vim.api.nvim_win_is_valid(source_win)
+      or vim.api.nvim_win_get_buf(source_win) ~= current.buf
+      or vim.api.nvim_win_get_tabpage(source_win) ~= vim.api.nvim_get_current_tabpage()
+    then
+      return
+    end
     show_hover(url, source_win)
   end, DEBOUNCE_MS)
 end
@@ -179,13 +204,54 @@ end
 local function ensure_initialized()
   if augroup_initialized then return end
   augroup_initialized = true
+  saved_mousemoveevent = vim.o.mousemoveevent
   vim.o.mousemoveevent = true
-  -- <MouseMove> is a keycode, not an autocmd event. The mapping below fires
-  -- whenever 'mousemoveevent' is on and the mouse moves; the global handler
-  -- checks the current mouse position against the registered windows.
-  vim.keymap.set({ "n", "i", "v" }, "<MouseMove>", function()
-    handle_mouse_move()
-  end, { silent = true, desc = "md-render: URL hover" })
+  -- Observe the native event without replacing user mappings, including when
+  -- the mouse is over a preview that does not have keyboard focus.
+  vim.on_key(function(key, typed)
+    if key ~= vim.keycode "<MouseMove>" and typed ~= vim.keycode "<MouseMove>" then return end
+    if mouse_scheduled then return end
+    mouse_scheduled = true
+    vim.schedule(function()
+      mouse_scheduled = false
+      if next(registered) then handle_mouse_move() end
+    end)
+  end, KEY_NS)
+  vim.api.nvim_create_autocmd({ "BufEnter", "BufWinEnter", "BufWinLeave", "TabLeave" }, {
+    group = vim.api.nvim_create_augroup(AUGROUP, { clear = true }),
+    callback = function(ev)
+      if ev.event == "TabLeave" then
+        cancel_pending()
+        close_hover()
+        return
+      end
+      local function prune()
+        for win, entry in pairs(registered) do
+          if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= entry.buf then M.detach(win) end
+        end
+      end
+      if ev.event == "BufWinLeave" then
+        vim.schedule(prune)
+      else
+        prune()
+      end
+    end,
+  })
+end
+
+function M.detach(win)
+  registered[win] = nil
+  if close_autocmds[win] then pcall(vim.api.nvim_del_autocmd, close_autocmds[win]) end
+  close_autocmds[win] = nil
+  if state.pending_win == win then cancel_pending() end
+  if state.current_win == win then close_hover() end
+  if not next(registered) and augroup_initialized then
+    vim.on_key(nil, KEY_NS)
+    vim.api.nvim_clear_autocmds { group = AUGROUP }
+    if vim.o.mousemoveevent then vim.o.mousemoveevent = saved_mousemoveevent end
+    saved_mousemoveevent = nil
+    augroup_initialized = false
+  end
 end
 
 --- Start showing URL hovers for the given preview window.
@@ -193,18 +259,20 @@ end
 ---@param ns integer
 ---@param win integer
 function M.attach(buf, ns, win)
+  if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= buf then return end
   ensure_initialized()
   local already_registered = registered[win] ~= nil
+  if already_registered and registered[win].buf == buf and registered[win].ns == ns then return end
+  if state.pending_win == win then cancel_pending() end
+  if state.current_win == win then close_hover() end
   registered[win] = { buf = buf, ns = ns }
   if already_registered then return end
-  vim.api.nvim_create_autocmd("WinClosed", {
+  close_autocmds[win] = vim.api.nvim_create_autocmd("WinClosed", {
     group = vim.api.nvim_create_augroup(AUGROUP, { clear = false }),
     pattern = tostring(win),
     once = true,
     callback = function()
-      registered[win] = nil
-      cancel_pending()
-      if state.current_win == win then close_hover() end
+      M.detach(win)
     end,
   })
 end

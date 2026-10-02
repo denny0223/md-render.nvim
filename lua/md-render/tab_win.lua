@@ -11,17 +11,6 @@ end
 function TabWin:setup(win)
   self.win = win
   local augroup = vim.api.nvim_create_augroup(self.augroup, { clear = true })
-  vim.api.nvim_create_autocmd("TabLeave", {
-    group = augroup,
-    callback = function()
-      -- Only act if we're leaving the preview tab
-      if vim.api.nvim_get_current_win() == self.win then
-        vim.schedule(function()
-          if self.win == win then self:close_if_valid() end
-        end)
-      end
-    end,
-  })
   vim.api.nvim_create_autocmd("WinClosed", {
     group = augroup,
     pattern = tostring(win),

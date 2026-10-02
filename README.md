@@ -43,7 +43,7 @@ The complete [reference manual](doc/md-render.txt), including the library API, i
 - **CJK spacing around inline markers** — the spaces in `これは **強調** です。`, written only so that lenient parsers notice the `**`, are closed up on screen; they stay when a neighbour is narrow, as in `これは **API** です。`
 - **Nested block structure** — a blockquote, callout, or fenced code block indented to a list item's content is rendered in place, not as literal text
 - **CJK-aware word wrapping** — JIS X 4051 kinsoku shori + optional [BudouX](https://github.com/google/budoux) phrase segmentation via [budoux.lua](https://github.com/delphinus/budoux.lua)
-- **Clickable links** — mouse click to open URLs; hover the mouse over a link to peek the full URL in a subtle floating window; OSC 8 hyperlink support for compatible terminals
+- **Clickable links** — mouse click to open URLs; hover a link to preview its destination (long URLs are shortened); OSC 8 hyperlink support for compatible terminals
 - **Autolinks** — angle-bracket URI/email links, bare HTTP(S), `www.`, email, `mailto:` and `xmpp:` forms; balanced URL parentheses stay in the destination, and shortened labels retain the full target. Angle-link contents and `www.` URLs retain literal source text. Bare HTTP(S) also accepts single-label hosts and adjacent prose.
 - **`<details>` support** — collapsible sections you can toggle by clicking or with `za` / `<CR>`, respecting the `open` attribute
 - **Status footer** — the floating preview shows the file name, your position in the source, and a box-drawing progress bar on its bottom border, without stealing a content row or touching your statusline
@@ -259,11 +259,13 @@ Inside a rendered preview (floating, tab, split, in-place toggle, or pager), the
 | Key | Action |
 |---|---|
 | `za` | Toggle the fold / expandable region under the cursor (no-op elsewhere) |
-| `<CR>` | Open the image under the cursor (Snacks backend), or toggle a fold / expandable region |
+| `<CR>` | Follow a heading or footnote link within the document, open an image (Snacks backend), or toggle a fold / expandable region |
 | `gf` | Follow the local file link under the cursor; Markdown targets stay rendered |
 | `<LeftMouse>` | Toggle folds, expand regions, and open links by clicking |
 | `q` / `<Esc>` / `<C-c>` | Close the window (floating / tab mode only) |
 | `q` | Quit Neovim with unsaved-buffer protection (pager only) |
+
+Use Enter on links such as `#heading` or a footnote reference to jump within the document; percent-encoded fragments work, and `#` goes to the top. Native `gx` opens external URLs.
 
 `gf` resolves the link destination relative to its source Markdown file, independently of the working directory. Markdown targets keep the current preview window; other files open for editing in the original source window, closing floating/tab previews. Pager opens other files and directories in the currently operated window. `Ctrl-O` returns to the preceding rendered document with its reading position and folds; after editing another file, that rendered return uses the source window. Outside a link, native `gf` and counts such as `2gf` still work.
 
@@ -271,7 +273,7 @@ Outside pager mode, directories open in the original source window through the c
 
 `Ctrl-O` and `Ctrl-I` remain native Neovim commands. Each window keeps its own jumplist: when a preview hands off to the original source editing window, only the immediately preceding rendered document is guaranteed on return. Earlier preview history is not merged into that window.
 
-Local links support relative paths, POSIX absolute paths, and `file:///` URLs, including encoded filenames, inline/reference links, and optional titles. Missing or unreadable files leave the preview unchanged. Fragments do not yet select a heading; Windows/UNC paths remain outside this feature's scope.
+Local links support relative paths, POSIX absolute paths, and `file:///` URLs, including encoded filenames, inline/reference links, and optional titles. Missing or unreadable files leave the preview unchanged. Fragments on links to another file do not yet select a heading; Windows/UNC paths remain outside this feature's scope.
 
 Reference links use the first valid definition, match labels with Unicode case folding and normalized whitespace, and resolve in table headers and cells. Valid definitions, including multiline and quoted definitions, are hidden even when unused; malformed definitions remain ordinary Markdown.
 
@@ -302,6 +304,8 @@ The plugin exposes a single `:MdRender` command with subcommands:
 | `:MdRender demo` | Show a demo window with all supported Markdown notations |
 
 Tab completion lists the subcommands for the first arg, `on` / `off` / `toggle` after `auto` and `textsize`, and `auto` / `image` / `native` / `status` after `textsize`.
+
+Tab previews stay open when you switch tabs, including while viewing an image. `q` in the image tab returns to the document. `:MdRender tab` closes the current document's tab preview; invoked from another Markdown source, it replaces that preview with the new document.
 
 > **Backwards compatibility.** The legacy top-level commands (`:MdRenderTab`, `:MdRenderToggle`, `:MdRenderSplit`, `:MdRenderAuto`, `:MdRenderPager`, `:MdRenderDemo`) still work and forward to the new dispatcher. They print a one-shot deprecation warning per Neovim session and will be removed in a future major version.
 
@@ -360,7 +364,7 @@ require("md-render.text_size").setup {
 
 `font_size = "auto"` fits the font to the terminal cells; a positive pixel value overrides it. Images follow your heading and inline highlights. Unsupported glyphs/styles and headings inside `<details>` retain text. After changing fonts, run `:MdRender textsize image` to refresh.
 
-Search, selection and cursor movement into a heading reveal the affected text without changing its layout or inserting markers. Internal anchors use ordinary clicks; external links also support the terminal shortcut (Ctrl+Shift+click in Kitty). For terminal text selection, use `:MdRender textsize off` or return to source with `:MdRender toggle`.
+Search, selection and cursor movement into a heading reveal the affected text without changing its layout or inserting markers. Internal anchors work with Enter or ordinary clicks; external links also support the terminal shortcut (Ctrl+Shift+click in Kitty). For terminal text selection, use `:MdRender textsize off` or return to source with `:MdRender toggle`.
 
 Inside tmux, `auto` selects image headings when the following checks pass; otherwise it tries native headings, then ordinary text. Pending checks retain ordinary text. This requires one attached Kitty client with measured cell dimensions, RGB and hyperlink support, and an active pane outside copy mode. Suspended clients wait until resumed. The tmux window must fit the client viewport; nested tmux and multiple clients are unsupported. Configure tmux with:
 

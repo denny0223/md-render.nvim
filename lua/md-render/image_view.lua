@@ -61,30 +61,6 @@ function M.open(path)
       end
     end,
   })
-  vim.api.nvim_create_autocmd("WinClosed", {
-    group = group,
-    pattern = tostring(win),
-    callback = function()
-      if not viewer_active then return end
-      local fallback_win = vim.api.nvim_get_current_win()
-      -- Finish the tab layout change before returning; background closes must
-      -- leave the reader's current window alone, as must a newer navigation.
-      vim.schedule(function()
-        if
-          vim.api.nvim_get_current_win() ~= fallback_win
-          or not vim.api.nvim_win_is_valid(origin_win)
-          or vim.api.nvim_win_get_buf(origin_win) ~= origin_buf
-        then
-          return
-        end
-        vim.api.nvim_set_current_win(origin_win)
-        local cursor = vim.api.nvim_win_get_cursor(origin_win)
-        if cursor[1] ~= origin_view.lnum or cursor[2] ~= origin_view.col then return end
-        vim.fn.winrestview(origin_view)
-      end)
-    end,
-  })
-
   local function valid()
     return not state.closed
       and vim.api.nvim_win_is_valid(win)
@@ -109,6 +85,40 @@ function M.open(path)
   end
   vim.api.nvim_create_autocmd("BufWipeout", { group = group, buffer = buf, callback = cleanup })
   vim.api.nvim_create_autocmd("VimLeavePre", { group = group, callback = cleanup })
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = group,
+    pattern = tostring(win),
+    callback = function()
+      cleanup()
+      if not viewer_active then return end
+      local fallback_win = vim.api.nvim_get_current_win()
+      -- Finish the tab layout change before returning; background closes must
+      -- leave the reader's current window alone, as must a newer navigation.
+      vim.schedule(function()
+        if
+          vim.api.nvim_get_current_win() ~= fallback_win
+          or not vim.api.nvim_win_is_valid(origin_win)
+          or vim.api.nvim_win_get_buf(origin_win) ~= origin_buf
+        then
+          return
+        end
+        vim.api.nvim_set_current_win(origin_win)
+        local cursor = vim.api.nvim_win_get_cursor(origin_win)
+        if cursor[1] ~= origin_view.lnum or cursor[2] ~= origin_view.col then return end
+        vim.fn.winrestview(origin_view)
+      end)
+    end,
+  })
+  vim.api.nvim_create_autocmd("BufLeave", {
+    group = group,
+    buffer = buf,
+    callback = function()
+      -- BufWinLeave is skipped when another split still shows this buffer.
+      vim.schedule(function()
+        if not valid() then cleanup() end
+      end)
+    end,
+  })
   vim.api.nvim_create_autocmd({ "BufWinEnter", "WinEnter" }, {
     group = group,
     buffer = buf,

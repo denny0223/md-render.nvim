@@ -24,6 +24,14 @@ local function close_timer(timer)
   end
 end
 
+local function without_events(fn)
+  local saved = vim.o.eventignore
+  vim.o.eventignore = "all"
+  local ok, err = pcall(fn)
+  vim.o.eventignore = saved
+  if not ok then error(err, 0) end
+end
+
 --- Usable text-area width of a window, excluding the gutter (signcolumn,
 --- number column, foldcolumn, statuscolumn). `nvim_win_get_width` returns the
 --- full window width including these, which would mis-size content centered
@@ -387,12 +395,11 @@ function Session.new(source_bufnr, ns_name, opts)
   -- A non-empty filetype ("md-render") prevents external hacks that run
   -- `:edit` on filetype="" buffers from clearing the rendered content.
   if source_name ~= "" then
-    local saved_ei = vim.o.eventignore
-    vim.o.eventignore = "all"
-    local named = pcall(vim.api.nvim_buf_set_name, self.buf, source_name .. " [render]")
-    if not named then vim.api.nvim_buf_set_name(self.buf, source_name .. " [render " .. self.buf .. "]") end
-    vim.bo[self.buf].filetype = "md-render"
-    vim.o.eventignore = saved_ei
+    without_events(function()
+      local named = pcall(vim.api.nvim_buf_set_name, self.buf, source_name .. " [render]")
+      if not named then vim.api.nvim_buf_set_name(self.buf, source_name .. " [render " .. self.buf .. "]") end
+      vim.bo[self.buf].filetype = "md-render"
+    end)
     -- nvim_buf_set_name can flip readonly when it thinks the file already
     -- exists on disk; defend so apply_content_to_buffer doesn't W10-warn.
     vim.bo[self.buf].readonly = false
@@ -1926,6 +1933,7 @@ local function install_render_buf_guards(session)
   vim.api.nvim_create_autocmd("BufWriteCmd", {
     group = augroup,
     buffer = session.buf,
+    nested = true,
     callback = function(ev)
       if not vim.api.nvim_buf_is_valid(session.source_bufnr) then
         vim.notify("md-render: source buffer is gone; cannot save", vim.log.levels.ERROR)
@@ -1951,19 +1959,27 @@ local function install_render_buf_guards(session)
       local win = vim.api.nvim_get_current_win()
       local saved_buf = vim.api.nvim_win_get_buf(win)
       local saved_ei = vim.o.eventignore
-      vim.o.eventignore = "all"
-      vim.api.nvim_win_set_buf(win, session.source_bufnr)
-      vim.o.eventignore = saved_ei
-      local ok, err = pcall(vim.api.nvim_command, "write" .. bang)
-      vim.o.eventignore = "all"
-      if vim.api.nvim_win_is_valid(win) and vim.api.nvim_buf_is_valid(saved_buf) then
-        vim.api.nvim_win_set_buf(win, saved_buf)
-      end
+      local ok, err = pcall(function()
+        without_events(function()
+          vim.api.nvim_win_set_buf(win, session.source_bufnr)
+        end)
+        vim.api.nvim_command("write" .. bang)
+      end)
+      local restored, restore_err = pcall(without_events, function()
+        if
+          vim.api.nvim_win_is_valid(win)
+          and vim.api.nvim_buf_is_valid(saved_buf)
+          and vim.api.nvim_win_get_buf(win) == session.source_bufnr
+        then
+          vim.api.nvim_win_set_buf(win, saved_buf)
+        end
+      end)
       vim.o.eventignore = saved_ei
       -- The render buffer's 'modified' flag was set by Vim when :w was
       -- invoked; clear it so the user doesn't see [+] linger.
       if vim.api.nvim_buf_is_valid(session.buf) then vim.bo[session.buf].modified = false end
-      if not ok then error(err) end
+      if not ok then error(err, 0) end
+      if not restored then error(restore_err, 0) end
     end,
   })
 end

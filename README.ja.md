@@ -685,7 +685,7 @@ md.display_utils.setup_images(win, content, ns)
 make test
 ```
 
-`tests/*_test.lua` にマッチする全テストファイルを `nvim --headless` で実行します。新しいテストファイルは自動的に検出されます。
+Neovim と Python 3 が必要です。`tests/*_test.lua` にマッチする全テストを `nvim --headless` で実行し、`tests/tooling_test.py` のツールチェックも実行します。新しい `*_test.lua` は自動的に検出されます。依存関係と追加の統合テストは[テスト文書](tests/README.md)を参照してください。
 
 ## ライセンス
 

@@ -23,14 +23,13 @@ The corpus runs headless at width 1000 with plain headings and text-only image f
 
 Layer 2 exists because of a silent breakage: FFmpeg 9 removed `-vsync`, frame extraction failed for every video and animated GIF, and nothing noticed — the emitted escape sequences were still correct and no commit had touched the code. The failure mode was the toolchain moving, so the test runs on a schedule, not just on push.
 
-## Running all CI tests locally
+## Running the default checks locally
 
 ```bash
-for f in tests/*_test.lua; do
-  echo "=== $f ==="
-  nvim --headless -u NONE --noplugin -l "$f"
-done
+make test
 ```
+
+This needs Neovim and Python 3. In addition to the Lua checks, `tests/tooling_test.py` exercises capture failure, fresh baselines, process ownership and metric parsing with isolated command stubs. It launches no real terminal and downloads nothing. If ImageMagick 7 is installed, it also checks the actual normalized RMSE interface with identical, different and corrupt images. Run it alone with `make test-harness`.
 
 ### Optional Snacks integration tests
 
@@ -167,13 +166,13 @@ Screenshot-based tests that launch real terminal emulators and compare rendered 
 
 ### Requirements
 
-- macOS (uses `screencapture` and Quartz for window capture)
-- At least one of: WezTerm, Kitty, Ghostty
-- ImageMagick (`magick`) for SSIM comparison
+- macOS for new captures (uses `screencapture` and Quartz); `--compare` needs no desktop
+- At least one of WezTerm, Kitty or Ghostty for new captures; `--compare` needs only saved PNGs
+- ImageMagick 7 (`magick`) for normalized RMSE comparison
 - **PyObjC**: `pip install pyobjc-framework-Quartz`. Without it the capture cannot be scoped to one window and the script aborts.
 - **Screen Recording permission** for whatever runs the script (System Settings > Privacy & Security > Screen Recording)
 
-This layer is a deliberate gate, not something to run on every save. Most questions people reach for a screenshot to answer are cheaper in layer 3: it opens GUI windows and takes over the screen while it runs, and a whole-window SSIM is sensitive to font, colorscheme and OS updates.
+This layer is a deliberate gate, not something to run on every save. Most questions people reach for a screenshot to answer are cheaper in layer 3: it opens GUI windows and takes over the screen while it runs, and a whole-window comparison is sensitive to font, colorscheme and OS updates.
 
 ### Usage
 
@@ -181,12 +180,16 @@ This layer is a deliberate gate, not something to run on every save. Most questi
 # First time: capture screenshots and save as reference
 ./tests/run_visual_test.sh --update
 
-# After changes: capture and compare against reference (SSIM threshold: 0.95)
+# After changes: capture and compare (maximum normalized RMSE: 0.05)
 ./tests/run_visual_test.sh
 
 # Compare only (skip capture, use existing screenshots)
 ./tests/run_visual_test.sh --compare
 ```
+
+Normalized RMSE is a distance: identical images score 0, and smaller is better. `0.05` is an initial tolerance, not an equivalent of the former SSIM 0.95 setting or evidence of visual correctness. Inspect representative unchanged and intentionally broken captures for your font, terminal and OS, then calibrate `MD_RENDER_VISUAL_MAX_RMSE` before treating the result as an acceptance gate. The same-image/different-image controls in `tooling_test.py` verify the metric direction and failure handling, not this visual tolerance.
+
+Missing captures, missing references, an empty comparison set and ImageMagick errors fail. New captures use temporary files; every capture must succeed before `--update` can replace any baseline. Capture failure cannot promote an older screenshot. Compare-only mode deliberately uses the saved files and never launches a terminal.
 
 ### When to run
 
@@ -213,7 +216,7 @@ tests/screenshots/
     wezterm.png
     kitty.png
     ghostty.png
-  diff/                # SSIM diff images (gitignored)
+  diff/                # Difference images (gitignored)
     wezterm.png
     kitty.png
     ghostty.png
@@ -223,7 +226,7 @@ tests/screenshots/
 
 - The test Markdown (`tests/fixtures/visual_test.md`) avoids using the same image file in multiple places to prevent WezTerm image ID conflicts.
 - Animated GIF tests are included -- the animation timer affects image placement timing on WezTerm.
-- `tests/capture_window.py` finds the window by **title**, not PID: terminals re-exec, so the PID the shell holds often does not own the window. `tests/visual_test_init.lua` sets the title from Neovim via `'title'` (OSC 2), which every supported terminal honours — unlike the per-terminal command line flags, which differ and do not all set the name macOS reports.
+- `tests/capture_window.py` finds the window by a unique per-run/per-terminal **title**: terminals re-exec, so the PID the shell holds often does not own the window. `tests/visual_test_init.lua` sets the title from Neovim via `'title'` (OSC 2), which every supported terminal honours. Each launch gets its own process group; teardown signals only that group and never searches the desktop for a matching process name.
 - The script **never falls back to a full-screen capture**. An earlier version did, and with PyObjC missing it silently photographed the whole desktop and wrote it out as a reference image.
 - Much of what a screenshot is reached for can be answered without pixels: `kitty @ get-text` reports the actual cell grid, which is enough to check things like whether a heading occupies a two-row multicell group. Reserve this layer for questions that genuinely need pixels.
 
@@ -254,4 +257,4 @@ print(string.format("\n%d passed, %d failed", pass_count, fail_count))
 if fail_count > 0 then os.exit(1) end
 ```
 
-`make test` globs `tests/*_test.lua`, so a new file is picked up automatically — no workflow change needed.
+`make test` globs `tests/*_test.lua` and runs the Python tooling checks. A new matching Lua file is picked up automatically — no workflow change needed. Explicit browser/terminal integration checks stay separate.

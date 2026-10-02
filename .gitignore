@@ -97,7 +97,7 @@ doc/tags*
 .claude/
 
 # Visual test screenshots (reference images are tracked separately)
-tests/screenshots/
+tests/screenshots/*
 !tests/screenshots/reference/
 
 # Python bytecode from the visual test helper

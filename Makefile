@@ -2,9 +2,13 @@ NVIM := nvim --headless -u NONE --noplugin
 
 TEST_FILES := $(sort $(wildcard tests/*_test.lua))
 
-.PHONY: test $(TEST_FILES) lint format check
+.PHONY: test test-harness $(TEST_FILES) lint format check
 
-test: $(TEST_FILES)
+test: test-harness $(TEST_FILES)
+
+# Stdlib-only checks for test/maintenance tools; never launches a real terminal.
+test-harness:
+	python3 tests/tooling_test.py
 
 $(TEST_FILES):
 	$(NVIM) -l $@

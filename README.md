@@ -681,7 +681,7 @@ md.display_utils.setup_images(win, content, ns)
 make test
 ```
 
-This runs all `tests/*_test.lua` files via `nvim --headless`. New test files matching the `*_test.lua` pattern are picked up automatically.
+This requires Neovim and Python 3. It runs all `tests/*_test.lua` files via `nvim --headless` and the tooling checks in `tests/tooling_test.py`. New test files matching the `*_test.lua` pattern are picked up automatically. See [tests/README.md](tests/README.md) for dependencies and optional integration checks.
 
 ## License
 

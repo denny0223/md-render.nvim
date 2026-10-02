@@ -674,7 +674,7 @@ md.display_utils.setup_images(win, content, ns)
 make test
 ```
 
-這會透過 `nvim --headless` 執行所有 `tests/*_test.lua`。新增符合 `*_test.lua` 命名方式的測試檔，會自動納入。
+需要 Neovim 與 Python 3。這會透過 `nvim --headless` 執行所有 `tests/*_test.lua`，並執行 `tests/tooling_test.py` 的工具檢查。新增符合 `*_test.lua` 命名方式的測試檔，會自動納入。相依項目與選用整合測試請見[測試說明](tests/README.md)。
 
 ## 授權
 

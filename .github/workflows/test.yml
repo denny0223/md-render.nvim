@@ -37,7 +37,7 @@ jobs:
     steps:
       - name: Install runtime
         run: >-
-          dnf install -y git neovim ImageMagick python3-gobject python3-cairo pango gobject-introspection
+          dnf install -y git neovim ImageMagick ffmpeg-free python3-gobject python3-cairo pango gobject-introspection
           google-noto-sans-mono-vf-fonts google-noto-sans-cjk-vf-fonts
       - uses: actions/checkout@v4
       - name: Install latest Snacks
@@ -46,14 +46,17 @@ jobs:
         run: |
           nvim --version
           magick --version
+          ffmpeg -version
           git -C "$MD_RENDER_SNACKS_PATH" rev-parse HEAD
           rpm -q python3-gobject python3-cairo pango gobject-introspection google-noto-sans-mono-vf-fonts google-noto-sans-cjk-vf-fonts
       - name: Run heading integration tests
         run: |
           python3 tests/heading_raster_test.py
           nvim --headless -u NONE --noplugin -l tests/heading_typography_integration.lua
+      - name: Run tooling integration tests with ImageMagick
+        run: python3 tests/tooling_test.py
       - name: Run Snacks integration tests
         run: |
-          for test in tests/snacks_*_test.lua tests/image_view_lifecycle_test.lua; do
+          for test in tests/snacks_*_test.lua tests/image_view_lifecycle_test.lua tests/picker_integration_test.lua; do
             nvim --headless -u NONE --noplugin -l "$test"
           done

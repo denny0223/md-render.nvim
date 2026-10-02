@@ -84,11 +84,56 @@ jobs:
           MD_RENDER_REQUIRE_MEDIA_TOOLS: "1"
         run: nvim --headless -u NONE --noplugin -l tests/media_test.lua
 
+  mermaid:
+    name: Real Mermaid CLI and browser
+    runs-on: ubuntu-24.04
+    env:
+      PUPPETEER_CACHE_DIR: /tmp/md-render-mermaid-browser
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: v0.12.0
+      - name: Install pinned renderer and its pinned browser revision
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libnss3 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
+            libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 fonts-liberation imagemagick
+          npm --prefix /tmp/md-render-mermaid install --no-audit --no-fund \
+            @mermaid-js/mermaid-cli@12.0.0 puppeteer@25.12.0
+          # npm may require explicit approval for dependency postinstall scripts.
+          node /tmp/md-render-mermaid/node_modules/puppeteer/install.mjs
+          # Only this isolated CI fixture needs the hosted runner sandbox override.
+          # The plugin's invocation and users' browser configuration stay unchanged.
+          mkdir -p /tmp/md-render-mermaid/bin
+          printf '%s\n' '{"args":["--no-sandbox"]}' > /tmp/md-render-mermaid/puppeteer.json
+          cat > /tmp/md-render-mermaid/bin/mmdc <<'SH'
+          #!/bin/sh
+          exec /tmp/md-render-mermaid/node_modules/.bin/mmdc \
+            -p /tmp/md-render-mermaid/puppeteer.json "$@"
+          SH
+          chmod +x /tmp/md-render-mermaid/bin/mmdc
+          echo /tmp/md-render-mermaid/bin >> "$GITHUB_PATH"
+      - name: Report tool versions
+        run: |
+          node --version
+          mmdc --version
+          node -e "console.log('puppeteer', require('/tmp/md-render-mermaid/node_modules/puppeteer/package.json').version)"
+          browser=$(node -e "require('/tmp/md-render-mermaid/node_modules/puppeteer').executablePath().then(console.log)")
+          "$browser" --version
+      - name: Render through the plugin from a cold cache
+        run: nvim --headless -u NONE --noplugin -l tests/mermaid_integration.lua
+
   # The scheduled run is only meaningful if someone hears about it. A failing
   # cron job on a repo nobody is watching is the same as no test at all.
   notify:
     name: Open an issue on scheduled failure
-    needs: ffmpeg-matrix
+    needs: [ffmpeg-matrix, mermaid]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
@@ -103,7 +148,7 @@ jobs:
               ...context.repo, state: "open", labels: "toolchain",
             });
             const existing = open.find(i => i.title === title);
-            const body = `The weekly FFmpeg matrix failed. An external tool most likely changed under us.\n\n${url}`;
+            const body = `The weekly media-tool checks failed. An external tool most likely changed under us.\n\n${url}`;
             if (existing) {
               await github.rest.issues.createComment({ ...context.repo, issue_number: existing.number, body });
             } else {

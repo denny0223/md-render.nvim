@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import signal
 import socket as network
 import subprocess
@@ -58,6 +59,12 @@ def main():
     options = parser.parse_args()
     if options.images and (options.passthrough != "all" or options.expect_plain):
         parser.error("--images requires --passthrough all and cannot use --expect-plain")
+    capture_command = ["magick", "import"] if shutil.which("magick") else ["import"]
+    convert_command = ["magick"] if shutil.which("magick") else ["convert"]
+    if options.images or options.output:
+        assert shutil.which(capture_command[0]), "ImageMagick window capture is required"
+    if options.snacks:
+        assert shutil.which(convert_command[0]), "ImageMagick conversion is required"
     output = options.output
     if output:
         output.mkdir(parents=True, exist_ok=True)
@@ -206,7 +213,7 @@ end})
             (output / (name + ".ansi")).write_text(kitty("get-text", "--ansi", "--add-wrap-markers"))
             (output / (name + ".json")).write_text(json.dumps(state(), ensure_ascii=False, indent=2) + "\n")
             window = str(json.loads(kitty("ls"))[0]["platform_window_id"])
-            run(["magick", "import", "-window", window, str(output / (name + ".png"))])
+            run([*capture_command, "-window", window, str(output / (name + ".png"))])
 
         run(["tmux", "-S", socket, "-f", str(config), "new-session", "-d", "-s", "headings", "-x", "110", "-y", "56", "sleep 3600"])
         attach = ["tmux", "-S", socket, "attach-session", "-t", "headings"]
@@ -291,7 +298,7 @@ end})
                     path = (output or root) / (name + ".png")
 
                     def painted_pixels():
-                        run(["magick", "import", "-window", window, str(path)])
+                        run([*capture_command, "-window", window, str(path)])
                         matched = []
                         with Image.open(path).convert("RGB") as screen:
                             # Kitty puts an odd spare pixel on the far edge.
@@ -531,7 +538,7 @@ end})
             extra = ""
             if options.snacks:
                 picture = root / "coexist.png"
-                run(["magick", "-size", "96x32", "xc:#e43b44", str(picture)])
+                run([*convert_command, "-size", "96x32", "xc:#e43b44", str(picture)])
                 extra = f"\n\n![Snacks coexistence]({picture})"
             long_fixture = root / "long-heading.md"
             long_fixture.write_text("Body.\n\n## " + long_text + extra + "\n")

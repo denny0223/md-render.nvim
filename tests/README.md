@@ -5,9 +5,9 @@
 | Layer | What | Catches | Where | How |
 |-------|------|---------|-------|-----|
 | 1. Unit tests | The bytes md-render *emits* | Protocol regressions | CI (push/PR) | `make test` |
-| 2. Media tools | The commands md-render *runs* | An external tool changing under us | CI (push/PR **and weekly**) | `nvim --headless -u NONE --noplugin -l tests/media_test.lua` |
+| 2. Media tools | The commands md-render *runs* | An external tool changing under us | CI (push/PR **and weekly**) | `media_test.lua`, `mermaid_integration.lua` |
 | 3. Terminal | What the terminal actually *holds* | Scaled text drawn wrong, or not at all | CI (push/PR **and weekly**) | `tests/terminal_test.py` |
-| 4. Visual regression | What the terminal actually *draws* | Clipped glyphs, images that never paint | Local only | `./tests/run_visual_test.sh` |
+| 4. Visual regression | What the terminal actually *draws* | Clipped glyphs, images that never paint | One CI image-heading lane; broader checks local | `tmux_terminal_test.py --images`, `./tests/run_visual_test.sh` |
 
 ### Offline CommonMark/GFM corpus
 
@@ -41,7 +41,7 @@ MD_RENDER_SNACKS_PATH=/path/to/snacks.nvim make test
 
 Without this optional dependency, those integration tests report a skip. They check placement rebuilding, inactive-tab completion, and rapid zoom cleanup; they do not establish terminal visual correctness.
 
-The Fedora CI job installs the latest Snacks default branch and ImageMagick, then runs these tests with the dependency enabled. Its log records the Neovim, ImageMagick, and Snacks versions.
+The Fedora CI job installs the latest Snacks default branch, ImageMagick and `ffmpeg-free`, then runs these tests with the dependency enabled. Its version checks require `magick` and `ffmpeg`, so the GIF/MP4 branch cannot silently skip because FFmpeg is absent. Its log records the Neovim, ImageMagick, FFmpeg and Snacks versions.
 
 ## Layer 1: Unit tests
 
@@ -69,7 +69,7 @@ Two details make it meaningful rather than decorative:
 
 The test prints the version of each tool it found; when the matrix goes red the first useful question is which toolchain it went red on.
 
-`plantuml_kitty_test.lua` skips when no renderer is installed or configured. Once a renderer is available, a cold render must succeed; command failure and timeout fail even if a PNG was written. ImageMagick (`magick` or `convert`) or macOS `sips` then decodes the PNG before the protocol checks run. If no decoder is installed, the test explicitly skips PNG validation without reporting those checks as passed. Its cache is temporary.
+`plantuml_kitty_test.lua` skips when no renderer is installed or configured. Once a renderer is available, a cold render must succeed; command failure and timeout fail even if a PNG was written. ImageMagick (`magick` or `convert`) or macOS `sips` then decodes the PNG before the protocol checks run. If no decoder is installed, the test explicitly skips PNG validation without reporting those checks as passed. Its cache is temporary; CI installs ImageMagick and exercises truncated-image and failed-command controls.
 
 ### FFmpeg matrix
 
@@ -79,13 +79,13 @@ Spanning majors is the point. Ubuntu 24.04 still ships FFmpeg 6.1, so a job that
 
 ### Real Mermaid renderer
 
-The explicit Mermaid integration check renders a small diagram through the plugin from an empty temporary cache. The output must pass real PNG decoding with positive dimensions. Missing tools and a broken browser fail this explicit integration check:
+The media workflow has one Mermaid lane using CLI 12.0.0 and Puppeteer 25.12.0, which selects its own fixed browser revision. It prints the CLI, Puppeteer and browser versions, then renders a small diagram through the plugin from an empty temporary cache. The output must pass real PNG decoding with positive dimensions. Missing tools and a broken browser fail this explicit integration check:
 
 ```sh
 nvim --headless -u NONE --noplugin -l tests/mermaid_integration.lua
 ```
 
-Install `mmdc`, its browser and a PNG decoder (ImageMagick or macOS `sips`) before running it locally. The ordinary `make test` target does not invoke this check or install a browser.
+Install `mmdc`, its browser and a PNG decoder (ImageMagick or macOS `sips`) before running it locally. The ordinary `make test` target does not invoke this check or install a browser. The CI-only wrapper supplies `--no-sandbox` to the browser for its fixed fixture on the hosted runner; plugin configuration and ordinary local runs do not use that override.
 
 ## Optional image heading tests
 
@@ -119,7 +119,7 @@ Capture input in an isolated receiver while switching pane or opening a popup du
 
 Repeat over SSH before claiming remote tmux support. A loopback SSH PTY verifies byte transport without a shared image path, but does not establish a separate remote-host/local-client configuration. Linux acceptance does not establish other OS/client support.
 
-The optional `--images` path reuses the isolated Kitty/tmux terminal harness and requires the image-heading Python dependencies, Pillow and ImageMagick. Its native-fallback check requires tmux >= 3.6. It compares foreground glyph pixels for all six levels against their PNGs, verifies reference/angle-link destinations in painted OSC 8 cells, and checks source toggle/reopening plus auto recovery through native and plain fallback. Use an isolated X display; `--ssh` repeats the same checks over the temporary loopback server. This compact regression does not replace the broader interaction procedure above.
+The `--images` path reuses the isolated Kitty/tmux terminal harness and requires the image-heading Python dependencies, Pillow and ImageMagick (either the `magick` commands or ImageMagick 6's `import`/`convert`). Its native-fallback check requires tmux >= 3.6. It compares foreground glyph pixels for all six levels against their PNGs, verifies reference/angle-link destinations in painted OSC 8 cells, and checks source toggle/reopening plus auto recovery through native and plain fallback. One CI lane runs it with latest Kitty, tmux 3.6 and Neovim 0.12.0, retaining screenshots and diagnostics. Use an isolated X display; `--ssh` repeats the same checks over the temporary loopback server. This compact regression does not replace the broader interaction procedure above.
 
 ```sh
 xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_test.py --images --passthrough all --output /tmp/md-image-tmux-results

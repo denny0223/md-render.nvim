@@ -104,6 +104,28 @@ jobs:
           xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_test.py "${args[@]}"
           xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_test.py --passthrough all "${args[@]}"
 
+      # One supported combination exercises the full raster-to-terminal path;
+      # the rest of the matrix retains its smaller native/fallback checks.
+      - name: Install image heading dependencies
+        if: matrix.kitty == 'latest' && matrix.tmux == '3.6' && matrix.nvim == 'v0.12.0'
+        run: >-
+          sudo apt-get install -y --no-install-recommends imagemagick python3-pil
+          python3-gi python3-gi-cairo python3-cairo gir1.2-pango-1.0 fonts-noto-mono
+
+      - name: Check image heading pixels and interactions
+        if: matrix.kitty == 'latest' && matrix.tmux == '3.6' && matrix.nvim == 'v0.12.0'
+        run: >-
+          xvfb-run -a --server-args="-screen 0 2400x1800x24"
+          python3 tests/tmux_terminal_test.py --images --passthrough all
+          --output /tmp/md-image-tmux-results
+
+      - name: Keep image heading diagnostics
+        if: always() && matrix.kitty == 'latest' && matrix.tmux == '3.6' && matrix.nvim == 'v0.12.0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-heading-terminal
+          path: /tmp/md-image-tmux-results
+
   notify:
     name: Open an issue on scheduled failure
     needs: kitty-matrix

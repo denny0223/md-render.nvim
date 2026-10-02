@@ -86,7 +86,7 @@ These dependencies are optional for basic Markdown rendering, but required for t
 | [snacks.nvim](https://github.com/folke/snacks.nvim) | Optional image backend, viewport fitting, and focused image tabs | Default native backend remains available; it does not provide these fork features |
 | [FFmpeg](https://ffmpeg.org/) (`ffmpeg` / `ffprobe`) | Native JPEG/WebP → PNG conversion; GIF / video frame extraction for both backends | Falls back to ImageMagick (images only; video requires ffmpeg) |
 | [ImageMagick](https://imagemagick.org/) (`magick`) | Snacks image conversion and image-tab zoom/pan; native image conversion and shared GIF frame extraction | Native conversion can use the tools below. The image tab requires `magick`, including for PNG; `ffmpeg`, `sips`, or an installation providing only `convert` cannot replace it |
-| [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) and its headless browser | Render Mermaid diagrams with either backend | Falls back to `npx -y @mermaid-js/mermaid-cli` (requires Node.js/npm and may download the CLI); the browser is still required |
+| [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) and its headless browser | Render Mermaid diagrams with either backend | Falls back to `npx -y @mermaid-js/mermaid-cli` (requires Node.js/npm and may download the CLI); the browser is still required. Disable with `mermaid_allow_npx = false` |
 | [PlantUML](https://plantuml.com/) (`plantuml`, or `java` with `$PLANTUML_JAR`) | Render PlantUML diagrams as images | A PlantUML server, if you name one (needs curl); otherwise the fence stays a code block |
 | [budoux.lua](https://github.com/delphinus/budoux.lua) | CJK phrase-level line breaking (BudouX) | Character-level splitting (kinsoku rules still apply) |
 | Treesitter parsers | Syntax highlighting in code blocks | Code blocks rendered without highlighting |
@@ -150,6 +150,19 @@ add({
 })
 ```
 
+### Playback and Mermaid fallback
+
+GIF/video autoplay and the Mermaid `npx` fallback are enabled by default. To disable either, configure it before opening a preview:
+
+```lua
+require("md-render.image").setup {
+  autoplay = false,
+  mermaid_allow_npx = false,
+}
+```
+
+With `autoplay = false`, both backends show the first frame; image tabs start paused and Space still starts playback. Frame preparation still requires FFmpeg for videos; GIFs can use FFmpeg or ImageMagick. With `mermaid_allow_npx = false`, only an installed `mmdc` is used; without it, Mermaid stays a code block. Merge these options into your existing image setup, including `backend = "snacks"` if selected. For ordinary text headings, use `:MdRender textsize off`.
+
 ### Optional Snacks image backend
 
 This setup enables static images, diagrams, viewport fitting, and focused image tabs. It requires:
@@ -209,7 +222,7 @@ If you already configure Snacks, merge these `image` options into its existing c
 
 After loading the plugins, check the setup:
 
-1. Run `:checkhealth snacks`. Check that `:echo executable('magick')` returns `1` and `:lua print(require("md-render.image").config().backend)` prints `snacks`.
+1. Run `:checkhealth md-render` to check the selected backend, tools, heading status, and cache location. Also run `:checkhealth snacks` for the Snacks setup.
 2. Inside tmux, `tmux show-options -gv allow-passthrough` should print `on` or `all`.
 3. In Kitty, open a Markdown file containing a local PNG and run `:MdRender tab`. Wait for the image to appear, place the cursor on it or its title, and press Enter to verify that its image tab opens. Tool availability alone does not verify terminal display.
 
@@ -281,7 +294,7 @@ Reference links use the first valid definition, match labels with Unicode case f
 
 With the [Snacks backend](#optional-snacks-image-backend) configured and ImageMagick (`magick`) installed, press Enter on an image or its title to open a focused image tab. Use arrows or `hjkl` to move, `+/-` to zoom, `f` to fit the complete image, and `q` to return. These keys are set automatically in the image tab.
 
-GIF and video tabs require Kitty 0.31 or newer and play automatically. Press Space to pause or resume; zooming and panning preserve the playback state. Playback controls affect only the image tab.
+GIF and video tabs require Kitty 0.31 or newer and play automatically unless `autoplay = false`. Press Space to start, pause, or resume; zooming and panning preserve the playback state. Playback controls affect only the image tab.
 
 Scroll the mouse wheel to zoom, or hold the left mouse button and drag to move the image. Vim-style navigation, Page Up/Down, Home/End, and counts are also supported. Press `?` or use `:help md-render-image-view` for the [complete reference](doc/md-render.txt).
 
@@ -529,6 +542,8 @@ require("snacks").setup({
 
 ## FAQ / Troubleshooting
 
+After loading the plugin, start with `:checkhealth md-render` for the selected image backend, required tools, heading status, and cache location. Follow the feature-specific checks below to verify actual terminal display.
+
 <details>
 <summary><strong><code>:MdRender</code> is not an editor command</strong></summary>
 
@@ -546,7 +561,7 @@ With the default native backend, inline image display requires a terminal suppor
 <details>
 <summary><strong>Videos appear as a single static frame</strong></summary>
 
-Both backends require `ffmpeg` in `$PATH` for video frame extraction. The Snacks backend plays those frames in Kitty, including inside tmux. Without it, the plugin falls back to displaying just the first frame as a still image. Install it via your package manager (e.g. `brew install ffmpeg`).
+Check that `autoplay` is enabled in your image setup. With `autoplay = false`, a loaded video intentionally stays on its first frame. Both backends require `ffmpeg` in `$PATH` to prepare video frames, including that still frame. The Snacks backend plays those frames in Kitty, including inside tmux. Install FFmpeg via your package manager (e.g. `brew install ffmpeg`).
 
 </details>
 
@@ -560,7 +575,7 @@ Use a document preview such as `:MdRender tab`, select the [Snacks backend](#opt
 <details>
 <summary><strong>Mermaid diagrams don't render</strong></summary>
 
-Mermaid rendering requires the `mmdc` binary from [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli). If `mmdc` isn't installed globally, the plugin falls back to `npx -y @mermaid-js/mermaid-cli`, which is significantly slower on first invocation. Install it globally with `npm install -g @mermaid-js/mermaid-cli` for faster rendering.
+Mermaid rendering requires the `mmdc` binary from [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) and its headless browser. If `mmdc` isn't installed, the default fallback runs `npx -y @mermaid-js/mermaid-cli`, which may download and execute the CLI and is slower on first invocation. Set `mermaid_allow_npx = false` to require a local installation; without one, Mermaid remains a code block. Install it globally with `npm install -g @mermaid-js/mermaid-cli` for faster rendering.
 
 </details>
 
@@ -580,6 +595,19 @@ require("md-render.image").setup {
 ```
 
 The server also needs `curl`. Rendered diagrams are cached under `stdpath("cache")/md-render/plantuml`, keyed by the diagram source, so a diagram is only sent once.
+
+</details>
+
+<details>
+<summary><strong>Where is the image cache, and how can I clear it?</strong></summary>
+
+`:checkhealth md-render` shows this plugin's media cache location, also available from `require("md-render.image").cache_dir()`. `image.reset_cache()` resets in-memory capability and probe caches; it does not remove cached files. To remove its cached downloads and generated images, close previews and image tabs, let any active conversions finish, then run:
+
+```vim
+:lua vim.fn.delete(require("md-render.image").cache_dir(), "rf")
+```
+
+Restart Neovim before reopening a preview so it releases any retained preview state. Files are downloaded or regenerated when needed again.
 
 </details>
 

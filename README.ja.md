@@ -86,7 +86,7 @@ nvim +"MdRender pager" assets/showcase.md
 | [snacks.nvim](https://github.com/folke/snacks.nvim) | オプションの画像バックエンド、サイズ調整、専用画像タブ | デフォルトのネイティブバックエンドは引き続き使用可。ただし、これらのフォーク独自機能は使えません |
 | [FFmpeg](https://ffmpeg.org/) (`ffmpeg` / `ffprobe`) | ネイティブの JPEG/WebP → PNG 変換、両バックエンド共通の GIF / 動画のフレーム展開 | ImageMagick にフォールバック（画像のみ。動画には ffmpeg が必要） |
 | [ImageMagick](https://imagemagick.org/) (`magick`) | Snacks の画像変換と画像タブのズーム・パン、ネイティブの画像変換と共通の GIF フレーム展開 | ネイティブの変換は下表のツールで代替可。画像タブは PNG でも `magick` が必須で、`ffmpeg`、`sips`、`convert` のみのインストールでは代替できません |
-| [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) とヘッドレスブラウザ | 両バックエンドで Mermaid ダイアグラムを描画 | `npx -y @mermaid-js/mermaid-cli` にフォールバック（Node.js/npm が必要で、CLI をダウンロードする場合があります）。ブラウザも引き続き必要です |
+| [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) とヘッドレスブラウザ | 両バックエンドで Mermaid ダイアグラムを描画 | `npx -y @mermaid-js/mermaid-cli` にフォールバック（Node.js/npm が必要で、CLI をダウンロードする場合があります）。ブラウザも引き続き必要です。`mermaid_allow_npx = false` で無効化可 |
 | [PlantUML](https://plantuml.com/) (`plantuml`、または `java` と `$PLANTUML_JAR`) | PlantUML ダイアグラムを画像として描画 | 指定した場合のみ PlantUML サーバ（curl が必要）。指定が無ければコードブロックのまま |
 | [budoux.lua](https://github.com/delphinus/budoux.lua) | CJK フレーズ単位の改行（BudouX） | 1文字ずつ分割（禁則処理は維持） |
 | Treesitter パーサー | コードブロックのシンタックスハイライト | ハイライトなしで表示 |
@@ -150,6 +150,19 @@ add({
 })
 ```
 
+### 自動再生と Mermaid のフォールバック
+
+GIF／動画の自動再生と Mermaid の `npx` フォールバックは、既定ではどちらも有効です。無効にする場合はプレビューを開く前に設定してください：
+
+```lua
+require("md-render.image").setup {
+  autoplay = false,
+  mermaid_allow_npx = false,
+}
+```
+
+`autoplay = false` では両バックエンドとも最初のフレームを表示し、画像タブも一時停止状態で開きます。Space で再生を開始できます。動画のフレーム準備には引き続き FFmpeg が必要で、GIF は FFmpeg または ImageMagick を使えます。`mermaid_allow_npx = false` ではインストール済みの `mmdc` のみ使い、見つからなければ Mermaid はコードブロックのまま表示します。これらのオプションは既存の画像設定に統合し、選択済みの `backend = "snacks"` も維持してください。見出しを通常の文字にするには `:MdRender textsize off` を使います。
+
 ### Snacks 画像バックエンド
 
 オプションのバックエンドで、静止画・ダイアグラムの表示、ウィンドウに合わせたサイズ調整、専用画像タブを有効にします。必要なものは以下のとおりです：
@@ -209,7 +222,7 @@ Snacks をすでに設定している場合は、その設定に上記の `image
 
 読み込み後に設定を確認してください：
 
-1. `:checkhealth snacks` を実行します。`:echo executable('magick')` が `1`、`:lua print(require("md-render.image").config().backend)` が `snacks` を返すことを確認してください。
+1. `:checkhealth md-render` で選択中のバックエンド、ツール、見出しの状態、キャッシュの場所を確認します。Snacks の設定は `:checkhealth snacks` でも確認してください。
 2. tmux 内では `tmux show-options -gv allow-passthrough` が `on` または `all` を返す必要があります。
 3. Kitty でローカルの PNG を含む Markdown ファイルを開き、`:MdRender tab` を実行します。画像が表示されたら画像またはそのタイトル上で Enter を押し、画像タブが開くことを確認してください。ツールが見つかるだけでは、端末での表示確認にはなりません。
 
@@ -281,7 +294,7 @@ vim.keymap.set("n", "<leader>md", "<Plug>(md-render-demo)",        { desc = "Mar
 
 [Snacks バックエンド](#snacks-画像バックエンド) と ImageMagick（`magick`）を設定した状態で、画像またはそのタイトル上で Enter を押すと専用画像タブが開きます。以下のキーはタブ内で自動設定され、追加のプラグインやキーマップ設定は不要です。
 
-GIF / 動画タブには Kitty 0.31 以降が必要で、開くと自動再生されます。Space で一時停止 / 再開でき、ズームやパンでも再生状態を維持します。再生操作は画像タブだけに適用されます。
+GIF / 動画タブには Kitty 0.31 以降が必要で、`autoplay = false` 以外では開くと自動再生されます。Space で再生開始 / 一時停止 / 再開でき、ズームやパンでも再生状態を維持します。再生操作は画像タブだけに適用されます。
 
 | 画像タブ内のキー | 動作 |
 |---|---|
@@ -532,6 +545,8 @@ require("snacks").setup({
 
 ## FAQ / トラブルシューティング
 
+プラグインの読み込み後、まず `:checkhealth md-render` で画像バックエンド、必要なツール、見出しの状態、キャッシュの場所を確認してください。実際の端末表示は、以下の各機能の手順で確認します。
+
 <details>
 <summary><strong><code>:MdRender</code> がエディタのコマンドとして認識されない</strong></summary>
 
@@ -549,7 +564,7 @@ require("snacks").setup({
 <details>
 <summary><strong>動画が静止画 1 枚しか表示されない</strong></summary>
 
-両バックエンドで動画のフレーム展開には `ffmpeg` が `$PATH` に必要です。Snacks は Kitty で再生し、tmux 内のプレビューにも対応します。なければ、最初のフレームを静止画として表示するフォールバックになります。パッケージマネージャでインストールしてください（例：`brew install ffmpeg`）。
+画像設定の `autoplay` が有効か確認してください。`autoplay = false` では読み込み済みの動画を最初のフレームで止めます。両バックエンドで動画のフレーム準備には `ffmpeg` が `$PATH` に必要で、静止画として最初のフレームを表示する場合も同じです。Snacks は Kitty で再生し、tmux 内のプレビューにも対応します。パッケージマネージャで FFmpeg をインストールしてください（例：`brew install ffmpeg`）。
 
 </details>
 
@@ -563,7 +578,7 @@ require("snacks").setup({
 <details>
 <summary><strong>Mermaid ダイアグラムが描画されない</strong></summary>
 
-Mermaid のレンダリングには [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) の `mmdc` バイナリが必要です。グローバルに `mmdc` がない場合は `npx -y @mermaid-js/mermaid-cli` にフォールバックしますが、初回呼び出しが大幅に遅くなります。`npm install -g @mermaid-js/mermaid-cli` でグローバルインストールするのがおすすめです。
+Mermaid のレンダリングには [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) の `mmdc` とヘッドレスブラウザが必要です。`mmdc` がない場合、既定では `npx -y @mermaid-js/mermaid-cli` で CLI をダウンロード・実行する場合があり、初回は時間がかかります。`mermaid_allow_npx = false` でインストール済みのツールだけに制限でき、見つからなければコードブロックのまま表示します。`npm install -g @mermaid-js/mermaid-cli` でインストールすると起動を短縮できます。
 
 </details>
 
@@ -584,6 +599,19 @@ require("md-render.image").setup {
 ```
 
 サーバを使う場合は `curl` も必要です。描画したダイアグラムはソースをキーにして `stdpath("cache")/md-render/plantuml` にキャッシュされるので、送信は 1 回だけです。
+
+</details>
+
+<details>
+<summary><strong>画像キャッシュの場所と削除方法</strong></summary>
+
+`:checkhealth md-render` でこのプラグインのメディアキャッシュの場所を確認でき、`require("md-render.image").cache_dir()` でも取得できます。`image.reset_cache()` はメモリ内の機能・検出結果のキャッシュをリセットし、ファイルは削除しません。その中のダウンロード済みファイルと生成画像を削除するには、プレビューと画像タブを閉じ、実行中の変換が終わってから実行してください：
+
+```vim
+:lua vim.fn.delete(require("md-render.image").cache_dir(), "rf")
+```
+
+保持されているプレビューの状態も解放するため、Neovim を再起動してからプレビューを開いてください。必要になったファイルは再ダウンロードまたは再生成されます。
 
 </details>
 

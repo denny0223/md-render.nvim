@@ -6,7 +6,7 @@ local png = vim.fn.getcwd() .. "/tests/fixtures/test_4x4.png"
 local gif = vim.fn.getcwd() .. "/assets/demo/test_animated.gif"
 vim.env.TMUX, vim.env.TMUX_PANE, vim.env.TERM_PROGRAM = nil, nil, "kitty"
 vim.o.showtabline = 0
-image.setup { backend = "kitty" }
+image.setup { backend = "kitty", autoplay = true }
 image._set_kitty_supported(true)
 image._test_cell_size = { cell_w = 8, cell_h = 16 }
 local stored, deleted = {}, {}
@@ -174,7 +174,7 @@ display.cleanup_images(state)
 assert(timer:is_closing(), "cleanup stopped but did not close its timer")
 image.ensure_png_async = ensure_png
 
--- Native animation pauses in a hidden tab and resumes on return.
+-- Native animation pauses in a hidden tab, resumes on return, and honors autoplay.
 local extract = image.extract_frames_async
 image.extract_frames_async = function(_, callback)
   callback { png, png }
@@ -190,5 +190,13 @@ wait_for(function()
   return state.anim_timer:is_active()
 end, "animation did not resume on return")
 display.cleanup_images(state)
+image.setup { autoplay = false }
+state = display.setup_images(win, content(gif), ns)
+wait_for(function()
+  return state.anims[gif] ~= nil
+end, "paused animation did not load its first frame")
+assert(state.anims[gif].current == 1 and not state.anim_timer:is_active(), "autoplay=false started animation")
+display.cleanup_images(state)
 image.extract_frames_async = extract
-print "Render lifecycle: obsolete IDs, window ownership, lazy rebuild, failure, timers and tabs OK"
+image.setup { autoplay = true }
+print "Render lifecycle: obsolete IDs, window ownership, lazy rebuild, failure, timers, tabs and autoplay OK"

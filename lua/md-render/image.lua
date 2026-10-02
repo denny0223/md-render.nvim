@@ -28,16 +28,23 @@ local _kitty_supported = nil
 ---@class MdRender.Image.Config
 ---@field backend? "kitty"|"snacks"
 ---@field plantuml_server string? base URL of a PlantUML server, e.g. `"https://www.plantuml.com/plantuml"`
+---@field autoplay? boolean play GIF/video animations automatically (default true)
+---@field mermaid_allow_npx? boolean allow npx to download/run Mermaid CLI (default true)
 
 ---@type MdRender.Image.Config
 local config = {
   backend = "kitty",
+  autoplay = true,
+  mermaid_allow_npx = true,
   -- Unset on purpose. A PlantUML fence is rendered by a local `plantuml` or
   -- `java -jar $PLANTUML_JAR` if there is one; naming a server here is what
   -- allows the source of a diagram to leave the machine, and nothing else
   -- turns that on.
   plantuml_server = nil,
 }
+
+local _mmdc_cmd = nil
+local _mmdc_checked = false
 
 --- Configure image rendering.
 ---@param opts? MdRender.Image.Config
@@ -51,11 +58,27 @@ function M.setup(opts)
   if opts.plantuml_server ~= nil then
     config.plantuml_server = opts.plantuml_server ~= "" and opts.plantuml_server or nil
   end
+  for _, name in ipairs { "autoplay", "mermaid_allow_npx" } do
+    if opts[name] ~= nil then
+      assert(type(opts[name]) == "boolean", name .. " must be a boolean")
+      config[name] = opts[name]
+    end
+  end
+  if opts.mermaid_allow_npx ~= nil then
+    _mmdc_cmd = nil
+    _mmdc_checked = false
+  end
 end
 
 ---@return MdRender.Image.Config
 function M.config()
   return config
+end
+
+--- Directory containing this plugin's persistent media/diagram caches.
+---@return string
+function M.cache_dir()
+  return vim.fn.stdpath "cache" .. "/md-render"
 end
 
 -- ============================================================================
@@ -498,7 +521,7 @@ end
 --- Get cache directory for rendered mermaid diagrams
 ---@return string
 local function get_mermaid_cache_dir()
-  local dir = vim.fn.stdpath "cache" .. "/md-render/mermaid"
+  local dir = M.cache_dir() .. "/mermaid"
   vim.fn.mkdir(dir, "p")
   return dir
 end
@@ -506,15 +529,12 @@ end
 --- Find the mmdc executable (mermaid CLI).
 --- Searches PATH first, then falls back to npx.
 ---@return string[]? command prefix (e.g. {"mmdc"} or {"npx", "-y", "@mermaid-js/mermaid-cli"})
-local _mmdc_cmd = nil
-local _mmdc_checked = false
-
 local function find_mmdc()
   if _mmdc_checked then return _mmdc_cmd end
   _mmdc_checked = true
   if vim.fn.executable "mmdc" == 1 then
     _mmdc_cmd = { "mmdc" }
-  elseif vim.fn.executable "npx" == 1 then
+  elseif config.mermaid_allow_npx and vim.fn.executable "npx" == 1 then
     _mmdc_cmd = { "npx", "-y", "@mermaid-js/mermaid-cli" }
   end
   return _mmdc_cmd
@@ -659,7 +679,7 @@ end
 --- Get cache directory for rendered PlantUML diagrams
 ---@return string
 local function get_plantuml_cache_dir()
-  local dir = vim.fn.stdpath "cache" .. "/md-render/plantuml"
+  local dir = M.cache_dir() .. "/plantuml"
   vim.fn.mkdir(dir, "p")
   return dir
 end
@@ -892,6 +912,7 @@ function M.supports_kitty()
   return _kitty_supported
 end
 
+--- Reset in-memory capability/probe caches; does not remove persistent files.
 function M.reset_cache()
   _kitty_supported = nil
   _is_ghostty = nil
@@ -902,6 +923,8 @@ function M.reset_cache()
   _anim_checked = false
   _plantuml_cmd = nil
   _plantuml_checked = false
+  _mmdc_cmd = nil
+  _mmdc_checked = false
   _video_dimensions_cache = {}
   _video_dimensions_generation = _video_dimensions_generation + 1
   tty_mod.reset()
@@ -985,7 +1008,7 @@ local _url_cache = {}
 --- Get cache directory for downloaded images
 ---@return string
 local function get_cache_dir()
-  local dir = vim.fn.stdpath "cache" .. "/md-render/images"
+  local dir = M.cache_dir() .. "/images"
   vim.fn.mkdir(dir, "p")
   return dir
 end
@@ -1308,7 +1331,7 @@ end
 --- Get cache directory for converted PNGs (JPEG/WebP → PNG).
 ---@return string
 local function get_converted_cache_dir()
-  local dir = vim.fn.stdpath "cache" .. "/md-render/converted"
+  local dir = M.cache_dir() .. "/converted"
   vim.fn.mkdir(dir, "p")
   return dir
 end

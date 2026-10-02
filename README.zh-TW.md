@@ -85,7 +85,7 @@ nvim +"MdRender pager" assets/showcase.md
 | [snacks.nvim](https://github.com/folke/snacks.nvim) | 選用圖片後端、自動調整圖片大小與獨立圖片分頁 | 仍可使用預設原生後端，但不會有這些 fork 新增功能 |
 | [FFmpeg](https://ffmpeg.org/)（`ffmpeg` / `ffprobe`） | 原生後端的 JPEG/WebP → PNG 轉換，以及兩個後端共用的 GIF 動畫與影片影格擷取 | 圖片可改用 ImageMagick；影片仍需要 ffmpeg |
 | [ImageMagick](https://imagemagick.org/)（`magick`） | Snacks 圖片轉換、圖片分頁縮放與平移，以及原生圖片轉換與共用的 GIF 影格擷取 | 原生後端可使用下表的替代工具。圖片分頁即使開啟 PNG 也需要 `magick`，無法用 `ffmpeg`、`sips` 或只有 `convert` 指令的安裝取代 |
-| [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli)（`mmdc`）及其無頭瀏覽器 | 兩種後端都用它產生 Mermaid 圖表 | 找不到 `mmdc` 時會改用 `npx -y @mermaid-js/mermaid-cli`，需要 Node.js/npm，且可能下載 CLI；瀏覽器仍是必要條件 |
+| [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli)（`mmdc`）及其無頭瀏覽器 | 兩種後端都用它產生 Mermaid 圖表 | 找不到 `mmdc` 時會改用 `npx -y @mermaid-js/mermaid-cli`，需要 Node.js/npm，且可能下載 CLI；瀏覽器仍是必要條件。可用 `mermaid_allow_npx = false` 停用 |
 | [PlantUML](https://plantuml.com/)（`plantuml`，或 `java` 搭配 `$PLANTUML_JAR`） | 產生 PlantUML 圖表 | 只有在你指定伺服器時，才會改用該伺服器，並需要 curl；否則維持程式碼區塊 |
 | [budoux.lua](https://github.com/delphinus/budoux.lua) | 使用 BudouX，讓中日韓文字依詞組換行 | 未安裝時依字元斷行，仍保留行首行尾禁則 |
 | Treesitter 剖析器 | 程式碼區塊的語法醒目提示 | 未安裝時仍會顯示程式碼，但沒有語法醒目提示 |
@@ -149,6 +149,19 @@ add({
 })
 ```
 
+### 自動播放與 Mermaid 替代方式
+
+GIF／影片自動播放與 Mermaid 的 `npx` 替代方式預設皆啟用。若要停用其中一項，請在開啟預覽前設定：
+
+```lua
+require("md-render.image").setup {
+  autoplay = false,
+  mermaid_allow_npx = false,
+}
+```
+
+設定 `autoplay = false` 時，兩個後端都只顯示第一個影格；圖片分頁初始為暫停，仍可按空白鍵開始播放。影片仍需要 FFmpeg 準備影格；GIF 可使用 FFmpeg 或 ImageMagick。設定 `mermaid_allow_npx = false` 時，只使用已安裝的 `mmdc`；找不到時，Mermaid 保留為程式碼區塊。請將這些選項合併到既有圖片設定，包含已選用的 `backend = "snacks"`。若要使用一般文字標題，可執行 `:MdRender textsize off`。
+
 ### 選用 Snacks 圖片後端
 
 這套設定能啟用靜態圖片、圖表、自動配合視窗大小，以及獨立圖片分頁。需要準備：
@@ -208,7 +221,7 @@ require("md-render.image").setup({ backend = "snacks" })
 
 外掛載入後，請確認設定：
 
-1. 執行 `:checkhealth snacks`。確認 `:echo executable('magick')` 回傳 `1`，且 `:lua print(require("md-render.image").config().backend)` 顯示 `snacks`。
+1. 執行 `:checkhealth md-render`，檢查選用後端、工具、標題狀態與快取位置；另用 `:checkhealth snacks` 檢查 Snacks 設定。
 2. 如果使用 tmux，`tmux show-options -gv allow-passthrough` 應顯示 `on` 或 `all`。
 3. 在 Kitty 中開啟含有本機 PNG 圖片的 Markdown 檔案，執行 `:MdRender tab`。等圖片出現後，將游標移到圖片或標題上，按 Enter 確認能開啟圖片分頁。找到工具不代表終端機一定能正確顯示，仍需完成這一步。
 
@@ -280,7 +293,7 @@ Pager 以外的模式會在原始編輯視窗交給已設定的目錄瀏覽器�
 
 完成 [Snacks 後端](#選用-snacks-圖片後端)設定並安裝 ImageMagick（`magick`）後，在圖片或其標題上按 Enter，即可開啟獨立圖片分頁。使用方向鍵或 `hjkl` 移動、`+/-` 縮放、`f` 顯示完整圖片、`q` 返回。這些按鍵會自動設定在圖片分頁內。
 
-GIF 與影片分頁需要 Kitty 0.31 以上版本，開啟後會自動播放，按空白鍵可暫停或繼續；縮放與平移會維持目前的播放狀態。播放控制只影響圖片分頁。
+GIF 與影片分頁需要 Kitty 0.31 以上版本，除非設定 `autoplay = false`，否則開啟後會自動播放。按空白鍵可開始、暫停或繼續；縮放與平移會維持目前的播放狀態。播放控制只影響圖片分頁。
 
 滑鼠滾輪可縮放圖片，按住左鍵拖曳可移動圖片。也支援 Vim 風格導覽、Page Up／Down、Home／End 與數字前綴。按 `?` 或使用 `:help md-render-image-view` 查閱[完整操作說明](doc/md-render.twx)。
 
@@ -522,6 +535,8 @@ require("snacks").setup({
 
 ## 常見問題與疑難排解
 
+載入外掛後，先用 `:checkhealth md-render` 查看選用圖片後端、必要工具、標題狀態與快取位置，再依下方各功能的步驟確認實際終端顯示。
+
 <details>
 <summary><strong><code>:MdRender</code> 不是有效的編輯器指令</strong></summary>
 
@@ -539,7 +554,7 @@ require("snacks").setup({
 <details>
 <summary><strong>影片只顯示一張靜態圖片</strong></summary>
 
-兩個後端都需要能從 `$PATH` 找到 `ffmpeg`，才能擷取影片影格。Snacks 後端可在 Kitty 中播放，包括 tmux 內的預覽；沒有安裝時，會退回以第一個影格顯示靜態圖片。請透過套件管理器安裝，例如 `brew install ffmpeg`。
+先確認圖片設定中的 `autoplay` 已啟用。設定 `autoplay = false` 時，載入完成的影片會停在第一個影格。兩個後端都需要能從 `$PATH` 找到 `ffmpeg`，才能準備影片影格，包含這個靜態首格。Snacks 後端可在 Kitty 中播放，包括 tmux 內的預覽。請透過套件管理器安裝 FFmpeg，例如 `brew install ffmpeg`。
 
 </details>
 
@@ -553,7 +568,7 @@ require("snacks").setup({
 <details>
 <summary><strong>Mermaid 圖表沒有顯示</strong></summary>
 
-Mermaid 圖表需要 [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) 提供的 `mmdc` 指令。若未全域安裝 `mmdc`，外掛會改用 `npx -y @mermaid-js/mermaid-cli`，但第一次執行會較慢。可用 `npm install -g @mermaid-js/mermaid-cli` 全域安裝，以減少啟動時間。
+Mermaid 圖表需要 [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) 提供的 `mmdc` 指令及其無頭瀏覽器。未安裝 `mmdc` 時，預設改用 `npx -y @mermaid-js/mermaid-cli`，可能下載並執行 CLI，第一次執行也較慢。設定 `mermaid_allow_npx = false` 可限定使用本機安裝；找不到時，保留為程式碼區塊。可用 `npm install -g @mermaid-js/mermaid-cli` 全域安裝，以減少啟動時間。
 
 </details>
 
@@ -573,6 +588,19 @@ require("md-render.image").setup {
 ```
 
 使用伺服器也需要 `curl`。產生的圖表會依原始文字快取於 `stdpath("cache")/md-render/plantuml`，相同圖表可重複使用快取。
+
+</details>
+
+<details>
+<summary><strong>圖片快取在哪裡？如何清除？</strong></summary>
+
+`:checkhealth md-render` 會顯示此外掛的媒體快取位置，也可用 `require("md-render.image").cache_dir()` 取得。`image.reset_cache()` 只重設記憶體中的能力與探測快取，不會刪除快取檔案。若要刪除其中的下載檔案與產生的圖片，請先關閉預覽和圖片分頁，等正在進行的轉換完成，再執行：
+
+```vim
+:lua vim.fn.delete(require("md-render.image").cache_dir(), "rf")
+```
+
+請先重新啟動 Neovim，再開啟預覽，讓記憶體中保留的預覽狀態一併釋放。之後需要時，檔案會重新下載或產生。
 
 </details>
 

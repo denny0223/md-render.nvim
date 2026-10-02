@@ -12,6 +12,7 @@ English: `:help md-render-contents@en`
 
 はじめに						|md-render-introduction|
 必要要件						|md-render-requirements|
+環境チェック                                               |md-render-health|
 インストール						|md-render-installation|
   Snacks 画像バックエンド			      |md-render-snacks-image|
 マッピング						    |md-render-mappings|
@@ -97,6 +98,11 @@ md-render.nvim は Neovim 用の Markdown レンダリングエンジンです�
 - オプションの Snacks バックエンドは Unicode プレースホルダーにも依存します。
   設定例は Kitty 単体、または Kitty 内の tmux を対象としています。
   必要な依存関係と設定は |md-render-snacks-image| を参照してください。
+
+                                                        *md-render-health*
+読み込み後に :checkhealth md-render で画像バックエンド、ツール、見出しの状態、
+キャッシュの場所を確認できます。Snacks は :checkhealth snacks でも確認します。
+実際の端末表示は |md-render-snacks-image| の PNG・画像タブの手順で確認してください。
 
 ==============================================================================
 インストール						*md-render-installation*
@@ -212,7 +218,8 @@ Snacks を設定済みの場合は、その設定に image オプションを統
 二度呼ばないでください。Snacks 側の document と math の描画を無効にして、
 プレビューを md-render に任せます。この連携にそれらの機能は不要です。
 
-読み込み後に :checkhealth snacks を実行し、次を確認してください： >vim
+読み込み後に :checkhealth md-render と :checkhealth snacks を実行し、
+次を確認してください： >vim
 
   :echo executable('magick')
   :lua print(require("md-render.image").config().backend)
@@ -1200,6 +1207,24 @@ IMAGE							       *md-render-image*
 
 Snacks の設定、依存関係、確認手順は |md-render-snacks-image| を参照。
 
+                                                            *image.setup()*
+image.setup({opts}) ~
+プレビューを開く前に設定してください。以下の既定値は両方とも true です： >lua
+
+  require("md-render.image").setup {
+    autoplay = false,
+    mermaid_allow_npx = false,
+  }
+<
+autoplay=false では両バックエンドとも GIF／動画の最初のフレームを表示し、画像
+タブを一時停止状態で開きます。Space で再生を開始できます。動画のフレーム準備には
+引き続き FFmpeg が必要で、GIF は FFmpeg または ImageMagick を使えます。
+mermaid_allow_npx=false はインストール済みの mmdc のみ使い、なければ Mermaid
+をコードのまま表示します。
+既定の npx フォールバックは CLI をダウンロード・実行する場合があります。
+既存の画像設定に統合し、選択済みの backend="snacks" も維持してください。
+見出しを通常の文字にするには :MdRender textsize off を使います。
+
 Snacks の自動レイアウトは利用可能なウィンドウ幅を使います（max_width を明示
 した場合はそちらを優先）。画像は縦横比を保ち、その幅と「高さ − 6 行」に
 収まり、元のピクセルサイズを超えて拡大しません。
@@ -1223,8 +1248,8 @@ Snacks バックエンドと ImageMagick（magick）を設定し、画像また�
   ?               この操作ヘルプを開く。
   q / <Esc>       画像タブを閉じて文書に戻る。
 
-GIF / 動画タブには Kitty 0.31 以降が必要です。開くと自動再生され、一時停止
-すると現在のフレームで止まります。ズームや
+GIF / 動画タブには Kitty 0.31 以降が必要です。autoplay=false 以外では自動再生
+され、一時停止すると現在のフレームで止まります。Space で再生を開始できます。ズームや
 パンでも再生状態を維持し、再生操作は文書プレビューとは独立してこのタブだけに
 適用されます。文書内と同じ音声なしのフレームプレビューを使用します。ffmpeg
 使用時は 5 fps、最大 400x400 ピクセル、300 フレーム（最大 60 秒）です。
@@ -1250,7 +1275,17 @@ image.set_download_fn({fn}) ~
 
 							   *image.reset_cache()*
 image.reset_cache() ~
-	キャッシュされた画像と Mermaid レンダリング結果をすべてクリアします。
+	メモリ内の機能・検出結果のキャッシュをリセットします。ファイルは残ります。
+
+                                                        *image.cache_dir()*
+image.cache_dir() ~
+	このプラグインのメディアキャッシュディレクトリを返します。ダウンロード
+	済みファイルと生成画像を削除するには、プレビューと画像タブを閉じ、実行中の
+	変換が終わってから実行してください： >vim
+
+  :lua vim.fn.delete(require("md-render.image").cache_dir(), "rf")
+<	保持されているプレビューの状態も解放するため、Neovim を再起動してから
+	プレビューを開いてください。必要なファイルは再ダウンロード・再生成されます。
 
 							*image.supports_kitty()*
 image.supports_kitty() ~
@@ -1438,6 +1473,7 @@ Details ~
   (mmdc)               @mermaid-js/mermaid-cli` にフォールバック。
                        Node.js/npm が必要で、CLI をダウンロードする場合が
                        あります。両バックエンドでヘッドレスブラウザも必要。
+                       |image.setup()| の mermaid_allow_npx=false で無効化可。
                        https://github.com/mermaid-js/mermaid-cli
 
 ==============================================================================

@@ -11,6 +11,7 @@ English: `:help md-render-contents@en`
 
 簡介                                                  |md-render-introduction|
 系統需求                                              |md-render-requirements|
+環境檢查                                                  |md-render-health|
 安裝                                                  |md-render-installation|
   Snacks 圖片後端                                     |md-render-snacks-image|
 按鍵設定                                                  |md-render-mappings|
@@ -87,6 +88,11 @@ md-render.nvim 是 Neovim 的 Markdown 渲染引擎，能將 Markdown 原始文�
 - 選用的 Snacks 後端也需要 Unicode 佔位字元支援。本文的設定以 Kitty 單獨
   執行，或在 Kitty 中使用 tmux 為對象。
   相依項目與設定請見 |md-render-snacks-image|。
+
+                                                          *md-render-health*
+載入外掛後，用 :checkhealth md-render 檢查選用圖片後端、工具、標題狀態與快取
+位置。Snacks 設定另用 :checkhealth snacks 檢查。這些檢查不代表實際終端顯示
+正常；請依 |md-render-snacks-image| 的 PNG 與圖片分頁步驟確認。
 
 ==============================================================================
 安裝                                                  *md-render-installation*
@@ -198,7 +204,7 @@ BudouX，請保留其選用相依項目： >lua
 setup()。停用 Snacks 的文件與數學式渲染，讓 md-render 負責預覽；此整合不需要
 這兩項功能。
 
-載入外掛後，執行 :checkhealth snacks，並檢查： >vim
+載入外掛後，執行 :checkhealth md-render 與 :checkhealth snacks，並檢查： >vim
 
   :echo executable('magick')
   :lua print(require("md-render.image").config().backend)
@@ -1090,6 +1096,22 @@ display_utils.setup_images({win}, {content}, {ns}, {opts}) ~
 
 Snacks 的設定、系統需求與檢查方式請見 |md-render-snacks-image|。
 
+                                                            *image.setup()*
+image.setup({opts}) ~
+請在開啟預覽前設定。以下兩個選項預設皆為 true： >lua
+
+  require("md-render.image").setup {
+    autoplay = false,
+    mermaid_allow_npx = false,
+  }
+<
+autoplay=false 讓兩個後端只顯示 GIF／影片第一個影格；圖片分頁初始為暫停，
+仍可按空白鍵開始播放。影片仍需要 FFmpeg 準備影格；GIF 可使用 FFmpeg 或
+ImageMagick。mermaid_allow_npx=false 限定使用已安裝的 mmdc，找不到
+時保留 Mermaid 程式碼。預設的 npx 替代方式可能下載並執行 CLI。請將選項合併
+至既有圖片設定，保留已選用的 backend="snacks"。
+若要使用一般文字標題，可執行 :MdRender textsize off。
+
 使用 Snacks 時，自動配置會採用視窗可用寬度，除非明確設定 max_width；圖片高度
 則限制在視窗高度減去六行之內。圖片會維持長寬比，且不會放大至超過原始像素尺寸。
 
@@ -1109,8 +1131,8 @@ Snacks 的設定、系統需求與檢查方式請見 |md-render-snacks-image|。
   說明       ?；開啟本節操作說明。
   返回       q / <Esc>；關閉圖片分頁，回到文件。
 
-GIF 與影片分頁需要 Kitty 0.31 以上版本，開啟後會自動播放；暫停時停在目前
-影格，縮放與平移會維持播放狀態。
+GIF 與影片分頁需要 Kitty 0.31 以上版本，除非 autoplay=false，否則開啟後會
+自動播放。暫停時停在目前影格，按空白鍵可開始播放；縮放與平移會維持播放狀態。
 播放控制只影響此分頁，與文件預覽各自獨立。沿用文件內的無聲影格預覽；使用
 ffmpeg 時為每秒 5 格、最大 400x400 像素與 300 格（最多 60 秒）。
 
@@ -1134,7 +1156,16 @@ image.set_download_fn({fn}) ~
 
                                                          *image.reset_cache()*
 image.reset_cache() ~
-	清除所有圖片與 Mermaid 渲染快取。
+	重設記憶體中的能力與探測快取，不會刪除快取檔案。
+
+                                                        *image.cache_dir()*
+image.cache_dir() ~
+	回傳外掛的磁碟媒體快取目錄。若要刪除其中的下載檔案與產生的圖片，請先
+	關閉預覽和圖片分頁，等正在進行的轉換完成，再執行： >vim
+
+  :lua vim.fn.delete(require("md-render.image").cache_dir(), "rf")
+<	請重新啟動 Neovim，再開啟預覽，讓記憶體中保留的預覽狀態一併釋放。
+	之後需要時，檔案會重新下載或產生。
 
                                                       *image.supports_kitty()*
 image.supports_kitty() ~
@@ -1307,6 +1338,7 @@ DETAILS 區塊 ~
   Mermaid CLI          將 Mermaid 圖表轉為圖片。找不到 mmdc 時改用
   (mmdc)               `npx -y @mermaid-js/mermaid-cli`，需要 Node.js/npm，
                        且可能下載 CLI。兩種後端都仍需要其無頭瀏覽器。
+                       可在 |image.setup()| 設定 mermaid_allow_npx=false 停用。
                        https://github.com/mermaid-js/mermaid-cli
 
   PlantUML             將 PlantUML 圖表轉為圖片。只有在你指定伺服器時，

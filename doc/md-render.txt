@@ -11,6 +11,7 @@ CONTENTS						    *md-render-contents*
 
 Introduction						|md-render-introduction|
 Requirements						|md-render-requirements|
+Diagnostics                                                 |md-render-health|
 Installation						|md-render-installation|
   Snacks image backend				      |md-render-snacks-image|
 Mappings						    |md-render-mappings|
@@ -98,6 +99,12 @@ REQUIREMENTS						*md-render-requirements*
 - The optional Snacks backend also requires Unicode placeholders. Its
   documented setup targets Kitty, directly or inside tmux.
   See |md-render-snacks-image| for its dependencies and configuration.
+
+                                                        *md-render-health*
+Run :checkhealth md-render after loading the plugin to check the selected
+image backend, tools, heading status, and cache location. For Snacks, also
+run :checkhealth snacks. These checks do not verify actual terminal display;
+use the PNG and image-tab check in |md-render-snacks-image| for that.
 
 ==============================================================================
 INSTALLATION						*md-render-installation*
@@ -211,7 +218,8 @@ configuration; do not call setup() twice. Disabling Snacks' document and math
 rendering lets md-render own the preview; neither is needed by this
 integration.
 
-After loading the plugins, run :checkhealth snacks and check: >vim
+After loading the plugins, run :checkhealth md-render and :checkhealth snacks.
+Check: >vim
 
   :echo executable('magick')
   :lua print(require("md-render.image").config().backend)
@@ -1243,6 +1251,24 @@ IMAGE							       *md-render-image*
 
 For Snacks setup, requirements, and checks, see |md-render-snacks-image|.
 
+                                                            *image.setup()*
+image.setup({opts}) ~
+Configure before opening a preview. Both options below default to true: >lua
+
+  require("md-render.image").setup {
+    autoplay = false,
+    mermaid_allow_npx = false,
+  }
+<
+autoplay=false shows the first GIF/video frame with either backend and opens
+image tabs paused; Space can still start playback. Frame preparation still
+requires FFmpeg for videos; GIFs can use FFmpeg or ImageMagick.
+mermaid_allow_npx=false uses only an installed mmdc, retaining Mermaid as code
+if it is unavailable.
+The default npx fallback may download and execute the CLI. Merge these options
+into your existing image setup, retaining backend="snacks" if selected.
+Use :MdRender textsize off for ordinary text headings.
+
 With Snacks, automatic layout uses the available window width (unless
 max_width is explicit) and fits images within the window height minus six
 rows. Images keep their aspect ratio and do not grow beyond their original
@@ -1264,8 +1290,9 @@ or its title to open a focused image tab. Its keys are set automatically:
   Help          ?; open this reference.
   Back          q / <Esc>; close the image tab and return to the document.
 
-GIF and video tabs require Kitty 0.31 or newer and start playing automatically.
-Pausing holds the current frame;
+GIF and video tabs require Kitty 0.31 or newer and start playing automatically
+unless autoplay=false. Space starts playback when paused; pausing holds the
+current frame.
 zooming and panning preserve the playback state. Playback controls affect only
 this tab, independently of the document preview. This uses the same silent
 frame preview as inline playback: with ffmpeg, 5 fps, at most 400x400 pixels
@@ -1293,7 +1320,17 @@ image.set_download_fn({fn}) ~
 
 							   *image.reset_cache()*
 image.reset_cache() ~
-	Clear all cached images and Mermaid renders.
+	Reset in-memory capability and probe caches. Cached files remain.
+
+                                                        *image.cache_dir()*
+image.cache_dir() ~
+	Return the plugin's persistent media cache directory. To remove its
+	downloads and generated images, close previews and image tabs, wait
+	for active conversions to finish, then run: >vim
+
+  :lua vim.fn.delete(require("md-render.image").cache_dir(), "rf")
+<	Restart Neovim before reopening a preview to release retained preview
+	state. Files are downloaded or regenerated when needed again.
 
 							*image.supports_kitty()*
 image.supports_kitty() ~
@@ -1483,7 +1520,8 @@ that use them. Install command-line tools separately on Neovim's PATH.
   Mermaid CLI          Render Mermaid diagrams as images.  Falls back to
   (mmdc)               `npx -y @mermaid-js/mermaid-cli` (requires Node.js/npm;
                        may download the CLI). Both backends still need its
-                       headless browser.
+                       headless browser. Set mermaid_allow_npx=false in
+                       |image.setup()| to disable the npx fallback.
                        https://github.com/mermaid-js/mermaid-cli
 
   PlantUML             Render PlantUML diagrams as images.  Falls back to a

@@ -184,8 +184,29 @@ if vim.fn.executable "ffmpeg" == 1 then
   end
   backend.cleanup(animated)
   assert(#drawn_rows() == 0, "animation cleanup must remove placeholders")
+  image.setup { autoplay = false }
+  local paused_from = #requests + 1
+  local paused = backend.setup(win, media)
+  wait_for(function()
+    for idx = 1, 3 do
+      if not paused.objects[idx] or not paused.objects[idx]:ready() then return false end
+    end
+    return true
+  end, "autoplay=false must retain visible first frames")
+  local reset_frames = 0
+  for idx = paused_from, #requests do
+    local req = requests[idx]
+    if req.a == "a" then
+      assert(req.s == 1, "autoplay=false resumed a cached animation")
+      if req.c == 1 then reset_frames = reset_frames + 1 end
+    end
+    assert(req.a ~= "f", "autoplay=false uploaded cached animation frames again")
+  end
+  assert(reset_frames >= 2, "cached animations were not reset to their first frame")
+  backend.cleanup(paused)
+  image.setup { autoplay = true }
   terminal.request = request
-  print "Snacks animation: GIF, MP4, shared frames, retransmit, remote chunks, rebuild and cleanup OK"
+  print "Snacks animation: GIF, MP4, shared frames, retransmit, remote chunks, rebuild, autoplay and cleanup OK"
 else
   print "SKIP Snacks animation: ffmpeg unavailable"
 end
@@ -283,9 +304,25 @@ do
   end
   assert(bases == 1 and last_control(img).s == 3, "restart did not replace the partial base and resume")
 
+  local frames_before_toggle = count("f", img)
+  image.setup { autoplay = false }
+  backend.update(restarted, media)
+  wait_for(function()
+    return restarted.objects[1] ~= nil
+  end, "autoplay=false did not restore the first frame")
+  assert(last_control(img).s == 1 and last_control(img).c == 1, "autoplay=false did not stop at the first frame")
+  image.setup { autoplay = true }
+  backend.update(restarted, media)
+  wait_for(function()
+    return restarted.objects[1] ~= nil
+  end, "autoplay=true did not restore the placement")
+  assert(
+    last_control(img).s == 3 and count("f", img) == frames_before_toggle,
+    "autoplay toggle lost or duplicated cached frames"
+  )
   backend.cleanup(restarted)
   image.extract_frames_async, terminal.request = extract, request
-  print "Snacks ownership: shared survivor, last-owner stop and partial restart OK"
+  print "Snacks ownership: shared survivor, last-owner stop, partial restart and cached autoplay toggle OK"
 end
 
 -- Core resolution keeps local filenames literal; the downstream Snacks

@@ -277,6 +277,33 @@ if vim.fn.executable "ffmpeg" == 1 then
     img:on_send() -- A late base-image completion must not restart the upload.
     assert(#requests == closed + 1 and requests[#requests].d == "I", "closed media was uploaded again")
   end
+  image.setup { autoplay = false }
+  local paused_from = #requests + 1
+  viewer.open(gif)
+  wait_for(function()
+    return view.placement and view.media._md_render_upload and view.media._md_render_upload:completed()
+  end, "paused viewer did not load")
+  assert(not view.playing, "autoplay=false opened a playing viewer")
+  for idx = paused_from, #requests do
+    local req = requests[idx]
+    if req.a == "a" and req.i == view.media.id then assert(req.s == 1, "paused viewer started animation") end
+  end
+  key "<Space>"
+  assert(view.playing and requests[#requests].s == 3, "Space cannot start an autoplay-disabled viewer")
+  local viewer_tab = vim.api.nvim_get_current_tabpage()
+  vim.cmd "tabnew"
+  local background_win = vim.api.nvim_get_current_win()
+  assert(view.playing and requests[#requests].s == 1, "hidden viewer must pause without changing playback intent")
+  vim.api.nvim_set_current_tabpage(viewer_tab)
+  wait_for(function()
+    return requests[#requests].a == "a" and requests[#requests].s == 3
+  end, "viewer did not resume on return")
+  key "q"
+  wait_for(function()
+    return vim.api.nvim_get_current_win() == session.win
+  end, "paused viewer lost its origin")
+  vim.api.nvim_win_close(background_win, true)
+  image.setup { autoplay = true }
   viewer.open, terminal.request = open, request
   preview.toggle()
   print "Image view media: Enter source, autoplay, pause/resume, animated zoom/pan and independent cleanup OK"

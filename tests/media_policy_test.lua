@@ -1,4 +1,4 @@
--- Literal media paths, shared probes, diagram output, frame extraction, and tab visibility.
+-- Literal media paths, bounded/shared probes, policy switches, and tab visibility.
 -- Run: nvim --headless -u NONE --noplugin -l tests/media_policy_test.lua
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
 
@@ -52,6 +52,19 @@ local mmdc, animation_tool = false, "ffmpeg"
 vim.fn.executable = function(cmd)
   return ((cmd == "mmdc" and mmdc) or cmd == "npx" or cmd == "ffprobe" or cmd == animation_tool) and 1 or 0
 end
+assert(image.config().autoplay and image.config().mermaid_allow_npx, "preserve both defaults")
+assert(image.has_mmdc(), "npx fallback is available by default")
+image.setup { autoplay = false, mermaid_allow_npx = false }
+assert(not image.config().autoplay and not image.has_mmdc(), "policy invalidates cached npx detection")
+mmdc = true
+image.reset_cache()
+assert(image.has_mmdc(), "local mmdc works while npx is disabled")
+mmdc = false
+image.reset_cache()
+assert(not image.has_mmdc(), "reset invalidates previous mmdc detection")
+image.setup { autoplay = true, mermaid_allow_npx = true }
+assert(image.has_mmdc(), "npx can be explicitly enabled again")
+assert(not pcall(image.setup, { autoplay = "false" }), "reject a truthy non-boolean option")
 
 local calls, jobs, response = 0, {}, { code = 0, stdout = "640x360\n" }
 vim.system = function(cmd, opts, callback)
@@ -161,6 +174,7 @@ assert(image.video_dimensions(video, true) == 1280, "old completion replaced the
 vim.fn.stdpath = function(kind)
   return kind == "cache" and temp or original.stdpath(kind)
 end
+assert(image.cache_dir() == temp .. "/md-render")
 
 -- A readable output is not success until the renderer exits successfully.
 local policy_executable = vim.fn.executable
@@ -337,4 +351,4 @@ vim.fn.executable, vim.fn.stdpath = original.executable, original.stdpath
 vim.system, vim.api.nvim_ui_send = original.system, original.ui_send
 image.reset_cache()
 vim.fn.delete(temp, "rf")
-print "media_policy_test: literal paths, shared probes, diagram output, frame extraction, and tab visibility passed"
+print "media_policy_test: literal paths, policies, shared probes, frame extraction, and tab visibility passed"

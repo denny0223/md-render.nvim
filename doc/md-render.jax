@@ -761,7 +761,7 @@ telescope.previewer({opts}) ~
 
 ファイルの種類に応じて自動的に表示方法を切り替えます：
 
-  Markdown (.md, .markdown)     md-render によるフルレンダリング（ハイライト、
+  Markdown (.md, .markdown)     ソースの先頭 500 行をレンダリング（ハイライト、
 				リンク、インライン画像）
 
   画像・動画                    Kitty graphics protocol でインライン表示。ファ
@@ -771,8 +771,9 @@ telescope.previewer({opts}) ~
   その他                        telescope のデフォルトファイル previewer（シン
 				タックスハイライト付き）にフォールバック。
 
-grep 系の picker（ `live_grep` 、 `grep_string` など）では、マッチしたソース行に自
-動スクロールします。
+選択が 80 ms 続いてからプレビューを更新します。grep 系の picker（live_grep、
+grep_string など）ではマッチしたソース行にスクロールします。500 行目を超える
+結果は Telescope 標準の Markdown ソース表示を使います。
 
 							  *:Telescope_md_render*
 :TELESCOPE MD_RENDER EXTENSION ~
@@ -795,6 +796,8 @@ snacks.preview({opts}) ~
 	snacks.nvim の picker 用プレビュー関数を作成します。telescope 版と同じ
 	く Markdown レンダリング、画像・動画表示、デフォルト previewer への
 	フォールバックに対応します。
+	Markdown は picker.previewers.file.max_size に従い、上限を超える
+	ファイルは Snacks 標準の previewer を使います。
 
 	パラメータ: ~
 	  {opts}  (table|nil) オプション設定:

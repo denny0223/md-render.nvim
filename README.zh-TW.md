@@ -473,11 +473,11 @@ require("telescope").extensions.egrepify.egrepify({ previewer = previewer })
 
 | 檔案類型 | 行為 |
 |---|---|
-| Markdown（`.md`、`.markdown`） | 完整 md-render 預覽，包含語法醒目提示、連結與圖片 |
+| Markdown（`.md`、`.markdown`） | 渲染前 500 行原始文字，包含語法醒目提示、連結與圖片 |
 | 圖片／影片（PNG、JPEG、WebP、GIF、MP4 等） | 透過 Kitty graphics protocol 顯示 |
 | 其他檔案 | 使用 Telescope 預設的語法醒目提示預覽器 |
 
-在 grep 搜尋類型的選取器中，預覽會捲動到符合搜尋結果的行。
+選取項目停留 80 ms 後才更新預覽。在 grep 搜尋類型的選取器中，預覽會捲動到符合搜尋結果的行；若結果超出原始檔第 500 行，則使用 Telescope 預設的原始 Markdown 預覽。
 
 ### `:Telescope md_render` 擴充功能
 
@@ -492,6 +492,8 @@ require("telescope").extensions.egrepify.egrepify({ previewer = previewer })
 ## Snacks.nvim 整合
 
 `require("md-render.snacks").preview()` 會建立 [snacks.nvim](https://github.com/folke/snacks.nvim) 選取器使用的預覽函式。它和 Telescope 預覽器一樣，可處理 Markdown、圖片／影片，以及其他檔案的預設預覽。
+
+Markdown 預覽遵循 Snacks 的 `picker.previewers.file.max_size` 設定，超過大小限制的檔案使用其預設預覽器。
 
 這個選取器整合與 [Snacks 圖片後端](#選用-snacks-圖片後端)是不同功能。如果已經設定 Snacks，請將下方其中一種 `picker` 設定合併到原本的設定，避免再次呼叫 `setup()`。
 

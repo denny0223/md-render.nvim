@@ -480,11 +480,11 @@ require("telescope").extensions.egrepify.egrepify({ previewer = previewer })
 
 | ファイル種別 | 動作 |
 |---|---|
-| Markdown (`.md`, `.markdown`) | md-render によるフルレンダリング（ハイライト、リンク、画像） |
+| Markdown (`.md`, `.markdown`) | ソースの先頭 500 行をレンダリング（ハイライト、リンク、画像） |
 | 画像・動画 (PNG, JPEG, WebP, GIF, MP4, ...) | Kitty graphics protocol でインライン表示 |
 | その他 | telescope のデフォルト previewer（シンタックスハイライト付き）にフォールバック |
 
-grep 系の picker では、マッチした行に自動スクロールします。
+選択が 80 ms 続いてからプレビューを更新します。grep 系の picker ではマッチした行にスクロールし、ソースの 500 行目を超える場合は Telescope 標準の Markdown ソース表示を使います。
 
 ### `:Telescope md_render` Extension
 
@@ -502,6 +502,8 @@ previewer 付きでラップします。引数はすべてそのまま渡され�
 `require("md-render.snacks").preview()` で
 [snacks.nvim](https://github.com/folke/snacks.nvim) の picker 用プレビュー関数を
 作成します。telescope 版と同じく Markdown、画像・動画、その他のファイルに対応します。
+
+Markdown プレビューは Snacks の `picker.previewers.file.max_size` 設定に従い、上限を超えるファイルは標準の previewer を使います。
 
 この picker 連携は [Snacks 画像バックエンド](#snacks-画像バックエンド) とは別の機能です。Snacks を設定済みの場合は、以下のいずれかの `picker` テーブルを既存の設定に統合し、`setup()` を再度呼ばないでください。
 

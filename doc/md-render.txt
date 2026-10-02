@@ -799,8 +799,8 @@ telescope.previewer({opts}) ~
 
 The previewer handles three kinds of files:
 
-  Markdown (.md, .markdown)     md-render rendering with highlights, links,
-				and inline images.
+  Markdown (.md, .markdown)     Render the first 500 source lines with
+				highlights, links, and inline images.
 
   Image / Video                 Inline display via Kitty graphics protocol.
   (PNG, JPEG, WebP, GIF,        File name and dimensions are shown as a
@@ -809,8 +809,10 @@ The previewer handles three kinds of files:
   Other files                   Falls back to telescope's default previewer
 				with syntax highlighting.
 
-For grep-based pickers (e.g. `live_grep`, `grep_string`), the preview
-automatically scrolls to the matched source line.
+The preview updates after the selection settles for 80 ms. For grep-based
+pickers (e.g. `live_grep`, `grep_string`), it scrolls to the matched source
+line. Matches beyond source line 500 use Telescope's default raw Markdown
+preview.
 
 							  *:Telescope_md_render*
 :TELESCOPE MD_RENDER EXTENSION ~
@@ -833,6 +835,8 @@ snacks.preview({opts}) ~
 	Create a preview function for snacks.nvim pickers.  It handles the
 	same three file types as the telescope previewer (Markdown rendering,
 	image/video display, and fallback to snacks' default file previewer).
+	Markdown previews respect picker.previewers.file.max_size; larger
+	files use Snacks' default previewer.
 
 	Parameters: ~
 	  {opts}  (table|nil) Optional settings:

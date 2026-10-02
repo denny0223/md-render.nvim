@@ -677,7 +677,7 @@ telescope.previewer({opts}) ~
 
 預覽器處理三類檔案：
 
-  Markdown (.md, .markdown)   使用 md-render 顯示醒目提示、連結與文件內圖片。
+  Markdown (.md, .markdown)   渲染前 500 行原始文字，包含醒目提示、連結與圖片。
 
   圖片／影片                  透過 Kitty 圖形協定顯示，標題列出檔名與尺寸。
   (PNG, JPEG, WebP, GIF,
@@ -685,8 +685,9 @@ telescope.previewer({opts}) ~
 
   其他檔案                    使用 telescope 預設預覽器及其語法醒目提示。
 
-使用以 grep 為基礎的選擇器（例如 `live_grep`、`grep_string`）時，預覽會自動
-捲動至符合的來源行。
+選取項目停留 80 ms 後才更新預覽。使用以 grep 為基礎的選擇器（例如 `live_grep`、
+`grep_string`）時，預覽會捲動至符合的來源行；超出第 500 行的搜尋結果則使用
+Telescope 預設的原始 Markdown 預覽。
 
                                                         *:Telescope_md_render*
 :TELESCOPE MD_RENDER 擴充 ~
@@ -709,6 +710,8 @@ snacks.preview({opts}) ~
 	建立供 snacks.nvim 選擇器使用的預覽函式。處理與 Telescope 預覽器相同的
 	三類檔案：Markdown 渲染、圖片／影片顯示，以及使用 Snacks 預設預覽器
 	處理其他檔案。
+	Markdown 預覽遵循 picker.previewers.file.max_size，超過大小限制的
+	檔案使用 Snacks 預設預覽器。
 
 	參數：~
 	  {opts}  (table|nil) 選用設定：

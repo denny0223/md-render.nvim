@@ -68,13 +68,13 @@ function M.previewer(opts)
   local last_filepath = nil
   -- Debounce the entire preview render (file read, markdown build, image setup)
   -- so rapid j/k navigation in the picker never blocks on heavy files. Old
-  -- images are torn down immediately on file change; the new file's content
+  -- images are torn down immediately on selection change; the new content
   -- is rendered only when selection settles for RENDER_DEBOUNCE_MS.
   local RENDER_DEBOUNCE_MS = 80
   local render_timer = nil
-  -- Bumped on every file change. Long-running render is split into stages
+  -- Bumped on every selection. Long-running render is split into stages
   -- separated by vim.schedule yields; each stage checks generation and
-  -- aborts if a newer file change arrived during the yield.
+  -- aborts if a newer selection arrived during the yield.
   local generation = 0
 
   local function cancel_render_timer()
@@ -91,9 +91,7 @@ function M.previewer(opts)
       local filepath = entry.path or entry.filename
       if not filepath then return end
 
-      local file_changed = filepath ~= last_filepath
-      if not file_changed then return end
-
+      -- Telescope can replace the scratch buffer for another hit in the same file.
       local display_utils = require "md-render.display_utils"
       local bufnr = self.state.bufnr
       local winid = self.state.winid
@@ -114,12 +112,13 @@ function M.previewer(opts)
           and filepath == last_filepath
           and vim.api.nvim_win_is_valid(winid)
           and vim.api.nvim_buf_is_valid(bufnr)
+          and vim.api.nvim_win_get_buf(winid) == bufnr
       end
 
       -- Defer all heavy work so the picker stays responsive during rapid
       -- navigation. The render is split into multiple stages separated by
       -- vim.schedule yields so the event loop can process queued keypresses
-      -- between each stage; if a newer file change arrives, the in-flight
+      -- between each stage; if a newer selection arrives, the in-flight
       -- render aborts at the next stage boundary.
       render_timer = vim.defer_fn(function()
         render_timer = nil
@@ -248,6 +247,7 @@ function M.previewer(opts)
       end, RENDER_DEBOUNCE_MS)
     end,
     teardown = function()
+      generation = generation + 1
       cancel_render_timer()
       if image_state then
         require("md-render.display_utils").cleanup_images(image_state)

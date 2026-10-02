@@ -67,17 +67,14 @@ local function scroll_to_source_line(winid, pos, source_line_map)
       break
     end
   end
-  vim.schedule(function()
-    if not vim.api.nvim_win_is_valid(winid) then return end
-    local buf_lines = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(winid))
-    target = math.max(1, math.min(target, buf_lines))
-    local win_height = vim.api.nvim_win_get_height(winid)
-    local top = math.max(0, target - 1 - math.floor(win_height / 2))
-    vim.api.nvim_win_call(winid, function()
-      vim.fn.winrestview { topline = top + 1 }
-    end)
-    vim.api.nvim_win_set_cursor(winid, { target, 0 })
+  local buf_lines = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(winid))
+  target = math.max(1, math.min(target, buf_lines))
+  local win_height = vim.api.nvim_win_get_height(winid)
+  local top = math.max(0, target - 1 - math.floor(win_height / 2))
+  vim.api.nvim_win_call(winid, function()
+    vim.fn.winrestview { topline = top + 1 }
   end)
+  vim.api.nvim_win_set_cursor(winid, { target, 0 })
 end
 
 --- Create a snacks.nvim picker preview function that renders Markdown via md-render.nvim.
@@ -100,10 +97,20 @@ function M.preview(opts)
 
   ---@type MdRender.ImageState?
   local image_state = nil
-  local last_filepath = nil
-  ---@type integer[]?
-  local last_source_line_map = nil
+  local last_render = nil
   local cleanup_autocmd_id = nil
+  local cleanup_win = nil
+
+  local function render_key(ctx, path)
+    return {
+      path = path,
+      buf = ctx.buf,
+      win = ctx.win,
+      tick = vim.api.nvim_buf_get_changedtick(ctx.buf),
+      width = vim.api.nvim_win_get_width(ctx.win),
+      height = vim.api.nvim_win_get_height(ctx.win),
+    }
+  end
 
   local function cleanup_images()
     if image_state then
@@ -113,15 +120,17 @@ function M.preview(opts)
   end
 
   local function ensure_win_cleanup(winid)
-    if cleanup_autocmd_id then return end
+    if cleanup_win == winid then return end
+    if cleanup_autocmd_id then pcall(vim.api.nvim_del_autocmd, cleanup_autocmd_id) end
+    cleanup_win = winid
     cleanup_autocmd_id = vim.api.nvim_create_autocmd("WinClosed", {
       pattern = tostring(winid),
       once = true,
       callback = function()
         cleanup_images()
-        last_filepath = nil
-        last_source_line_map = nil
+        last_render = nil
         cleanup_autocmd_id = nil
+        cleanup_win = nil
       end,
     })
   end
@@ -131,24 +140,21 @@ function M.preview(opts)
     local path = Snacks.picker.util.path(ctx.item)
     if not path then
       cleanup_images()
-      last_filepath = nil
-      last_source_line_map = nil
+      last_render = nil
       return require("snacks.picker.preview").file(ctx)
     end
 
     local is_markdown = path:match "%.md$" or path:match "%.markdown$"
     local display_utils = require "md-render.display_utils"
+    local file_changed = not last_render or not vim.deep_equal(last_render.key, render_key(ctx, path))
 
     if not is_markdown then
-      last_source_line_map = nil
-
       -- Try to display as image/video
       local img_content = build_image_content(path, ctx.win)
       if img_content then
-        local file_changed = path ~= last_filepath
         if file_changed then
           cleanup_images()
-          last_filepath = path
+          last_render = nil
           ctx.preview:reset()
           ctx.preview:set_title(vim.fn.fnamemodify(path, ":t"))
           ctx.preview:minimal()
@@ -157,37 +163,53 @@ function M.preview(opts)
           vim.bo[ctx.buf].modifiable = false
           ensure_win_cleanup(ctx.win)
           image_state = display_utils.setup_images(ctx.win, img_content, ns)
+          last_render = { key = render_key(ctx, path) }
         end
         return
       end
 
       -- Fall back to snacks' default file previewer
       cleanup_images()
-      last_filepath = nil
+      last_render = nil
       return require("snacks.picker.preview").file(ctx)
     end
 
-    -- Markdown rendering: only re-render on file change
-    local file_changed = path ~= last_filepath
+    -- Snacks resets the scratch buffer on layout changes, even for the same file.
     if file_changed then
       cleanup_images()
-      last_filepath = path
+      last_render = nil
+
+      local stat = vim.uv.fs_stat(path)
+      local max_size = ctx.picker.opts.previewers.file.max_size or (1024 * 1024)
+      if not stat or stat.type ~= "file" or stat.size == 0 or stat.size > max_size then
+        ctx.prev = nil
+        return require("snacks.picker.preview").file(ctx)
+      end
+
+      local ok, lines = pcall(vim.fn.readfile, path)
+      if not ok then
+        ctx.prev = nil
+        return require("snacks.picker.preview").file(ctx)
+      end
+      for _, line in ipairs(lines) do
+        -- Keep Snacks' binary handling; readfile() represents NUL as an embedded LF.
+        if line:find "[%z\1-\8\10-\12\14-\31]" then
+          ctx.prev = nil
+          return require("snacks.picker.preview").file(ctx)
+        end
+      end
 
       ctx.preview:reset()
       ctx.preview:set_title(vim.fn.fnamemodify(path, ":t"))
       ctx.preview:minimal()
-
-      local lines = vim.fn.readfile(path)
-      if not lines or #lines == 0 then return end
 
       require("md-render").setup_highlights()
       local preview_mod = require "md-render.preview"
       local max_width = math.max(40, vim.api.nvim_win_get_width(ctx.win) - 4)
       -- text_scale = false: nothing here paints OSC 66 runs, and a scaled
       -- heading reserves a rendered row whether or not it is ever painted.
-      local build_opts = { max_width = max_width, text_scale = false }
+      local build_opts = { max_width = max_width, buf_dir = vim.fn.fnamemodify(path, ":p:h"), text_scale = false }
       local content = preview_mod.build_content(lines, build_opts)
-      last_source_line_map = content.source_line_map
 
       vim.bo[ctx.buf].modifiable = true
       display_utils.apply_content_to_buffer(ctx.buf, ns, content)
@@ -200,10 +222,11 @@ function M.preview(opts)
           return preview_mod.build_content(lines, build_opts)
         end,
       })
+      last_render = { key = render_key(ctx, path), source_line_map = content.source_line_map }
     end
 
     -- Scroll to matched source line (always, even for same file with different position)
-    scroll_to_source_line(ctx.win, ctx.item.pos, last_source_line_map)
+    scroll_to_source_line(ctx.win, ctx.item.pos, last_render.source_line_map)
   end
 end
 

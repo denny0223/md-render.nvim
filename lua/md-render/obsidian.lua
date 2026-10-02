@@ -8,9 +8,13 @@ local M = {}
 ---@type table<string, table|false>
 local _vault_cache = {}
 
---- Cache: source directory + short filename → absolute path
----@type table<string, string>
-local _file_cache = {}
+local CONFIG_BYTES = 1024 * 1024
+local CACHE_NS = 30 * 1000000000
+local SEARCH_NS = 50 * 1000000
+local SEARCH_ENTRIES = 10000
+
+--- Vault-wide fallback indexes, including misses, expire without editor restarts.
+local _search_cache = {}
 
 --- Find the Obsidian vault root by walking up from the given directory.
 ---@param buf_dir string  absolute directory path to start from
@@ -53,24 +57,24 @@ end
 ---@return string?  attachment folder path, or nil if not configured
 function M.get_attachment_folder(vault_root)
   local info = _vault_cache[vault_root]
-  if info and info.attachment_folder ~= nil then
-    if info.attachment_folder then return info.attachment_folder end
-    return nil
+  local now = vim.uv.hrtime()
+  if info and now < (info.config_expires or 0) then return info.attachment_folder or nil end
+  if info then
+    info.attachment_folder = false
+    info.config_expires = now + CACHE_NS
   end
 
   local config_path = vault_root .. "/.obsidian/app.json"
-  if vim.fn.filereadable(config_path) ~= 1 then
-    if info then info.attachment_folder = false end
-    return nil
-  end
+  local stat = vim.uv.fs_stat(config_path)
+  if not stat or stat.type ~= "file" or stat.size > CONFIG_BYTES then return nil end
 
-  local ok, lines = pcall(vim.fn.readfile, config_path)
-  if not ok or not lines then
-    if info then info.attachment_folder = false end
-    return nil
-  end
+  -- The read itself is bounded even if the file grows after stat().
+  local fd = vim.uv.fs_open(config_path, "r", 438)
+  if not fd then return nil end
+  local json_str = vim.uv.fs_read(fd, CONFIG_BYTES + 1, 0)
+  vim.uv.fs_close(fd)
+  if not json_str or #json_str > CONFIG_BYTES then return nil end
 
-  local json_str = table.concat(lines, "\n")
   local ok2, config = pcall(vim.json.decode, json_str)
   if not ok2 or type(config) ~= "table" or type(config.attachmentFolderPath) ~= "string" then
     if info then info.attachment_folder = false end
@@ -98,14 +102,6 @@ function M.resolve(filename, buf_dir)
     return vim.fn.filereadable(path) == 1 and path or nil
   end
 
-  -- A ./attachments setting belongs to the source note's directory.
-  local cache_key = buf_dir .. "\0" .. filename
-  local cached = _file_cache[cache_key]
-  if cached then
-    if vim.fn.filereadable(cached) == 1 then return cached end
-    _file_cache[cache_key] = nil
-  end
-
   -- Try attachment folder first (most common location)
   local att_folder = M.get_attachment_folder(vault_root)
   if att_folder then
@@ -122,38 +118,38 @@ function M.resolve(filename, buf_dir)
       -- Relative to vault root
       att_path = vault_root .. "/" .. att_folder .. "/" .. filename
     end
-    if vim.fn.filereadable(att_path) == 1 then
-      _file_cache[cache_key] = att_path
-      return att_path
-    end
+    if vim.fn.filereadable(att_path) == 1 then return att_path end
   end
 
   -- Try vault root directly
   local root_path = vault_root .. "/" .. filename
-  if vim.fn.filereadable(root_path) == 1 then
-    _file_cache[cache_key] = root_path
-    return root_path
-  end
+  if vim.fn.filereadable(root_path) == 1 then return root_path end
 
-  -- Vault-wide search using vim.fs.find (limit=1 for early termination)
-  local results = vim.fs.find(filename, {
-    path = vault_root,
-    upward = false,
-    type = "file",
-    limit = 1,
-  })
-  if results[1] then
-    _file_cache[cache_key] = results[1]
-    return results[1]
+  local now = vim.uv.hrtime()
+  local search = _search_cache[vault_root]
+  if not search or now >= search.expires then
+    search = { expires = now + CACHE_NS, files = {} }
+    _search_cache[vault_root] = search
+    -- ponytail: fallback scans stop at 10,000 entries or 50 ms; explicit paths
+    -- and attachment folders remain available beyond this discovery budget.
+    local count = 0
+    for path, kind in vim.fs.dir(vault_root, { depth = math.huge }) do
+      count = count + 1
+      if count > SEARCH_ENTRIES or vim.uv.hrtime() - now >= SEARCH_NS then break end
+      if kind == "file" then
+        local name = vim.fs.basename(path)
+        if not search.files[name] then search.files[name] = vault_root .. "/" .. path end
+      end
+    end
   end
-
-  return nil
+  local path = search.files[filename]
+  return path and vim.fn.filereadable(path) == 1 and path or nil
 end
 
 --- Clear all caches (for testing).
 function M.reset_cache()
   _vault_cache = {}
-  _file_cache = {}
+  _search_cache = {}
 end
 
 return M

@@ -173,5 +173,57 @@ if vim.fn.executable "ffmpeg" == 1 then
 else
   print "SKIP Snacks animation: ffmpeg unavailable"
 end
+-- Core resolution keeps local filenames literal; the downstream Snacks
+-- normalizer must never substitute an environment-named decoy file.
+do
+  local saved_dir, saved_asset = vim.env.MEDIA_DIR, vim.env.MEDIA_ASSET
+  vim.env.MEDIA_DIR, vim.env.MEDIA_ASSET = "expanded", "replacement"
+  local literal_dir, decoy_dir = cache .. "/literal-$MEDIA_DIR", cache .. "/literal-expanded"
+  vim.fn.mkdir(literal_dir, "p")
+  vim.fn.mkdir(decoy_dir, "p")
+  local literal, decoy = literal_dir .. "/$MEDIA_ASSET.png", decoy_dir .. "/replacement.png"
+  assert(vim.uv.fs_copyfile(root .. "/tests/fixtures/test_4x4.png", literal))
+  local transparent =
+    vim.base64.decode "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg=="
+  local file = assert(io.open(decoy, "wb"))
+  file:write(transparent)
+  file:close()
+  local resolved = assert(image.resolve_local("$MEDIA_ASSET.png", literal_dir))
+  assert(
+    resolved == literal and Snacks.image.convert.norm(resolved) == decoy,
+    "fixture must exercise Snacks' downstream expansion"
+  )
+  local media = { image_placements = { { path = resolved, line = 0, col = 0, cols = 4, rows = 3 } } }
+  local owned = backend.setup(win, media)
+  wait_for(function()
+    return owned.objects[1] and owned.objects[1]:ready()
+  end, "literal local filename did not load")
+  local original = owned.objects[1].img
+  assert(original.info.size.width == 4, "Snacks opened the environment-expanded decoy")
+  local original_file, alias_file = assert(io.open(literal, "rb")), assert(io.open(original.file, "rb"))
+  assert(original_file:read "*a" == alias_file:read "*a", "literal alias changed source bytes")
+  original_file:close()
+  alias_file:close()
+  assert(media.image_placements[1].path == literal, "alias replaced the navigation path")
+  assert(
+    not original.src:find("$", 1, true) and Snacks.image.convert.norm(original.src) == original.src,
+    "alias parent still expands"
+  )
+  backend.update(owned, media)
+  assert(owned.objects[1].img == original, "unchanged literal source did not reuse its alias")
+  assert(vim.uv.fs_copyfile(decoy, literal))
+  backend.update(owned, media)
+  wait_for(function()
+    return owned.objects[1] and owned.objects[1]:ready()
+  end, "edited literal file did not load")
+  assert(
+    owned.objects[1].img ~= original and owned.objects[1].img.info.size.width == 1,
+    "alias cache reused stale file contents"
+  )
+  assert(Snacks.image.convert.norm(resolved) == decoy, "adapter changed Snacks' global normalization")
+  backend.cleanup(owned)
+  vim.env.MEDIA_DIR, vim.env.MEDIA_ASSET = saved_dir, saved_asset
+  print "Snacks literal sources: filename and parent variables, exact bytes, navigation and edited-file cache OK"
+end
 vim.fn.delete(cache, "rf")
 print "Snacks image lifecycle: same-layout rebuild, off-tab completion and cleanup OK"

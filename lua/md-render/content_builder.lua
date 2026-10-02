@@ -4575,14 +4575,7 @@ function ContentBuilder:render_document(lines, opts)
             if src_url then
               resolved = image.get_video_cached(src_url)
             else
-              local video_path = vim.fn.expand(img_entry.path)
-              if video_path:sub(1, 1) ~= "/" and buf_dir then video_path = buf_dir .. "/" .. video_path end
-              if vim.fn.filereadable(video_path) == 1 then resolved = video_path end
-              -- Fallback: try Obsidian vault resolution for local video files
-              if not resolved and buf_dir then
-                local obsidian = require "md-render.obsidian"
-                resolved = obsidian.resolve(img_entry.path, buf_dir)
-              end
+              resolved = image.resolve_local(img_entry.path, buf_dir)
             end
             is_animated = true
             local img_max_cols = max_width - 2

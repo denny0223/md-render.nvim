@@ -903,7 +903,7 @@ end
 ---@param s string
 ---@return boolean
 function M.is_url(s)
-  return s:match "^https?://" ~= nil
+  return type(s) == "string" and not s:find "%c" and s:lower():match "^https?://" ~= nil
 end
 
 --- URLs that are badges or tiny icons — not worth displaying as block images
@@ -1155,14 +1155,34 @@ function M.resolve(src, base_dir)
     if M.is_badge_url(src) then return nil end
     return M.get_cached(src)
   end
+  return M.resolve_local(src, base_dir)
+end
 
-  local resolved = vim.fn.expand(src)
-  if resolved:sub(1, 1) ~= "/" and base_dir then resolved = base_dir .. "/" .. resolved end
+--- Resolve a literal local path, without Vim/shell expressions or environment expansion.
+--- Only ~/ expands; URI schemes and NUL bytes are not local filenames.
+---@param src string
+---@param base_dir? string
+---@return string? resolved_path
+function M.resolve_local(src, base_dir)
+  if type(src) ~= "string" or src == "" or src:find "%z" then return nil end
+  local absolute = src:sub(1, 1) == "/" or (IS_WINDOWS and src:match "^%a:[/\\]")
+  if src:match "^%a[%w+.-]*:" and not absolute then return nil end
+  local resolved = src
+  if src:sub(1, 2) == "~/" then
+    local user_home = uv.os_homedir()
+    if not user_home then return nil end
+    resolved = user_home .. src:sub(2)
+  elseif not absolute then
+    local base = base_dir or uv.cwd()
+    if not base then return nil end
+    if base:sub(1, 1) ~= "/" and not (IS_WINDOWS and base:match "^%a:[/\\]") then base = uv.cwd() .. "/" .. base end
+    resolved = base .. "/" .. src
+  end
 
   if vim.fn.filereadable(resolved) == 1 then return resolved end
 
   -- Fallback: try Obsidian vault resolution
-  if base_dir then
+  if base_dir and not absolute and src:sub(1, 2) ~= "~/" then
     local obsidian = require "md-render.obsidian"
     local vault_resolved = obsidian.resolve(src, base_dir)
     if vault_resolved then return vault_resolved end

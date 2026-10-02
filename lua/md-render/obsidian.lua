@@ -8,7 +8,7 @@ local M = {}
 ---@type table<string, table|false>
 local _vault_cache = {}
 
---- Cache: "vault_root:basename" → absolute path
+--- Cache: source directory + short filename → absolute path
 ---@type table<string, string>
 local _file_cache = {}
 
@@ -72,7 +72,7 @@ function M.get_attachment_folder(vault_root)
 
   local json_str = table.concat(lines, "\n")
   local ok2, config = pcall(vim.json.decode, json_str)
-  if not ok2 or type(config) ~= "table" or not config.attachmentFolderPath then
+  if not ok2 or type(config) ~= "table" or type(config.attachmentFolderPath) ~= "string" then
     if info then info.attachment_folder = false end
     return nil
   end
@@ -83,7 +83,7 @@ function M.get_attachment_folder(vault_root)
 end
 
 --- Resolve an Obsidian file reference to an absolute path.
---- Search order: cache → attachment folder → vault root → vault-wide search.
+--- Explicit paths resolve directly; short names search attachments, then the vault.
 ---@param filename string  filename (e.g. "image.png" or "subfolder/image.png")
 ---@param buf_dir string  directory of the source markdown file
 ---@return string?  absolute path to the file, or nil if not found
@@ -91,10 +91,15 @@ function M.resolve(filename, buf_dir)
   local vault_root = M.find_vault_root(buf_dir)
   if not vault_root then return nil end
 
-  local basename = filename:match "([^/]+)$" or filename
+  if filename:find("/", 1, true) then
+    if filename:sub(1, 1) == "/" then return nil end
+    local relative = filename:sub(1, 2) == "./" or filename:sub(1, 3) == "../"
+    local path = (relative and buf_dir or vault_root) .. "/" .. filename
+    return vim.fn.filereadable(path) == 1 and path or nil
+  end
 
-  -- Check file cache
-  local cache_key = vault_root .. ":" .. basename
+  -- A ./attachments setting belongs to the source note's directory.
+  local cache_key = buf_dir .. "\0" .. filename
   local cached = _file_cache[cache_key]
   if cached then
     if vim.fn.filereadable(cached) == 1 then return cached end
@@ -105,17 +110,17 @@ function M.resolve(filename, buf_dir)
   local att_folder = M.get_attachment_folder(vault_root)
   if att_folder then
     local att_path
-    if att_folder:sub(1, 2) == "./" then
+    if att_folder == "." or att_folder:sub(1, 2) == "./" then
       -- Relative to current file's directory
       local sub = att_folder:sub(3)
       if sub == "" then
-        att_path = buf_dir .. "/" .. basename
+        att_path = buf_dir .. "/" .. filename
       else
-        att_path = buf_dir .. "/" .. sub .. "/" .. basename
+        att_path = buf_dir .. "/" .. sub .. "/" .. filename
       end
     else
       -- Relative to vault root
-      att_path = vault_root .. "/" .. att_folder .. "/" .. basename
+      att_path = vault_root .. "/" .. att_folder .. "/" .. filename
     end
     if vim.fn.filereadable(att_path) == 1 then
       _file_cache[cache_key] = att_path
@@ -124,14 +129,14 @@ function M.resolve(filename, buf_dir)
   end
 
   -- Try vault root directly
-  local root_path = vault_root .. "/" .. basename
+  local root_path = vault_root .. "/" .. filename
   if vim.fn.filereadable(root_path) == 1 then
     _file_cache[cache_key] = root_path
     return root_path
   end
 
   -- Vault-wide search using vim.fs.find (limit=1 for early termination)
-  local results = vim.fs.find(basename, {
+  local results = vim.fs.find(filename, {
     path = vault_root,
     upward = false,
     type = "file",

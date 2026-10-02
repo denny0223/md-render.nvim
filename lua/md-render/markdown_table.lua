@@ -364,14 +364,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
                   if src_url then
                     resolved = image_mod.get_video_cached(src_url)
                   else
-                    local video_path = vim.fn.expand(url)
-                    if video_path:sub(1, 1) ~= "/" and buf_dir then video_path = buf_dir .. "/" .. video_path end
-                    if vim.fn.filereadable(video_path) == 1 then resolved = video_path end
-                    -- Fallback: try Obsidian vault resolution for local video files
-                    if not resolved and buf_dir then
-                      local obsidian = require "md-render.obsidian"
-                      resolved = obsidian.resolve(url, buf_dir)
-                    end
+                    resolved = image_mod.resolve_local(url, buf_dir)
                   end
                   if resolved then
                     img_w, img_h = image_mod.video_dimensions(resolved)

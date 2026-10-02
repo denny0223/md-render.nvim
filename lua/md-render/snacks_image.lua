@@ -43,6 +43,42 @@ function M.animate(img, frames, playing)
   if img.sent then img:on_send() end
 end
 
+-- Snacks interprets $variables and #page= before opening local sources. Its
+-- public constructors have no literal-path option, so isolate those names in
+-- per-process aliases; keep the document's original path for navigation.
+local aliases, alias_dir = {}, nil
+local function literal_source(path)
+  if not path:find("$", 1, true) and not path:find("#page=", 1, true) then return path end
+  local stat = vim.uv.fs_stat(path)
+  if not stat then return nil end
+  local key = vim.fn.sha256(table.concat({
+    path,
+    stat.ino,
+    stat.size,
+    stat.mtime.sec,
+    stat.mtime.nsec,
+    stat.ctime.sec,
+    stat.ctime.nsec,
+  }, ":"))
+  if aliases[key] and vim.uv.fs_stat(aliases[key]) then return aliases[key] end
+  if not alias_dir then
+    local dir = vim.fn.tempname()
+    if dir:find("$", 1, true) or dir:find("#page=", 1, true) then return nil end
+    vim.fn.mkdir(dir, "p")
+    alias_dir = dir
+    vim.api.nvim_create_autocmd("VimLeavePre", {
+      once = true,
+      callback = function()
+        vim.fn.delete(dir, "rf")
+      end,
+    })
+  end
+  local alias = alias_dir .. "/" .. key .. "." .. (path:match "%.([%w]+)$" or "img")
+  if not vim.uv.fs_symlink(path, alias) and not vim.uv.fs_copyfile(path, alias) then return nil end
+  aliases[key] = alias
+  return alias
+end
+
 function M.supported()
   if not (_G.Snacks and Snacks.image) then return false end
   -- Reattached tmux panes can lack KITTY_WINDOW_ID; ask the current client.
@@ -124,7 +160,15 @@ function M.update(state, content)
         height = p.rows,
       }
       local function place(path, frames)
-        local object = Snacks.image.placement.new(state.buf, path, opts)
+        local source = literal_source(path)
+        if not source then
+          vim.api.nvim_buf_set_extmark(state.buf, state.ns, p.line, 0, {
+            virt_text = { { "Image source could not be prepared; check the file path", "ErrorMsg" } },
+            virt_text_pos = "overlay",
+          })
+          return
+        end
+        local object = Snacks.image.placement.new(state.buf, source, opts)
         state.objects[idx] = object
         if frames and #frames > 1 then M.animate(object.img, frames) end
       end

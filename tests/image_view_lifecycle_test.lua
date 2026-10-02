@@ -47,10 +47,11 @@ local function wait_for(fn, message)
 end
 
 -- Copy PNG pixels instead of cropping; control crop completion without replacing Snacks.
-local crops = {}
+local crops, fail_spawn = {}, false
 local system = vim.system
-vim.system = function(cmd, _, callback)
+vim.system = function(cmd, opts, callback)
   assert(cmd[1] == "magick" and cmd[3] == "-crop", "unexpected process")
+  assert(opts.timeout == 5000, "crop process must have a deadline")
   local job = { file = cmd[#cmd], crop = cmd[4] }
   assert(vim.uv.fs_copyfile(cmd[2], job.file))
   function job:kill()
@@ -60,6 +61,7 @@ vim.system = function(cmd, _, callback)
     callback { code = code or 0 }
   end
   crops[#crops + 1] = job
+  if fail_spawn then error "test crop spawn error" end
   return job
 end
 local view = require("md-render.image_view").open(root .. "/tests/fixtures/test_4x4.png")
@@ -153,14 +155,44 @@ local notify, errors = vim.notify, {}
 vim.notify = function(message)
   errors[#errors + 1] = message
 end
-crops[6]:complete(1)
+crops[6]:complete(124)
 wait_for(function()
   return #crops == 7
 end, "failed conversion stranded queued input")
 vim.notify = notify
 assert(#errors == 1 and errors[1]:find("image crop failed", 1, true), "crop error was not reported")
+assert(vim.fn.filereadable(crops[6].file) == 0, "timed-out crop left partial output")
 vim.api.nvim_buf_delete(view.buf, { force = true })
 assert(crops[7].killed, "closing the viewer must cancel its active conversion")
+crops[7]:complete()
+
+-- Failure keeps the last displayed frame; both timeout and spawn errors can retry.
+view = require("md-render.image_view").open(root .. "/tests/fixtures/test_4x4.png")
+wait_for(function()
+  return #crops == 8
+end, "retry view did not start")
+local retained = finish_crop(8)
+flush_updates()
+zoom = vim.fn.maparg("+", "n", false, true).callback
+vim.notify = function() end
+zoom()
+crops[9]:complete(124)
+wait_for(function()
+  return not view.job
+end, "timed-out crop remained active")
+assert(view.placement == retained and not retained.closed, "timeout discarded the visible crop")
+assert(vim.fn.filereadable(crops[9].file) == 0, "timeout retained partial output")
+fail_spawn = true
+zoom()
+assert(not view.job and not retained.closed, "spawn error discarded the visible crop or stuck the job")
+assert(vim.fn.filereadable(crops[10].file) == 0, "spawn error retained partial output")
+fail_spawn = false
+zoom()
+local recovered = finish_crop(11)
+flush_updates()
+assert(view.placement == recovered and retained.closed, "crop could not recover after a spawn error")
+vim.notify = notify
+vim.api.nvim_buf_delete(view.buf, { force = true })
 
 vim.system, Snacks.util.debounce = system, debounce
 if vim.fn.executable "ffmpeg" == 1 then

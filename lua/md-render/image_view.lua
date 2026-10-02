@@ -157,9 +157,13 @@ function M.open(path)
     local file = state.frames and state.path or dir .. "/" .. serial .. ".png"
     local started = vim.uv.hrtime()
     local function show(result)
-      if not valid() or serial ~= state.serial then return end
+      if not valid() or serial ~= state.serial then
+        if not state.frames then os.remove(file) end
+        return
+      end
       state.job = nil
-      if result.code ~= 0 then
+      if result.code ~= 0 or (not state.frames and not image.image_dimensions(file)) then
+        if not state.frames then os.remove(file) end
         vim.notify("md-render: image crop failed: " .. (result.stderr or ""), vim.log.levels.ERROR)
         if state.dirty then paint() end
         return
@@ -245,11 +249,21 @@ function M.open(path)
       show { code = 0 }
     else
       -- ponytail: crop cached PNGs; profile before changing the static-image renderer.
-      state.job = vim.system(
-        { "magick", state.path, "-crop", ("%dx%d+%d+%d"):format(g.w, g.h, g.x, g.y), "+repage", file },
-        { text = true },
-        vim.schedule_wrap(show)
-      )
+      local ok, job = pcall(vim.system, {
+        "magick",
+        state.path,
+        "-crop",
+        ("%dx%d+%d+%d"):format(g.w, g.h, g.x, g.y),
+        "+repage",
+        "-delete",
+        "1--1",
+        file,
+      }, { text = true, timeout = 5000 }, vim.schedule_wrap(show))
+      if ok then
+        state.job = job
+      else
+        show { code = -1, stderr = tostring(job) }
+      end
     end
   end
   local function zoom(factor)

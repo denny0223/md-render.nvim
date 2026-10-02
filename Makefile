@@ -9,6 +9,7 @@ test: test-harness $(TEST_FILES)
 # Stdlib-only checks for test/maintenance tools; never launches a real terminal.
 test-harness:
 	python3 tests/tooling_test.py
+	python3 tests/download_integration_test.py
 
 $(TEST_FILES):
 	$(NVIM) -l $@

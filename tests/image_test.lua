@@ -1133,9 +1133,10 @@ test("set_download_fn: taking the job keeps curl out of it", function()
 
   assert_eq(sys.spawns, 0, "no curl was spawned")
   assert_eq(#answers, 1, "the caller is answered exactly once")
-  assert_eq(answers[1], downloaded, "and gets the file the custom function wrote")
+  assert_true(answers[1] ~= downloaded and vim.fn.filereadable(answers[1]) == 1, "completed custom output is published")
+  assert_eq(vim.fn.filereadable(downloaded), 0, "custom staging file is removed after publication")
 
-  if downloaded then os.remove(downloaded) end
+  if answers[1] then os.remove(answers[1]) end
   image.set_download_fn(nil)
   sys.restore()
 end)

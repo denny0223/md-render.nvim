@@ -628,6 +628,28 @@ local function render_diagram_file(cache_path, render)
   return installed and cache_path or nil
 end
 
+--- Built-in downloads have one literal HTTP(S) URL and a whole-process deadline.
+local function curl_download(url, output, seconds, bytes)
+  return async.system({
+    "curl",
+    "-q",
+    "--globoff",
+    "-sfL",
+    "--proto",
+    "=http,https",
+    "--proto-redir",
+    "=http,https",
+    "--max-time",
+    tostring(seconds),
+    "--max-filesize",
+    tostring(bytes),
+    "-o",
+    output,
+    "--",
+    url,
+  }, { text = true, timeout = seconds * 1000 + 1000 })
+end
+
 --- Keep npm's project configuration and package resolution outside the viewed repository.
 --- Installed mmdc retains the caller's working directory.
 local function render_mermaid_file(source, cmd_prefix, cache_path, run)
@@ -799,13 +821,12 @@ end
 ---@param cache_path string
 ---@return string? png_path
 local function render_plantuml_remote(source, server)
-  if not server or vim.fn.executable "curl" ~= 1 then return nil end
+  if not M.is_url(server) or vim.fn.executable "curl" ~= 1 then return nil end
   local cache_path = plantuml_cache_path(source, server)
   if vim.fn.filereadable(cache_path) == 1 then return cache_path end
   local url = server .. "/png/~h" .. plantuml_encode_hex(source)
   return render_diagram_file(cache_path, function(output)
-    local cmd = { "curl", "-sfL", "--max-time", "15", "--max-filesize", "20000000", "-o", output, url }
-    return async.system(cmd, { text = true })
+    return curl_download(url, output, 15, 20000000)
   end)
 end
 
@@ -1001,8 +1022,8 @@ end
 --- Custom download function for authenticated or special URL handling.
 --- Signature: fn(url, output_path, callback) -> handled
 ---   - url: the image URL to download
----   - output_path: absolute path where the image file should be saved
----   - callback: fun(ok: boolean) — call with true on success, false on failure
+---   - output_path: absolute temporary path where the completed file should be saved
+---   - callback: fun(ok: boolean) — finish writing before calling true; false means failure
 ---   - return true if this function handles the URL (callback will be called later)
 ---   - return false to fall back to the default curl downloader
 ---@type fun(url: string, output_path: string, callback: fun(ok: boolean)): boolean
@@ -1126,31 +1147,25 @@ local function detect_video_ext(path)
   return nil
 end
 
---- Validate a downloaded file and update cache.
---- If the file is video with a wrong extension, rename it to the correct one.
+--- Validate completed output, then atomically publish it. Never remove a peer's cache entry.
 ---@param url string
+---@param output string private staging path
 ---@param cache_path string
+---@param video boolean skip image header validation for explicit video downloads
 ---@return string? path  nil when the download is not usable
-local function finalize_download(url, cache_path)
-  if vim.fn.filereadable(cache_path) == 1 then
-    if M.image_dimensions(cache_path) then
-      _url_cache[url] = cache_path
-      return cache_path
-    end
+local function finalize_download(url, output, cache_path, video)
+  local stat = uv.fs_stat(output)
+  if not stat or stat.type ~= "file" or stat.size == 0 then return nil end
+  if not video and not M.image_dimensions(output) then
     -- Check if it's a video with wrong extension
-    local video_ext = detect_video_ext(cache_path)
-    if video_ext then
-      local current_ext = cache_path:match "%.(%w+)$"
-      if current_ext and current_ext ~= video_ext then
-        local correct_path = cache_path:gsub("%." .. current_ext .. "$", "." .. video_ext)
-        os.rename(cache_path, correct_path)
-        cache_path = correct_path
-      end
-      _url_cache[url] = cache_path
-      return cache_path
-    end
+    local video_ext = detect_video_ext(output)
+    if not video_ext then return nil end
+    cache_path = cache_path:gsub("%.[^./]+$", "." .. video_ext)
   end
-  os.remove(cache_path)
+  if uv.fs_rename(output, cache_path) then
+    _url_cache[url] = cache_path
+    return cache_path
+  end
   return nil
 end
 
@@ -1177,11 +1192,27 @@ local function custom_download(url, cache_path)
   return taken, ok
 end
 
+--- Keep partial built-in and custom output invisible to cache readers.
+local function download_file(url, cache_path, video)
+  local nonce = vim.fn.sha256(vim.fn.tempname()):sub(1, 16)
+  local output = cache_path:gsub("(%.[^./]+)$", "." .. nonce .. "%1")
+  local ok, result = pcall(function()
+    local taken, arrived = custom_download(url, output)
+    if not taken then
+      arrived = curl_download(url, output, video and 30 or 10, video and 104857600 or 20000000).code == 0
+    end
+    if arrived then return finalize_download(url, output, cache_path, video) end
+  end)
+  os.remove(output)
+  if not ok then vim.notify("md-render: " .. tostring(result), vim.log.levels.ERROR) end
+  return ok and result or nil
+end
+
 --- Download a URL to a local file asynchronously.
 ---@param url string
 ---@param callback fun(path: string?)  called with local path on success, nil on failure
 function M.download_async(url, callback)
-  if M.is_badge_url(url) then
+  if not M.is_url(url) or M.is_badge_url(url) then
     callback(nil)
     return
   end
@@ -1195,20 +1226,7 @@ function M.download_async(url, callback)
   local cache_path = url_to_cache_path(url)
 
   shared_work(cache_path, function()
-    -- Try custom download function first (e.g. for authenticated GitHub Enterprise URLs)
-    local taken, ok = custom_download(url, cache_path)
-    if taken then
-      if not ok then return nil end
-      return finalize_download(url, cache_path)
-    end
-
-    -- Default: download with curl
-    local cmd = { "curl", "-sfL", "--max-time", "10", "--max-filesize", "20000000", "-o", cache_path, url }
-    if async.system(cmd, { text = true }).code ~= 0 then
-      os.remove(cache_path)
-      return nil
-    end
-    return finalize_download(url, cache_path)
+    return download_file(url, cache_path, false)
   end, callback)
 end
 
@@ -1217,9 +1235,11 @@ end
 ---@param url string
 ---@return string? cached_path
 function M.get_video_cached(url)
-  if _url_cache[url] and vim.fn.filereadable(_url_cache[url]) == 1 then return _url_cache[url] end
+  local current = _url_cache[url] and uv.fs_stat(_url_cache[url])
+  if current and current.type == "file" and current.size > 0 then return _url_cache[url] end
   local cache_path = url_to_cache_path(url)
-  if vim.fn.filereadable(cache_path) == 1 then
+  local stat = uv.fs_stat(cache_path)
+  if stat and stat.type == "file" and stat.size > 0 then
     _url_cache[url] = cache_path
     return cache_path
   end
@@ -1231,6 +1251,10 @@ end
 ---@param url string
 ---@param callback fun(path: string?)  called with local path on success, nil on failure
 function M.download_video_async(url, callback)
+  if not M.is_url(url) then
+    callback(nil)
+    return
+  end
   local cached = M.get_video_cached(url)
   if cached then
     callback(cached)
@@ -1239,26 +1263,8 @@ function M.download_video_async(url, callback)
 
   local cache_path = url_to_cache_path(url)
 
-  --- Both paths below accept the download on the same terms.
-  ---@param arrived boolean
-  ---@return string?
-  local function settle(arrived)
-    if arrived and vim.fn.filereadable(cache_path) == 1 then
-      _url_cache[url] = cache_path
-      return cache_path
-    end
-    os.remove(cache_path)
-    return nil
-  end
-
   shared_work(cache_path, function()
-    -- Try custom download function first (e.g. for authenticated GitHub Enterprise URLs)
-    local taken, ok = custom_download(url, cache_path)
-    if taken then return settle(ok) end
-
-    -- Default: download with curl (larger limits for video)
-    local cmd = { "curl", "-sfL", "--max-time", "30", "--max-filesize", "104857600", "-o", cache_path, url }
-    return settle(async.system(cmd, { text = true }).code == 0)
+    return download_file(url, cache_path, true)
   end, callback)
 end
 

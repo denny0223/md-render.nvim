@@ -234,6 +234,22 @@ check_return(function()
   vim.cmd "tabclose"
 end, "closing the image tab did not preserve the original viewport")
 
+-- Closing schedules restoration; a newer navigation must own focus instead.
+local just_closed = require("md-render.image_view").open "unused.png"
+vim.fn.maparg("q", "n", false, true).callback()
+local just_opened = require("md-render.image_view").open "unused.png"
+vim.wait(20, function()
+  return false
+end)
+assert(
+  just_closed.closed and vim.api.nvim_get_current_win() == just_opened.win,
+  "old close stole focus from a newer viewer"
+)
+vim.fn.maparg("q", "n", false, true).callback()
+assert(vim.wait(1000, function()
+  return vim.api.nvim_get_current_win() == origin
+end, 10))
+
 -- Do not restore the old cursor after the reader has navigated elsewhere.
 vim.api.nvim_win_set_cursor(origin, { 50, 0 })
 vim.cmd "normal! zt"

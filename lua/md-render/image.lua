@@ -371,32 +371,62 @@ function M.is_video_content(path)
   return false
 end
 
---- Get video frame dimensions using ffprobe.
---- Returns the original video dimensions (not the downscaled frame size).
---- Results are cached in memory keyed by path.
----@param path string absolute path to video file
----@return integer? width, integer? height
-function M.video_dimensions(path)
-  if vim.fn.executable "ffprobe" ~= 1 then return nil, nil end
-  local result = vim
-    .system({
-      "ffprobe",
-      "-v",
-      "error",
-      "-select_streams",
-      "v:0",
-      "-show_entries",
-      "stream=width,height",
-      "-of",
-      "csv=p=0:s=x",
-      path,
-    }, { text = true, timeout = 5000 })
-    :wait()
+local _video_dimensions_cache = {}
+local _video_dimensions_generation = 0
+
+local function video_signature(path)
+  local stat = uv.fs_stat(path)
+  if not stat or stat.type ~= "file" then return nil end
+  return table.concat({ stat.size, stat.mtime.sec, stat.mtime.nsec }, ":")
+end
+
+local function video_probe_cmd(path)
+  return {
+    "ffprobe",
+    "-v",
+    "error",
+    "-select_streams",
+    "v:0",
+    "-show_entries",
+    "stream=width,height",
+    "-of",
+    "csv=p=0:s=x",
+    path,
+  }
+end
+
+local function cache_video_dimensions(path, signature, generation, result)
+  if generation ~= _video_dimensions_generation or signature ~= video_signature(path) then return nil, nil end
+  local dimensions = { signature = signature }
   if result.code == 0 and result.stdout then
     local w, h = result.stdout:match "(%d+)x(%d+)"
-    if w and h then return tonumber(w), tonumber(h) end
+    if w and h and tonumber(w) > 0 and tonumber(h) > 0 then
+      dimensions[1], dimensions[2] = tonumber(w), tonumber(h)
+    end
   end
-  return nil, nil
+  -- Cache failed probes too; retry when the file changes or reset_cache is called.
+  _video_dimensions_cache[path] = dimensions
+  return dimensions[1], dimensions[2]
+end
+
+--- Get original video dimensions. Successes and failures are cached by file stat.
+---@param path string absolute path to video file
+---@param cache_only? boolean never launch ffprobe during a content rebuild
+---@return integer? width, integer? height
+function M.video_dimensions(path, cache_only)
+  local signature = video_signature(path)
+  if not signature then return nil, nil end
+  local cached = _video_dimensions_cache[path]
+  if cached and cached.signature == signature then return cached[1], cached[2] end
+  if cache_only then return nil, nil end
+  local generation = _video_dimensions_generation
+  if vim.fn.executable "ffprobe" ~= 1 then return cache_video_dimensions(path, signature, generation, {}) end
+  return cache_video_dimensions(
+    path,
+    signature,
+    generation,
+    vim.system(video_probe_cmd(path), { text = true, timeout = 5000 }):wait()
+  )
 end
 
 --- Get video frame dimensions asynchronously using ffprobe.
@@ -404,29 +434,26 @@ end
 ---@param path string absolute path to video file
 ---@param callback fun(width: integer?, height: integer?)
 function M.video_dimensions_async(path, callback)
-  async.run(function()
-    -- Use ffprobe to get original video dimensions
-    local result = async.system({
-      "ffprobe",
-      "-v",
-      "error",
-      "-select_streams",
-      "v:0",
-      "-show_entries",
-      "stream=width,height",
-      "-of",
-      "csv=p=0:s=x",
-      path,
-    }, { text = true, timeout = 10000 })
-    if result.code == 0 and result.stdout then
-      local w, h = result.stdout:match "(%d+)x(%d+)"
-      if w and h then
-        callback(tonumber(w), tonumber(h))
-        return
-      end
-    end
+  local signature = video_signature(path)
+  if not signature then
     callback(nil, nil)
-  end)
+    return
+  end
+  local cached = _video_dimensions_cache[path]
+  if cached and cached.signature == signature then
+    callback(cached[1], cached[2])
+    return
+  end
+  local generation = _video_dimensions_generation
+  shared_work("dimensions:" .. generation .. ":" .. path .. ":" .. signature, function()
+    if vim.fn.executable "ffprobe" ~= 1 then return cache_video_dimensions(path, signature, generation, {}) end
+    return cache_video_dimensions(
+      path,
+      signature,
+      generation,
+      async.system(video_probe_cmd(path), { text = true, timeout = 5000 })
+    )
+  end, callback)
 end
 
 ---@param path string
@@ -875,6 +902,8 @@ function M.reset_cache()
   _anim_checked = false
   _plantuml_cmd = nil
   _plantuml_checked = false
+  _video_dimensions_cache = {}
+  _video_dimensions_generation = _video_dimensions_generation + 1
   tty_mod.reset()
   M.reset_png()
 end
@@ -1697,30 +1726,6 @@ end
 
 local MAX_ANIM_FRAMES = 300 -- max frames to extract (= 60 seconds at 5 fps)
 
---- Build a command to count frames in an animated GIF.
----@param tool string  "ffmpeg" or "magick"
----@param path string  GIF file path
----@return string[] cmd
-local function build_frame_count_cmd(tool, path)
-  if tool == "ffmpeg" then
-    return {
-      "ffprobe",
-      "-v",
-      "error",
-      "-count_frames",
-      "-select_streams",
-      "v:0",
-      "-show_entries",
-      "stream=nb_read_frames",
-      "-of",
-      "csv=p=0",
-      path,
-    }
-  else
-    return { "magick", "identify", "-format", "%n\n", path }
-  end
-end
-
 --- Report a frame-extraction failure once per distinct error.
 ---
 --- Both extraction paths otherwise just drop the frames and return nil, which
@@ -1829,11 +1834,16 @@ function M.transmit_animated(path)
   -- Check frame cache first
   local cached = get_cached_frames(path, cache_dir)
   if not cached then
-    -- Count total frames first
-    local count_result = vim.system(build_frame_count_cmd(anim_tool, path), { text = true }):wait()
     local total_frames = 1
-    if count_result.code == 0 and count_result.stdout then
-      total_frames = tonumber(count_result.stdout:match "%d+") or 1
+    if anim_tool == "magick" then
+      local count_result = vim
+        .system({ "magick", "identify", "-format", "%n\n", path }, { text = true, timeout = 5000 })
+        :wait()
+      if count_result.code ~= 0 then
+        warn_extract_failed(anim_tool, count_result)
+        return nil
+      end
+      total_frames = tonumber((count_result.stdout or ""):match "%d+") or 1
     end
 
     vim.fn.mkdir(cache_dir, "p")
@@ -1958,11 +1968,17 @@ function M.extract_frames_async(path, callback)
     local frames = get_cached_frames(path, cache_dir)
 
     if not frames then
-      -- Count frames first
-      local count_result = async.system(build_frame_count_cmd(anim_tool, path), { text = true })
       local total_frames = 1
-      if count_result.code == 0 and count_result.stdout then
-        total_frames = tonumber(count_result.stdout:match "%d+") or 1
+      if anim_tool == "magick" then
+        local count_result = async.system(
+          { "magick", "identify", "-format", "%n\n", path },
+          { text = true, timeout = 5000 }
+        )
+        if count_result.code ~= 0 then
+          warn_extract_failed(anim_tool, count_result)
+          return nil
+        end
+        total_frames = tonumber((count_result.stdout or ""):match "%d+") or 1
       end
 
       vim.fn.mkdir(cache_dir, "p")
@@ -2078,6 +2094,7 @@ end
 function M.put_image(image_id, win, row, col, display_cols, display_rows, anim_path, img_w, img_h)
   if not M.supports_kitty() then return end
   if not vim.api.nvim_win_is_valid(win) then return end
+  if vim.api.nvim_win_get_tabpage(win) ~= vim.api.nvim_get_current_tabpage() then return end
 
   local win_pos = vim.api.nvim_win_get_position(win)
 

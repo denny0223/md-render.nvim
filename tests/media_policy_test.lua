@@ -1,4 +1,4 @@
--- Literal media paths and completed diagram output.
+-- Literal media paths, shared probes, diagram output, frame extraction, and tab visibility.
 -- Run: nvim --headless -u NONE --noplugin -l tests/media_policy_test.lua
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
 
@@ -47,6 +47,116 @@ assert(not image.is_url "https://example.test/a\n.png", "reject URL control char
 assert(image.is_url "HTTPS://example.test/a.png", "HTTP scheme is case insensitive")
 assert(image.resolve_local "tests/fixtures/test_4x4.png" == vim.fn.getcwd() .. "/tests/fixtures/test_4x4.png")
 vim.fn.expand, uv.os_homedir = original.expand, original.os_homedir
+
+local mmdc, animation_tool = false, "ffmpeg"
+vim.fn.executable = function(cmd)
+  return ((cmd == "mmdc" and mmdc) or cmd == "npx" or cmd == "ffprobe" or cmd == animation_tool) and 1 or 0
+end
+
+local calls, jobs, response = 0, {}, { code = 0, stdout = "640x360\n" }
+vim.system = function(cmd, opts, callback)
+  assert(cmd[1] == "ffprobe" and opts.timeout == 5000, "bounded dimensions probe")
+  assert(not vim.tbl_contains(cmd, "-count_frames"), "dimensions probe must not count frames")
+  calls = calls + 1
+  if callback then jobs[#jobs + 1] = callback end
+  return {
+    wait = function()
+      return response
+    end,
+  }
+end
+local video = file "video.mp4"
+assert(image.video_dimensions(video, true) == nil and calls == 0, "cache-only layout never launches a process")
+for _ = 1, 30 do
+  local w, h = image.video_dimensions(video)
+  assert(w == 640 and h == 360)
+end
+assert(calls == 1, "repeated references share a dimensions result")
+file("video.mp4", "modified source")
+response = { code = 1, stdout = "" }
+for _ = 1, 30 do
+  assert(image.video_dimensions(video) == nil)
+end
+assert(calls == 2, "source stat invalidates cache; a failed probe is cached")
+image.video_dimensions_async(video, function(w, h)
+  assert(w == nil and h == nil)
+end)
+assert(calls == 2, "async callers share cached failures")
+image.reset_cache()
+response = { code = 0, stdout = "800x600\n" }
+local answers = 0
+for _ = 1, 20 do
+  image.video_dimensions_async(video, function(w, h)
+    assert(w == 800 and h == 600)
+    answers = answers + 1
+  end)
+end
+assert(
+  vim.wait(2000, function()
+    return #jobs == 1
+  end, 5),
+  "one shared async probe starts"
+)
+jobs[1](response)
+assert(
+  vim.wait(2000, function()
+    return answers == 20
+  end, 5),
+  "every waiter receives dimensions"
+)
+assert(calls == 3 and image.video_dimensions(video, true) == 800, "async producer fills layout cache")
+assert(image.video_dimensions(video) == 800 and calls == 3, "sync consumer shares async cache")
+
+-- Reset and file replacement retire pending results, including cached failures.
+local answers_by_request = {}
+local function request_dimensions(label)
+  image.video_dimensions_async(video, function(w, h)
+    answers_by_request[label] = { w, h }
+  end)
+end
+image.reset_cache()
+request_dimensions "before reset"
+assert(vim.wait(2000, function()
+  return #jobs == 2
+end, 5))
+image.reset_cache()
+request_dimensions "after reset"
+assert(
+  vim.wait(2000, function()
+    return #jobs == 3
+  end, 5),
+  "reset must not join a retired probe"
+)
+jobs[3] { code = 0, stdout = "1024x768" }
+assert(vim.wait(2000, function()
+  return answers_by_request["after reset"] ~= nil
+end, 5))
+jobs[2] { code = 124, stdout = "" }
+assert(vim.wait(2000, function()
+  return answers_by_request["before reset"] ~= nil
+end, 5))
+assert(image.video_dimensions(video, true) == 1024, "pre-reset failure repopulated the current cache")
+
+file("video.mp4", "earlier version")
+request_dimensions "earlier version"
+assert(vim.wait(2000, function()
+  return #jobs == 4
+end, 5))
+file("video.mp4", "newer larger source version")
+request_dimensions "newer version"
+assert(vim.wait(2000, function()
+  return #jobs == 5
+end, 5))
+jobs[5] { code = 0, stdout = "1280x720" }
+assert(vim.wait(2000, function()
+  return answers_by_request["newer version"] ~= nil
+end, 5))
+jobs[4] { code = 0, stdout = "640x360" }
+assert(vim.wait(2000, function()
+  return answers_by_request["earlier version"] ~= nil
+end, 5))
+assert(answers_by_request["earlier version"][1] == nil, "retired file dimensions reached a placement")
+assert(image.video_dimensions(video, true) == 1280, "old completion replaced the current file cache")
 
 vim.fn.stdpath = function(kind)
   return kind == "cache" and temp or original.stdpath(kind)
@@ -159,8 +269,72 @@ image.setup { plantuml_server = "" }
 vim.fn.executable = policy_executable
 image.reset_cache()
 
+calls = 0
+vim.system = function(cmd, opts, callback)
+  calls = calls + 1
+  assert(cmd[1] == "ffmpeg", "FFmpeg extraction must skip the unused frame-count probe")
+  assert(opts.timeout == 30000)
+  local out = cmd[#cmd]:gsub("%%04d", "0001")
+  assert(uv.fs_copyfile("tests/fixtures/test_4x4.png", out))
+  local result = { code = 0, stdout = "" }
+  if callback then vim.schedule(function()
+    callback(result)
+  end) end
+  return {
+    wait = function()
+      return result
+    end,
+  }
+end
+local frames
+image.extract_frames_async(file "clip.gif", function(result)
+  frames = result
+end)
+assert(
+  vim.wait(2000, function()
+    return frames ~= nil
+  end, 5),
+  "frame extraction completes"
+)
+assert(calls == 1 and #frames == 1)
+
+animation_tool = "magick"
+image.reset_cache()
+local finished, warned = false, false
+local notify = vim.notify_once
+vim.notify_once = function()
+  warned = true
+end
+vim.system = function(cmd, opts, callback)
+  assert(cmd[1] == "magick" and cmd[2] == "identify", "stop after a failed count")
+  assert(opts.timeout == 5000, "ImageMagick frame count is bounded")
+  vim.schedule(function()
+    callback { code = 124, stdout = "", stderr = "timeout" }
+  end)
+  return {}
+end
+image.extract_frames_async(file "failure.gif", function(result)
+  assert(result == nil)
+  finished = true
+end)
+assert(vim.wait(2000, function()
+  return finished
+end, 5) and warned, "frame-count timeout reaches the caller")
+vim.notify_once = notify
+
+local writes = {}
+vim.api.nvim_ui_send = function(data)
+  writes[#writes + 1] = data
+end
+image._set_kitty_supported(true)
+local origin = vim.api.nvim_get_current_win()
+vim.cmd "tabnew"
+image.put_image(1, origin, 0, 0, 1, 1)
+assert(#writes == 0, "background tab must not place images in the current terminal")
+vim.cmd "tabclose"
+
 vim.fn.executable, vim.fn.stdpath = original.executable, original.stdpath
 vim.system, vim.api.nvim_ui_send = original.system, original.ui_send
 image.reset_cache()
 vim.fn.delete(temp, "rf")
-print "media_policy_test: literal paths and diagram output passed"
+print "media_policy_test: literal paths, shared probes, diagram output, frame extraction, and tab visibility passed"

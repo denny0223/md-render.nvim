@@ -164,6 +164,34 @@ local ok, err = pcall(function()
     return #reopened.objects == 2
   end, "reopened content did not complete")
   assert(#jobs == 9 and active == 0 and peak == 2, "producer limit did not survive cleanup")
+
+  -- Terminal detection can finish after the owning window changes buffers.
+  local detect, pending_detect = Snacks.image.terminal.detect, nil
+  Snacks.image.terminal.detect = function(callback)
+    pending_detect = callback
+  end
+  local late = setup {
+    image_placements = {
+      { path = vim.fn.getcwd() .. "/tests/fixtures/test_4x4.png", line = 0, col = 0, cols = 4, rows = 1 },
+    },
+  }
+  local old_buf = vim.api.nvim_get_current_buf()
+  local other = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(late.win, other)
+  local before_detect = ui_writes
+  pending_detect()
+  assert(late.closed and ui_writes == before_detect, "late detection placed an image after window ownership changed")
+  Snacks.image.terminal.detect = detect
+  vim.api.nvim_win_set_buf(late.win, old_buf)
+  vim.api.nvim_buf_delete(other, { force = true })
+
+  require("md-render.image").setup { backend = "snacks" }
+  local ns = vim.api.nvim_create_namespace "snacks_reopened"
+  local opts = { on_ready = function() end }
+  local restored = require("md-render.display_utils").update_images(late, late.win, late.content, ns, opts)
+  states[#states + 1] = restored
+  assert(restored ~= late and not restored.closed and restored.objects[1], "closed Snacks state was not recreated")
+  assert(restored.ns == ns and restored.opts == opts, "recreated Snacks state lost its owner options")
 end)
 
 for _, state in ipairs(states) do

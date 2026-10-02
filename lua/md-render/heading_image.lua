@@ -48,10 +48,6 @@ function M.mouse_position(mouse)
   return mouse
 end
 
-local function overlaps(a, b)
-  return a.top <= b.bottom and a.bottom >= b.top and a.left <= b.right and a.right >= b.left
-end
-
 local function clear_links(state)
   if not state.linked then return end
   -- These URLs belong to terminal cells, outside Neovim's shadow grid.
@@ -177,21 +173,8 @@ local function paint(state)
     or vim.wo[state.win].winblend > 0
     or feedback
     or (state.tmux and require("md-render.heading_tmux").status().key ~= state.connection)
-  local overlays = {}
-  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-    local cfg = vim.api.nvim_win_get_config(win)
-    if win ~= state.win and cfg.relative ~= "" then
-      local pos = vim.api.nvim_win_get_position(win)
-      -- Include a possible border so images never cover floating UI.
-      local border = cfg.border and cfg.border ~= "none" and 2 or 0
-      table.insert(overlays, {
-        top = pos[1] + 1,
-        left = pos[2] + 1,
-        bottom = pos[1] + vim.api.nvim_win_get_height(win) + border,
-        right = pos[2] + vim.api.nvim_win_get_width(win) + border,
-      })
-    end
-  end
+  local display = require "md-render.display_utils"
+  local overlays = display.floating_rects(state.win)
   local cursor = vim.api.nvim_win_get_cursor(state.win)[1] - 1
   local cursor_col = active and vim.fn.virtcol "." - 1 or -1
   local left, right, top, bottom = require("md-render.text_size").text_area(state.win)
@@ -202,15 +185,9 @@ local function paint(state)
     local current = vim.api.nvim_buf_get_lines(state.buf, p.line, p.line + 1, false)[1] or ""
     local pos = vim.fn.screenpos(state.win, p.line + 1, p.col + 1)
     local rect = { top = pos.row, left = pos.col, bottom = pos.row + p.scale - 1, right = pos.col + entry.cols - 1 }
-    local covered = false
+    local covered = display.covered_by_float(rect, overlays)
     for row = p.line, p.line + p.scale - 1 do
       if interacting[row] then covered = true end
-    end
-    for _, overlay in ipairs(overlays) do
-      if overlaps(rect, overlay) then
-        covered = true
-        break
-      end
     end
     if
       not native

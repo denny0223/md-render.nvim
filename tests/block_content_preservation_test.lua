@@ -1,4 +1,4 @@
--- Readable block fallbacks and physical source ownership.
+-- Readable block fallbacks, physical source ownership and nonblocking media.
 -- Run: nvim --headless -u NONE --noplugin -l tests/block_content_preservation_test.lua
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
 
@@ -328,6 +328,65 @@ do
   eq(c.footnote_anchors["footnote-def-fake"], nil, "indented continuation cannot publish another definition")
   assert(row_with(c, "FIRST73 [^fake]: LITERAL73"), "definition-looking continuation stays in the owning note")
   eq(c.source_line_map[assert(row_with(c, "CODE73"))], 6, "blank ends note ownership before ordinary code")
+end
+
+-- Plain rendering must not resolve media, probe a video or launch an external tool.
+do
+  local saved = {}
+  for _, name in ipairs { "resolve", "resolve_local", "image_dimensions", "video_dimensions", "is_video_content" } do
+    saved[name] = image[name]
+    image[name] = function()
+      error("plain rendering called " .. name)
+    end
+  end
+  for _, source in ipairs {
+    { "![VIDEO73](literal.mp4)" },
+    { '<VIDEO SRC="literal.mp4"></VIDEO>' },
+    { "![IMAGE73](literal.png)" },
+    { "| media |", "| --- |", "| ![VIDEO73](literal.mp4) |" },
+  } do
+    local c = build(source)
+    assert(#c.lines > 0, "plain media fallback stays readable")
+    eq(c.image_placements, {}, "plain rendering creates no graphical work")
+  end
+  for name, fn in pairs(saved) do
+    image[name] = fn
+  end
+end
+
+do
+  local supports, resolve_local, dimensions, cell_size =
+    image.supports_kitty, image.resolve_local, image.video_dimensions, image._test_cell_size
+  local resolved, probed = {}, 0
+  local literal = "`=1`.mp4"
+  image.supports_kitty = function()
+    return true
+  end
+  image._test_cell_size = { cell_w = 8, cell_h = 16 }
+  image.resolve_local = function(source, directory)
+    resolved[#resolved + 1] = source
+    eq(directory, "/tmp", "video resolver receives the source directory")
+    return "/tmp/" .. source
+  end
+  image.video_dimensions = function(path, cached_only)
+    eq(path, "/tmp/" .. literal, "video destination remains literal")
+    eq(cached_only, true, "document construction only reads cached video dimensions")
+    probed = probed + 1
+    return 16, 9
+  end
+  for _, source in ipairs {
+    { "![VIDEO73](" .. literal .. ")" },
+    { '<VIDEO SRC="' .. literal .. '"></VIDEO>' },
+    { "| media |", "| --- |", "| ![VIDEO73](" .. literal .. ") |" },
+  } do
+    local c = build(source, { buf_dir = "/tmp" })
+    eq(resolved[#resolved], literal, "all video display paths share literal resolution")
+    eq(#c.image_placements, 1, "cached video metadata still produces a graphical placement")
+  end
+  eq(#resolved, 3, "standalone Markdown, HTML and table videos each resolve once")
+  eq(probed, 3, "each video reads cached dimensions once")
+  image.supports_kitty, image.resolve_local, image.video_dimensions, image._test_cell_size =
+    supports, resolve_local, dimensions, cell_size
 end
 
 print "block_content_preservation: passed"

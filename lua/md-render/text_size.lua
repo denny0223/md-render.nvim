@@ -738,6 +738,8 @@ local function visible_placements(state)
 
   local all, protected = require("md-render.heading_feedback").protected(state, state.placements)
   if all then return {} end
+  local display = require "md-render.display_utils"
+  local overlays = display.floating_rects(win)
   local cursor
   if win == vim.api.nvim_get_current_win() and not state.gesture then
     local pos = vim.fn.getcurpos()
@@ -785,6 +787,13 @@ local function visible_placements(state)
       for row = p.line, p.line + p.scale - 1 do
         feedback = feedback or protected[row]
       end
+      feedback = feedback
+        or display.covered_by_float({
+          top = pos.row,
+          left = pos.col,
+          bottom = pos.row + p.scale - 1,
+          right = pos.col + p.width - 1,
+        }, overlays)
       if sgr and fits_vertically and fits_horizontally and not feedback then
         -- The icon sits to the left of the text on the same line, so it is
         -- inside the window whenever the text is — unless the window is
@@ -1043,6 +1052,15 @@ local KEEPALIVE_MS = 500
 --- provoke more than one write per poll.
 local REASSERT_GAP_MS = 20
 
+local function stop_redraw_timer(state)
+  local timer = state.redraw_timer
+  state.redraw_timer = nil
+  if timer and not timer:is_closing() then
+    timer:stop()
+    timer:close()
+  end
+end
+
 --- Schedule a debounced repaint, backing off while a scroll is in flight.
 ---@param state MdRender.TextSizeState
 local function schedule_paint(state)
@@ -1050,7 +1068,7 @@ local function schedule_paint(state)
   local streaming = state.last_event_at and (now - state.last_event_at) < BURST_WINDOW_MS
   state.last_event_at = now
 
-  if state.redraw_timer then state.redraw_timer:stop() end
+  stop_redraw_timer(state)
   state.redraw_timer = vim.defer_fn(function()
     state.redraw_timer = nil
     M.paint(state)
@@ -1473,10 +1491,7 @@ function M.detach(state)
   active[state.win] = nil
   update_termsync()
   stop_redraw_notification()
-  if state.redraw_timer then
-    state.redraw_timer:stop()
-    state.redraw_timer = nil
-  end
+  stop_redraw_timer(state)
   if state.keepalive_timer then
     state.keepalive_timer:stop()
     if not state.keepalive_timer:is_closing() then state.keepalive_timer:close() end

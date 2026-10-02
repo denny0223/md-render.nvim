@@ -681,7 +681,13 @@ function Session:refresh_images()
     if win then self:bind_window(win) end
     return
   end
-  self.image_state = display_utils.update_images(self.image_state, self.win, self.content)
+  self.image_state = display_utils.update_images(self.image_state, self.win, self.content, self.ns, {
+    buf = self.buf,
+    on_ready = function()
+      self:rebuild()
+      self:refresh_images()
+    end,
+  })
   self.text_size_state = require("md-render.text_size").refresh(self.text_size_state, self.win, self.content)
 end
 
@@ -3058,7 +3064,7 @@ MdPreview.show_demo = function()
       vim.fn.winrestview(display_utils.remap_view(view, content, new_content))
     end)
     content = new_content
-    image_state = display_utils.update_images(image_state, win, content)
+    image_state = display_utils.update_images(image_state, win, content, ns, { buf = buf, on_ready = rebuild })
     text_size_state = text_size.refresh(text_size_state, win, content)
   end
 

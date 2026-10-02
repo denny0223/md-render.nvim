@@ -4829,7 +4829,8 @@ function ContentBuilder:render_document(lines, opts)
           local resolved, src_url, display_cols, display_rows, is_animated
           local orig_img_w, orig_img_h
 
-          if is_video then
+          local graphics = image.supports_kitty()
+          if graphics and is_video then
             -- Video files: skip image_dimensions validation
             src_url = image.is_url(img_entry.path) and img_entry.path or nil
             if src_url then
@@ -4840,7 +4841,7 @@ function ContentBuilder:render_document(lines, opts)
             is_animated = true
             local img_max_cols = max_width - 2
             if resolved then
-              orig_img_w, orig_img_h = image.video_dimensions(resolved)
+              orig_img_w, orig_img_h = image.video_dimensions(resolved, true)
               if orig_img_w and orig_img_h then
                 display_cols, display_rows =
                   image.calc_display_size(orig_img_w, orig_img_h, img_max_cols, opts.image_max_height or 25)
@@ -4851,7 +4852,7 @@ function ContentBuilder:render_document(lines, opts)
               display_cols = math.floor(img_max_cols * 0.8)
               display_rows = 15
             end
-          else
+          elseif graphics then
             resolved = image.resolve(img_entry.path, buf_dir)
             src_url = image.is_url(img_entry.path) and img_entry.path or nil
             local img_max_cols = max_width - 2
@@ -4865,7 +4866,7 @@ function ContentBuilder:render_document(lines, opts)
                 -- URL without video extension resolved to a video file
                 is_video = true
                 is_animated = true
-                orig_img_w, orig_img_h = image.video_dimensions(resolved)
+                orig_img_w, orig_img_h = image.video_dimensions(resolved, true)
                 if orig_img_w and orig_img_h then
                   display_cols, display_rows =
                     image.calc_display_size(orig_img_w, orig_img_h, img_max_cols, opts.image_max_height or 25)
@@ -4882,7 +4883,7 @@ function ContentBuilder:render_document(lines, opts)
 
           local display_name = (img_entry.alt and img_entry.alt ~= "") and img_entry.alt
             or (img_entry.path:match "([^/]+)$" or img_entry.path)
-          if image.supports_kitty() then
+          if graphics then
             if display_cols and display_rows then
               local raw_icon, icon_hl = icons.get_image_icon(img_entry.path)
               local img_icon = pad_icon(raw_icon)

@@ -30,7 +30,8 @@ function M.open(path)
   local origin_view = vim.fn.winsaveview()
   vim.cmd "tabnew"
   local win, buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
-  local state = { zoom = 1, x = 0.5, y = 0.5, serial = 0, win = win, buf = buf, playing = true }
+  local state =
+    { zoom = 1, x = 0.5, y = 0.5, serial = 0, win = win, buf = buf, playing = image.config().autoplay ~= false }
   local drag
   vim.b[buf].md_render_image_view = true
   vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
@@ -65,10 +66,15 @@ function M.open(path)
     pattern = tostring(win),
     callback = function()
       if not viewer_active then return end
+      local fallback_win = vim.api.nvim_get_current_win()
       -- Finish the tab layout change before returning; background closes must
-      -- leave the reader's current window alone.
+      -- leave the reader's current window alone, as must a newer navigation.
       vim.schedule(function()
-        if not vim.api.nvim_win_is_valid(origin_win) or vim.api.nvim_win_get_buf(origin_win) ~= origin_buf then
+        if
+          vim.api.nvim_get_current_win() ~= fallback_win
+          or not vim.api.nvim_win_is_valid(origin_win)
+          or vim.api.nvim_win_get_buf(origin_win) ~= origin_buf
+        then
           return
         end
         vim.api.nvim_set_current_win(origin_win)
@@ -80,7 +86,13 @@ function M.open(path)
   })
 
   local function valid()
-    return not state.closed and vim.api.nvim_win_is_valid(win) and vim.api.nvim_buf_is_valid(buf)
+    return not state.closed
+      and vim.api.nvim_win_is_valid(win)
+      and vim.api.nvim_buf_is_valid(buf)
+      and vim.api.nvim_win_get_buf(win) == buf
+  end
+  local function playing()
+    return valid() and state.playing and vim.api.nvim_win_get_tabpage(win) == vim.api.nvim_get_current_tabpage()
   end
   local function cleanup()
     if state.closed then return end
@@ -107,7 +119,18 @@ function M.open(path)
           placement:show()
           placement:update()
         end
+        if state.media and state.media.sent then
+          Snacks.image.terminal.request { a = "a", i = state.media.id, s = playing() and 3 or 1 }
+        end
       end)
+    end,
+  })
+  vim.api.nvim_create_autocmd("TabLeave", {
+    group = group,
+    callback = function()
+      if valid() and state.media and state.media.sent then
+        Snacks.image.terminal.request { a = "a", i = state.media.id, s = 1 }
+      end
     end,
   })
 
@@ -425,9 +448,7 @@ function M.open(path)
       local file = dir .. "/media.png"
       assert(vim.uv.fs_copyfile(png, file))
       state.frames, state.media = frames, Snacks.image.image.new(file)
-      require("md-render.snacks_image").animate(state.media, frames, function()
-        return state.playing
-      end)
+      require("md-render.snacks_image").animate(state.media, frames, playing)
       local on_send = state.media.on_send
       state.media.on_send = function(self)
         if state.closed then

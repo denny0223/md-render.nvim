@@ -195,6 +195,15 @@ if vim.fn.executable "ffmpeg" == 1 then
   local function key(name)
     vim.fn.maparg(name, "n", false, true).callback()
   end
+  -- Dimension discovery may rebuild both inline placements before interaction.
+  wait_for(function()
+    if session.image_state.timer then return false end
+    for idx, placement in ipairs(session.content.image_placements) do
+      local object = session.image_state.objects[idx]
+      if not placement.img_w or not object or not object:ready() then return false end
+    end
+    return true
+  end, "inline dimensions did not settle")
   for idx, path in ipairs { gif, video } do
     assert(
       vim.wait(15000, function()

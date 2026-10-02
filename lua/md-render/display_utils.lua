@@ -21,6 +21,39 @@ function M.getmousepos(release)
   return mouse
 end
 
+--- Terminal overlays must leave floating UI, including its border, to Neovim.
+function M.floating_rects(owner)
+  local rects = {}
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local cfg = vim.api.nvim_win_get_config(win)
+    if win ~= owner and cfg.relative ~= "" then
+      local pos = vim.api.nvim_win_get_position(win)
+      local border = cfg.border and cfg.border ~= "none" and 2 or 0
+      rects[#rects + 1] = {
+        top = pos[1] + 1,
+        left = pos[2] + 1,
+        bottom = pos[1] + vim.api.nvim_win_get_height(win) + border,
+        right = pos[2] + vim.api.nvim_win_get_width(win) + border,
+      }
+    end
+  end
+  return rects
+end
+
+function M.covered_by_float(rect, floats)
+  for _, other in ipairs(floats) do
+    if
+      rect.top <= other.bottom
+      and rect.bottom >= other.top
+      and rect.left <= other.right
+      and rect.right >= other.left
+    then
+      return true
+    end
+  end
+  return false
+end
+
 local _osc8_supported = nil
 
 local function is_wezterm()
@@ -723,6 +756,15 @@ local function has_async_source(placement)
   return placement.mermaid_source ~= nil or placement.plantuml_source ~= nil or placement.src_url ~= nil
 end
 
+local function stop_timer(state, key)
+  local timer = state[key]
+  state[key] = nil
+  if timer and not timer:is_closing() then
+    timer:stop()
+    timer:close()
+  end
+end
+
 ---@param win integer
 ---@param content MdRender.Content
 ---@param ns integer?
@@ -747,20 +789,34 @@ function M.setup_images(win, content, ns, opts)
     anims = {},
     tx_dims = {}, -- path → {w, h}: actual transmitted image dimensions
     win = win,
+    buf = opts and opts.buf or vim.api.nvim_win_get_buf(win),
+    revision = 1,
+    owner = {},
     closed = false,
     redraw_timer = nil,
     autocmd_ids = {},
   }
+  local function current(revision)
+    return not state.closed
+      and (revision == nil or revision == state.revision)
+      and vim.api.nvim_win_is_valid(state.win)
+      and vim.api.nvim_buf_is_valid(state.buf)
+      and vim.api.nvim_win_get_buf(state.win) == state.buf
+  end
+  local function visible()
+    return current() and vim.api.nvim_win_get_tabpage(state.win) == vim.api.nvim_get_current_tabpage()
+  end
 
   -- Let the owner publish new dimensions when native interactions are done.
   -- Picker integrations can still supply the legacy content builder instead.
   local on_download
   if opts and opts.buf and (opts.on_ready or opts.build_content) then
-    on_download = function()
-      if state._rebuild_timer then state._rebuild_timer:stop() end
+    on_download = function(revision)
+      if not current(revision) then return end
+      stop_timer(state, "_rebuild_timer")
       state._rebuild_timer = vim.defer_fn(function()
         state._rebuild_timer = nil
-        if state.closed or not vim.api.nvim_win_is_valid(win) then return end
+        if not current(revision) then return end
         local buf = opts.buf
         if not vim.api.nvim_buf_is_valid(buf) then return end
         if opts.on_ready then
@@ -773,7 +829,7 @@ function M.setup_images(win, content, ns, opts)
         vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
         M.apply_content_to_buffer(buf, ns, new_content)
         vim.bo[buf].modifiable = was_modifiable
-        M.update_images(state, win, new_content)
+        M.update_images(state, win, new_content, ns, opts)
         -- A download changes how many rows an image occupies, so every line
         -- below it moves. Anything else anchored to rendered line numbers has
         -- to be told, or it keeps pointing at the pre-rebuild layout.
@@ -808,7 +864,7 @@ function M.setup_images(win, content, ns, opts)
   local LAZY_PADDING = 10
 
   local function placement_near_viewport(placement)
-    if not vim.api.nvim_win_is_valid(state.win) then return false end
+    if not visible() then return false end
     local wininfo = vim.fn.getwininfo(state.win)[1]
     if not wininfo then return false end
     local topline = wininfo.topline - 1
@@ -819,7 +875,7 @@ function M.setup_images(win, content, ns, opts)
   end
 
   local function place_images()
-    if state.closed or not vim.api.nvim_win_is_valid(state.win) then return end
+    if not visible() then return end
 
     -- Retry transmit for images that have a path but no ID (up to MAX_RETRIES).
     -- Skip placements whose conversion is already in flight to avoid spawning
@@ -918,7 +974,12 @@ function M.setup_images(win, content, ns, opts)
         break
       end
     end
-    if not has_multi then
+    if image.config().autoplay == false then
+      for _, anim in pairs(state.anims) do
+        anim.current = 1
+      end
+    end
+    if not has_multi or not visible() or image.config().autoplay == false then
       anim_timer:stop()
       return
     end
@@ -928,7 +989,7 @@ function M.setup_images(win, content, ns, opts)
       200,
       vim.schedule_wrap(function()
         if state.closed then return end
-        if not vim.api.nvim_win_is_valid(state.win) then
+        if not visible() or image.config().autoplay == false then
           anim_timer:stop()
           return
         end
@@ -997,7 +1058,7 @@ function M.setup_images(win, content, ns, opts)
 
   local function redraw_images()
     state.redraw_timer = nil
-    if state.closed or not vim.api.nvim_win_is_valid(state.win) then return end
+    if not visible() then return end
     -- Pause animation during redraw! to prevent concurrent placement writes
     pause_anim_timers()
     if is_wezterm() then
@@ -1024,7 +1085,7 @@ function M.setup_images(win, content, ns, opts)
 
   local function schedule_redraw()
     if state.closed then return end
-    if state.redraw_timer then state.redraw_timer:stop() end
+    stop_timer(state, "redraw_timer")
     -- Pause animations immediately on scroll to stop terminal writes
     pause_anim_timers()
     state.redraw_timer = vim.defer_fn(function()
@@ -1038,12 +1099,12 @@ function M.setup_images(win, content, ns, opts)
   ---@param placement MdRender.ImagePlacement
   local function clear_placeholder_text(placement, num_rows)
     if not ns then return end
-    if not vim.api.nvim_win_is_valid(state.win) then return end
-    local buf = vim.api.nvim_win_get_buf(state.win)
-    if not vim.api.nvim_buf_is_valid(buf) then return end
+    if not current() then return end
+    local buf = state.buf
     local line_count = vim.api.nvim_buf_line_count(buf)
     local start_line = placement.line
     local end_line = math.min(placement.line + num_rows - 1, line_count - 1)
+    if start_line > end_line then return end
     -- Find lines that have MdRenderImagePlaceholder extmarks
     local placeholder_lines = {}
     local marks = vim.api.nvim_buf_get_extmarks(buf, ns, { start_line, 0 }, { end_line, -1 }, { details = true })
@@ -1089,7 +1150,7 @@ function M.setup_images(win, content, ns, opts)
   ---@param path string
   ---@param placement MdRender.ImagePlacement
   ---@param placeholder_rows integer
-  local function setup_animation(path, placement, placeholder_rows)
+  local function setup_animation(path, placement, placeholder_rows, revision, owner)
     --- Point a placement at frames that exist, and take their real size.
     ---@param frame_w integer?
     ---@param frame_h integer?
@@ -1106,21 +1167,25 @@ function M.setup_images(win, content, ns, opts)
     local existing = state.anims[path]
     if existing then
       adopt(existing.frame_w, existing.frame_h)
-      return
+      return true
     end
 
     local frame_ids, tmp_dir, frame_w, frame_h = async.await(function(callback)
       image.transmit_animated_async(path, function(ids, ...)
         -- A cancelled await discards its result; release late IDs here.
-        if state.closed or not vim.api.nvim_win_is_valid(state.win) then
+        if not current(revision) then
           if ids then image.delete_images(ids) end
           callback(nil)
           return
         end
         callback(ids, ...)
-      end, state)
+      end, owner)
     end)
-    if not frame_ids then return end
+    if not frame_ids then return false end
+    if not current(revision) then
+      image.delete_images(frame_ids)
+      return
+    end
     state.anims[path] = {
       frame_ids = frame_ids,
       current = 1,
@@ -1132,6 +1197,7 @@ function M.setup_images(win, content, ns, opts)
     -- Only a multi-frame sequence needs the timer; a single frame is a
     -- static image that happens to have arrived this way.
     if #frame_ids > 1 then start_anim_timer() end
+    return true
   end
 
   --- Size the placement from the file, then transmit it and clear the
@@ -1139,8 +1205,8 @@ function M.setup_images(win, content, ns, opts)
   ---@async
   ---@param placement MdRender.ImagePlacement
   ---@param path string
-  local function show(placement, path)
-    if not vim.api.nvim_win_is_valid(state.win) then return end
+  local function show(placement, path, revision, owner)
+    if not current(revision) then return end
 
     placement.path = path
 
@@ -1166,23 +1232,22 @@ function M.setup_images(win, content, ns, opts)
     if placement.video then
       -- Video: always animated, and only ffprobe knows how big it is
       placement.animated = true
-      size_from(async.await(2, image.video_dimensions_async, path))
-      if not vim.api.nvim_win_is_valid(state.win) then return end
-      setup_animation(path, placement, placeholder_rows)
-      return
+      local missing_size = not placement.img_w
+      local width, height = async.await(2, image.video_dimensions_async, path)
+      if not current(revision) then return end
+      size_from(width, height)
+      if missing_size and width and height and on_download then on_download(revision) end
+      return setup_animation(path, placement, placeholder_rows, revision, owner)
     end
 
     placement.animated = image.is_animated_gif(path)
     size_from(image.image_dimensions(path))
 
-    if placement.animated then
-      setup_animation(path, placement, placeholder_rows)
-      return
-    end
+    if placement.animated then return setup_animation(path, placement, placeholder_rows, revision, owner) end
 
     local id, tx_w, tx_h = async.await(function(callback)
       image.transmit_image_async(path, function(id, ...)
-        if state.closed or not vim.api.nvim_win_is_valid(state.win) then
+        if not current(revision) then
           if id then image.delete_image(id) end
           callback(nil)
           return
@@ -1190,7 +1255,11 @@ function M.setup_images(win, content, ns, opts)
         callback(id, ...)
       end)
     end)
-    if not id then return end
+    if not id then return false end
+    if not current(revision) then
+      image.delete_image(id)
+      return
+    end
     -- Concurrent placements of one file share the state's first image ID.
     -- Release a duplicate transmission instead of losing its ownership.
     if state.image_ids[path] then
@@ -1211,6 +1280,7 @@ function M.setup_images(win, content, ns, opts)
     clear_placeholder_text(placement, placeholder_rows)
     -- Use schedule_redraw to re-place ALL images together after redraw!
     schedule_redraw()
+    return true
   end
 
   --- Produce the placement's file, if it does not have one yet.
@@ -1236,23 +1306,22 @@ function M.setup_images(win, content, ns, opts)
   --- Download or render the placement's image if needed, then display it.
   ---@async
   ---@param placement MdRender.ImagePlacement
-  local function process_placement_async(placement)
-    if placement.path then
-      show(placement, placement.path)
-      return
-    end
+  local function process_placement_async(placement, revision, owner)
+    if placement.path then return show(placement, placement.path, revision, owner) end
 
     local path = produce(placement)
-    if not path then return end
+    if not path then return false end
+    if not current(revision) then return end
     -- A file that did not exist when the content was built changes how many
     -- rows it needs, so everything below it moves. Rebuilding is what puts it
     -- in the right place; the rebuild comes back around through
     -- `update_images` with a placement sized for the real image.
     if on_download then
-      on_download()
+      on_download(revision)
     else
-      show(placement, path)
+      return show(placement, path, revision, owner)
     end
+    return true
   end
 
   -- The initial paint asks for every placement near the viewport at once, and
@@ -1276,13 +1345,23 @@ function M.setup_images(win, content, ns, opts)
 
   ---@param placement MdRender.ImagePlacement
   process_placement = function(placement)
-    if state.closed or in_flight(placement) then return end
+    if not current() or in_flight(placement) then return end
+    local revision, owner = state.revision, state.owner
     tasks[placement] = async.run(function()
       permits:with(function()
         -- The window can go, and the placement can scroll away, while this is
         -- queued behind a permit.
-        if not vim.api.nvim_win_is_valid(state.win) then return end
-        process_placement_async(placement)
+        if not current(revision) then return end
+        local ok, shown = pcall(process_placement_async, placement, revision, owner)
+        if current(revision) and (not ok or shown == false) then
+          placement._retries = MAX_RETRIES
+          if ns and placement.line < vim.api.nvim_buf_line_count(state.buf) then
+            vim.api.nvim_buf_set_extmark(state.buf, ns, placement.line, 0, {
+              virt_text = { { "Image conversion failed; edit the source and retry", "ErrorMsg" } },
+              virt_text_pos = "overlay",
+            })
+          end
+        end
       end)
     end)
   end
@@ -1293,6 +1372,7 @@ function M.setup_images(win, content, ns, opts)
   state.process_placement = process_placement
   state.clear_placeholder_text = clear_placeholder_text
   state.start_anim_timer = start_anim_timer
+  state.placement_near_viewport = placement_near_viewport
 
   -- Ask for everything near the viewport; the semaphore decides how much of it
   -- happens at once. Off-screen placements are skipped entirely on this pass
@@ -1309,11 +1389,10 @@ function M.setup_images(win, content, ns, opts)
   for _, event in ipairs { "WinScrolled", "CursorMoved", "CursorMovedI" } do
     local id = vim.api.nvim_create_autocmd(event, {
       group = augroup,
-      callback = function(ev)
-        -- WinScrolled: check if it's our window
-        if event == "WinScrolled" then
-          if tostring(ev.match) ~= tostring(state.win) then return end
-        else
+      callback = function()
+        -- WinScrolled reports only the first scrolled window; paired previews
+        -- can scroll in the same event, so all visible states must refresh.
+        if event ~= "WinScrolled" then
           -- CursorMoved: check if cursor is in our window
           if vim.api.nvim_get_current_win() ~= state.win then return end
         end
@@ -1322,6 +1401,22 @@ function M.setup_images(win, content, ns, opts)
     })
     table.insert(state.autocmd_ids, id)
   end
+
+  vim.api.nvim_create_autocmd({ "TabEnter", "BufWinEnter" }, {
+    group = augroup,
+    callback = function()
+      if visible() then schedule_redraw() end
+    end,
+  })
+  vim.api.nvim_create_autocmd({ "TabLeave", "BufWinLeave" }, {
+    group = augroup,
+    callback = function(event)
+      if event.event == "TabLeave" or event.buf == state.buf then
+        pause_anim_timers()
+        stop_timer(state, "redraw_timer")
+      end
+    end,
+  })
 
   -- Somebody else repainted the screen, which dropped our placements with it.
   -- Not filtered by window: a full repaint clears the whole screen, so every
@@ -1357,10 +1452,23 @@ end
 ---@param win integer
 ---@param content MdRender.Content
 ---@return MdRender.ImageState?
-function M.update_images(state, win, content)
+function M.update_images(state, win, content, ns, opts)
+  if
+    state
+    and (
+      state.closed
+      or state.win ~= win
+      or not vim.api.nvim_win_is_valid(win)
+      or vim.api.nvim_win_get_buf(win) ~= state.buf
+    )
+  then
+    M.cleanup_images(state)
+    state = nil
+  end
+  if not vim.api.nvim_win_is_valid(win) then return nil end
   if state and state.snacks then return require("md-render.snacks_image").update(state, content) end
   -- No previous state: full setup from scratch
-  if not state then return M.setup_images(win, content, nil) end
+  if not state then return M.setup_images(win, content, ns, opts) end
 
   -- No images in new content: full cleanup
   if not content.image_placements or #content.image_placements == 0 then
@@ -1369,6 +1477,10 @@ function M.update_images(state, win, content)
   end
 
   local image = require "md-render.image"
+  -- Keep shared producers running under their permits, but retire their targets.
+  state.revision = state.revision + 1
+  state.owner = {}
+  stop_timer(state, "_rebuild_timer")
 
   -- Build set of paths present in new placements
   local new_paths = {}
@@ -1423,11 +1535,11 @@ function M.update_images(state, win, content)
         -- Already transmitted — just clear placeholder text so it doesn't
         -- show through the graphics overlay.
         state.clear_placeholder_text(placement, placement.rows)
-      else
+      elseif state.placement_near_viewport(placement) then
         -- New image: transmit, clear placeholder, and register in state
         state.process_placement(placement)
       end
-    elseif has_async_source(placement) then
+    elseif has_async_source(placement) and state.placement_near_viewport(placement) then
       state.process_placement(placement)
     end
   end
@@ -1453,7 +1565,7 @@ function M.cleanup_images(state)
   end
 
   -- Stop download-rebuild timer
-  if state._rebuild_timer then state._rebuild_timer:stop() end
+  stop_timer(state, "_rebuild_timer")
 
   -- Delete static images from terminal
   local ids = {}
@@ -1476,7 +1588,7 @@ function M.cleanup_images(state)
   image.delete_images(ids)
 
   -- Stop redraw timer
-  if state.redraw_timer then state.redraw_timer:stop() end
+  stop_timer(state, "redraw_timer")
 
   -- Remove autocmds
   pcall(vim.api.nvim_del_augroup_by_name, "md_render_images_" .. state.win)

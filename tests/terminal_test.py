@@ -233,7 +233,7 @@ def run_kitty(kitty, enabled, workdir, mode="float"):
                 return [(row, line) for row, line in enumerate(screen().decode().splitlines())
                         if "Body text under" in line or "floating preview is sized" in line]
 
-            def check_heading(level, scaled, context):
+            def check_heading(level, scaled, context, readable=True):
                 payloads = [text.decode() for meta, text in OSC66.findall(screen(ansi=True))
                             if level_of(meta.decode()) == level]
                 present = LEVEL_TEXT[level] in "".join(payloads)
@@ -241,7 +241,7 @@ def run_kitty(kitty, enabled, workdir, mode="float"):
                     ok(f"h{level} {'is scaled' if scaled else 'yields to native feedback'} {context}")
                 else:
                     bad(f"h{level} scaling {context}", f"expected scaled={scaled}, payloads={payloads!r}")
-                if not scaled:
+                if not scaled and readable:
                     if LEVEL_TEXT[level] in screen().decode():
                         ok(f"h{level} text remains readable {context}")
                     else:
@@ -278,6 +278,83 @@ def run_kitty(kitty, enabled, workdir, mode="float"):
                         ok(f"body rows survive cursor movement {context}")
                     else:
                         bad(f"body rows survive cursor movement {context}", repr(actual))
+
+                def scaled_rows(level):
+                    rows = []
+                    for row, line in enumerate(screen(ansi=True).splitlines()):
+                        text = "".join(text.decode() for meta, text in OSC66.findall(line)
+                                       if level_of(meta.decode()) == level)
+                        if text:
+                            rows.append((row, text))
+                    return rows
+
+                expected_h2 = scaled_rows(2)
+                assert any(LEVEL_TEXT[2] in text for _, text in expected_h2), expected_h2
+
+                def check_layout(context):
+                    actual = (scaled_rows(2), body_rows())
+                    if actual == (expected_h2, expected):
+                        ok(f"h2 and body retain their screen rows {context}")
+                    else:
+                        bad(f"h2 and body retain their screen rows {context}", repr(actual))
+
+                overlay_lines = ["FLOAT OVERLAY FIRST ROW STAYS READABLE",
+                                 "FLOAT OVERLAY SECOND ROW STAYS READABLE"]
+                overlay = lua("(function() "
+                              "local win, buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf(); "
+                              "local cursor = vim.api.nvim_win_get_cursor(win); "
+                              f"assert(cursor[1] == {body_row} and cursor[2] == {body_col - 1}); "
+                              f"local pos = vim.fn.screenpos(win, {heading_row}, {heading_col}); "
+                              "assert(pos.row > 0 and pos.col > 0); "
+                              "local popup_buf = vim.api.nvim_create_buf(false, true); "
+                              "vim.bo[popup_buf].bufhidden = 'wipe'; "
+                              "vim.api.nvim_buf_set_lines(popup_buf, 0, -1, false, {"
+                              + ",".join(json.dumps(line) for line in overlay_lines) + "}); "
+                              "local popup = vim.api.nvim_open_win(popup_buf, false, {relative='editor', "
+                              f"row=pos.row-1, col=pos.col-1, width={max(map(len, overlay_lines))}, height=2, "
+                              "border='none', style='minimal', focusable=false}); "
+                              "assert(vim.api.nvim_get_current_win() == win and vim.api.nvim_get_current_buf() == buf); "
+                              "assert(vim.deep_equal(cursor, vim.api.nvim_win_get_cursor(win))); "
+                              "return {win=popup, tab=vim.api.nvim_get_current_tabpage()} end)()")
+                try:
+                    # Cross the 500 ms keepalive twice: an initial Neovim repaint
+                    # alone must not hide an overlay that later reassertions damage.
+                    for context in ("under a non-focusable float", "after another heading keepalive"):
+                        time.sleep(0.6)
+                        visible = screen().decode()
+                        if all(line in visible for line in overlay_lines):
+                            ok(f"the complete float remains readable {context}")
+                        else:
+                            bad(f"the complete float remains readable {context}", visible)
+                        check_heading(1, False, context, readable=False)
+                        check_layout(context)
+                finally:
+                    lua(f"(function() if vim.api.nvim_win_is_valid({overlay['win']}) then "
+                        f"vim.api.nvim_win_close({overlay['win']}, true) end; return true end)()")
+                time.sleep(0.6)
+                check_heading(1, True, "after the covering float closes")
+                check_layout("after the covering float closes")
+
+                background = lua("(function() local original = vim.api.nvim_get_current_tabpage(); "
+                                 "vim.cmd.tabnew(); local tab = vim.api.nvim_get_current_tabpage(); "
+                                 "assert(tab ~= original); vim.bo.buftype = 'nofile'; vim.bo.bufhidden = 'wipe'; "
+                                 "vim.api.nvim_buf_set_lines(0, 0, -1, false, {'BACKGROUND TAB STAYS CLEAN'}); "
+                                 "return tab end)()")
+                try:
+                    time.sleep(0.6)
+                    visible = screen().decode()
+                    if ("BACKGROUND TAB STAYS CLEAN" in visible and not OSC66.findall(screen(ansi=True))
+                            and not any(title in visible for title in LEVEL_TEXT.values())):
+                        ok("background tab stays free of the old preview's heading paint")
+                    else:
+                        bad("background tab stays free of the old preview's heading paint", visible)
+                finally:
+                    lua(f"(function() if vim.api.nvim_tabpage_is_valid({background}) then "
+                        f"vim.api.nvim_set_current_tabpage({background}); vim.cmd.tabclose() end; "
+                        f"vim.api.nvim_set_current_tabpage({overlay['tab']}); return true end)()")
+                time.sleep(0.6)
+                check_heading(1, True, "after returning from the background tab")
+                check_layout("after returning from the background tab")
 
         if mode == "pager":
             source = workdir / "pager-source.md"

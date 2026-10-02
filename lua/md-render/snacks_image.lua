@@ -6,15 +6,63 @@ local permits = async.semaphore(2)
 
 -- Keep Snacks' placement/transport lifecycle; Kitty cycles frames itself.
 function M.animate(img, frames, playing)
-  if img._md_render_animation then return end
+  local owns_placements = playing == nil
+  playing = playing or function()
+    return image.config().autoplay ~= false
+  end
+  if img._md_render_animation then
+    if img._md_render_stopped and img._md_render_frames_ready then
+      img._md_render_stopped = false
+      Snacks.image.terminal.request { a = "a", i = img.id, s = playing() and 3 or 1 }
+    end
+    return
+  end
   img._md_render_animation = true
+  local function has_owners(self)
+    for _, placement in pairs(self.placements) do
+      if not placement.closed then return true end
+    end
+    return false
+  end
+  local function retire(self)
+    if self._md_render_upload then self._md_render_upload:close() end
+    if self._md_render_frames_ready then
+      Snacks.image.terminal.request { a = "a", i = self.id, s = 1 }
+    else
+      -- Appending a complete upload to partially retained frames duplicates
+      -- them. Let the next owner resend the base image and all frames instead.
+      Snacks.image.terminal.request { a = "d", d = "I", i = self.id }
+      self.sent = false
+    end
+    self._md_render_stopped = true
+  end
+  if owns_placements then
+    local del, place = img.del, img.place
+    img.del = function(self, ...)
+      del(self, ...)
+      if not has_owners(self) then retire(self) end
+    end
+    img.place = function(self, ...)
+      place(self, ...)
+      if self._md_render_stopped and self._md_render_frames_ready and self.sent then
+        self._md_render_stopped = false
+        Snacks.image.terminal.request { a = "a", i = self.id, s = playing() and 3 or 1 }
+      end
+    end
+  end
   local on_send = img.on_send
   img.on_send = function(self)
     on_send(self)
     if self._md_render_upload then self._md_render_upload:close() end
+    self._md_render_frames_ready = false
+    if owns_placements and not has_owners(self) then
+      retire(self)
+      return
+    end
+    self._md_render_stopped = false
     self._md_render_upload = async.run(function()
       local terminal = Snacks.image.terminal
-      terminal.request { a = "a", i = self.id, r = 1, z = 200, s = (not playing or playing()) and 2 or 1, v = 1 }
+      terminal.request { a = "a", i = self.id, r = 1, z = 200, s = playing() and 2 or 1, v = 1 }
       for idx = 2, #frames do
         if terminal.env().remote then
           local file = assert(io.open(frames[idx], "rb"))
@@ -36,7 +84,8 @@ function M.animate(img, frames, playing)
         end
         if idx % 10 == 0 then async.sleep(10) end
       end
-      terminal.request { a = "a", i = self.id, s = (not playing or playing()) and 3 or 1 }
+      self._md_render_frames_ready = true
+      terminal.request { a = "a", i = self.id, s = playing() and 3 or 1 }
     end)
     self._md_render_upload:detach()
   end
@@ -116,10 +165,22 @@ end
 
 function M.update(state, content)
   if state.closed then return state end
+  if not vim.api.nvim_win_is_valid(state.win) or vim.api.nvim_win_get_buf(state.win) ~= state.buf then
+    M.cleanup(state)
+    return state
+  end
   state.content = content
   if not state.transport_ready then return state end
   state.revision = state.revision + 1
   local revision = state.revision
+  local function current()
+    return not state.closed
+      and revision == state.revision
+      and vim.api.nvim_buf_is_valid(state.buf)
+      and vim.api.nvim_win_is_valid(state.win)
+      and vim.api.nvim_win_get_buf(state.win) == state.buf
+  end
+  stop_timer(state)
   state.placements = content.image_placements or {}
   -- Rebuilding replaces buffer rows even when the image coordinates stay the
   -- same. Recreate placements so Snacks cannot reuse displaced extmarks.
@@ -131,7 +192,7 @@ function M.update(state, content)
     stop_timer(state)
     state.timer = vim.defer_fn(function()
       state.timer = nil
-      if state.closed or not vim.api.nvim_buf_is_valid(state.buf) then return end
+      if not current() then return end
       if state.opts.on_ready then
         state.opts.on_ready()
       elseif state.opts.build_content then
@@ -170,14 +231,29 @@ function M.update(state, content)
         end
         local object = Snacks.image.placement.new(state.buf, source, opts)
         state.objects[idx] = object
-        if frames and #frames > 1 then M.animate(object.img, frames) end
+        if frames and #frames > 1 then
+          if image.config().autoplay ~= false then
+            M.animate(object.img, frames)
+          elseif object.img._md_render_animation then
+            Snacks.image.terminal.request { a = "a", i = object.img.id, s = 1, c = 1 }
+            object.img._md_render_stopped = true
+          end
+        end
       end
       if p.animated or p.video or image.is_video_file(p.path) or image.is_animated_gif(p.path) then
         async.run(function()
           permits:with(function()
-            if state.closed or revision ~= state.revision then return end
+            if not current() then return end
+            if not p.img_w and (p.video or image.is_video_file(p.path)) then
+              local width, height = async.await(2, image.video_dimensions_async, p.path)
+              if not current() then return end
+              if width and height then
+                p.img_w, p.img_h = width, height
+                ready()
+              end
+            end
             local frames = async.await(2, image.extract_frames_async, p.path)
-            if state.closed or revision ~= state.revision then return end
+            if not current() then return end
             place(frames and frames[1] or p.path, frames)
           end)
         end)
@@ -189,7 +265,7 @@ function M.update(state, content)
       -- callback finishes; cancelled waiters would let new edits exceed the cap.
       async.run(function()
         permits:with(function()
-          if state.closed or revision ~= state.revision then return end
+          if not current() then return end
           local path
           if p.mermaid_source then
             path = async.await(2, image.render_mermaid_async, p.mermaid_source)
@@ -198,7 +274,7 @@ function M.update(state, content)
           elseif p.src_url then
             path = async.await(2, image.download_async, p.src_url)
           end
-          if state.closed or revision ~= state.revision then return end
+          if not current() then return end
           if path then
             p.path = path
             ready()

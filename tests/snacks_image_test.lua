@@ -93,10 +93,19 @@ if vim.fn.executable "ffmpeg" == 1 then
   end
   local animated = backend.setup(win, media)
   local function loaded()
+    if animated.timer then return false end -- Dimension discovery can still replace placements.
     for idx = 1, 3 do
       local object = animated.objects[idx]
       local task = object and object.img._md_render_upload
-      if not object or not object:ready() or not task or not task:completed() then return false end
+      if
+        not object
+        or not object:ready()
+        or not task
+        or not task:completed()
+        or not object.img._md_render_frames_ready
+      then
+        return false
+      end
     end
     return true
   end
@@ -113,14 +122,21 @@ if vim.fn.executable "ffmpeg" == 1 then
     local img = animated.objects[idx].img
     assert(img.info.dpi.width == img.info.dpi.height, "decoded frames must not distort Snacks' placement size")
     assert(count("f", img.id) > 0, "animated media was reduced to a still image")
-    assert(count("a", img.id) == 2, "animation must load once and loop")
+    local uploads, last_control = 0, nil
+    for _, req in ipairs(requests) do
+      if req.a == "a" and req.i == img.id then
+        if req.r == 1 then uploads = uploads + 1 end
+        last_control = req.s
+      end
+    end
+    assert(uploads == 1 and last_control == 3, "animation must load once and resume after dimension discovery")
     local frames = count("f", img.id)
     local old_task = img._md_render_upload
     img.sent = false -- Snacks can resend an image after evicting it from its cache.
     img:send()
     assert(
       vim.wait(3000, function()
-        return img._md_render_upload ~= old_task and img._md_render_upload:completed()
+        return img._md_render_upload ~= old_task and img._md_render_upload:completed() and img._md_render_frames_ready
       end, 10),
       "retransmitted images must restore their frames"
     )
@@ -139,7 +155,7 @@ if vim.fn.executable "ffmpeg" == 1 then
   video:send()
   assert(
     vim.wait(3000, function()
-      return video._md_render_upload:completed()
+      return video._md_render_upload:completed() and video._md_render_frames_ready
     end, 10),
     "remote upload timed out"
   )
@@ -173,6 +189,105 @@ if vim.fn.executable "ffmpeg" == 1 then
 else
   print "SKIP Snacks animation: ffmpeg unavailable"
 end
+
+-- Keep real Snacks images/placements; hold only extraction at known PNG frames
+-- so an upload necessarily yields while its owners change.
+do
+  local extract, request = image.extract_frames_async, terminal.request
+  local requests, frame = {}, cache .. "/shared-frames.png"
+  assert(vim.uv.fs_copyfile(root .. "/tests/fixtures/test_4x4.png", frame))
+  image.extract_frames_async = function(_, callback)
+    callback(vim.fn["repeat"]({ frame }, 31))
+  end
+  terminal.request = function(opts)
+    requests[#requests + 1] = vim.deepcopy(opts)
+    request(opts)
+  end
+  local function count(action, img, first)
+    local total = 0
+    for idx = first or 1, #requests do
+      if requests[idx].a == action and requests[idx].i == img.id then total = total + 1 end
+    end
+    return total
+  end
+  local function last_control(img)
+    for idx = #requests, 1, -1 do
+      if requests[idx].a == "a" and requests[idx].i == img.id then return requests[idx] end
+    end
+  end
+  local media = { image_placements = { { path = frame, animated = true, line = 0, col = 0, cols = 4, rows = 3 } } }
+  vim.cmd "vsplit"
+  local second_win, second_buf = vim.api.nvim_get_current_win(), vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_win_set_buf(second_win, second_buf)
+  vim.api.nvim_buf_set_lines(second_buf, 0, -1, false, lines)
+  vim.api.nvim_set_current_win(win)
+  local first, second = backend.setup(win, media), backend.setup(second_win, media)
+  wait_for(function()
+    local object = first.objects[1]
+    return object
+      and second.objects[1]
+      and object.img._md_render_upload
+      and not object.img._md_render_upload:completed()
+  end, "shared upload did not reach a yield")
+  local img = first.objects[1].img
+  assert(second.objects[1].img == img, "windows did not share the same Snacks image")
+  backend.cleanup(first)
+  local retired = #requests + 1
+  wait_for(function()
+    return img._md_render_upload:completed()
+  end, "retiring one owner cancelled the survivor's upload")
+  assert(count("f", img) == 30 and last_control(img).s == 3, "surviving owner lost its complete animation")
+  for idx = retired, #requests do
+    local req = requests[idx]
+    assert(not (req.i == img.id and (req.s == 1 or req.d == "I")), "retiring one owner stopped the shared image")
+  end
+  backend.cleanup(second)
+  assert(last_control(img).s == 1, "last owner did not stop playback")
+  local cached = backend.setup(win, media)
+  wait_for(function()
+    return cached.objects[1] and cached.objects[1]:ready()
+  end, "complete cached animation did not reopen")
+  assert(cached.objects[1].img == img and count("f", img) == 30, "reopening appended duplicate cached frames")
+  assert(last_control(img).s == 3, "complete cached animation did not resume")
+  backend.cleanup(cached)
+  vim.api.nvim_win_close(second_win, true)
+  vim.api.nvim_buf_delete(second_buf, { force = true })
+
+  frame = cache .. "/partial-frames.png"
+  assert(vim.uv.fs_copyfile(root .. "/tests/fixtures/test_4x4.png", frame))
+  media.image_placements[1].path = frame
+  local partial = backend.setup(win, media)
+  wait_for(function()
+    local object = partial.objects[1]
+    return object and object.img._md_render_upload and not object.img._md_render_upload:completed()
+  end, "partial upload did not reach a yield")
+  img = partial.objects[1].img
+  backend.cleanup(partial)
+  retired = #requests + 1
+  vim.wait(100)
+  assert(count("f", img, retired) == 0 and count("a", img, retired) == 0, "retired upload sent late frames or playback")
+  assert(not img.sent, "partial terminal image was retained as a complete cache")
+  local restarted = backend.setup(win, media)
+  wait_for(function()
+    local object = restarted.objects[1]
+    return object and object.img._md_render_upload and object.img._md_render_upload:completed()
+  end, "cancelled cached image did not restart")
+  assert(
+    restarted.objects[1].img == img and count("f", img, retired) == 30,
+    "restart did not send every frame exactly once"
+  )
+  local bases = 0
+  for idx = retired, #requests do
+    local req = requests[idx]
+    if req.i == img.id and not req.a and req.f == 100 then bases = bases + 1 end
+  end
+  assert(bases == 1 and last_control(img).s == 3, "restart did not replace the partial base and resume")
+
+  backend.cleanup(restarted)
+  image.extract_frames_async, terminal.request = extract, request
+  print "Snacks ownership: shared survivor, last-owner stop and partial restart OK"
+end
+
 -- Core resolution keeps local filenames literal; the downstream Snacks
 -- normalizer must never substitute an environment-named decoy file.
 do

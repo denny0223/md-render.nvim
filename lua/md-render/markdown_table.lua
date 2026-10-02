@@ -367,7 +367,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
                     resolved = image_mod.resolve_local(url, buf_dir)
                   end
                   if resolved then
-                    img_w, img_h = image_mod.video_dimensions(resolved)
+                    img_w, img_h = image_mod.video_dimensions(resolved, true)
                   end
                 else
                   resolved = image_mod.resolve(url, buf_dir)
@@ -376,7 +376,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
                     img_w, img_h = image_mod.image_dimensions(resolved)
                     if not img_w and image_mod.is_video_content(resolved) then
                       is_video = true
-                      img_w, img_h = image_mod.video_dimensions(resolved)
+                      img_w, img_h = image_mod.video_dimensions(resolved, true)
                     end
                   end
                 end

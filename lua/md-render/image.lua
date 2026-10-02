@@ -29,13 +29,13 @@ local _kitty_supported = nil
 ---@field backend? "kitty"|"snacks"
 ---@field plantuml_server string? base URL of a PlantUML server, e.g. `"https://www.plantuml.com/plantuml"`
 ---@field autoplay? boolean play GIF/video animations automatically (default true)
----@field mermaid_allow_npx? boolean allow npx to download/run Mermaid CLI (default true)
+---@field mermaid_allow_npx? boolean allow npx to download/run Mermaid CLI (default false)
 
 ---@type MdRender.Image.Config
 local config = {
   backend = "kitty",
   autoplay = true,
-  mermaid_allow_npx = true,
+  mermaid_allow_npx = false,
   -- Unset on purpose. A PlantUML fence is rendered by a local `plantuml` or
   -- `java -jar $PLANTUML_JAR` if there is one; naming a server here is what
   -- allows the source of a diagram to leave the machine, and nothing else
@@ -528,14 +528,14 @@ end
 
 --- Find the mmdc executable (mermaid CLI).
 --- Searches PATH first, then falls back to npx.
----@return string[]? command prefix (e.g. {"mmdc"} or {"npx", "-y", "@mermaid-js/mermaid-cli"})
+---@return string[]? command prefix
 local function find_mmdc()
   if _mmdc_checked then return _mmdc_cmd end
   _mmdc_checked = true
   if vim.fn.executable "mmdc" == 1 then
     _mmdc_cmd = { "mmdc" }
   elseif config.mermaid_allow_npx and vim.fn.executable "npx" == 1 then
-    _mmdc_cmd = { "npx", "-y", "@mermaid-js/mermaid-cli" }
+    _mmdc_cmd = { "npx", "-y", "@mermaid-js/mermaid-cli@12.0.0" }
   end
   return _mmdc_cmd
 end
@@ -609,6 +609,34 @@ local function render_diagram_file(cache_path, render)
   return installed and cache_path or nil
 end
 
+--- Keep npm's project configuration and package resolution outside the viewed repository.
+--- Installed mmdc retains the caller's working directory.
+local function render_mermaid_file(source, cmd_prefix, cache_path, run)
+  local tmp_dir = vim.fn.tempname()
+  if vim.fn.mkdir(tmp_dir, "p", 448) == 0 then return nil end
+  local input = tmp_dir .. "/diagram.mmd"
+  local f = io.open(input, "w")
+  if not f then
+    vim.fn.delete(tmp_dir, "rf")
+    return nil
+  end
+  f:write(source)
+  f:close()
+  local path = render_diagram_file(cache_path, function(output)
+    local cmd = build_mmdc_cmd(cmd_prefix, input, output)
+    local opts = { text = true, timeout = 30000 }
+    if cmd_prefix[1] == "npx" then
+      -- cwd alone still lets npm discover a package.json/.npmrc in an ancestor.
+      table.insert(cmd, 2, tmp_dir)
+      table.insert(cmd, 2, "--prefix")
+      opts.cwd = tmp_dir
+    end
+    return run(cmd, opts)
+  end)
+  vim.fn.delete(tmp_dir, "rf")
+  return path
+end
+
 --- Check if a mermaid diagram is already cached (no rendering).
 ---@param source string mermaid diagram source code
 ---@return string? cached_path
@@ -628,17 +656,9 @@ function M.render_mermaid(source)
   local cache_path = mermaid_cache_path(source)
   if vim.fn.filereadable(cache_path) == 1 then return cache_path end
 
-  local tmp_input = vim.fn.tempname() .. ".mmd"
-  local f = io.open(tmp_input, "w")
-  if not f then return nil end
-  f:write(source)
-  f:close()
-
-  local path = render_diagram_file(cache_path, function(output)
-    return vim.system(build_mmdc_cmd(cmd_prefix, tmp_input, output), { text = true, timeout = 30000 }):wait()
+  return render_mermaid_file(source, cmd_prefix, cache_path, function(cmd, opts)
+    return vim.system(cmd, opts):wait()
   end)
-  os.remove(tmp_input)
-  return path
 end
 
 --- Render mermaid source code to a PNG image (asynchronous, cached).
@@ -658,17 +678,7 @@ function M.render_mermaid_async(source, callback)
   end
 
   shared_work(cache_path, function()
-    local tmp_input = vim.fn.tempname() .. ".mmd"
-    local f = io.open(tmp_input, "w")
-    if not f then return nil end
-    f:write(source)
-    f:close()
-
-    local path = render_diagram_file(cache_path, function(output)
-      return async.system(build_mmdc_cmd(cmd_prefix, tmp_input, output), { text = true, timeout = 30000 })
-    end)
-    os.remove(tmp_input)
-    return path
+    return render_mermaid_file(source, cmd_prefix, cache_path, async.system)
   end, callback)
 end
 

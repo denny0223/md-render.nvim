@@ -52,8 +52,10 @@ local mmdc, animation_tool = false, "ffmpeg"
 vim.fn.executable = function(cmd)
   return ((cmd == "mmdc" and mmdc) or cmd == "npx" or cmd == "ffprobe" or cmd == animation_tool) and 1 or 0
 end
-assert(image.config().autoplay and image.config().mermaid_allow_npx, "preserve both defaults")
-assert(image.has_mmdc(), "npx fallback is available by default")
+assert(image.config().autoplay and not image.config().mermaid_allow_npx, "autoplay stays on; npm execution is opt-in")
+assert(not image.has_mmdc(), "npx alone must not enable diagram execution by default")
+image.setup { mermaid_allow_npx = true }
+assert(image.has_mmdc(), "npx fallback is explicitly enabled")
 image.setup { autoplay = false, mermaid_allow_npx = false }
 assert(not image.config().autoplay and not image.has_mmdc(), "policy invalidates cached npx detection")
 mmdc = true

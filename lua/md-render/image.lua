@@ -727,7 +727,7 @@ local function find_plantuml()
   if vim.fn.executable "plantuml" == 1 then
     _plantuml_cmd = { "plantuml" }
   elseif vim.fn.executable "java" == 1 and vim.env.PLANTUML_JAR and vim.fn.filereadable(vim.env.PLANTUML_JAR) == 1 then
-    _plantuml_cmd = { "java", "-jar", vim.env.PLANTUML_JAR }
+    _plantuml_cmd = { "java", "-DPLANTUML_SECURITY_PROFILE=SANDBOX", "-jar", vim.env.PLANTUML_JAR }
   end
   return _plantuml_cmd
 end
@@ -741,21 +741,29 @@ function M.has_plantuml()
   return M.config().plantuml_server ~= nil and vim.fn.executable "curl" == 1
 end
 
---- Compute cache path for PlantUML source.
---- Hashes source only: unlike mermaid's -t/-b flags, nothing here varies the
---- output by theme or background.
+--- Keep local SANDBOX results separate from legacy and remote-server output.
 ---@param source string
+---@param server? string normalized remote server URL; nil means local SANDBOX
 ---@return string
-local function plantuml_cache_path(source)
-  local hash = vim.fn.sha256(source):sub(1, 16)
+local function plantuml_cache_path(source, server)
+  local policy = server and "remote:" .. server or "local:SANDBOX"
+  local hash = vim.fn.sha256("v2|" .. policy .. "|" .. source):sub(1, 16)
   return get_plantuml_cache_dir() .. "/" .. hash .. ".png"
+end
+
+local function plantuml_server()
+  local server = config.plantuml_server
+  return server and server:gsub("/+$", "") or nil
 end
 
 --- Check if a PlantUML diagram is already cached (no rendering).
 ---@param source string PlantUML diagram source code
 ---@return string? cached_path
 function M.get_plantuml_cached(source)
-  local cache_path = plantuml_cache_path(source)
+  local local_renderer = find_plantuml() ~= nil
+  local server = not local_renderer and plantuml_server() or nil
+  if not local_renderer and not server then return nil end
+  local cache_path = plantuml_cache_path(source, server)
   if vim.fn.filereadable(cache_path) == 1 then return cache_path end
   return nil
 end
@@ -771,10 +779,11 @@ end
 ---@param source string
 ---@param cache_path string
 ---@return string? png_path
-local function render_plantuml_remote(source, cache_path)
-  local server = M.config().plantuml_server
+local function render_plantuml_remote(source, server)
   if not server or vim.fn.executable "curl" ~= 1 then return nil end
-  local url = server:gsub("/+$", "") .. "/png/~h" .. plantuml_encode_hex(source)
+  local cache_path = plantuml_cache_path(source, server)
+  if vim.fn.filereadable(cache_path) == 1 then return cache_path end
+  local url = server .. "/png/~h" .. plantuml_encode_hex(source)
   return render_diagram_file(cache_path, function(output)
     local cmd = { "curl", "-sfL", "--max-time", "15", "--max-filesize", "20000000", "-o", output, url }
     return async.system(cmd, { text = true })
@@ -787,27 +796,41 @@ end
 ---@param source string PlantUML diagram source code
 ---@param callback fun(png_path: string?)
 function M.render_plantuml_async(source, callback)
-  local cache_path = plantuml_cache_path(source)
+  local cmd_prefix = find_plantuml()
+  local server = plantuml_server()
+  if not cmd_prefix and not server then
+    callback(nil)
+    return
+  end
+  local cache_path = plantuml_cache_path(source, not cmd_prefix and server or nil)
   if vim.fn.filereadable(cache_path) == 1 then
     callback(cache_path)
     return
   end
 
-  shared_work(cache_path, function()
-    local cmd_prefix = find_plantuml()
-    if not cmd_prefix then return render_plantuml_remote(source, cache_path) end
+  -- Capture the fallback policy too: a settings change must not join a request
+  -- whose local failure would send the source to a different server.
+  shared_work(cache_path .. "|" .. (server or ""), function()
+    if not cmd_prefix then return render_plantuml_remote(source, server) end
 
     local cmd = vim.list_extend(vim.list_extend({}, cmd_prefix), { "-tpng", "-pipe" })
-    local result = async.system(cmd, { stdin = source, text = false, timeout = 30000 })
-    if result.code == 0 and result.stdout and #result.stdout > 0 then
-      local f = io.open(cache_path, "wb")
-      if f then
-        f:write(result.stdout)
-        f:close()
+    local path = render_diagram_file(cache_path, function(output)
+      local result = async.system(cmd, {
+        stdin = source,
+        text = false,
+        timeout = 30000,
+        env = { PLANTUML_SECURITY_PROFILE = "SANDBOX" },
+      })
+      if result.code == 0 and result.stdout and #result.stdout > 0 then
+        local f = io.open(output, "wb")
+        if f then
+          f:write(result.stdout)
+          f:close()
+        end
       end
-    end
-    if vim.fn.filereadable(cache_path) == 1 then return cache_path end
-    return render_plantuml_remote(source, cache_path)
+      return result
+    end)
+    return path or render_plantuml_remote(source, server)
   end, callback)
 end
 

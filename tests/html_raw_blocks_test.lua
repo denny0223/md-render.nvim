@@ -33,7 +33,7 @@ local function build(source, opts)
   )
   local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
   for row, line in ipairs(c.lines) do
-    eq(line:find("\n", 1, true), nil, "output row has no embedded newline")
+    eq(line:find "[\r\n]", nil, "output row has no embedded line ending")
     eq(
       c.source_line_map[row] >= 1 and c.source_line_map[row] <= #source,
       true,
@@ -849,6 +849,68 @@ do
     { { 2, video_icon .. "multi line.mp4", "/multi\nline.mp4" } },
     "video display folding keeps the full source target"
   )
+end
+do
+  -- Standalone media uses its own caption path in both graphics and text fallback.
+  local image = require "md-render.image"
+  local path = vim.fn.getcwd() .. "/tests/fixtures/test_4x4.png"
+  local icon = require("md-render.icons").pad_icon(require("md-render.icons").get_image_icon(path)) .. " "
+  local supports_kitty, cell_size = image.supports_kitty, image._test_cell_size
+  image._test_cell_size = { cell_w = 10, cell_h = 20 }
+  for _, graphics in ipairs { false, true } do
+    image.supports_kitty = function()
+      return graphics
+    end
+    for _, width in ipairs { 20, 100 } do
+      for _, case in ipairs {
+        { "前段\n後段 CAPTION73", "前段 後段 CAPTION73" },
+        { "前段\r\n後段 CAPTION73", "前段 後段 CAPTION73" },
+        { "前段\r後段 CAPTION73", "前段 後段 CAPTION73" },
+        {
+          "前段  \\*literal* &amp; <b>字面</b> 後段 CAPTION73",
+          "前段  \\*literal* &amp; <b>字面</b> 後段 CAPTION73",
+        },
+      } do
+        local source = vim.split('<img src="' .. path .. '" alt="' .. case[1] .. '">', "\n", { plain = true })
+        vim.list_extend(source, { "", "[AFTER73](/after)" })
+        local c = build(source, { max_width = width })
+        local folded = build({ '<img src="' .. path .. '" alt="' .. case[2] .. '">', "", "[AFTER73](/after)" }, {
+          max_width = width,
+        })
+        eq(c.lines, folded.lines, "caption line endings follow the same layout as a single space")
+        eq(c.highlights, folded.highlights, "caption byte ranges follow normalized text before wrapping")
+        eq(c.image_placements, folded.image_placements, "caption folding preserves image geometry")
+        eq(#c.image_placements, graphics and 1 or 0, "both graphics and text fallback are exercised")
+        if graphics then eq(c.image_placements[1].path, path, "caption folding preserves the actual image path") end
+        eq(targets(c), { { #source, "AFTER73", "/after" } }, "following paragraph retains its physical source row")
+        if width == 100 then
+          eq(c.lines[1], icon .. case[2], "caption preserves exact spacing, backslashes and literal markup")
+        end
+      end
+    end
+  end
+
+  -- Empty alt falls back to a filename; display folding must never change resolution.
+  -- Windows filenames cannot contain LF.
+  if vim.fn.has "win32" == 0 then
+    local directory = vim.fn.tempname()
+    vim.fn.mkdir(directory, "p")
+    local exact_path = directory .. "/file\nname.png"
+    assert(vim.uv.fs_copyfile(path, exact_path))
+    for _, graphics in ipairs { false, true } do
+      image.supports_kitty = function()
+        return graphics
+      end
+      local source = vim.split('<img src="' .. exact_path .. '" alt="">', "\n", { plain = true })
+      local c = build(source)
+      eq(c.lines[1], icon .. "file name.png", "filename fallback folds only its display line ending")
+      eq(require("md-render.inline").html_target(table.concat(source, "\n")), exact_path, "raw src remains literal")
+      eq(#c.image_placements, graphics and 1 or 0, "filename fallback exercises graphics and text modes")
+      if graphics then eq(c.image_placements[1].path, exact_path, "resolution keeps the original filename bytes") end
+    end
+    vim.fn.delete(directory, "rf")
+  end
+  image.supports_kitty, image._test_cell_size = supports_kitty, cell_size
 end
 do
   local raw = build { "<table>", "<tr><td>*literal* <em>styled</em></td></tr>", "</table>" }

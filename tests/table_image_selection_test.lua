@@ -199,4 +199,87 @@ do
   end
   vim.fn.delete(directory, "rf")
 end
+
+-- Multiline HTML alt is folded before table caption wrapping and image hit bounds.
+local table_start = "<table><tr><th>Caption with enough room for a complete image label</th></tr><tr><td>"
+for _, graphics in ipairs { false, true } do
+  image._set_kitty_supported(graphics)
+  for _, width in ipairs { 20, 100 } do
+    for _, case in ipairs {
+      { "前段\n後段 CAPTION73", "前段 後段 CAPTION73" },
+      { "前段\r\n後段 CAPTION73", "前段 後段 CAPTION73" },
+      { "前段\r後段 CAPTION73", "前段 後段 CAPTION73" },
+      { "前段  \\字面 後段 CAPTION73", "前段  \\字面 後段 CAPTION73" },
+    } do
+      local tag = table_start .. '<img src="' .. paths[1] .. '" alt="' .. case[1] .. '"></td></tr></table>'
+      local source_lines = vim.split(tag, "\n", { plain = true })
+      vim.list_extend(source_lines, { "", "[AFTER73](/after)" })
+      local source_buf = vim.api.nvim_create_buf(false, true)
+      vim.bo[source_buf].filetype = "markdown"
+      vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, source_lines)
+      vim.api.nvim_set_current_buf(source_buf)
+      local tick = vim.api.nvim_buf_get_changedtick(source_buf)
+      local opts = { max_width = width, text_scale = false }
+      local folded = preview.build_content({
+        table_start .. '<img src="' .. paths[1] .. '" alt="' .. case[2] .. '"></td></tr></table>',
+        "",
+        "[AFTER73](/after)",
+      }, opts)
+      preview.show_tab(opts)
+      session = assert(preview._sessions[vim.api.nvim_get_current_buf()])
+      for step = 1, 2 do
+        local c = session.content
+        assert(vim.deep_equal(c.lines, folded.lines), "CRLF/CR/LF captions lay out exactly like one space")
+        assert(vim.deep_equal(c.highlights, folded.highlights), "table highlights use normalized caption bytes")
+        assert(vim.deep_equal(c.image_placements, folded.image_placements), "table caption folding preserves geometry")
+        if width == 100 then
+          assert(table.concat(c.lines, "\n"):find(case[2], 1, true), "wide caption preserves exact literal bytes")
+        end
+        assert(vim.deep_equal(vim.api.nvim_buf_get_lines(session.buf, 0, -1, false), c.lines))
+        assert(#c.source_line_map == #c.lines, "each output row retains a source row")
+        for row, line in ipairs(c.lines) do
+          assert(not line:find "[\r\n]", "table output rows contain no embedded line endings")
+          if line:find("AFTER73", 1, true) then
+            assert(c.source_line_map[row] == #source_lines, "caption folding cannot shift the following paragraph")
+          end
+        end
+        for _, item in ipairs(c.highlights) do
+          for _, hl in ipairs(item.groups) do
+            assert(hl.col >= 0 and (hl.end_col == -1 or hl.end_col <= #c.lines[item.line + 1]))
+          end
+        end
+        assert(vim.fn.search("CAPTION73", "nw") > 0, "complete caption tail is searchable initially and after rebuild")
+        assert(#c.image_placements == (graphics and 1 or 0), "both table graphics and fallback are exercised")
+        if graphics then
+          local p = c.image_placements[1]
+          assert(p.path == paths[1], "table caption folding preserves the actual image path")
+          if width == 20 then assert(p.label_rows > 1, "narrow caption really wraps") end
+          session.image_state = {
+            snacks = true,
+            objects = {
+              {
+                ready = function()
+                  return true
+                end,
+              },
+            },
+          }
+          for row = p.line - p.label_rows + 1, p.line do
+            enter(row, vim.fn.virtcol2col(session.win, row, p.cell_col + 1) - 1, paths[1])
+            enter(row, vim.fn.virtcol2col(session.win, row, p.cell_col + p.cell_cols) - 1, paths[1])
+          end
+          session.image_state = nil
+        end
+        if step == 1 then session:rebuild() end
+      end
+      assert(vim.deep_equal(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), source_lines))
+      assert(
+        vim.api.nvim_buf_get_changedtick(source_buf) == tick,
+        "caption navigation and rebuild preserve source bytes"
+      )
+      vim.api.nvim_buf_delete(session.buf, { force = true })
+      vim.api.nvim_buf_delete(source_buf, { force = true })
+    end
+  end
+end
 print "Table image selection: cell ownership, long CJK captions, image edges, readiness and standalone navigation OK"

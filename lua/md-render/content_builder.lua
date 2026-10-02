@@ -601,6 +601,7 @@ end
 ---@param name_hl string Highlight group for the display name text
 ---@return integer lines_added Number of lines emitted
 function ContentBuilder:_emit_image_header(indent, img_icon, icon_hl, display_name, max_width, name_hl)
+  display_name = display_name:gsub("\r\n", "\n"):gsub("[\r\n]", " ")
   local icon_start = #indent
   local icon_end = icon_start + #img_icon
   local icon_display_width = vim.api.nvim_strwidth(img_icon)

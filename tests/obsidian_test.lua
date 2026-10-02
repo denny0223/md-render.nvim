@@ -38,7 +38,7 @@ vim.uv.hrtime = function()
   return now
 end
 vim.fs.dir = function(path, opts)
-  scans = scans + 1
+  if path == root then scans = scans + 1 end
   return fs_dir(path, opts)
 end
 obsidian.reset_cache()
@@ -69,7 +69,7 @@ vim.fs.dir = function()
   scans = scans + 1
   return function()
     entries = entries + 1
-    return "missing/entry" .. entries .. ".png", "file"
+    return "entry" .. entries .. ".png", "file"
   end
 end
 obsidian.reset_cache()
@@ -90,6 +90,29 @@ end
 assert(obsidian.resolve("absent.png", one) == nil)
 assert(entries > 0 and entries <= 5, "fallback ignored its elapsed-time budget")
 vim.uv.hrtime, vim.fs.dir = hrtime, fs_dir
+
+-- Native recursive iterators can open every queued empty directory without
+-- yielding another entry. Check the budget before directory opens as well.
+local empty_root = vim.fn.tempname()
+vim.fn.mkdir(empty_root .. "/.obsidian", "p")
+for i = 1, 150 do
+  vim.fn.mkdir(empty_root .. "/empty-" .. i, "p")
+end
+local scandir, opens = vim.uv.fs_scandir, 0
+now = hrtime()
+local start = now
+vim.uv.hrtime = function()
+  return now
+end
+vim.uv.fs_scandir = function(path, ...)
+  opens = opens + 1
+  if path ~= empty_root then now = now + 10 * 1000000 end
+  return scandir(path, ...)
+end
+assert(obsidian.resolve("missing.png", empty_root) == nil)
+assert(opens <= 6 and now - start <= 50 * 1000000, "empty directories bypassed the scan deadline")
+vim.uv.hrtime, vim.uv.fs_scandir = hrtime, scandir
+vim.fn.delete(empty_root, "rf")
 
 -- Oversized/invalid configuration must retain fallback, and a growing file
 -- must not turn the bounded read into a full-file allocation.

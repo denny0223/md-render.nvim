@@ -132,13 +132,21 @@ function M.resolve(filename, buf_dir)
     _search_cache[vault_root] = search
     -- ponytail: fallback scans stop at 10,000 entries or 50 ms; explicit paths
     -- and attachment folders remain available beyond this discovery budget.
-    local count = 0
-    for path, kind in vim.fs.dir(vault_root, { depth = math.huge }) do
-      count = count + 1
-      if count > SEARCH_ENTRIES or vim.uv.hrtime() - now >= SEARCH_NS then break end
-      if kind == "file" then
-        local name = vim.fs.basename(path)
-        if not search.files[name] then search.files[name] = vault_root .. "/" .. path end
+    local dirs, next_dir, count = { vault_root }, 1, 0
+    while dirs[next_dir] do
+      -- A recursive iterator can visit many empty directories without yielding.
+      if count >= SEARCH_ENTRIES or vim.uv.hrtime() - now >= SEARCH_NS then break end
+      local dir = dirs[next_dir]
+      next_dir = next_dir + 1
+      for name, kind in vim.fs.dir(dir) do
+        count = count + 1
+        if count > SEARCH_ENTRIES or vim.uv.hrtime() - now >= SEARCH_NS then break end
+        local path = dir .. "/" .. name
+        if kind == "file" and not search.files[name] then
+          search.files[name] = path
+        elseif kind == "directory" then
+          dirs[#dirs + 1] = path
+        end
       end
     end
   end

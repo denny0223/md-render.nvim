@@ -31,7 +31,7 @@ class ToolingTest(unittest.TestCase):
         self.env["NVIM_LOG_FILE"] = str(self.root / "nvim.log")
         for kind in ("CONFIG", "DATA", "STATE", "CACHE"):
             self.env[f"XDG_{kind}_HOME"] = str(self.root / kind.lower())
-        for name in ("dirname", "mkdir", "mktemp", "rm", "cp", "sed", "grep", "perl", "cat"):
+        for name in ("dirname", "mkdir", "mktemp", "rm", "cp", "mv", "sed", "grep", "perl", "cat"):
             (self.bin / name).symlink_to(shutil.which(name))
         (self.bin / "python3").symlink_to(sys.executable)
         self.script = self.root / "tests/run_visual_test.sh"
@@ -142,6 +142,77 @@ if not os.environ.get('TOOL_CAPTURE_EMPTY'):
         self.reference.write_bytes(b"not a PNG 0")
         self.assertNotEqual(self.run_visual().returncode, 0)
 
+    def test_vendor_refresh_preserves_tree_on_failure_and_updates_on_success(self):
+        script = self.root / "scripts/vendor-async.sh"
+        script.parent.mkdir()
+        shutil.copyfile(REPO / "scripts/vendor-async.sh", script)
+        target = self.root / "lua/md-render/vendor"
+        shutil.copytree(REPO / "lua/md-render/vendor", target)
+        (target / "keep.bin").write_bytes(b"\x00preserve other vendored content\xff")
+        (target / "async/keep.lua").write_text("return require('vim.async.leave_this_alone')\n")
+
+        def snapshot():
+            return {str(path.relative_to(target)): path.read_bytes() if path.is_file() else None
+                    for path in target.rglob("*")}
+
+        before = snapshot()
+        self.executable("git", """import os, sys
+if 'rev-parse' in sys.argv:
+    if os.environ.get('TOOL_BAD_REF'):
+        sys.exit(1)
+    print('1' * 40)
+elif sys.argv[-1].endswith('_core/util.lua'):
+    if os.environ.get('TOOL_BAD_HELPERS'):
+        print('missing helper markers')
+    else:
+        print('-- Generated from async.nvim/lua/async/_errors.lua: start')
+        print('function M._normalize_error(e) return e end')
+        print('function M._stringify_error(e) return e end')
+        print('-- Generated from async.nvim/lua/async/_errors.lua: end')
+else:
+    if os.environ.get('TOOL_MISSING_UPSTREAM'):
+        sys.exit(1)
+    print("return require('vim.async._core')")
+""")
+        (self.bin / "mv").unlink()
+        real_mv = shutil.which("mv")
+        self.executable("mv", f"""import os, sys
+from pathlib import Path
+counter = Path(os.environ['TOOL_TEST_ROOT']) / 'mv-count'
+count = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(count))
+if os.environ.get('TOOL_FAIL_PUBLISH') and count == 2:
+    sys.exit('deliberate publish failure')
+os.execv({real_mv!r}, [{real_mv!r}, *sys.argv[1:]])
+""")
+        for fault in ("TOOL_BAD_REF", "TOOL_BAD_HELPERS", "TOOL_MISSING_UPSTREAM", "TOOL_FAIL_PUBLISH"):
+            (self.root / "mv-count").unlink(missing_ok=True)
+            result = subprocess.run(["/bin/bash", str(script), "fake-checkout"], env=self.env | {fault: "1"},
+                                    capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(result.returncode, 0, fault)
+            self.assertEqual(snapshot(), before, fault + ": previous tree changed")
+            self.assertEqual(list(target.parent.glob(".vendor-async.*")), [], fault + ": staging tree leaked")
+            if fault == "TOOL_FAIL_PUBLISH":
+                self.assertEqual((self.root / "mv-count").read_text(), "3", "rollback must restore the old tree")
+
+        result = subprocess.run(["/bin/bash", str(script), "fake-checkout"], env=self.env,
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        after = snapshot()
+        self.assertEqual(after["async/REVISION"], b"1" * 40 + b"\n")
+        self.assertEqual(after["async.lua"], b"return require('md-render.vendor.async._core')\n")
+        helpers = after["async/_util.lua"].decode()
+        self.assertIn("function M._normalize_error", helpers)
+        self.assertIn("function M._stringify_error", helpers)
+        self.assertTrue(helpers.endswith("return M\n"))
+        rewritten = {"async.lua", "async/REVISION", "async/_util.lua"}
+        for module in ("_core", "_event", "_future", "_queue", "_runtime", "_semaphore"):
+            name = f"async/{module}.lua"
+            rewritten.add(name)
+            self.assertEqual(after[name], after["async.lua"])
+        self.assertEqual({name: data for name, data in after.items() if name not in rewritten},
+                         {name: data for name, data in before.items() if name not in rewritten})
+        self.assertEqual(list(target.parent.glob(".vendor-async.*")), [])
 
     def test_installed_broken_plantuml_fails_instead_of_skipping(self):
         for source, error in (("raise SystemExit(7)\n", "renderer failed"),

@@ -29,7 +29,7 @@ Layer 2 exists because of a silent breakage: FFmpeg 9 removed `-vsync`, frame ex
 make test
 ```
 
-This needs Neovim and Python 3. In addition to the Lua checks, `tests/tooling_test.py` exercises capture failure, fresh baselines, process ownership and metric parsing with isolated command stubs. It launches no real terminal and downloads nothing. If ImageMagick 7 is installed, it also checks the actual normalized RMSE interface with identical, different and corrupt images. Run it alone with `make test-harness`.
+This needs Neovim and Python 3. In addition to the Lua checks, `tests/tooling_test.py` exercises capture failure, fresh baselines, process ownership, metric parsing and staged vendor updates with isolated command stubs. It launches no real terminal and downloads nothing. If ImageMagick 7 is installed, it also checks the actual normalized RMSE interface with identical, different and corrupt images. Run it alone with `make test-harness`.
 
 ### Optional Snacks integration tests
 

@@ -12,14 +12,37 @@ set -euo pipefail
 nvim_repo=${1:?usage: $0 <path-to-neovim-checkout> [ref]}
 ref=${2:-origin/master}
 root=$(cd "$(dirname "$0")/.." && pwd)
-dest=$root/lua/md-render/vendor/async
+vendor=$root/lua/md-render/vendor
 
+# Stage every upstream file before touching the working copy. Invalid refs or
+# upstream layout changes must not leave the plugin with a partial runtime.
+revision=$(git -C "$nvim_repo" rev-parse --verify "$ref^{commit}")
+stage=$(mktemp -d "$root/lua/md-render/.vendor-async.XXXXXX")
+published=0
+cleanup() {
+  local status=$?
+  if [ -d "$stage/previous" ] && [ "$published" -eq 0 ]; then
+    if [ -e "$vendor" ] || ! mv "$stage/previous" "$vendor"; then
+      echo "error: rollback failed; previous vendor tree preserved at $stage/previous" >&2
+      return 1
+    fi
+  fi
+  rm -rf "$stage"
+  return "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+cp -a "$vendor" "$stage/vendor"
+dest=$stage/vendor/async
 mkdir -p "$dest"
 
-show() { git -C "$nvim_repo" show "$ref:runtime/lua/vim/$1"; }
+show() { git -C "$nvim_repo" show "$revision:runtime/lua/vim/$1"; }
 
+files=("$dest.lua")
 show async.lua >"$dest.lua"
 for mod in _core _event _future _queue _runtime _semaphore; do
+  files+=("$dest/$mod.lua")
   show "async/$mod.lua" >"$dest/$mod.lua"
 done
 
@@ -29,10 +52,12 @@ done
 # The marker contains slashes, so address it with sed's \%...% delimiter form.
 marker='Generated from async.nvim/lua/async/_errors.lua'
 helpers=$(show _core/util.lua | sed -n "\%$marker: start%,\%$marker: end%p")
-grep -q '_stringify_error' <<<"$helpers" || {
+if ! grep -Fq "$marker: end" <<<"$helpers" ||
+   ! grep -q 'function M._normalize_error' <<<"$helpers" ||
+   ! grep -q 'function M._stringify_error' <<<"$helpers"; then
   echo "error: the _errors block in _core/util.lua no longer looks as expected" >&2
   exit 1
-}
+fi
 {
   echo "-- Extracted from runtime/lua/vim/_core/util.lua; see ../README.md."
   echo
@@ -42,12 +67,20 @@ grep -q '_stringify_error' <<<"$helpers" || {
   echo
   echo "return M"
 } >"$dest/_util.lua"
+files+=("$dest/_util.lua")
 
 # Point the copy's requires at where it now lives.
 perl -pi -e "
   s{require\('vim\.async\.}{require('md-render.vendor.async.}g;
   s{require\('vim\._core\.util'\)}{require('md-render.vendor.async._util')}g;
-" "$dest.lua" "$dest"/*.lua
+" "${files[@]}"
 
-git -C "$nvim_repo" rev-parse "$ref" >"$dest/REVISION"
-echo "Vendored vim.async from $nvim_repo at $(cat "$dest/REVISION")"
+for file in "${files[@]}"; do
+  [ -s "$file" ] || { echo "error: empty upstream file: $file" >&2; exit 1; }
+done
+printf '%s\n' "$revision" >"$dest/REVISION"
+# ponytail: two renames allow a crash gap; atomic exchange is needed for crash safety.
+mv "$vendor" "$stage/previous"
+mv "$stage/vendor" "$vendor"
+published=1
+echo "Vendored vim.async from $nvim_repo at $revision"

@@ -21,6 +21,9 @@ on:
     - cron: "0 3 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   ffmpeg-matrix:
     name: ffmpeg ${{ matrix.ffmpeg.name }}
@@ -47,8 +50,10 @@ jobs:
           # The scheduled run is what surfaces the expiry.
           - name: "6.1"
             url: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2025-08-31-13-00/ffmpeg-n6.1.3-linux64-gpl-6.1.tar.xz
+            sha256: 400f9ca9d8ea3f812660cf7a00b9bfed944175cd9d6bd0c9b6257cf99376a75c
           - name: "7.1"
             url: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-01-31-12-57/ffmpeg-n7.1.3-35-g419cdf9dcc-linux64-gpl-7.1.tar.xz
+            sha256: 80e7f0bb40711bb190790f548cb9808f4e4ccfd117a9121e2dbfd74f34368166
           # 8.x, 9.x and master are rolling: the assets are rebuilt in place,
           # so the scheduled run picks up new point releases automatically.
           # This is the part that actually detects drift.
@@ -59,10 +64,12 @@ jobs:
           - name: master
             url: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Neovim
-        uses: rhysd/action-setup-vim@v1
+        uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1
         with:
           neovim: true
           version: stable
@@ -71,6 +78,10 @@ jobs:
         run: |
           set -euxo pipefail
           curl -fsSL -o /tmp/ffmpeg.tar.xz "${{ matrix.ffmpeg.url }}"
+          checksum='${{ matrix.ffmpeg.sha256 }}'
+          if [ -n "$checksum" ]; then
+            printf '%s  /tmp/ffmpeg.tar.xz\n' "$checksum" | sha256sum --check -
+          fi
           mkdir -p /tmp/ffmpeg && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-components=1
           echo "/tmp/ffmpeg/bin" >> "$GITHUB_PATH"
 
@@ -90,11 +101,13 @@ jobs:
     env:
       PUPPETEER_CACHE_DIR: /tmp/md-render-mermaid-browser
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
-      - uses: rhysd/action-setup-vim@v1
+      - uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1
         with:
           neovim: true
           version: v0.12.0
@@ -104,9 +117,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libnss3 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
             libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 fonts-liberation imagemagick
-          npm --prefix /tmp/md-render-mermaid install --no-audit --no-fund \
-            @mermaid-js/mermaid-cli@12.0.0 puppeteer@25.12.0
-          # npm may require explicit approval for dependency postinstall scripts.
+          mkdir -p /tmp/md-render-mermaid
+          cp tests/fixtures/mermaid-cli/package*.json /tmp/md-render-mermaid/
+          npm --prefix /tmp/md-render-mermaid ci --ignore-scripts --no-audit --no-fund
+          # Only the locked Puppeteer browser installer needs to run a script.
           node /tmp/md-render-mermaid/node_modules/puppeteer/install.mjs
           # Only this isolated CI fixture needs the hosted runner sandbox override.
           # The plugin's invocation and users' browser configuration stay unchanged.
@@ -139,7 +153,7 @@ jobs:
     permissions:
       issues: write
     steps:
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const title = "Scheduled media-tool test failed";

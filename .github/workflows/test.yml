@@ -1,5 +1,8 @@
 name: Tests
 on: [push, pull_request]
+permissions:
+  contents: read
+
 jobs:
   test:
     name: nvim ${{ matrix.nvim }} / ${{ matrix.os }}
@@ -17,9 +20,11 @@ jobs:
     # without blocking merges.
     continue-on-error: ${{ matrix.nvim == 'nightly' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install Neovim
-        uses: rhysd/action-setup-vim@v1
+        uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1
         with:
           neovim: true
           version: ${{ matrix.nvim }}
@@ -39,7 +44,9 @@ jobs:
         run: >-
           dnf install -y git neovim ImageMagick ffmpeg-free python3-gobject python3-cairo pango gobject-introspection
           google-noto-sans-mono-vf-fonts google-noto-sans-cjk-vf-fonts
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install latest Snacks
         run: git clone --depth=1 https://github.com/folke/snacks.nvim.git "$MD_RENDER_SNACKS_PATH"
       - name: Verify runtime

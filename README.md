@@ -86,7 +86,7 @@ These dependencies are optional for basic Markdown rendering, but required for t
 | [snacks.nvim](https://github.com/folke/snacks.nvim) | Optional image backend, viewport fitting, and focused image tabs | Default native backend remains available; it does not provide these fork features |
 | [FFmpeg](https://ffmpeg.org/) (`ffmpeg` / `ffprobe`) | Native JPEG/WebP → PNG conversion; GIF / video frame extraction for both backends | Falls back to ImageMagick (images only; video requires ffmpeg) |
 | [ImageMagick](https://imagemagick.org/) (`magick`) | Snacks image conversion and image-tab zoom/pan; native image conversion and shared GIF frame extraction | Native conversion can use the tools below. The image tab requires `magick`, including for PNG; `ffmpeg`, `sips`, or an installation providing only `convert` cannot replace it |
-| [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) and its headless browser | Render Mermaid diagrams with either backend | Falls back to `npx -y @mermaid-js/mermaid-cli` (requires Node.js/npm and may download the CLI); the browser is still required. Disable with `mermaid_allow_npx = false` |
+| [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) and its headless browser | Render Mermaid diagrams with either backend | Retains the code block if unavailable. Optional npm fallback requires `mermaid_allow_npx = true`, Node.js/npm and the browser |
 | [PlantUML](https://plantuml.com/) (`plantuml`, or `java` with `$PLANTUML_JAR`) | Render PlantUML diagrams as images | A PlantUML server, if you name one (needs curl); otherwise the fence stays a code block |
 | [budoux.lua](https://github.com/delphinus/budoux.lua) | CJK phrase-level line breaking (BudouX) | Character-level splitting (kinsoku rules still apply) |
 | Treesitter parsers | Syntax highlighting in code blocks | Code blocks rendered without highlighting |
@@ -152,16 +152,18 @@ add({
 
 ### Playback and Mermaid fallback
 
-GIF/video autoplay and the Mermaid `npx` fallback are enabled by default. To disable either, configure it before opening a preview:
+GIF/video autoplay is enabled by default; Mermaid's `npx` fallback is disabled. These are the defaults, configured before opening a preview:
 
 ```lua
 require("md-render.image").setup {
-  autoplay = false,
+  autoplay = true,
   mermaid_allow_npx = false,
 }
 ```
 
 With `autoplay = false`, both backends show the first frame; image tabs start paused and Space still starts playback. Frame preparation still requires FFmpeg for videos; GIFs can use FFmpeg or ImageMagick. With `mermaid_allow_npx = false`, only an installed `mmdc` is used; without it, Mermaid stays a code block. Merge these options into your existing image setup, including `backend = "snacks"` if selected. For ordinary text headings, use `:MdRender textsize off`.
+
+Remote images and videos load automatically in document previews and configured Telescope/Snacks picker previews. Changing a picker selection can start requests without `:MdRender toggle`. The built-in downloader supports HTTP(S) and HTTP(S) redirects, treats URLs literally, and ignores `.curlrc`; proxy and CA environment settings still apply. Use `set_download_fn()` for custom authentication.
 
 ### Optional Snacks image backend
 
@@ -170,7 +172,7 @@ This setup enables static images, diagrams, viewport fitting, and focused image 
 - [snacks.nvim](https://github.com/folke/snacks.nvim), loaded and configured before opening an md-render preview.
 - Kitty with Unicode placeholder support. Inside tmux, add `set -g allow-passthrough on` to your tmux configuration and reload it. Other terminals supported by Snacks have not been verified with this integration; the native backend's terminal list above does not establish Snacks compatibility.
 - ImageMagick with the `magick` command on Neovim's `$PATH` for the complete image workflow, including zoom/pan. Installing only FFmpeg or `sips` is insufficient.
-- For Mermaid, the Mermaid CLI (`mmdc`, or the `npx` fallback) and its headless browser. Snacks handles image display; it does not replace the diagram renderer. No browser window is opened.
+- For Mermaid, the Mermaid CLI (`mmdc`, or an explicitly enabled `npx` fallback) and its headless browser. Snacks handles image display; it does not replace the diagram renderer. No browser window is opened.
 
 For lazy.nvim, use this in place of the basic md-render spec above. Keep the optional icon/BudouX dependencies if you use them:
 
@@ -575,7 +577,7 @@ Use a document preview such as `:MdRender tab`, select the [Snacks backend](#opt
 <details>
 <summary><strong>Mermaid diagrams don't render</strong></summary>
 
-Mermaid rendering requires the `mmdc` binary from [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) and its headless browser. If `mmdc` isn't installed, the default fallback runs `npx -y @mermaid-js/mermaid-cli`, which may download and execute the CLI and is slower on first invocation. Set `mermaid_allow_npx = false` to require a local installation; without one, Mermaid remains a code block. Install it globally with `npm install -g @mermaid-js/mermaid-cli` for faster rendering.
+Mermaid rendering requires the `mmdc` binary from [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) and its headless browser. Install it with `npm install -g @mermaid-js/mermaid-cli`; without it, Mermaid remains a code block by default. Explicitly setting `mermaid_allow_npx = true` permits npm to download and execute a specified CLI version in an isolated project context. This avoids the viewed project's `.npmrc` and local packages, but still trusts your npm configuration, registry and the package's dependencies; those dependencies are not locked by the runtime fallback.
 
 </details>
 
@@ -583,6 +585,8 @@ Mermaid rendering requires the `mmdc` binary from [@mermaid-js/mermaid-cli](http
 <summary><strong>PlantUML diagrams don't render</strong></summary>
 
 Fenced blocks tagged `plantuml` or `puml` are rendered locally when a `plantuml` binary is on your `PATH` (most package managers ship one), or when `java` is available and `$PLANTUML_JAR` points at a readable `plantuml.jar`. Install one of those and the fence becomes a diagram.
+
+Local rendering uses PlantUML's SANDBOX profile, which blocks access to local files and URLs, including external includes. It is a renderer policy, not an OS sandbox; the installed executable remains trusted.
 
 There is no fallback unless you ask for one. PlantUML renders on a server by design, and rendering on somebody else's means sending the diagram there, so the plugin will not choose that for you — without a local renderer, a `plantuml` fence stays a code block. Name a server and it will be used:
 
@@ -594,7 +598,7 @@ require("md-render.image").setup {
 }
 ```
 
-The server also needs `curl`. Rendered diagrams are cached under `stdpath("cache")/md-render/plantuml`, keyed by the diagram source, so a diagram is only sent once.
+The server also needs `curl` and controls its own security profile. Rendered diagrams are cached under `stdpath("cache")/md-render/plantuml`, keyed by the source and renderer policy/server identity. Local SANDBOX output and different servers do not share results.
 
 </details>
 
@@ -608,6 +612,8 @@ The server also needs `curl`. Rendered diagrams are cached under `stdpath("cache
 ```
 
 Restart Neovim before reopening a preview so it releases any retained preview state. Files are downloaded or regenerated when needed again.
+
+Transfers, metadata scans and plugin-managed conversions have individual limits. Persistent caches currently have no total size limit, and process deadlines do not cap native decoders' memory or scratch-disk use.
 
 </details>
 

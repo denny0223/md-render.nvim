@@ -64,7 +64,7 @@ Tests monkey-patch `vim.api.nvim_ui_send` to capture the bytes the image module 
 
 Two details make it meaningful rather than decorative:
 
-- **It forces a cache miss.** Both the frame cache and the converted-PNG cache are keyed on a hash of the source path, so testing a bundled path directly would hit a cache from an earlier run and never invoke the tool. The test copies each asset to a unique temporary path first.
+- **It forces a cache miss.** Frame caches include the source path, size and modification time; converted-PNG caches include the path and modification time. Testing a bundled path directly can therefore hit a cache from an earlier run and never invoke the tool. The test copies each asset to a unique temporary path first.
 - **It refuses to pass by not testing.** A missing tool is reported as `skip` so contributors without ffmpeg can still run `make test`, but CI sets `MD_RENDER_REQUIRE_MEDIA_TOOLS=1`, which turns every skip into a failure.
 
 The test prints the version of each tool it found; when the matrix goes red the first useful question is which toolchain it went red on.
@@ -79,7 +79,7 @@ Spanning majors is the point. Ubuntu 24.04 still ships FFmpeg 6.1, so a job that
 
 ### Real Mermaid renderer
 
-The media workflow has one Mermaid lane using CLI 12.0.0 and Puppeteer 25.12.0, which selects its own fixed browser revision. It prints the CLI, Puppeteer and browser versions, then renders a small diagram through the plugin from an empty temporary cache. The output must pass real PNG decoding with positive dimensions. Missing tools and a broken browser fail this explicit integration check:
+The media workflow has one Mermaid lane using CLI 12.0.0 and Puppeteer 25.12.0, which selects its own fixed browser revision. The fixture in `tests/fixtures/mermaid-cli/` locks its npm dependencies; CI runs `npm ci --ignore-scripts`, then explicitly runs the locked Puppeteer browser installer. It prints the CLI, Puppeteer and browser versions, then renders a small diagram through the plugin from an empty temporary cache. The output must pass real PNG decoding with positive dimensions. Missing tools and a broken browser fail this explicit integration check:
 
 ```sh
 nvim --headless -u NONE --noplugin -l tests/mermaid_integration.lua

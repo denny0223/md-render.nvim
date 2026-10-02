@@ -85,7 +85,7 @@ nvim +"MdRender pager" assets/showcase.md
 | [snacks.nvim](https://github.com/folke/snacks.nvim) | 選用圖片後端、自動調整圖片大小與獨立圖片分頁 | 仍可使用預設原生後端，但不會有這些 fork 新增功能 |
 | [FFmpeg](https://ffmpeg.org/)（`ffmpeg` / `ffprobe`） | 原生後端的 JPEG/WebP → PNG 轉換，以及兩個後端共用的 GIF 動畫與影片影格擷取 | 圖片可改用 ImageMagick；影片仍需要 ffmpeg |
 | [ImageMagick](https://imagemagick.org/)（`magick`） | Snacks 圖片轉換、圖片分頁縮放與平移，以及原生圖片轉換與共用的 GIF 影格擷取 | 原生後端可使用下表的替代工具。圖片分頁即使開啟 PNG 也需要 `magick`，無法用 `ffmpeg`、`sips` 或只有 `convert` 指令的安裝取代 |
-| [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli)（`mmdc`）及其無頭瀏覽器 | 兩種後端都用它產生 Mermaid 圖表 | 找不到 `mmdc` 時會改用 `npx -y @mermaid-js/mermaid-cli`，需要 Node.js/npm，且可能下載 CLI；瀏覽器仍是必要條件。可用 `mermaid_allow_npx = false` 停用 |
+| [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli)（`mmdc`）及其無頭瀏覽器 | 兩種後端都用它產生 Mermaid 圖表 | 找不到時保留程式碼區塊。選用 npm 替代方式須設定 `mermaid_allow_npx = true`，並備妥 Node.js/npm 與瀏覽器 |
 | [PlantUML](https://plantuml.com/)（`plantuml`，或 `java` 搭配 `$PLANTUML_JAR`） | 產生 PlantUML 圖表 | 只有在你指定伺服器時，才會改用該伺服器，並需要 curl；否則維持程式碼區塊 |
 | [budoux.lua](https://github.com/delphinus/budoux.lua) | 使用 BudouX，讓中日韓文字依詞組換行 | 未安裝時依字元斷行，仍保留行首行尾禁則 |
 | Treesitter 剖析器 | 程式碼區塊的語法醒目提示 | 未安裝時仍會顯示程式碼，但沒有語法醒目提示 |
@@ -151,16 +151,18 @@ add({
 
 ### 自動播放與 Mermaid 替代方式
 
-GIF／影片自動播放與 Mermaid 的 `npx` 替代方式預設皆啟用。若要停用其中一項，請在開啟預覽前設定：
+GIF／影片預設自動播放；Mermaid 的 `npx` 替代方式預設關閉。以下是預設值，請在開啟預覽前設定：
 
 ```lua
 require("md-render.image").setup {
-  autoplay = false,
+  autoplay = true,
   mermaid_allow_npx = false,
 }
 ```
 
 設定 `autoplay = false` 時，兩個後端都只顯示第一個影格；圖片分頁初始為暫停，仍可按空白鍵開始播放。影片仍需要 FFmpeg 準備影格；GIF 可使用 FFmpeg 或 ImageMagick。設定 `mermaid_allow_npx = false` 時，只使用已安裝的 `mmdc`；找不到時，Mermaid 保留為程式碼區塊。請將這些選項合併到既有圖片設定，包含已選用的 `backend = "snacks"`。若要使用一般文字標題，可執行 `:MdRender textsize off`。
+
+遠端圖片與影片會在文件預覽，以及已設定的 Telescope／Snacks picker 預覽中自動載入。切換 picker 選取項目即可觸發請求，無須另執行 `:MdRender toggle`。內建下載器支援 HTTP(S) 與 HTTP(S) 重新導向，依 URL 原文請求，並忽略 `.curlrc`；代理伺服器與 CA 環境設定仍會生效。自訂驗證方式請使用 `set_download_fn()`。
 
 ### 選用 Snacks 圖片後端
 
@@ -169,7 +171,7 @@ require("md-render.image").setup {
 - [snacks.nvim](https://github.com/folke/snacks.nvim)：開啟 md-render 預覽前，必須先載入並完成設定。
 - 支援 Unicode 佔位字元的 Kitty。如果在 tmux 內使用，請將 `set -g allow-passthrough on` 加入 tmux 設定檔並重新載入。Snacks 支援的其他終端機尚未在這個整合中驗證；上方原生後端的相容性清單不代表 Snacks 後端也已通過驗證。
 - ImageMagick，而且 Neovim 的 `$PATH` 必須能找到 `magick`。完整的圖片功能，包括縮放與平移，都需要它；只安裝 FFmpeg 或 `sips` 並不足夠。
-- 若要顯示 Mermaid 圖表，還需要 Mermaid CLI（`mmdc` 或替代的 `npx` 流程）及其無頭瀏覽器。Snacks 負責顯示圖片，不會取代圖表產生工具；執行時不會開啟瀏覽器視窗。
+- 若要顯示 Mermaid 圖表，還需要 Mermaid CLI（`mmdc` 或明確啟用的 `npx` 替代方式）及其無頭瀏覽器。Snacks 負責顯示圖片，不會取代圖表產生工具；執行時不會開啟瀏覽器視窗。
 
 使用 lazy.nvim 時，請用以下範例取代上方基本安裝的 md-render 設定。如果原本有使用圖示或 BudouX，也請保留對應的相依外掛：
 
@@ -568,7 +570,7 @@ require("snacks").setup({
 <details>
 <summary><strong>Mermaid 圖表沒有顯示</strong></summary>
 
-Mermaid 圖表需要 [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) 提供的 `mmdc` 指令及其無頭瀏覽器。未安裝 `mmdc` 時，預設改用 `npx -y @mermaid-js/mermaid-cli`，可能下載並執行 CLI，第一次執行也較慢。設定 `mermaid_allow_npx = false` 可限定使用本機安裝；找不到時，保留為程式碼區塊。可用 `npm install -g @mermaid-js/mermaid-cli` 全域安裝，以減少啟動時間。
+Mermaid 圖表需要 [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) 提供的 `mmdc` 指令及其無頭瀏覽器。可用 `npm install -g @mermaid-js/mermaid-cli` 安裝；找不到時，預設保留為程式碼區塊。明確設定 `mermaid_allow_npx = true` 後，才允許 npm 在隔離的專案環境下載並執行指定版本的 CLI。這會避開文件所在專案的 `.npmrc` 與本機套件，但仍信任你的 npm 設定、套件來源及相依套件；執行時的替代方式並未鎖定完整相依版本。
 
 </details>
 
@@ -576,6 +578,8 @@ Mermaid 圖表需要 [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mer
 <summary><strong>PlantUML 圖表沒有顯示</strong></summary>
 
 標記為 `plantuml` 或 `puml` 的程式碼區塊，會在 `$PATH` 中有 `plantuml` 時使用本機繪圖；另一種方式是安裝 `java`，並讓 `$PLANTUML_JAR` 指向可讀取的 `plantuml.jar`。任一方式可用時，就能將區塊轉為圖表。
+
+本機繪圖使用 PlantUML 的 SANDBOX 模式，封鎖本機檔案與 URL 存取，包括外部引用。這是繪圖工具的存取政策，並非作業系統沙箱；已安裝的執行檔仍屬信任範圍。
 
 外掛不會自動替你選擇遠端服務。使用別人的 PlantUML 伺服器，代表會把圖表原始文字傳送給對方；因此沒有本機工具時，預設保留為程式碼區塊。若要使用伺服器，請明確指定：
 
@@ -587,7 +591,7 @@ require("md-render.image").setup {
 }
 ```
 
-使用伺服器也需要 `curl`。產生的圖表會依原始文字快取於 `stdpath("cache")/md-render/plantuml`，相同圖表可重複使用快取。
+使用伺服器也需要 `curl`，其安全模式由伺服器決定。產生的圖表會依原始文字與繪圖政策／伺服器身分快取於 `stdpath("cache")/md-render/plantuml`；本機 SANDBOX 與不同伺服器的結果不會混用。
 
 </details>
 
@@ -601,6 +605,8 @@ require("md-render.image").setup {
 ```
 
 請先重新啟動 Neovim，再開啟預覽，讓記憶體中保留的預覽狀態一併釋放。之後需要時，檔案會重新下載或產生。
+
+傳輸、中繼資料掃描及外掛管理的轉檔各有工作上限。目前持久快取沒有總容量上限，程序逾時也無法限制原生解碼工具的記憶體或暫存磁碟用量。
 
 </details>
 

@@ -162,10 +162,10 @@ For static images, diagrams, viewport fitting, and image tabs, install:
 - ImageMagick with `magick` on Neovim's PATH for the complete image workflow.
   Image tabs require this command even for PNG; ffmpeg, sips, or an
   installation providing only convert cannot replace it.
-- For Mermaid, mmdc (or the npx fallback) and its headless browser. Snacks
-  displays images; it does not replace the diagram renderer. No browser
-  window is opened. The npx fallback requires Node.js/npm and may download
-  the CLI. See |md-render-dependencies| for other optional features.
+- For Mermaid, mmdc (or an explicitly enabled npx fallback) and its headless
+  browser. Snacks displays images; it does not replace the diagram renderer.
+  No browser window is opened. The npx fallback requires Node.js/npm and may
+  download the CLI. See |md-render-dependencies| for other optional features.
 
 Plugin managers install Neovim plugins; install command-line tools separately.
 For lazy.nvim, replace the basic md-render spec above with this one, retaining
@@ -730,6 +730,10 @@ A fenced block tagged `plantuml` or `puml` is rendered as an image, the way a
 `mermaid` fence is.  Rendering is done by a `plantuml` on the PATH, or by
 `java -jar $PLANTUML_JAR` when that variable points at a readable jar.
 
+Local rendering uses PlantUML's SANDBOX profile, blocking local-file and URL
+access, including external includes. This is a renderer policy, not an OS
+sandbox; the installed executable remains trusted.
+
 With neither, the fence stays a code block.  PlantUML renders on a server by
 design, and rendering on somebody else's means sending the diagram there, so
 that is not a fallback the plugin picks on its own.  Name a server and it will
@@ -742,9 +746,10 @@ be used: >lua
 "https://www.plantuml.com/plantuml" is the public instance, if that is the one
 you want.  Either way the diagram source is sent to it.
 
-A named server also needs `curl`.  Renders are cached under
-`stdpath("cache")/md-render/plantuml`, keyed by the diagram source, so a given
-diagram is sent once.
+A named server also needs `curl` and controls its own security profile.
+Renders are cached under `stdpath("cache")/md-render/plantuml`, keyed by
+source and renderer policy/server identity. Local SANDBOX output and
+different servers do not share results.
 
 ------------------------------------------------------------------------------
 Deprecated commands				 *md-render-deprecated-commands*
@@ -1253,10 +1258,10 @@ For Snacks setup, requirements, and checks, see |md-render-snacks-image|.
 
                                                             *image.setup()*
 image.setup({opts}) ~
-Configure before opening a preview. Both options below default to true: >lua
+Configure before opening a preview. These are the defaults: >lua
 
   require("md-render.image").setup {
-    autoplay = false,
+    autoplay = true,
     mermaid_allow_npx = false,
   }
 <
@@ -1265,14 +1270,36 @@ image tabs paused; Space can still start playback. Frame preparation still
 requires FFmpeg for videos; GIFs can use FFmpeg or ImageMagick.
 mermaid_allow_npx=false uses only an installed mmdc, retaining Mermaid as code
 if it is unavailable.
-The default npx fallback may download and execute the CLI. Merge these options
+Explicit mermaid_allow_npx=true permits npm to download and run a specified
+CLI version in a private working directory with an isolated project prefix.
+The viewed project's .npmrc and local packages do not affect resolution;
+your npm configuration, registry and package dependencies remain trusted.
+The runtime fallback does not lock those dependencies. Merge these options
 into your existing image setup, retaining backend="snacks" if selected.
 Use :MdRender textsize off for ordinary text headings.
+
+Remote images and videos load automatically in document previews and
+configured Telescope/Snacks picker previews. Changing a picker selection can
+start requests without :MdRender toggle. The built-in downloader accepts
+HTTP(S) URLs and redirects, treats URLs literally, and ignores .curlrc.
+Proxy and CA environment settings still apply. Use |image.set_download_fn()|
+for custom authentication.
 
 With Snacks, automatic layout uses the available window width (unless
 max_width is explicit) and fits images within the window height minus six
 rows. Images keep their aspect ratio and do not grow beyond their original
 pixel size.
+
+                                                         *md-render-obsidian*
+Obsidian attachments ~
+
+Explicit paths, the configured attachment folder and vault-root files are
+checked before a vault-wide fallback search. The shared fallback index scans
+at most 10,000 entries or 50 ms and expires after 30 seconds, so later lookups
+can discover new files. Large vaults may leave short filenames unresolved;
+use an explicit path or the configured attachment folder in that case.
+.obsidian/app.json is read up to 1 MiB; invalid or oversized configuration
+falls back to lookup without an attachment-folder setting.
 
                                                         *md-render-image-view*
 With the Snacks backend and ImageMagick (magick), press <Enter> on an image
@@ -1311,12 +1338,16 @@ it does not regenerate the diagram.
 
 						       *image.set_download_fn()*
 image.set_download_fn({fn}) ~
-	Set a custom download function for web images.  By default, curl is
-	used.
+	Set a custom download function for HTTP(S) web images, including
+	authenticated requests. The built-in curl downloader ignores .curlrc.
 
 	Parameters: ~
 	  {fn}  (function) Function with signature:
 		  fn(url: string, dest: string, callback: function)
+
+	The dest is a temporary absolute output path, not the final cache path.
+	Finish writing and close it before calling callback(true); use
+	callback(false) on failure. The plugin publishes successful output.
 
 							   *image.reset_cache()*
 image.reset_cache() ~
@@ -1331,6 +1362,10 @@ image.cache_dir() ~
   :lua vim.fn.delete(require("md-render.image").cache_dir(), "rf")
 <	Restart Neovim before reopening a preview to release retained preview
 	state. Files are downloaded or regenerated when needed again.
+
+	Transfers, metadata scans and plugin-managed conversions have
+	individual limits. Persistent caches have no total size limit. Process
+	deadlines do not cap native decoders' memory or scratch-disk use.
 
 							*image.supports_kitty()*
 image.supports_kitty() ~
@@ -1517,11 +1552,10 @@ that use them. Install command-line tools separately on Neovim's PATH.
                        Snacks static conversion uses ImageMagick.
                        https://github.com/folke/snacks.nvim/blob/main/docs/image.md
 
-  Mermaid CLI          Render Mermaid diagrams as images.  Falls back to
-  (mmdc)               `npx -y @mermaid-js/mermaid-cli` (requires Node.js/npm;
-                       may download the CLI). Both backends still need its
-                       headless browser. Set mermaid_allow_npx=false in
-                       |image.setup()| to disable the npx fallback.
+  Mermaid CLI          Render Mermaid diagrams as images. Both backends need
+  (mmdc)               its headless browser. The npx fallback is disabled by
+                       default; mermaid_allow_npx=true in |image.setup()|
+                       permits CLI download/execution via Node.js/npm.
                        https://github.com/mermaid-js/mermaid-cli
 
   PlantUML             Render PlantUML diagrams as images.  Falls back to a

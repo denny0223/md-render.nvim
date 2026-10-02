@@ -124,7 +124,7 @@ test("hidden comments retain the source identity of resolved standard references
     local wiki = build { "[[note " .. comment .. "]]" }
     eq(
       link_texts(wiki),
-      { { "note ", "obsidian://advanced-uri?filepath=note ", 1 } },
+      { { "note ", "obsidian://advanced-uri?filepath=note%20", 1 } },
       "nonconflicting wiki keeps comment display policy"
     )
   end
@@ -146,7 +146,7 @@ test("escaped comment openers retain literal bytes and reference identity", func
     )
     content = build { "[[foo \\" .. comment .. "]]", "", "[foo " .. comment .. "]: /wrong" }
     eq(
-      content.link_metadata[1].url,
+      vim.uri_decode(content.link_metadata[1].url),
       "obsidian://advanced-uri?filepath=foo " .. comment,
       "escaped and unescaped identifiers stay distinct"
     )
@@ -538,6 +538,37 @@ test("nested labels use existing link precedence", function()
     end, links),
     { "/inner", "/url" },
     "nested targets"
+  )
+end)
+
+test("outer links display reference-image alt text for every reference form", function()
+  local refs = { image = "/image.png", alt = "/image.png", ["**alt**"] = "/image.png" }
+  for _, label in ipairs { "![alt][image]", "![alt][]", "![alt]", "![**alt**][image]", "![**alt**][]" } do
+    local source = "前 [" .. label .. "](/outer) 後 [end](/end)"
+    local text, highlights, links = markdown.render(source, nil, nil, refs)
+    eq(text, "前 alt 後 end", "nested image displays only its semantic label")
+    eq(#links, 2, "image target does not replace the outer target")
+    eq({ links[1].url, links[2].url }, { "/outer", "/end" }, "outer and following targets")
+    for i, expected in ipairs { "alt", "end" } do
+      eq(text:sub(links[i].col_start + 1, links[i].col_end), expected, "UTF-8 byte range after image syntax removal")
+    end
+    if label:find("**", 1, true) then
+      local bold = {}
+      for _, hl in ipairs(highlights) do
+        if hl.hl == "Bold" then bold[#bold + 1] = text:sub(hl.col + 1, hl.end_col) end
+      end
+      eq(bold, { "alt" }, "image alt emphasis retains its byte range")
+    end
+  end
+  local text, _, links = markdown.render("[^n] [![alt][image]](/outer) [^n]", nil, nil, refs, { n = 1 })
+  local labels = {}
+  for _, link in ipairs(links) do
+    labels[#labels + 1] = { text:sub(link.col_start + 1, link.col_end), link.url }
+  end
+  eq(
+    labels,
+    { { "¹", "#footnote-def-n" }, { "¹", "#footnote-def-n" }, { "alt", "/outer" } },
+    "preexisting footnote ranges follow nested image removal"
   )
 end)
 test("table headers and wrapped rows receive references with exact byte ranges", function()

@@ -146,10 +146,18 @@ function M.html_tags(text, pos)
   end
 end
 
+--- Normalize an element name without changing case-sensitive attribute values.
+function M.html_name(token)
+  local closing, name = token:match "^<(/?)([A-Za-z][A-Za-z0-9%-]*)[%s/>]"
+  if name then return name:lower(), closing == "/" end
+end
+
 --- Find a real closing tag outside attributes and comments.
 function M.html_closing(text, name, start)
+  name = name:lower()
   for first, last, token in M.html_tags(text, start) do
-    if token:match("^</" .. name .. "%s*>$") then return first, last end
+    local tag_name, closing = M.html_name(token)
+    if closing and tag_name == name then return first, last end
   end
 end
 
@@ -167,14 +175,16 @@ end
 
 --- Existing supported HTML semantics use quoted href/src values.
 function M.html_target(tag)
-  local name = tag:match "^<(%a+)[%s>]"
+  local name, closing = M.html_name(tag)
+  if closing then return end
   local attribute = name == "a" and "href" or (name == "img" or name == "video") and "src"
   if attribute then
     local value, quoted = M.html_attribute(tag, attribute)
     if quoted then return value end
     if name == "video" then
       for _, _, token in M.html_tags(tag) do
-        if token:match "^<source%s" then
+        local source_name, source_closing = M.html_name(token)
+        if source_name == "source" and not source_closing then
           value, quoted = M.html_attribute(token, "src")
           if quoted then return value end
         end
@@ -343,9 +353,13 @@ function M.reference_definition(text, start)
 end
 
 --- Scan one already-parsed paragraph; block boundaries are the caller's job.
-local function scan(text, refs, wanted_link, source_label, bare_url)
+local function scan(text, refs, wanted_link, source_label, bare_url, index_labels)
   local spans, brackets, autolinks, invalid_destinations, hard_breaks = {}, {}, {}, {}, {}
-  local standard_ranges = {}
+  local standard_ranges, links = {}, {}
+  local labels = index_labels and {} or nil
+  local link_labels, label_cursor, label_finish = nil, 1, 0
+  local wiki_close
+  local last_link_start = 0
   local runs
   local autolink_finish = 0
   local has_angle_link = false
@@ -354,6 +368,16 @@ local function scan(text, refs, wanted_link, source_label, bare_url)
       brackets[#brackets].angle_link = true
     else
       has_angle_link = true
+    end
+  end
+  local function source_angle_link(bracket, last)
+    if not source_label or not bracket or bracket.angle_link or bracket.source_start > last then return end
+    -- A child reports its own angle ownership when it closes. Restore only
+    -- the parent's direct fragments, not every growing ancestral label.
+    local label = text:sub(bracket.source_start, last)
+    local original = source_label(label)
+    if original ~= label and original:find("<", 1, true) and scan(original, refs).has_angle_link then
+      bracket.angle_link = true
     end
   end
   local pos = wanted_link or 1
@@ -380,34 +404,38 @@ local function scan(text, refs, wanted_link, source_label, bare_url)
       if finish then
         local tag = text:sub(pos, finish)
         local target = angle_link or M.html_target(tag)
-        if tag:match "^<a%s" and not M.html_closing(text, "a", finish + 1) then target = nil end
-        if tag:match "^<video[%s>]" then
+        local tag_name, closing = M.html_name(tag)
+        if tag_name == "a" and not closing and not M.html_closing(text, "a", finish + 1) then target = nil end
+        if tag_name == "video" and not closing then
           local _, video_end = M.html_closing(text, "video", finish + 1)
           target = video_end and M.html_target(text:sub(pos, video_end)) or nil
         end
         standard_ranges[#standard_ranges + 1] = { start = pos, finish = finish, link = target ~= nil or nil }
       end
       pos = (finish or pos) + 1
-    elseif not wanted_link and (text:sub(pos, pos + 3) == "www." or (bare_url and text:match("^https?://", pos))) then
+    elseif
+      not wanted_link
+      and not index_labels
+      and (text:sub(pos, pos + 3) == "www." or (bare_url and text:match("^https?://", pos)))
+    then
       -- Hard-break ownership reuses Markdown's established HTTP matcher.
       local url = bare_url and text:match("^https?://", pos) and bare_url(pos)
       local finish = url and pos + #url - 1 or www_end(text, pos, source_label)
       -- Autolinks apply to text nodes, never a resolved link/image label.
-      -- Reuse the same bracket scanner; lookahead disables www recognition.
-      if finish then
-        for _, bracket in ipairs(brackets) do
-          if bracket.link == nil then
-            local lookahead = scan(text, refs, bracket.start, source_label)
-            bracket.link = lookahead.suffix_start ~= nil
-              or (
-                text:sub(bracket.start, bracket.start + 1) == "[[" and text:find("]]", bracket.start + 2, true) ~= nil
-              )
-          end
-          if bracket.link then
-            finish = nil
-            break
-          end
+      -- Index future label ownership once, instead of rescanning the suffix
+      -- for every unmatched opener. Candidates then advance one range cursor.
+      if finish and #brackets > 0 then
+        if not link_labels then
+          link_labels = scan(text, refs, nil, source_label, nil, true).labels
+          table.sort(link_labels, function(a, b)
+            return a.start < b.start
+          end)
         end
+        while link_labels[label_cursor] and link_labels[label_cursor].start <= pos do
+          label_finish = math.max(label_finish, link_labels[label_cursor].finish)
+          label_cursor = label_cursor + 1
+        end
+        if pos <= label_finish then finish = nil end
       end
       if finish then
         autolink_finish = finish
@@ -435,31 +463,37 @@ local function scan(text, refs, wanted_link, source_label, bare_url)
       end
       pos = pos + 1
     elseif c == "[" or text:sub(pos, pos + 1) == "![" then
-      for _, bracket in ipairs(brackets) do
-        bracket.nested = true
+      -- Ancestors were marked when their immediate child opened.
+      if #brackets > 0 then
+        source_angle_link(brackets[#brackets], pos - 1)
+        brackets[#brackets].nested = true
       end
       local image_marker = c == "!"
       -- link_bounds() starts at [, so recover a preceding unescaped image marker.
       local preceding_escape = wanted_link == pos and text:sub(1, pos - 1):match "(\\*)!$" or nil
       local image = image_marker or (preceding_escape ~= nil and #preceding_escape % 2 == 0)
-      brackets[#brackets + 1] = { start = pos + (image_marker and 1 or 0), image = image, active = true }
+      brackets[#brackets + 1] = {
+        start = pos + (image_marker and 1 or 0),
+        source_start = pos + (image_marker and 2 or 1),
+        image = image,
+      }
+      local start = brackets[#brackets].start
+      if labels and text:sub(start, start + 1) == "[[" then
+        if not wiki_close or wiki_close < start + 2 then wiki_close = text:find("]]", start + 2, true) or #text + 1 end
+        if wiki_close <= #text then labels[#labels + 1] = { start = start, finish = wiki_close + 1 } end
+      end
       pos = pos + (image_marker and 2 or 1)
     elseif c == "]" and #brackets > 0 then
       local bracket = table.remove(brackets)
-      if source_label then
-        local label = text:sub(bracket.start + 1, pos - 1)
-        local original = source_label(label)
-        -- Protected text must retain the same ownership as its source label.
-        if original ~= label and scan(original, refs).has_angle_link then bracket.angle_link = true end
-      end
-      if bracket.angle_link and not bracket.image then bracket.active = false end
-      local finish = bracket.active and M.link_end(text, pos + 1) or nil
+      source_angle_link(bracket, pos - 1)
+      local active = bracket.image or (bracket.start > last_link_start and not bracket.angle_link)
+      local finish = active and M.link_end(text, pos + 1) or nil
       if not finish and text:sub(pos + 1, pos + 1) == "(" then
         invalid_destinations[#invalid_destinations + 1] = pos + 1
       end
       local matched = finish ~= nil
       local url
-      if bracket.active and not matched and refs then
+      if active and not matched and refs then
         local ref_end = M.reference_end(text, pos + 1, source_label)
         local label = ref_end and text:sub(pos + 2, ref_end - 1)
         if not label or label == "" then label = not bracket.nested and text:sub(bracket.start + 1, pos - 1) or nil end
@@ -477,6 +511,9 @@ local function scan(text, refs, wanted_link, source_label, bare_url)
         return { code_spans = spans, suffix_start = matched and pos + 1 or nil, link_end = finish, reference_url = url }
       end
       if matched then
+        links[bracket.start] =
+          { start = bracket.start, suffix_start = pos + 1, finish = finish, url = url, image = bracket.image }
+        if labels then labels[#labels + 1] = { start = bracket.start, finish = pos } end
         standard_ranges[#standard_ranges + 1] = {
           start = bracket.start - (bracket.image and 1 or 0),
           finish = finish,
@@ -484,10 +521,10 @@ local function scan(text, refs, wanted_link, source_label, bare_url)
         }
       end
       if matched and not bracket.image then
-        for _, previous in ipairs(brackets) do
-          if not previous.image then previous.active = false end
-        end
+        -- Only earlier link openers become inactive; images may contain links.
+        last_link_start = bracket.start
       end
+      if #brackets > 0 then brackets[#brackets].source_start = (finish or pos) + 1 end
       pos = (finish or pos) + 1
     else
       pos = pos + 1
@@ -503,7 +540,14 @@ local function scan(text, refs, wanted_link, source_label, bare_url)
     hard_breaks = hard_breaks,
     has_angle_link = has_angle_link,
     standard_ranges = standard_ranges,
+    links = links,
+    labels = labels,
   }
+end
+
+--- Index one immutable paragraph; callers discard it after transforming bytes.
+function M.scan(text, ref_links, source_label)
+  return scan(text, ref_links, nil, source_label)
 end
 
 --- Hard breaks belong to text nodes, never code, HTML or valid link suffixes.
@@ -528,16 +572,21 @@ end
 ---@return integer? suffix_start 1-based byte after the closing label bracket
 ---@return integer? finish 1-based inclusive end of the whole link
 ---@return string? reference_url decoded destination for a resolved reference
-function M.link_bounds(text, start, ref_links, source_label)
+function M.link_bounds(text, start, ref_links, source_label, links)
+  if links then
+    local link = links[start]
+    if link then return link.suffix_start, link.finish, link.url end
+    return
+  end
   local result = scan(text, ref_links, start, source_label)
   return result.suffix_start, result.link_end, result.reference_url
 end
 
 --- Standard code/link/image and HTML/autolink ownership, including nested labels.
 --- Return disjoint 1-based inclusive ranges; an outer image/link owns its label.
-function M.standard_ranges(text, ref_links, source_label)
+function M.standard_ranges(text, ref_links, source_label, parsed)
   if not text:find "[`<%[]" then return {} end
-  local ranges = scan(text, ref_links, nil, source_label).standard_ranges
+  local ranges = (parsed or scan(text, ref_links, nil, source_label)).standard_ranges
   table.sort(ranges, function(a, b)
     return a.start < b.start or (a.start == b.start and a.finish > b.finish)
   end)

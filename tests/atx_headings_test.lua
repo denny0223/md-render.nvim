@@ -240,6 +240,11 @@ end)
 
 local rich = "   ### **粗體** [連結](https://example.invalid/a?x=1&amp;y=2) `#` ###"
 test("parsed heading content preserves inline byte ranges and anchors", function()
+  local level, parsed = markdown.parse_atx_heading(rich)
+  eq(level, 3, "ATX opening markers determine the level")
+  eq(parsed, "**粗體** [連結](https://example.invalid/a?x=1&amp;y=2) `#`", "only closing ATX markers are removed")
+  local semantic = markdown.render(parsed, nil, nil, nil, nil, true, { semantic = true })
+  eq(semantic, "粗體 連結 #", "the code hash and preceding source space remain semantic content")
   for _, width in ipairs { 80, 20 } do
     local content = build({ rich }, { max_width = width, indent = "  " })
     eq(style_text(content, "Bold"), "粗體", "bold covers the intended Unicode bytes")
@@ -249,7 +254,9 @@ test("parsed heading content preserves inline byte ranges and anchors", function
     eq(content.lines[link.line + 1]:sub(link.col_start + 1, link.col_end), "連結", "link covers its visible label")
     eq(link.url, "https://example.invalid/a?x=1&y=2", "destination decoded once")
     eq(content.source_line_map[link.line + 1], 1, "wrapped link maps to the heading source")
-    assert(content.heading_anchors["粗體-連結"] ~= nil, "anchor uses parsed content without closing markers")
+    -- Removing the literal # leaves its preceding space as a final hyphen.
+    eq(content.heading_anchors["粗體-連結-"], 0, "anchor preserves source spaces after stripping punctuation")
+    eq(content.heading_anchors["粗體-連結"], nil, "anchor does not trim a hyphen created from source whitespace")
   end
 end)
 
@@ -365,7 +372,7 @@ end)
 
 test("public preview rebuild preserves source, link activation and anchors", function()
   local preview = require "md-render.preview"
-  local source = { rich, "", "[jump](#粗體-連結)", "", "#", "", "####### literal" }
+  local source = { rich, "", "[jump](#粗體-連結-)", "", "#", "", "####### literal" }
   local buf = vim.api.nvim_create_buf(false, true)
   vim.bo[buf].filetype = "markdown"
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, source)

@@ -535,7 +535,7 @@ test("wiki and embed targets restore source breaks without leaking placeholders"
   assert_eq(breaks, {}, "URL restoration cannot create a phantom visible break")
   assert_eq(
     links,
-    { { col_start = 0, col_end = 4, url = "obsidian://advanced-uri?filepath=foo  \nbar" } },
+    { { col_start = 0, col_end = 4, url = "obsidian://advanced-uri?filepath=foo%20%20%0Abar" } },
     "wiki target retains its original source spelling"
   )
   text, _, links, _, _, _, _, _, breaks = markdown.render "![[foo\\\nbar.md]]"
@@ -543,7 +543,7 @@ test("wiki and embed targets restore source breaks without leaking placeholders"
   assert_eq(breaks, { { col = #"📎 foo", source_line = 2 } }, "embed display reports its visible break")
   assert_eq(
     links,
-    { { col_start = 0, col_end = #text, url = "obsidian://advanced-uri?filepath=foo\\\nbar.md" } },
+    { { col_start = 0, col_end = #text, url = "obsidian://advanced-uri?filepath=foo%5C%0Abar.md" } },
     "embed target contains source bytes, never a placeholder"
   )
   local content = build { "[[target|*foo  ", "bar*]]" }

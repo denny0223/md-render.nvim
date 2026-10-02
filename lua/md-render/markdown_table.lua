@@ -297,7 +297,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
       return alt, url, image_mod.is_video_file(url)
     end
     -- Try <img src="..." alt="..."> tag
-    local img_end = stripped:match "^<img%s" and inline.html_end(stripped, 1)
+    local img_end = stripped:lower():match "^<img%s" and inline.html_end(stripped, 1)
     local img_tag = img_end and stripped:sub(img_end + 1):match "^%s*$" and stripped:sub(1, img_end)
     if img_tag then
       local src = inline.html_target(img_tag)
@@ -310,7 +310,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
       end
     end
     -- Try <video src="...">...</video> or <video><source src="...">...</video>
-    local video_start = stripped:match "^<video[%s>]" and inline.html_end(stripped, 1)
+    local video_start = stripped:lower():match "^<video[%s>]" and inline.html_end(stripped, 1)
     local video_end = video_start and select(2, inline.html_closing(stripped, "video", video_start + 1))
     local video_tag = video_end and stripped:sub(video_end + 1):match "^%s*$" and stripped:sub(1, video_end)
     if video_tag then

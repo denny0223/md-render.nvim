@@ -189,13 +189,16 @@ end)
 
 local rich = "**粗體** [連結](https://example.invalid/a?x=1&amp;y=2) #"
 test("Setext title keeps exact Unicode inline ranges and literal closing hashes", function()
+  local semantic = markdown.render(rich, nil, nil, nil, nil, true, { semantic = true })
+  eq(semantic, "粗體 連結 #", "Setext retains the literal hash and preceding source space")
   local content = build { rich, "===" }
   eq(headings(content), { { "# 粗體 連結 #", 1 } }, "raw Setext title")
   eq(spans(content, "Bold"), { { 0, 2, #"# 粗體", "粗體" } }, "exact bold range")
   eq(content.link_metadata, {
     { line = 0, col_start = #"# 粗體 ", col_end = #"# 粗體 連結", url = "https://example.invalid/a?x=1&y=2" },
   }, "exact link byte range")
-  eq(content.heading_anchors["粗體-連結"], 0, "raw title anchor")
+  eq(content.heading_anchors["粗體-連結-"], 0, "punctuation removal preserves its preceding space as a hyphen")
+  eq(content.heading_anchors["粗體-連結"], nil, "raw title anchor does not trim generated hyphens")
   local inline = { markdown.render("Foo #", nil, nil, nil, nil, true, { heading_level = 1 }) }
   eq(inline[1], "Foo #", "inline-only context retains markers")
   eq(inline[4], nil, "inline-only context has no heading")
@@ -330,7 +333,7 @@ test("public preview/rebuild keeps Setext anchors and activation at narrow width
     rich .. " extended heading title",
     "  ===",
     "",
-    "[jump](#粗體-連結-extended-heading-title)",
+    "[jump](#粗體-連結--extended-heading-title)",
     "",
     "> quoted",
     "> ---",

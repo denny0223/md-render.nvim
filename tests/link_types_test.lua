@@ -60,8 +60,8 @@ test("heading_slug: strips wikilink syntax", function()
   assert_eq(Markdown.heading_slug "About [[Page|display]]", "about-display", "wikilink syntax stripped")
 end)
 
-test("heading_slug: collapses hyphens", function()
-  assert_eq(Markdown.heading_slug "A - B - C", "a-b-c", "hyphens collapsed")
+test("heading_slug: preserves source hyphens", function()
+  assert_eq(Markdown.heading_slug "A - B - C", "a---b---c", "spaces and existing hyphens remain distinct")
 end)
 
 test("heading_slug: removes special characters", function()
@@ -101,6 +101,59 @@ test("wikilink [[#heading|alias]] generates anchor URL", function()
   local _, _, links = Markdown.render "[[#My Section|go here]]"
   assert_eq(#links, 1, "wikilink anchor alias: one link")
   assert_eq(links[1].url, "#my-section", "wikilink anchor alias: URL is #slug")
+end)
+
+test("Obsidian query values cannot add parameters or fragments", function()
+  local _, _, links = Markdown.render "[[A&B?x=1%#H&mode=write|label]]"
+  assert_eq(
+    links[1].url,
+    "obsidian://advanced-uri?filepath=A%26B%3Fx%3D1%25&heading=H%26mode%3Dwrite",
+    "filepath and heading are independently encoded"
+  )
+  _, _, links = Markdown.render "[[筆記 &amp; A|link]] ![[A&B.png]]"
+  assert_eq(links[1].url, "obsidian://advanced-uri?filepath=A%26B.png", "embed value is encoded")
+  assert_eq(
+    links[2].url,
+    "obsidian://advanced-uri?filepath=%E7%AD%86%E8%A8%98%20%26%20A",
+    "entities decode before the query value is encoded"
+  )
+end)
+
+test("wikilinks split the page from the first heading marker", function()
+  local text, _, links = Markdown.render "[[Page#Heading #1]]"
+  assert_eq(text, "Page > Heading #1", "heading punctuation stays in the heading label")
+  assert_eq(
+    links[1].url,
+    "obsidian://advanced-uri?filepath=Page&heading=Heading%20%231",
+    "additional heading markers cannot become part of the filepath"
+  )
+end)
+
+test("heading slugs retain semantic labels and ignore display decoration", function()
+  local long_url = "https://example.com/" .. string.rep("a", 80)
+  for _, case in ipairs {
+    { "foo-bar_baz", "foo-bar_baz" },
+    { "A  B", "a--b" },
+    { "ÉCOLE Θ", "école-θ" },
+    { "Fish &amp; Chips", "fish--chips" },
+    { "See [docs][r]", "see-docs", { r = "/url" } },
+    { "<EM>Visible</eM> <span title='hidden'>label</span>", "visible-label" },
+    { "`<b>literal</b>`", "bliteralb" },
+    { '<IMG SRC="pic.png" ALT="Diagram">', "diagram" },
+    { "![[photo.png]]", "photopng" },
+    { "これは **強調** です。", "これは-強調-です" },
+    { long_url, "httpsexamplecom" .. string.rep("a", 80) },
+  } do
+    assert_eq(Markdown.heading_slug(case[1], case[3]), case[2], "semantic slug: " .. case[1])
+  end
+  local b = require("md-render.content_builder").ContentBuilder.new()
+  b:render_document({ "# See [docs][r]", "", "[r]: /url" }, { text_scale = false, indent = "" })
+  assert_eq(b:result().heading_anchors["see-docs"], 0, "builder supplies heading reference context")
+  assert_eq(
+    Markdown.heading_slug("*literal* &amp; <EM>text</em>", nil, nil, { raw_html = true }),
+    "literal--text",
+    "raw HTML context retains literal Markdown bytes before slug punctuation filtering"
+  )
 end)
 
 -- Standard link anchor detection
@@ -400,13 +453,13 @@ test("content_builder heading anchor line is correct", function()
   assert_eq(result.heading_anchors["second-heading"], 1, "heading anchor points to correct line")
 end)
 
-test("repeated heading anchors preserve natural names and distinct targets", function()
+test("repeated heading anchors are allocated in document order", function()
   local b = require("md-render.content_builder").ContentBuilder.new()
   for _, heading in ipairs { "A", "A", "A 1", "A", "A-1", "A 1" } do
     b:add_markdown_line("### " .. heading, "", 80)
   end
-  local expected = { a = 0, ["a-1"] = 2, ["a-2"] = 1, ["a-3"] = 3, a1 = 4, ["a-1-1"] = 5 }
-  assert_eq(b:result().heading_anchors, expected, "aliases cannot steal a natural heading name")
+  local expected = { a = 0, ["a-1"] = 1, ["a-1-1"] = 2, ["a-2"] = 3, ["a-1-2"] = 4, ["a-1-3"] = 5 }
+  assert_eq(b:result().heading_anchors, expected, "later natural names cannot steal an earlier generated anchor")
   assert_eq(b:result().heading_anchors, expected, "reading the result twice does not renumber anchors")
 end)
 

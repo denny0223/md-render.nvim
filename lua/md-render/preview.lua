@@ -55,42 +55,58 @@ end
 
 --- Parse simple YAML frontmatter lines into key-value pairs
 ---@param fm_lines string[]
----@return {key: string, value: string}[]
+---@return {key: string, value: string, source_line: integer}[]? entries Nil preserves unsupported YAML as raw text.
 local function parse_frontmatter(fm_lines)
   local entries = {}
   local current_key = nil
   local current_list = {}
+  local current_line
+  local list_indent
 
   local function flush_list()
     if current_key and #current_list > 0 then
       table.insert(entries, {
         key = current_key,
         value = table.concat(current_list, ", "),
+        source_line = current_line,
       })
       current_key = nil
       current_list = {}
+      list_indent = nil
+      return true
     end
+    return current_key == nil
   end
 
-  for _, line in ipairs(fm_lines) do
-    local list_value = line:match "^%s+%-%s+(.+)$"
+  for row, line in ipairs(fm_lines) do
+    if line:match "^%s*$" then goto continue end
+    local indent, list_value = line:match "^(%s+)%-%s+(.+)$"
     if list_value and current_key then
+      if (list_indent and list_indent ~= indent) or list_value:match "^[|>]" or list_value:match ":%s" then
+        return nil
+      end
+      list_indent = indent
       table.insert(current_list, list_value)
     else
-      flush_list()
+      if not flush_list() then return nil end
       local key, value = line:match "^([%w_%-]+):%s*(.*)$"
       if key then
         if value and value ~= "" then
-          table.insert(entries, { key = key, value = value })
+          if value:match "^[|>]" then return nil end
+          table.insert(entries, { key = key, value = value, source_line = row + 1 })
           current_key = nil
         else
           current_key = key
           current_list = {}
+          current_line = row + 1
         end
+      else
+        return nil
       end
     end
+    ::continue::
   end
-  flush_list()
+  if not flush_list() then return nil end
 
   return entries
 end
@@ -125,17 +141,23 @@ MdPreview.build_content = function(lines, opts)
     end
     if body_start > 1 and #frontmatter_lines > 0 then
       local entries = parse_frontmatter(frontmatter_lines)
-      if #entries > 0 then
+      if not entries then
+        -- Preserve unsupported or mixed YAML literally; Markdown parsing would
+        -- reinterpret its fences, block scalars and nested collections.
+        for row = 1, body_start - 1 do
+          b:set_source_line(row)
+          b:add_line("  " .. lines[row], { { col = 0, end_col = -1, hl = "Comment" } })
+        end
+        b:add_line ""
+      elseif #entries > 0 then
         b:set_source_line(1)
         b:add_line("  Properties", {
           { col = 2, end_col = 2 + #"Properties", hl = "Title" },
         })
-        -- Unique block id per overflowing frontmatter entry. Negative so it
-        -- can never collide with code-block expand ids, which are positive source
-        -- line numbers. Stable across rebuilds because entries parse
-        -- deterministically, so expand_state persists per entry.
-        local fm_block_counter = 0
+        -- Negative source rows stay distinct from code blocks and stable when
+        -- a width change makes another entry overflow.
         for _, entry in ipairs(entries) do
+          b:set_source_line(entry.source_line)
           local label = "  " .. entry.key
           -- Byte/display column where the value starts, after "<label>: ".
           -- label is ASCII (key matches [%w_%-]+), so bytes == display cols.
@@ -143,8 +165,7 @@ MdPreview.build_content = function(lines, opts)
           local full_line = label .. ": " .. entry.value
           local display_width = vim.api.nvim_strwidth(full_line)
           if display_width > max_width then
-            fm_block_counter = fm_block_counter + 1
-            local block_id = -fm_block_counter
+            local block_id = -entry.source_line
             local expanded = expand_state[block_id] or false
             local start_line = #b.lines
             if expanded then
@@ -179,8 +200,8 @@ MdPreview.build_content = function(lines, opts)
               end
               local truncated = full_line:sub(1, byte_pos) .. "…"
               b:add_line(truncated, {
-                { col = 0, end_col = #label, hl = "Comment" },
-                { col = value_col, end_col = byte_pos, hl = "String" },
+                { col = 0, end_col = math.min(#label, byte_pos), hl = "Comment" },
+                { col = math.min(value_col, byte_pos), end_col = byte_pos, hl = "String" },
                 { col = byte_pos, end_col = #truncated, hl = "Underlined" },
               })
             end

@@ -30,6 +30,7 @@ local inline = require "md-render.inline"
 local character_references = require "md-render.character_references"
 
 local MAX_URL_DISPLAY_WIDTH = 50
+local delimiter_char
 
 --- Parse ATX syntax before interpreting its inline content or container layout.
 ---@param line string source line after any container prefix has been removed
@@ -51,30 +52,24 @@ function Markdown.parse_setext_underline(line)
   if line:match "^ ? ? ?%-+[ \t]*$" then return 2 end
 end
 
---- Convert heading text to a URL-safe slug (GitHub-compatible).
---- Strips inline markdown markers, lowercases, replaces spaces with hyphens.
+--- Slugs use semantic heading text, before terminal-specific presentation.
 ---@param text string raw heading text (after # markers)
+---@param ref_links? table<string, string>
+---@param footnote_map? table<string, integer>
+---@param block_context? table
 ---@return string slug
-function Markdown.heading_slug(text)
-  local s = text
-  -- Strip common inline markdown markers
-  s = s:gsub("%*%*(.-)%*%*", "%1") -- bold
-  s = s:gsub("%*(.-)%*", "%1") -- italic
-  s = s:gsub("~~(.-)~~", "%1") -- strikethrough
-  s = s:gsub("==(.-)==", "%1") -- highlight
-  s = s:gsub("`(.-)`", "%1") -- code
-  s = s:gsub("%[(.-)%]%(.-%)", "%1") -- [text](url) → text
-  s = s:gsub("%[%[(.-)%]%]", function(inner)
-    local pipe = inner:find("|", 1, true)
-    if pipe then return inner:sub(pipe + 1) end
-    return inner
-  end)
-  s = s:lower()
-  s = s:gsub("[%p]", "") -- remove ASCII punctuation, preserve multibyte chars
-  s = s:gsub("%s+", "-") -- spaces to hyphens
-  s = s:gsub("%-+", "-") -- collapse hyphens
-  s = s:gsub("^%-+", ""):gsub("%-+$", "") -- trim hyphens
-  return s
+function Markdown.heading_slug(text, ref_links, footnote_map, block_context)
+  local context = { semantic = true, raw_html = block_context and block_context.raw_html }
+  local rendered = Markdown.render(text, nil, nil, ref_links, footnote_map, true, context)
+  rendered = vim.fn.tolower(vim.trim(rendered))
+  return (
+    rendered:gsub("[%z\1-\127\194-\253][\128-\191]*", function(char)
+      if char == " " then return "-" end
+      if char == "-" or char == "_" then return char end
+      local space, punctuation = delimiter_char(char)
+      return (space or punctuation or char:find "%c") and "" or char
+    end)
+  )
 end
 
 --- ASCII punctuation characters that can be backslash-escaped (CommonMark spec)
@@ -384,6 +379,13 @@ local function char_starting_at(text, pos)
   return text:sub(pos, last)
 end
 
+-- URI encoding preserves reserved delimiters; query values must escape them.
+local function query_value(value)
+  return (value:gsub("[^A-Za-z0-9%-%._~]", function(char)
+    return string.format("%%%02X", char:byte())
+  end))
+end
+
 --- Process [[wikilinks]]: display as link text with highlight
 ---@param text string
 ---@param highlights MdRender.Markdown.Highlight[]
@@ -397,9 +399,10 @@ local function process_wikilinks(
   hard_break_spans,
   standard_spans,
   code_spans,
-  autolink_spans
+  autolink_spans,
+  decode_url
 )
-  if not text:find("[[", 1, true) then return text end
+  if not text:find("[[", 1, true) or not text:find("]]", 1, true) then return text end
   local pre_hl_count, pre_link_count, removals = #highlights, #links, {}
   local processed = ""
   local i = 1
@@ -424,7 +427,7 @@ local function process_wikilinks(
           if heading then
             display = heading
           else
-            local page, h = inner:match "^(.+)#(.+)$"
+            local page, h = inner:match "^([^#]+)#(.+)$"
             if page and h then
               display = page .. " > " .. h
             else
@@ -434,7 +437,7 @@ local function process_wikilinks(
         end
 
         -- Targets keep their original spelling while labels render inline styles.
-        target = restore_source(restore_source(target, hard_break_spans), emphasis_spans)
+        target = decode_url(restore_source(restore_source(target, hard_break_spans), emphasis_spans))
         -- Determine URL and highlight based on link type
         local url, hl
         local anchor_heading = target:match "^#(.+)$"
@@ -444,11 +447,11 @@ local function process_wikilinks(
           hl = "MdRenderLinkAnchor"
         else
           -- Obsidian cross-file link via Advanced URI plugin
-          local page, heading = target:match "^(.+)#(.+)$"
+          local page, heading = target:match "^([^#]+)#(.+)$"
           if page and heading then
-            url = "obsidian://advanced-uri?filepath=" .. page .. "&heading=" .. heading
+            url = "obsidian://advanced-uri?filepath=" .. query_value(page) .. "&heading=" .. query_value(heading)
           else
-            url = "obsidian://advanced-uri?filepath=" .. target
+            url = "obsidian://advanced-uri?filepath=" .. query_value(target)
           end
           hl = "MdRenderLinkObsidian"
         end
@@ -460,6 +463,7 @@ local function process_wikilinks(
           col_start = start_col,
           col_end = start_col + #display,
           url = url,
+          _decoded = true,
         })
         removals[#removals + 1] = { start = i - 1 + #display, count = close + 2 - i - #display }
         i = close + 2
@@ -492,9 +496,11 @@ local function process_embeds(
   hard_break_spans,
   standard_spans,
   code_spans,
-  autolink_spans
+  autolink_spans,
+  decode_url,
+  semantic
 )
-  if not text:find("![[", 1, true) then return text end
+  if not text:find("![[", 1, true) or not text:find("]]", 1, true) then return text end
   local pre_hl_count, pre_link_count, removals = #highlights, #links, {}
   local processed = ""
   local i = 1
@@ -508,7 +514,7 @@ local function process_embeds(
       if close then
         local inner = text:sub(i + 3, close - 1)
         local target = inner:match "^([^|#]+)" or inner
-        local source_target = restore_source(restore_source(target, hard_break_spans), emphasis_spans)
+        local source_target = decode_url(restore_source(restore_source(target, hard_break_spans), emphasis_spans))
         local ext = source_target:match "%.(%w+)$"
         local icons_mod = require "md-render.icons"
         local raw_icon, embed_icon_hl
@@ -517,12 +523,12 @@ local function process_embeds(
         else
           raw_icon = "📎"
         end
-        local icon = icons_mod.pad_icon(raw_icon) .. " "
+        local icon = semantic and "" or icons_mod.pad_icon(raw_icon) .. " "
         local display = icon .. target
 
         local start_col = #processed
         processed = processed .. display
-        if embed_icon_hl then
+        if embed_icon_hl and not semantic then
           table.insert(highlights, { col = start_col, end_col = start_col + #icon - 1, hl = embed_icon_hl })
         end
         table.insert(
@@ -532,7 +538,8 @@ local function process_embeds(
         table.insert(links, {
           col_start = start_col,
           col_end = start_col + #display,
-          url = "obsidian://advanced-uri?filepath=" .. source_target,
+          url = "obsidian://advanced-uri?filepath=" .. query_value(source_target),
+          _decoded = true,
         })
         removals[#removals + 1] = { start = i - 1 + #display, count = close + 2 - i - #display }
         i = close + 2
@@ -563,6 +570,7 @@ local link_bounds = inline.link_bounds
 local function map_display_text(text, transform, keep_literals)
   if not text:find("](", 1, true) and not (keep_literals and text:find "[<\\]") then return transform(text, 0) end
   local parts, start, i = {}, 1, 1
+  local indexed_links = inline.scan(text).links
   while i <= #text do
     local c = text:sub(i, i)
     local _, comment_end = text:find("^<!%-%-.-%-*%-%->", i)
@@ -587,7 +595,7 @@ local function map_display_text(text, transform, keep_literals)
       parts[#parts + 1] = text:sub(i, last)
       start, i = last + 1, last
     elseif c == "[" then
-      local first, last = link_bounds(text, i)
+      local first, last = link_bounds(text, i, nil, nil, indexed_links)
       if last then
         parts[#parts + 1] = transform(text:sub(start, first), start - 1)
         parts[#parts + 1] = text:sub(first + 1, last)
@@ -659,6 +667,8 @@ end
 ---@return string processed
 local function process_links(text, highlights, links, source_label, ref_links)
   if not text:find("[", 1, true) then return text end
+  local indexed_links = inline.scan(text, ref_links, source_label).links
+  if not next(indexed_links) then return text end
   local pre_hl_count = #highlights
   local pre_link_count = #links
   local removals = {}
@@ -670,21 +680,27 @@ local function process_links(text, highlights, links, source_label, ref_links)
       processed = processed .. text:sub(i, literal_end)
       i = literal_end + 1
     elseif text:sub(i, i) == "[" then
-      local suffix_start, finish, reference_url = link_bounds(text, i, ref_links, source_label)
+      local suffix_start, finish, reference_url = link_bounds(text, i, ref_links, source_label, indexed_links)
       if finish then
         local link_text_raw = text:sub(i + 1, suffix_start - 2)
         local url = reference_url or link_destination(source_label(text:sub(suffix_start + 1, finish - 1)))
 
-        -- If link text is an image ![alt](img-url), use alt as display
-        local alt = link_text_raw:match "^!%[(.-)%]%((.-)%)$"
+        -- The same scanner recognizes inline, full, collapsed and shortcut images.
+        local image = text:sub(i + 1, i + 1) == "!" and indexed_links[i + 2]
+        local alt = image
+          and image.image
+          and image.finish == suffix_start - 2
+          and text:sub(image.start + 1, image.suffix_start - 2)
         local display_text = alt or link_text_raw
 
         local start_col = #processed
         processed = processed .. display_text
         add_link_highlight(highlights, start_col, start_col + #display_text, url)
         table.insert(links, { col_start = start_col, col_end = start_col + #display_text, url = url, _decoded = true })
-        table.insert(removals, { start = i - 1, count = 1 }) -- opening [
-        table.insert(removals, { start = suffix_start - 2, count = finish - suffix_start + 2 }) -- ] plus link suffix
+        local label_start = alt and image.start or i
+        local label_end = alt and image.suffix_start or suffix_start
+        table.insert(removals, { start = i - 1, count = label_start - i + 1 })
+        table.insert(removals, { start = label_end - 2, count = finish - label_end + 2 })
         i = finish + 1
       else
         processed = processed .. text:sub(i, i)
@@ -784,7 +800,7 @@ local function bare_autolink(text, start, literals, code_spans, angle_spans, emp
 end
 
 --- CommonMark flanking uses source characters, not decoded/display text.
-local function delimiter_char(char)
+delimiter_char = function(char)
   local cp = char ~= "" and wrap_mod.utf8_codepoint(char) or nil
   local space = char == ""
     or char:find "^[ \t\n\r\f]$" ~= nil
@@ -817,7 +833,8 @@ end
 local function protect_emphasis(text, source, refs, footnotes, code_spans, autolink_spans, source_label)
   if not text:find "[*_~]" then return text, {}, {} end
   local pairs = {}
-  local standard_ranges = inline.standard_ranges(text, refs, source_label)
+  local parsed = inline.scan(text, refs, source_label)
+  local standard_ranges = inline.standard_ranges(text, refs, source_label, parsed)
   local function resolve(first, last, in_label)
     local openers, lower = {}, {}
     local pos = first
@@ -825,7 +842,7 @@ local function protect_emphasis(text, source, refs, footnotes, code_spans, autol
       local char = text:sub(pos, pos)
       local suffix, link_end
       if char == "[" then
-        suffix, link_end = inline.link_bounds(text, pos, refs, source_label)
+        suffix, link_end = inline.link_bounds(text, pos, refs, source_label, parsed.links)
       end
       local wiki_start = text:sub(pos, pos + 1) == "[[" and pos or text:sub(pos, pos + 2) == "![[" and pos + 1
       local wiki_end = wiki_start and text:find("]]", wiki_start + 2, true)
@@ -995,6 +1012,7 @@ local function process_bare_urls(
   emphasis_spans,
   source
 )
+  if #spans == 0 and not text:find "https?://" and not text:find("@", 1, true) then return text end
   local pre_hl_count = #highlights
   local pre_link_count = #links
   local existing_links = vim.list_slice(links)
@@ -1008,7 +1026,7 @@ local function process_bare_urls(
     protected[span.placeholder] = span
   end
   local pattern = spans[1] and spans[1].placeholder:gsub("%d+", "%%d+")
-  local processed = ""
+  local parts, output_bytes = {}, 0
   local i = 1
   local removals = {}
 
@@ -1031,18 +1049,20 @@ local function process_bare_urls(
         spans[#spans + 1] = { placeholder = token, content = display_url }
         removals[#removals + 1] = { start = i - 1 + #token, count = length - #token }
       end
-      local first = #processed
-      processed = processed .. token
-      add_link_highlight(highlights, first, #processed, url)
-      links[#links + 1] = { col_start = first, col_end = #processed, url = url, _decoded = literal ~= nil }
+      local first = output_bytes
+      parts[#parts + 1] = token
+      output_bytes = output_bytes + #token
+      add_link_highlight(highlights, first, output_bytes, url)
+      links[#links + 1] = { col_start = first, col_end = output_bytes, url = url, _decoded = literal ~= nil }
       i = i + length
     else
-      processed = processed .. text:sub(i, i)
+      parts[#parts + 1] = text:sub(i, i)
+      output_bytes = output_bytes + 1
       i = i + 1
     end
   end
   adjust_positions(highlights, links, removals, pre_hl_count, pre_link_count)
-  return processed
+  return table.concat(parts)
 end
 
 --- Process #123 issue/PR references: make them clickable
@@ -1163,7 +1183,7 @@ local HTML_TAG_HIGHLIGHTS = {
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
 ---@return string processed
-local function process_html_tags(text, highlights, links, decode_url, keep_rows)
+local function process_html_tags(text, highlights, links, decode_url, keep_rows, semantic)
   if not text:find("<", 1, true) then return text end
   local pre_hl_count = #highlights
   local pre_link_count = #links
@@ -1184,7 +1204,8 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
       local matched = false
 
       -- Try <a href="...">text</a>
-      local a_tag = opening_tag and opening_tag:match "^<a%s" and opening_tag
+      local tag_name, closing = inline.html_name(opening_tag or "")
+      local a_tag = tag_name == "a" and not closing and opening_tag
       if a_tag then
         local href = inline.html_target(a_tag)
         local close_start, close_end = inline.html_closing(text, "a", i + #a_tag)
@@ -1204,7 +1225,7 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
 
       -- Try <img src="..." alt="...">
       if not matched then
-        local img_tag = opening_tag and opening_tag:match "^<img%s" and opening_tag
+        local img_tag = tag_name == "img" and not closing and opening_tag
         if img_tag then
           local src = inline.html_target(img_tag)
           if src then
@@ -1214,13 +1235,13 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
             if not quoted then alt = nil end
             local icons_mod = require "md-render.icons"
             local raw_img_icon, img_icon_hl = icons_mod.get_image_icon(src)
-            local img_icon = icons_mod.pad_icon(raw_img_icon) .. " "
-            local display = img_icon .. ((alt and alt ~= "") and alt or display_name)
+            local img_icon = semantic and "" or icons_mod.pad_icon(raw_img_icon) .. " "
+            local display = semantic and (alt or "") or img_icon .. ((alt and alt ~= "") and alt or display_name)
             if keep_rows then display = display:gsub("[\r\n]", " ") end
             local tag_rows = remove_tag(i - 1, img_tag, #display)
             local start_col = #processed
             processed = processed .. display
-            if img_icon_hl then
+            if img_icon_hl and not semantic then
               table.insert(highlights, { col = start_col, end_col = start_col + #img_icon - 1, hl = img_icon_hl })
             end
             add_link_highlight(highlights, start_col + #img_icon, start_col + #display, src)
@@ -1235,7 +1256,8 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
       -- Try <video src="...">...</video> or <video><source src="...">...</video>
       if not matched then
         local video_end = opening_tag
-          and opening_tag:match "^<video[%s>]"
+          and tag_name == "video"
+          and not closing
           and select(2, inline.html_closing(text, "video", i + #opening_tag))
         local video_tag = video_end and text:sub(i, video_end)
         if video_tag then
@@ -1245,13 +1267,13 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
             src = decode_url(src)
             local icons_mod = require "md-render.icons"
             local raw_icon, icon_hl = icons_mod.get_image_icon(src)
-            local img_icon = icons_mod.pad_icon(raw_icon) .. " "
-            local display = img_icon .. display_name
+            local img_icon = semantic and "" or icons_mod.pad_icon(raw_icon) .. " "
+            local display = semantic and "" or img_icon .. display_name
             if keep_rows then display = display:gsub("[\r\n]", " ") end
             local tag_rows = remove_tag(i - 1, video_tag, #display)
             local start_col = #processed
             processed = processed .. display
-            if icon_hl then
+            if icon_hl and not semantic then
               table.insert(highlights, { col = start_col, end_col = start_col + #img_icon - 1, hl = icon_hl })
             end
             add_link_highlight(highlights, start_col + #img_icon, start_col + #display, src)
@@ -1265,17 +1287,14 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows)
 
       -- Try paired HTML tags (<b>, <strong>, <em>, etc.)
       if not matched then
-        local tag_name = rest:match "^<(%a+)[%s>]"
-        if tag_name then
-          local lower_tag = tag_name:lower()
+        local paired_name = rest:match "^<(%a+)[%s>]"
+        if paired_name then
+          local lower_tag = paired_name:lower()
           local hl = HTML_TAG_HIGHLIGHTS[lower_tag]
           if hl ~= nil then
             local open_tag = opening_tag
             if open_tag then
-              local close_start, close_end = inline.html_closing(text, tag_name, i + #open_tag)
-              if not close_start and tag_name ~= lower_tag then
-                close_start, close_end = inline.html_closing(text, lower_tag, i + #open_tag)
-              end
+              local close_start, close_end = inline.html_closing(text, paired_name, i + #open_tag)
               if close_start then
                 local content = text:sub(i + #open_tag, close_start - 1)
                 processed = processed .. remove_tag(i - 1, open_tag)
@@ -1450,7 +1469,7 @@ end
 ---@param text string
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@return string processed
-local function strip_html_tags(text, highlights)
+local function strip_html_tags(text, highlights, semantic)
   if not text:find("<", 1, true) then return text end
   local processed = ""
   local i = 1
@@ -1460,8 +1479,10 @@ local function strip_html_tags(text, highlights)
       local tag = tag_end and text:sub(i, tag_end)
       if tag and tag:match "^</?%a" and not inline.autolink_end(text, i) then
         local start_col = #processed
-        processed = processed .. tag
-        table.insert(highlights, { col = start_col, end_col = start_col + #tag, hl = "Comment" })
+        if not semantic then
+          processed = processed .. tag
+          table.insert(highlights, { col = start_col, end_col = start_col + #tag, hl = "Comment" })
+        end
         i = i + #tag
       else
         processed = processed .. text:sub(i, i)
@@ -1477,7 +1498,7 @@ end
 
 --- Apply supported HTML display semantics without activating Markdown syntax.
 --- Physical source breaks survive tag removal, including multiline attributes.
-function Markdown.render_html(text)
+function Markdown.render_html(text, semantic)
   text = text:gsub("\r\n", "\n"):gsub("\r", "\n")
   local entities
   text, entities = protect_entities(text, text, true)
@@ -1487,10 +1508,10 @@ function Markdown.render_html(text)
     local previous = text
     text = process_html_tags(text, highlights, links, function(url)
       return restore_spans(url, entities)
-    end, true)
+    end, true, semantic)
     if text == previous then break end
   until false
-  text = strip_html_tags(text, highlights)
+  text = strip_html_tags(text, highlights, semantic)
   for _, span in ipairs(entities) do
     span.content = span.content:gsub("[\r\n]", " ")
   end
@@ -1607,6 +1628,7 @@ end
 ---@return MdRender.Markdown.Break[] hard_breaks Mandatory row boundaries in the newline-free text
 Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_map, inline_only, block_context)
   local raw_html = block_context and block_context.raw_html
+  local semantic = block_context and block_context.semantic
   inline_only = inline_only == true or (raw_html and not block_context.heading_level)
   local rendered_text = text
   local highlights = {}
@@ -1768,14 +1790,16 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   local decode_url, source_label
 
   if raw_html then
-    rendered_text, highlights, links = Markdown.render_html(rendered_text)
+    rendered_text, highlights, links = Markdown.render_html(rendered_text, semantic)
     rendered_text = rendered_text:gsub("\n", " ")
     goto finalize
   end
 
   if not needs_inline and #code_spans == 0 and not rendered_text:find "  +\n" then
-    rendered_text = display_soft_breaks(rendered_text, highlights, links)
-    rendered_text = collapse_spaces(rendered_text, highlights, links, checkbox_hl and #list_marker or 0)
+    if not semantic then
+      rendered_text = display_soft_breaks(rendered_text, highlights, links)
+      rendered_text = collapse_spaces(rendered_text, highlights, links, checkbox_hl and #list_marker or 0)
+    end
     goto finalize
   end
 
@@ -1845,7 +1869,9 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     hard_break_spans,
     standard_spans,
     code_spans,
-    autolink_spans
+    autolink_spans,
+    decode_url,
+    semantic
   )
   rendered_text = process_wikilinks(
     rendered_text,
@@ -1855,7 +1881,8 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     hard_break_spans,
     standard_spans,
     code_spans,
-    autolink_spans
+    autolink_spans,
+    decode_url
   )
   rendered_text = process_footnote_refs(rendered_text, footnote_map, highlights, links, source_label)
   rendered_text = restore_spans(rendered_text, standard_spans, nil, highlights, links)
@@ -1866,9 +1893,9 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   rendered_text = restore_spans(rendered_text, invalid_destinations, nil, highlights, links)
   repeat
     local prev = rendered_text
-    rendered_text = process_html_tags(rendered_text, highlights, links, decode_url)
+    rendered_text = process_html_tags(rendered_text, highlights, links, decode_url, nil, semantic)
   until rendered_text == prev
-  rendered_text = strip_html_tags(rendered_text, highlights)
+  rendered_text = strip_html_tags(rendered_text, highlights, semantic)
   html_ranges, html_pos = {}, 1
   while html_pos <= #rendered_text do
     local html_end = rendered_text:sub(html_pos, html_pos) == "<" and inline.html_end(rendered_text, html_pos)
@@ -1878,7 +1905,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   rendered_text, html_spans = protect_ranges(rendered_text, text, html_ranges, highlights, links)
   rendered_text = process_bare_urls(
     rendered_text,
-    MAX_URL_DISPLAY_WIDTH,
+    semantic and math.huge or MAX_URL_DISPLAY_WIDTH,
     highlights,
     links,
     { backslash_escapes, entity_spans },
@@ -1903,10 +1930,12 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     if not link._decoded then link.url = decode_url(link.url) end
     link._decoded = nil
   end
-  rendered_text = display_soft_breaks(rendered_text, highlights, links)
+  if not semantic then rendered_text = display_soft_breaks(rendered_text, highlights, links) end
   -- Validate labels in their original spelling before display-space collapse.
   -- Code and entities remain protected, and generated checkbox padding stays.
-  rendered_text = collapse_spaces(rendered_text, highlights, links, checkbox_hl and #list_marker or 0)
+  if not semantic then
+    rendered_text = collapse_spaces(rendered_text, highlights, links, checkbox_hl and #list_marker or 0)
+  end
   rendered_text = restore_spans(rendered_text, autolink_spans, nil, highlights, links)
   rendered_text = restore_spans(rendered_text, backslash_escapes, nil, highlights, links)
   rendered_text = restore_spans(rendered_text, code_spans, "MdRenderInlineCode", highlights, links)
@@ -1917,7 +1946,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   -- Close up the CJK gaps left behind by the removed markers.  Runs last so
   -- that every span boundary is final, and before the heading/list/blockquote
   -- highlights below, which are not inline spans.
-  rendered_text = drop_marker_spaces(rendered_text, highlights, links)
+  if not semantic then rendered_text = drop_marker_spaces(rendered_text, highlights, links) end
 
   ::finalize::
 
@@ -1963,40 +1992,55 @@ end
 --- Parse footnote definitions from document lines.
 --- Returns ordered list of {label, text} and a label→number mapping.
 ---@param lines string[]
+---@param opts? {continuation_only?: table<integer, boolean>}
 ---@return {label: string, text: string}[] definitions
 ---@return table<string, integer> label_to_number
-Markdown.parse_footnotes = function(lines)
+---@return table<integer, boolean> consumed physical input rows
+Markdown.parse_footnotes = function(lines, opts)
   local defs = {}
   local label_to_num = {}
   local current_label = nil
   local current_parts = {}
+  local current_rows, consumed = {}, {}
   local open_fence = nil
 
   local function flush()
     if current_label then
       if not label_to_num[current_label] then
-        table.insert(defs, { label = current_label, text = wrap_mod.join_source_lines(current_parts) })
+        local definition = { label = current_label, text = wrap_mod.join_source_lines(current_parts) }
+        if opts then
+          definition.source_line, definition.source_lines = current_rows[1], current_rows
+        end
+        table.insert(defs, definition)
         label_to_num[current_label] = #defs
       end
       current_label = nil
       current_parts = {}
+      current_rows = {}
     end
   end
 
-  for _, line in ipairs(lines) do
+  for index, line in ipairs(lines) do
     local is_fence
     open_fence, is_fence = fence_mod.step(open_fence, line)
     if is_fence then flush() end
     if open_fence or is_fence then goto continue end
 
-    local label, text = line:match "^%[%^([^%]]+)%]:%s+(.+)$"
+    local label, text
+    if not (opts and opts.continuation_only and opts.continuation_only[index]) then
+      label, text = line:match "^%[%^([^%]]+)%]:%s+(.+)$"
+    end
     if label then
       flush()
       current_label = label
       current_parts = { text }
+      current_rows = { index }
+      consumed[index] = true
     elseif current_label and line:match "^%s%s+" then
       -- Continuation line (indented)
       table.insert(current_parts, line:match "^%s+(.+)$" or "")
+      current_rows[#current_rows + 1] = index
+      consumed[index] = true
     else
       flush()
     end
@@ -2004,7 +2048,7 @@ Markdown.parse_footnotes = function(lines)
   end
   flush()
 
-  return defs, label_to_num
+  return defs, label_to_num, consumed
 end
 
 --- Check if a line is a footnote definition

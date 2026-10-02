@@ -168,5 +168,49 @@ test("a four-dash rule is not a frontmatter fence", function()
   assert_true(content.lines[1] ~= "  Properties", "no Properties block for a four-dash rule")
 end)
 
+test("mixed or unsupported YAML remains literal with original source rows", function()
+  for _, metadata in ipairs {
+    { "title: readable", "nested:", "  child: preserve me" },
+    { "title: readable", "description: |", "  **literal** [link](https://example.org)" },
+    { "title: readable", "中文: 不要消失" },
+    { "empty:" },
+    { "items:", "  - parent", "    - child" },
+  } do
+    local lines = { "---" }
+    vim.list_extend(lines, metadata)
+    lines[#lines + 1] = "---"
+    local fence_end = #lines
+    vim.list_extend(lines, { "", "body" })
+    local content = preview.build_content(lines, { text_scale = false })
+    for row = 1, fence_end do
+      assert_eq(content.lines[row], "  " .. lines[row], "unknown metadata row stays literal")
+      assert_eq(content.source_line_map[row], row, "unknown metadata keeps source row")
+    end
+    assert_eq(#content.link_metadata, 0, "raw YAML does not acquire Markdown link actions")
+    assert_eq(content.source_line_map[#content.lines], #lines, "body keeps original source offset")
+  end
+end)
+
+test("simple metadata tracks its source and expansion survives width changes", function()
+  local lines = { "---", "short: 123456789", "long: " .. LONG_VALUE, "---", "body" }
+  local wide = preview.build_content(lines, { max_width = 24, text_scale = false })
+  local id = wide.expandable_regions[1].block_id
+  local narrow = preview.build_content(lines, { max_width = 12, expand_state = { [id] = true }, text_scale = false })
+  assert_eq(narrow.expandable_regions[1].expanded, false, "newly overflowing entry does not inherit expansion")
+  assert_eq(narrow.expandable_regions[2].expanded, true, "original property retains expansion")
+  assert_eq(narrow.source_line_map[2], 2, "first property maps to its source row")
+end)
+
+test("keys wider than the viewport keep valid highlight ranges", function()
+  local display = require "md-render.display_utils"
+  for _, width in ipairs { 1, 2, 5, 12 } do
+    local content = preview.build_content({ "---", "a_very_long_property_key: value", "---" }, { max_width = width })
+    local buf = vim.api.nvim_create_buf(false, true)
+    display.apply_content_to_buffer(buf, vim.api.nvim_create_namespace "frontmatter_narrow", content)
+    assert_eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), content.lines, "narrow metadata applies to a real buffer")
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end
+end)
+
 print(string.format("\n%d passed, %d failed", pass_count, fail_count))
 if fail_count > 0 then vim.cmd "cquit 1" end

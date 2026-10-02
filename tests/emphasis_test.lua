@@ -299,16 +299,20 @@ test("reference lookup and inline extensions retain source spelling", function()
   eq(markdown.render "__あ__ ~い~", "あ い", "adjacent CJK spans stay separated")
   local text, _, links = markdown.render "[[**Page**]] [[Page|__標籤__]]"
   eq(text, "Page 標籤", "Obsidian labels render emphasis")
-  eq(links[1].url, "obsidian://advanced-uri?filepath=**Page**", "Obsidian target keeps source markers")
+  eq(vim.uri_decode(links[1].url), "obsidian://advanced-uri?filepath=**Page**", "Obsidian target keeps source markers")
   eq(links[2].url, "obsidian://advanced-uri?filepath=Page", "Obsidian alias keeps target")
   text, _, links = markdown.render "[[**P&auml;ge**]] [[P\\*ge]]"
   eq(text, "Päge P*ge", "Obsidian labels retain entity and escape decoding")
-  eq(links[1].url, "obsidian://advanced-uri?filepath=**Päge**", "Obsidian target decodes entities once")
-  eq(links[2].url, "obsidian://advanced-uri?filepath=P*ge", "Obsidian target decodes escapes once")
+  eq(
+    vim.uri_decode(links[1].url),
+    "obsidian://advanced-uri?filepath=**Päge**",
+    "Obsidian target decodes entities once"
+  )
+  eq(vim.uri_decode(links[2].url), "obsidian://advanced-uri?filepath=P*ge", "Obsidian target decodes escapes once")
   local highlights
   text, highlights, links = markdown.render "![[**foo**.png|100]]"
   eq(text:sub(-7), "foo.png", "embeds retain filename display rather than the size hint")
-  eq(links[1].url, "obsidian://advanced-uri?filepath=**foo**.png", "embed target keeps source markers")
+  eq(vim.uri_decode(links[1].url), "obsidian://advanced-uri?filepath=**foo**.png", "embed target keeps source markers")
   eq(styles { lines = { text }, highlights = { { line = 0, groups = highlights } } }, {
     { 0, #text - 7, #text - 4, "Bold", "foo" },
   }, "embedded filename emphasis")

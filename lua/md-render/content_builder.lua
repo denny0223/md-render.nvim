@@ -1543,7 +1543,7 @@ end
 local function quote_content(line, column, limit, owner_columns)
   local columns = {}
   local prefix = ""
-  while not limit or #columns < limit do
+  while #columns < math.min(limit or inline.MAX_NESTING, inline.MAX_NESTING) do
     local structural = expand_leading_tabs(line, column)
     local ws = #structural:match "^ *"
     local owner_gap = owner_columns
@@ -2074,7 +2074,8 @@ local function strip_container_indent(lines)
     -- decision after a quote exposes another item, retaining physical columns.
     while origin.list_column ~= nil do
       local inner = strip_container_prefix(content, local_base, column)
-      local leaf, columns, leaf_column, scaffold = quote_content(inner, column + local_base)
+      local leaf, columns, leaf_column, scaffold =
+        quote_content(inner, column + local_base, inline.MAX_NESTING - #origin.quote_columns)
       if #columns == 0 then break end
       ancestor_prefix = ancestor_prefix .. string.rep(" ", local_base) .. scaffold
       for _, next_column in ipairs(columns) do
@@ -2352,7 +2353,7 @@ local function join_paragraph_continuations(
       -- off the whole run and recurse, so paragraphs (and list items) inside
       -- the quote join exactly as they do at the top level. Each output line
       -- gets back the marker of the line that started it.
-      if not in_code and line:match "^>" then
+      if not in_code and quote_depth < #line_origin.quote_columns and line:match "^>" then
         flush_para()
         local container = quote_container(idx)
         local inner, inner_src, markers = {}, {}, {}
@@ -2570,7 +2571,7 @@ local function fenced_code_lines(
       open_fence, is_fence = fence_mod.step(open_fence, line, column, base)
       if open_fence or is_fence then
         code_lines[src] = true
-      elseif line:match "^>" then
+      elseif quote_depth < #origin.quote_columns and line:match "^>" then
         local container = container_indents[src] or ""
         local inner, inner_src = {}, {}
         local last = idx

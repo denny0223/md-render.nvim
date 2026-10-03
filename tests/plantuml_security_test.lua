@@ -191,6 +191,10 @@ for _, mode in ipairs { "wrapper", "jar" } do
     assert(ordinary.code == 0 and ordinary.stdout:find("<svg", 1, true), mode .. " ordinary rendering failed")
     print("PlantUML integration: " .. mode .. " overrides conflicting JVM options; LEGACY control reads marker")
   else
+    assert(
+      vim.env.MD_RENDER_REQUIRE_PLANTUML ~= "1",
+      "required PlantUML integration unavailable: " .. mode .. " (missing or unsupported/unknown version)"
+    )
     print("PlantUML integration skipped: " .. mode .. " unavailable or has an unsupported/unknown version")
   end
 end

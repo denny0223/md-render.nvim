@@ -52,8 +52,10 @@ local mmdc, animation_tool = false, "ffmpeg"
 vim.fn.executable = function(cmd)
   return ((cmd == "mmdc" and mmdc) or cmd == "npx" or cmd == "ffprobe" or cmd == animation_tool) and 1 or 0
 end
-assert(image.config().autoplay and image.config().mermaid_allow_npx, "preserve both defaults")
-assert(image.has_mmdc(), "npx fallback is available by default")
+assert(image.config().autoplay and not image.config().mermaid_allow_npx, "autoplay stays on; npm execution is opt-in")
+assert(not image.has_mmdc(), "npx alone must not enable diagram execution by default")
+image.setup { mermaid_allow_npx = true }
+assert(image.has_mmdc(), "npx fallback is explicitly enabled")
 image.setup { autoplay = false, mermaid_allow_npx = false }
 assert(not image.config().autoplay and not image.has_mmdc(), "policy invalidates cached npx detection")
 mmdc = true
@@ -71,9 +73,22 @@ vim.system = function(cmd, opts, callback)
   assert(cmd[1] == "ffprobe" and opts.timeout == 5000, "bounded dimensions probe")
   assert(not vim.tbl_contains(cmd, "-count_frames"), "dimensions probe must not count frames")
   calls = calls + 1
-  if callback then jobs[#jobs + 1] = callback end
+  local completed
+  local function complete(result)
+    if completed then return end
+    completed = true
+    if callback then callback(result) end
+  end
+  if callback then jobs[#jobs + 1] = complete end
   return {
     wait = function()
+      for i, pending in ipairs(jobs) do
+        if pending == complete then
+          table.remove(jobs, i)
+          break
+        end
+      end
+      complete(response)
       return response
     end,
   }
@@ -185,8 +200,16 @@ local diagram_jobs, local_plantuml = {}, true
 vim.fn.executable = function(cmd)
   return (cmd == "mmdc" or cmd == "curl" or (cmd == "plantuml" and local_plantuml)) and 1 or 0
 end
-vim.system = function(cmd, _, callback)
+vim.system = function(cmd, opts, callback)
   assert(cmd[1] == "mmdc" or cmd[1] == "plantuml" or cmd[1] == "curl")
+  if cmd[#cmd] == "-version" then
+    assert(opts.stdin == nil and opts.timeout == 1500)
+    return {
+      wait = function()
+        return { code = 0, stdout = "PlantUML version 1.2020.11" }
+      end,
+    }
+  end
   local job = { callback = callback }
   for i, arg in ipairs(cmd) do
     if arg == "-i" then job.input = cmd[i + 1] end

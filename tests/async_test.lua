@@ -341,6 +341,166 @@ test("system reads vim.system at call time so tests can stand in for it", functi
   assert_eq(code, 7, "and its result reaches the task")
 end)
 
+test("system force-kills a process that ignores its TERM deadline", function()
+  local system, child, result = vim.system
+  vim.system = function(...)
+    child = system(...)
+    return child
+  end
+  local task = async.run(function()
+    result = async.system({ "sh", "-c", "trap '' TERM; printf ready; exec sleep 10" }, { text = true, timeout = 100 })
+  end)
+  local bounded = vim.wait(2000, function()
+    return result ~= nil
+  end, 5)
+  if not bounded and child then child:kill(9) end -- Clean the failing control up too.
+  task:wait(2000)
+  vim.system = system
+  assert_true(bounded, "an ignored SIGTERM must not hold an async waiter indefinitely")
+  assert_eq(
+    result and { result.code, result.signal, result.stdout },
+    { 124, 9, "ready" },
+    "deadline escalates to SIGKILL"
+  )
+end)
+
+test("system bounds inherited pipes after its launcher exits", function()
+  local result
+  local task = async.run(function()
+    result = async.system({ "sh", "-c", "sleep 3 & exit 0" }, { text = true, timeout = 100 })
+  end)
+  local bounded = vim.wait(2000, function()
+    return result ~= nil
+  end, 5)
+  task:wait(4000) -- The failing control's pipe holder exits naturally too.
+  assert_true(bounded, "an exited launcher must not leave its async waiter awaiting child pipes")
+  assert_eq(
+    result and { result.code, result.signal },
+    { 124, 0 },
+    "pipe timeout overrides success and retains parent signal"
+  )
+end)
+
+test("start_system also bounds inherited pipes for synchronous waiters", function()
+  local exited
+  local result = async
+    .start_system({ "sh", "-c", "sleep 3 & exit 0" }, { text = true, timeout = 250 }, function(done)
+      exited = done
+    end)
+    :wait()
+  vim.wait(4000, function()
+    return exited ~= nil
+  end, 5)
+  assert_eq(
+    result and { result.code, result.signal },
+    { 124, 0 },
+    "wait must return the timed-out result within its deadline"
+  )
+end)
+
+test("start_system preserves caller options and refuses completed-group signals", function()
+  if vim.fn.has "win32" == 1 then return end
+  local system, kill = vim.system, vim.uv.kill
+  local opts, passed, signals = { timeout = 100, detach = false }, nil, 0
+  local job = { pid = 12345 }
+  vim.system = function(_, options, callback)
+    passed = options
+    callback { code = 0 }
+    return job
+  end
+  vim.uv.kill = function()
+    signals = signals + 1
+  end
+  local returned = async.start_system({ "stub" }, opts, function() end)
+  local ok = pcall(returned.kill, returned, 9)
+  vim.system, vim.uv.kill = system, kill
+  assert_true(returned == job and ok, "the same job can be harmlessly closed after synchronous completion")
+  assert_true(passed.detach and not opts.detach, "only the helper's option copy creates its own group")
+  assert_eq(signals, 0, "a completed group must never be signalled through a reused PID")
+end)
+
+test("start_system closes its watchdog on synchronous completion and spawn errors", function()
+  local system, defer = vim.system, vim.defer_fn
+  local timer, calls, job = nil, 0, {}
+  vim.defer_fn = function(...)
+    timer = defer(...)
+    return timer
+  end
+  vim.system = function(_, _, callback)
+    callback { code = 0 }
+    callback { code = 0 }
+    return job
+  end
+  local ok, result = pcall(async.start_system, { "stub" }, { timeout = 100 }, function()
+    calls = calls + 1
+  end)
+  assert_true(ok and result == job, "callback runner returns the original job")
+  assert_eq(calls, 1, "even a synchronous repeated callback completes once")
+  assert_true(timer and timer:is_closing(), "completion closes the timer created before spawning")
+  timer = nil
+  vim.system = function()
+    error("spawn failure marker", 0)
+  end
+  ok, result = pcall(async.start_system, { "stub" }, { timeout = 100 }, function()
+    calls = calls + 1
+  end)
+  assert_true(
+    not ok and tostring(result):find("spawn failure marker", 1, true),
+    "spawn errors retain their useful error"
+  )
+  assert_eq(calls, 1, "spawn failure does not deliver an exit callback")
+  assert_true(timer and timer:is_closing(), "spawn failure closes its watchdog")
+  vim.system, vim.defer_fn = system, defer
+end)
+
+test("start_system leaves nil and zero timeouts to the native runner", function()
+  local system, defer = vim.system, vim.defer_fn
+  local timers, calls = 0, 0
+  vim.defer_fn = function(...)
+    timers = timers + 1
+    return defer(...)
+  end
+  vim.system = function(_, _, callback)
+    callback { code = 0 }
+  end
+  for _, opts in ipairs { {}, { timeout = 0 } } do
+    pcall(async.start_system, { "stub" }, opts, function()
+      calls = calls + 1
+    end)
+  end
+  vim.system, vim.defer_fn = system, defer
+  assert_eq(calls, 2, "native completion remains unchanged without a positive deadline")
+  assert_eq(timers, 0, "untimed commands do not allocate watchdog timers")
+end)
+
+test("start_system tolerates a process that retired before its exit callback", function()
+  local system, defer = vim.system, vim.defer_fn
+  local expire, exit, timer, calls
+  calls = 0
+  vim.defer_fn = function(callback, delay)
+    expire = callback
+    timer = defer(callback, delay)
+    return timer
+  end
+  vim.system = function(_, _, callback)
+    exit = callback
+    return {
+      kill = function()
+        error("retired process", 0)
+      end,
+    }
+  end
+  async.start_system({ "stub" }, { timeout = 100 }, function()
+    calls = calls + 1
+  end)
+  local ok = pcall(expire)
+  exit { code = 0 }
+  vim.system, vim.defer_fn = system, defer
+  assert_true(ok, "a stale kill must not raise in the event loop")
+  assert_eq(calls, 1, "late exit still completes once")
+  assert_true(timer:is_closing(), "late exit closes the watchdog")
+end)
+
 test("schedule leaves a fast event context", function()
   local before, after
   async.run(function()

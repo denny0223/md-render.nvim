@@ -24,6 +24,9 @@ on:
     - cron: "30 3 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   kitty-matrix:
     name: kitty ${{ matrix.kitty }} / tmux ${{ matrix.tmux }} / nvim ${{ matrix.nvim }}
@@ -41,10 +44,12 @@ jobs:
         nvim: [v0.12.0, nightly]
     continue-on-error: ${{ matrix.nvim == 'nightly' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Neovim
-        uses: rhysd/action-setup-vim@v1
+        uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1
         with:
           neovim: true
           version: ${{ matrix.nvim }}
@@ -72,15 +77,25 @@ jobs:
           echo "Using kitty $version"
           curl -fsSL -o /tmp/kitty.txz \
             "https://github.com/kovidgoyal/kitty/releases/download/v${version}/kitty-${version}-x86_64.txz"
+          if [ '${{ matrix.kitty }}' != latest ]; then
+            echo '041c6fedd9be2f257d64eee41099a19f1ea525c69214ded5e930ff96ccb6b8a4  /tmp/kitty.txz' | sha256sum --check -
+          fi
           sudo mkdir -p /opt/kitty
           sudo tar -xJf /tmp/kitty.txz -C /opt/kitty
           echo "/opt/kitty/bin" >> "$GITHUB_PATH"
 
       - name: Install tmux ${{ matrix.tmux }}
         run: |
+          set -euxo pipefail
           version='${{ matrix.tmux }}'
           curl -fsSL -o /tmp/tmux.tar.gz \
             "https://github.com/tmux/tmux/releases/download/${version}/tmux-${version}.tar.gz"
+          case "$version" in
+            3.4) checksum=551ab8dea0bf505c0ad6b7bb35ef567cdde0ccb84357df142c254f35a23e19aa ;;
+            3.6) checksum=136db80cfbfba617a103401f52874e7c64927986b65b1b700350b6058ad69607 ;;
+            *) echo "Missing tmux checksum for $version" >&2; exit 1 ;;
+          esac
+          printf '%s  /tmp/tmux.tar.gz\n' "$checksum" | sha256sum --check -
           tar -xzf /tmp/tmux.tar.gz -C /tmp
           cd "/tmp/tmux-${version}"
           ./configure --prefix=/opt/tmux
@@ -121,7 +136,7 @@ jobs:
 
       - name: Keep image heading diagnostics
         if: always() && matrix.kitty == 'latest' && matrix.tmux == '3.6' && matrix.nvim == 'v0.12.0'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: image-heading-terminal
           path: /tmp/md-image-tmux-results
@@ -134,7 +149,7 @@ jobs:
     permissions:
       issues: write
     steps:
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const title = "Scheduled terminal test failed";

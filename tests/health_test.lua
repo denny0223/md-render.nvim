@@ -28,5 +28,18 @@ local report = table.concat(messages, "\n")
 assert(report:find("No attached UI", 1, true), report)
 assert(report:find("magick unavailable", 1, true), report)
 assert(report:find("Mermaid CLI unavailable", 1, true), report)
+assert(report:find("Mermaid npx fallback: false", 1, true), report)
 assert(not report:find("error:", 1, true), report)
+messages = {}
+vim.fn.executable = function(name)
+  return name == "npx" and 1 or 0
+end
+require("md-render.health").check()
+report = table.concat(messages, "\n")
+assert(not report:find("may download and run", 1, true), "npx availability is not permission")
+image.setup { mermaid_allow_npx = true }
+messages = {}
+require("md-render.health").check()
+report = table.concat(messages, "\n")
+assert(report:find("may download and run", 1, true), report)
 print "Health: optional dependencies degrade clearly, native mode has no Python or terminal side effects"

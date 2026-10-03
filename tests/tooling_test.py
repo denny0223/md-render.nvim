@@ -50,8 +50,10 @@ if sys.argv[1] != 'identify':
     print(os.environ.get('TOOL_METRIC', '0'))
 """)
 
-    def executable(self, name, source):
+    def executable(self, name, source, *, plantuml_version=True):
         path = self.bin / name
+        if name == "plantuml" and plantuml_version:
+            source = "import sys\nif '-version' in sys.argv:\n    print('PlantUML version 1.2020.11')\n    sys.exit(0)\n" + source
         path.write_text(f"#!{sys.executable}\n" + source)
         path.chmod(0o755)
         return path
@@ -224,6 +226,40 @@ os.execv({real_mv!r}, [{real_mv!r}, *sys.argv[1:]])
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(error, result.stdout + result.stderr)
                 self.assertNotIn("SKIP", result.stdout + result.stderr)
+
+    def test_plantuml_rejects_old_unknown_and_unresponsive_tools_before_source(self):
+        runner = self.root / "plantuml-version.lua"
+        runner.write_text('''package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. package.path
+local image = require "md-render.image"
+assert(not image.has_plantuml())
+assert(not image.has_plantuml())
+local done = false
+image.render_plantuml_async("@startuml\\nAlice -> Bob\\n@enduml", function(path)
+  assert(path == nil)
+  done = true
+end)
+assert(done)
+''')
+        for version in ("1.2020.2", "unknown", "slow"):
+            with self.subTest(version=version):
+                count = self.root / "plantuml-probes"
+                count.unlink(missing_ok=True)
+                self.executable("plantuml", f'''import os, sys, time
+from pathlib import Path
+root = Path(os.environ['TOOL_TEST_ROOT'])
+if '-version' in sys.argv:
+    count = root / 'plantuml-probes'
+    count.write_text(count.read_text() + 'x' if count.exists() else 'x')
+    if {version!r} == 'slow':
+        time.sleep(10)
+    print('PlantUML version ' + {version!r})
+else:
+    (root / 'document-was-rendered').write_text(sys.stdin.read())
+''', plantuml_version=False)
+                result = self.run_lua(str(runner))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(count.read_text(), "x", "failed discovery must be cached")
+                self.assertFalse((self.root / "document-was-rendered").exists())
 
     def test_plantuml_without_decoder_reports_unverified_output(self):
         (self.bin / "magick").unlink()

@@ -149,9 +149,10 @@ md-render.nvim 是 Neovim 的 Markdown 渲染引擎，能將 Markdown 原始文�
 - ImageMagick：完整圖片流程需要 Neovim 的 PATH 能找到 `magick`。
   圖片分頁即使開啟 PNG 也需要此指令，無法用 ffmpeg、sips，或只有 convert
   指令的安裝取代。
-- Mermaid：需要 mmdc（或 npx 替代方式）及其無頭瀏覽器。Snacks 負責顯示圖片，
-  圖表仍由原本的工具產生，不會開啟瀏覽器視窗。npx 替代方式需要 Node.js/npm，
-  且可能下載 CLI。其他選用功能請見 |md-render-dependencies|。
+- Mermaid：需要 mmdc（或明確啟用的 npx 替代方式）及其無頭瀏覽器。
+  Snacks 負責顯示圖片，圖表仍由原本的工具產生，不會開啟瀏覽器視窗。
+  npx 替代方式需要 Node.js/npm，且可能下載 CLI。
+  其他選用功能請見 |md-render-dependencies|。
 
 外掛管理器只會安裝 Neovim 外掛；指令列工具要另外安裝。
 使用 lazy.nvim 時，請以以下設定取代上方的基本 md-render 設定；若有使用圖示或
@@ -610,6 +611,10 @@ PlantUML 圖表                                             *md-render-plantuml*
 相同。外掛會使用 PATH 中的 `plantuml`；若 $PLANTUML_JAR 指向可讀取的 jar，
 也可使用 `java -jar $PLANTUML_JAR`。
 
+本機繪圖需要 PlantUML 1.2020.11 以上版本；較舊、無法辨識或未及時回應的版本
+視為不可用。
+SANDBOX 模式封鎖本機檔案與 URL 存取，包括外部引用。這是繪圖工具的存取政策，並非作業系統沙箱；已安裝的執行檔仍屬信任範圍。
+
 兩者都沒有時，內容會維持程式碼區塊。使用別人的 PlantUML 伺服器需要將圖表內容
 傳送過去，因此外掛不會自行選擇遠端伺服器作為替代方式。指定伺服器後才會使用：
 >lua
@@ -621,8 +626,9 @@ PlantUML 圖表                                             *md-render-plantuml*
 若要使用公開服務，其網址為 "https://www.plantuml.com/plantuml"。無論指定哪個
 伺服器，圖表原始碼都會傳送給它。
 
-使用指定伺服器也需要 `curl`。產生的圖片以圖表原始碼為快取依據，存放在
-`stdpath("cache")/md-render/plantuml`。同一份圖表在快取有效時只會傳送一次。
+使用指定伺服器也需要 `curl`，其安全模式由伺服器決定。產生的圖片以原始碼與
+繪圖政策／伺服器身分為快取依據，存放在 `stdpath("cache")/md-render/plantuml`。
+本機 SANDBOX 結果與不同伺服器的結果不會共用。
 
 ------------------------------------------------------------------------------
 已棄用的指令                                   *md-render-deprecated-commands*
@@ -1098,22 +1104,40 @@ Snacks 的設定、系統需求與檢查方式請見 |md-render-snacks-image|。
 
                                                             *image.setup()*
 image.setup({opts}) ~
-請在開啟預覽前設定。以下兩個選項預設皆為 true： >lua
+請在開啟預覽前設定。以下是預設值： >lua
 
   require("md-render.image").setup {
-    autoplay = false,
+    autoplay = true,
     mermaid_allow_npx = false,
   }
 <
 autoplay=false 讓兩個後端只顯示 GIF／影片第一個影格；圖片分頁初始為暫停，
 仍可按空白鍵開始播放。影片仍需要 FFmpeg 準備影格；GIF 可使用 FFmpeg 或
 ImageMagick。mermaid_allow_npx=false 限定使用已安裝的 mmdc，找不到
-時保留 Mermaid 程式碼。預設的 npx 替代方式可能下載並執行 CLI。請將選項合併
-至既有圖片設定，保留已選用的 backend="snacks"。
+時保留 Mermaid 程式碼。每次繪圖都使用獨立工作目錄，不會載入文件所在專案或
+上層目錄的 Puppeteer 設定；受支援的 PUPPETEER_* 環境設定仍有效。明確設定 mermaid_allow_npx=true 才允許 npm 下載並執行指定版本
+的 CLI，並使用隔離的專案 prefix。文件所在專案的 .npmrc 和本機套件不影響解析；
+你的 npm 設定、套件來源與相依套件仍屬信任範圍，
+執行時的替代方式不會鎖定相依套件。請將選項合併至既有圖片設定，保留已選用的
+backend="snacks"。
 若要使用一般文字標題，可執行 :MdRender textsize off。
+
+遠端圖片與影片會在文件預覽，以及已設定的 Telescope／Snacks picker 預覽中
+自動載入。切換 picker 選取項目即可觸發請求，無須另執行 :MdRender toggle。
+內建下載器支援 HTTP(S) 網址及重新導向，依網址原文請求，忽略 .curlrc；代理
+伺服器與 CA 環境設定仍有效。自訂認證請使用 |image.set_download_fn()|。
 
 使用 Snacks 時，自動配置會採用視窗可用寬度，除非明確設定 max_width；圖片高度
 則限制在視窗高度減去六行之內。圖片會維持長寬比，且不會放大至超過原始像素尺寸。
+
+                                                         *md-render-obsidian*
+Obsidian 附件 ~
+
+優先檢查明確路徑、設定的附件目錄，以及 vault 根目錄檔案，再搜尋整個 vault。
+共用的替代搜尋索引最多掃描 10,000 個項目或 50 ms，30 秒後到期，後續查詢可重新
+發現新增檔案。大型 vault 可能無法只靠檔名找到附件，此時請使用明確路徑，或將
+附件放在設定的附件目錄。.obsidian/app.json 最多讀取 1 MiB；格式無效或超過
+大小上限時，會依未設定附件目錄的方式繼續查找。
 
                                                         *md-render-image-view*
 使用 Snacks 後端與 ImageMagick（magick）時，在圖片或其標題上按 <Enter> 可開啟
@@ -1148,11 +1172,16 @@ ffmpeg 時為每秒 5 格、最大 400x400 像素與 300 格（最多 60 秒）�
 
                                                      *image.set_download_fn()*
 image.set_download_fn({fn}) ~
-	設定自訂的網路圖片下載函式，預設使用 curl。
+	設定自訂的 HTTP(S) 網路圖片下載函式，可處理需要認證的請求。
+	內建 curl 下載器會忽略 .curlrc。
 
 	參數：~
 	  {fn}  (function) 函式簽章：
 	          fn(url: string, dest: string, callback: function)
+
+	接受工作時回傳 true；回傳 false 則使用內建下載器。
+	dest 是暫存輸出的絕對路徑，並非最終快取路徑。寫入完成並關閉檔案後，
+	呼叫 callback(true)；失敗時呼叫 callback(false)。外掛會發布成功的輸出。
 
                                                          *image.reset_cache()*
 image.reset_cache() ~
@@ -1166,6 +1195,9 @@ image.cache_dir() ~
   :lua vim.fn.delete(require("md-render.image").cache_dir(), "rf")
 <	請重新啟動 Neovim，再開啟預覽，讓記憶體中保留的預覽狀態一併釋放。
 	之後需要時，檔案會重新下載或產生。
+
+	傳輸、檔案資訊掃描及外掛管理的轉換各有上限。磁碟快取目前沒有總大小
+	上限；處理程序的期限也不會限制原生解碼器的記憶體或暫存磁碟用量。
 
                                                       *image.supports_kitty()*
 image.supports_kitty() ~
@@ -1335,13 +1367,13 @@ DETAILS 區塊 ~
                        Snacks 靜態圖片轉換使用 ImageMagick。
                        https://github.com/folke/snacks.nvim/blob/main/docs/image.md
 
-  Mermaid CLI          將 Mermaid 圖表轉為圖片。找不到 mmdc 時改用
-  (mmdc)               `npx -y @mermaid-js/mermaid-cli`，需要 Node.js/npm，
-                       且可能下載 CLI。兩種後端都仍需要其無頭瀏覽器。
-                       可在 |image.setup()| 設定 mermaid_allow_npx=false 停用。
+  Mermaid CLI          將 Mermaid 圖表轉為圖片。兩種後端都需要其無頭瀏覽器。
+  (mmdc)               npx 替代方式預設關閉；在 |image.setup()| 明確設定
+                       mermaid_allow_npx=true 才允許透過 Node.js/npm
+                       下載並執行 CLI。
                        https://github.com/mermaid-js/mermaid-cli
 
-  PlantUML             將 PlantUML 圖表轉為圖片。只有在你指定伺服器時，
+  PlantUML 1.2020.11+  將 PlantUML 圖表轉為圖片。只有在你指定伺服器時，
   （plantuml，或 java  才會改用該伺服器；請見 |md-render-plantuml|。
   搭配 $PLANTUML_JAR） https://plantuml.com/
 

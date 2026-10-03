@@ -28,6 +28,57 @@ local origin = vim.api.nvim_get_current_win()
 local origin_buf = vim.api.nvim_get_current_buf()
 vim.api.nvim_buf_set_lines(0, 0, -1, false, vim.tbl_map(tostring, vim.fn.range(1, 100)))
 
+-- Resources belong to the original window even when the scratch buffer is
+-- duplicated. Replacing that window's buffer must obey the same ownership.
+for _, release in ipairs { "close", "replace" } do
+  local tempname, snacks = vim.fn.tempname, rawget(_G, "Snacks")
+  local dir, listeners = tempname(), vim.on_key()
+  vim.fn.tempname = function()
+    return dir
+  end
+  local view = require("md-render.image_view").open "unused.png"
+  vim.fn.tempname = tempname
+  vim.fn.writefile({ "crop" }, dir .. "/crop.png")
+  local calls = { kill = 0, upload = 0, pending = 0, placement = 0, delete = 0 }
+  local function called(name)
+    return function()
+      calls[name] = calls[name] + 1
+    end
+  end
+  view.job = { kill = called "kill" }
+  view.pending = { close = called "pending" }
+  view.placement = { close = called "placement" }
+  view.media = { id = 42, _md_render_upload = { close = called "upload" } }
+  _G.Snacks = { image = { terminal = { request = called "delete" } } }
+  vim.cmd "vsplit"
+  local duplicate = vim.api.nvim_get_current_win()
+  assert(duplicate ~= view.win and vim.api.nvim_win_get_buf(duplicate) == view.buf)
+  if release == "close" then
+    vim.api.nvim_win_close(view.win, true)
+  else
+    vim.api.nvim_win_set_buf(view.win, vim.api.nvim_create_buf(false, true))
+  end
+  assert(
+    vim.wait(1000, function()
+      return view.closed
+    end, 5),
+    release .. " of owner left viewer resources alive"
+  )
+  assert(vim.api.nvim_buf_is_valid(view.buf), "test must keep the viewer buffer alive in another split")
+  assert(vim.api.nvim_get_current_win() == duplicate, "background owner cleanup stole focus")
+  assert(vim.on_key() == listeners, "owner cleanup leaked its mouse listener")
+  assert(vim.fn.isdirectory(dir) == 0, "owner cleanup leaked crop files")
+  vim.api.nvim_buf_delete(view.buf, { force = true })
+  for name, count in pairs(calls) do
+    assert(count == 1, release .. " must release " .. name .. " exactly once")
+  end
+  if vim.api.nvim_win_is_valid(duplicate) then vim.api.nvim_win_close(duplicate, true) end
+  if vim.api.nvim_win_is_valid(view.win) then vim.api.nvim_win_close(view.win, true) end
+  _G.Snacks = snacks
+  vim.api.nvim_set_current_win(origin)
+end
+print "Image view ownership: owner close/replacement cleans resources with a surviving split OK"
+
 -- Exercise real mappings and crop geometry without starting image processes.
 do
   local image = require "md-render.image"

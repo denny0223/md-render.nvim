@@ -162,7 +162,8 @@ Snacks 画像バックエンド（オプション） ~
 - Neovim の PATH から magick を実行できる ImageMagick。
   画像機能一式に必要です。画像タブは PNG でも magick が必須で、
   ffmpeg、sips、convert のみのインストールでは代替できません。
-- Mermaid には mmdc（または npx のフォールバック）とヘッドレスブラウザ。
+- Mermaid には mmdc（または明示的に有効にした npx フォールバック）と
+  ヘッドレスブラウザ。
   Snacks は画像を表示し、ダイアグラムのレンダラを置き換えません。ブラウザの
   ウィンドウは開きません。npx は Node.js/npm が必要で、CLI をダウンロードする
   場合があります。他の機能の依存関係は |md-render-dependencies| を参照。
@@ -707,6 +708,27 @@ https://github.com/delphinus/md-render.nvim/issues/65
 `:MdRender textsize off` を使います。
 
 ------------------------------------------------------------------------------
+PlantUML ダイアグラム                                     *md-render-plantuml*
+
+`plantuml` または `puml` のコードフェンスは画像として描画します。PATH 上の
+plantuml、または java と読み取り可能な $PLANTUML_JAR を使います。
+ローカル描画には PlantUML 1.2020.11 以降が必要です。古い版、バージョンを確認
+できないもの、期限内に応答しないものは利用不可です。SANDBOX は外部 include を含むローカルファイルと
+URL へのアクセスを禁止します。これはレンダラのポリシーであり、
+OS のサンドボックスではありません。インストール済み実行ファイルは信頼します。
+
+ローカルのツールがなければコードのまま表示します。サーバを明示すると
+ダイアグラムの原文をそこへ送信して描画します： >lua
+
+  require("md-render.image").setup {
+    plantuml_server = "https://plantuml.example.com/plantuml",
+  }
+<
+サーバの利用には curl も必要で、安全性プロファイルはサーバ側が管理します。
+画像は `stdpath("cache")/md-render/plantuml` にキャッシュします。キーには原文と
+描画ポリシー／サーバの識別情報を使い、ローカル SANDBOX と各サーバで分けます。
+
+------------------------------------------------------------------------------
 非推奨コマンド					 *md-render-deprecated-commands*
 
 以下のトップレベルコマンドは後方互換のためのエイリアスとして残しています。
@@ -1209,10 +1231,10 @@ Snacks の設定、依存関係、確認手順は |md-render-snacks-image| を�
 
                                                             *image.setup()*
 image.setup({opts}) ~
-プレビューを開く前に設定してください。以下の既定値は両方とも true です： >lua
+プレビューを開く前に設定してください。以下は既定値です： >lua
 
   require("md-render.image").setup {
-    autoplay = false,
+    autoplay = true,
     mermaid_allow_npx = false,
   }
 <
@@ -1221,13 +1243,36 @@ autoplay=false では両バックエンドとも GIF／動画の最初のフレ�
 引き続き FFmpeg が必要で、GIF は FFmpeg または ImageMagick を使えます。
 mermaid_allow_npx=false はインストール済みの mmdc のみ使い、なければ Mermaid
 をコードのまま表示します。
-既定の npx フォールバックは CLI をダウンロード・実行する場合があります。
+すべての Mermaid 描画は専用の作業ディレクトリを使い、閲覧中のプロジェクトや
+上位ディレクトリの Puppeteer 設定を読み込みません。対応する PUPPETEER_* 環境
+設定は引き続き有効です。mermaid_allow_npx=true を明示すると、npm に
+よる指定バージョンの CLI のダウンロード・実行を許可し、隔離したプロジェクト
+prefix を使います。閲覧中のプロジェクトの .npmrc やローカルパッケージの影響を
+避けます。利用者の npm 設定、レジストリ、依存パッケージは引き続き信頼します。
+実行時のフォールバックでは依存パッケージを固定しません。
 既存の画像設定に統合し、選択済みの backend="snacks" も維持してください。
 見出しを通常の文字にするには :MdRender textsize off を使います。
+
+リモートの画像と動画は文書プレビューと設定済みの Telescope／Snacks picker
+プレビューで自動的に読み込みます。picker の選択変更でリクエストが発生し、
+:MdRender toggle は不要です。内蔵ダウンローダは HTTP(S) の URL とリダイレクト
+に対応し、URL を文字どおり扱い、.curlrc を無視します。プロキシと CA の環境設定
+は引き続き有効です。独自の認証には |image.set_download_fn()| を使います。
 
 Snacks の自動レイアウトは利用可能なウィンドウ幅を使います（max_width を明示
 した場合はそちらを優先）。画像は縦横比を保ち、その幅と「高さ − 6 行」に
 収まり、元のピクセルサイズを超えて拡大しません。
+
+                                                         *md-render-obsidian*
+Obsidian の添付ファイル ~
+
+明示的なパス、設定済みの添付フォルダ、vault 直下のファイルを優先し、その後
+vault 全体を検索します。共通のフォールバック索引は最大 10,000 項目または
+50 ms まで走査し、30 秒で期限切れになり、次の検索で新しいファイルを検出
+できます。大きな vault ではファイル名だけで見つからないことがあります。
+その場合は明示的なパスか設定済みの添付フォルダを使ってください。
+.obsidian/app.json は最大 1 MiB まで読み込み、不正な形式や上限超過の場合は
+添付フォルダが未設定の状態で検索を続けます。
 
                                                         *md-render-image-view*
 Snacks バックエンドと ImageMagick（magick）を設定し、画像またはタイトル上で
@@ -1266,12 +1311,17 @@ GIF / 動画タブには Kitty 0.31 以降が必要です。autoplay=false 以�
 
 						       *image.set_download_fn()*
 image.set_download_fn({fn}) ~
-	Web 画像のダウンロード関数をカスタム設定します。デフォルトでは curl が
-	使用されます。
+	HTTP(S) の Web 画像のダウンロード関数を設定し、独自の認証などに
+	使います。内蔵の curl ダウンローダは .curlrc を無視します。
 
 	パラメータ: ~
 	  {fn}  (function) 以下のシグネチャを持つ関数:
 		  fn(url: string, dest: string, callback: function)
+
+	処理する場合は true を返し、false なら内蔵ダウンローダを使います。
+	dest は一時出力の絶対パスで、最終キャッシュのパスではありません。
+	書き込みとクローズ後に callback(true)、失敗時に callback(false) を
+	呼びます。成功した出力はプラグインがキャッシュに配置します。
 
 							   *image.reset_cache()*
 image.reset_cache() ~
@@ -1286,6 +1336,10 @@ image.cache_dir() ~
   :lua vim.fn.delete(require("md-render.image").cache_dir(), "rf")
 <	保持されているプレビューの状態も解放するため、Neovim を再起動してから
 	プレビューを開いてください。必要なファイルは再ダウンロード・再生成されます。
+
+	転送、メタデータの走査、プラグインによる変換には個別の上限があります。
+	永続キャッシュ全体のサイズ上限はありません。プロセスの期限はネイティブ
+	デコーダのメモリや作業用ディスクの使用量を制限しません。
 
 							*image.supports_kitty()*
 image.supports_kitty() ~
@@ -1469,12 +1523,16 @@ Details ~
                        Snacks の静止画変換には ImageMagick を使います。
                        https://github.com/folke/snacks.nvim/blob/main/docs/image.md
 
-  Mermaid CLI          Mermaid ダイアグラムを画像として描画。 `npx -y
-  (mmdc)               @mermaid-js/mermaid-cli` にフォールバック。
-                       Node.js/npm が必要で、CLI をダウンロードする場合が
-                       あります。両バックエンドでヘッドレスブラウザも必要。
-                       |image.setup()| の mermaid_allow_npx=false で無効化可。
+  Mermaid CLI          Mermaid を画像として描画。両バックエンドでヘッドレス
+  (mmdc)               ブラウザも必要。npx フォールバックは既定で無効です。
+                       |image.setup()| の mermaid_allow_npx=true で
+                       Node.js/npm による CLI のダウンロード・実行を許可。
                        https://github.com/mermaid-js/mermaid-cli
+
+  PlantUML 1.2020.11+  PlantUML を画像として描画。指定したサーバのみ
+  (plantuml、または    フォールバックに使います。|md-render-plantuml| を参照。
+  java と             https://plantuml.com/
+  $PLANTUML_JAR)
 
 ==============================================================================
 vim:tw=78:ts=8:ft=help:norl:

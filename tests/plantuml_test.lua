@@ -78,13 +78,22 @@ end
 ---@param present table<string, true>
 ---@param fn fun()
 local function with_executables(present, fn)
-  local real = vim.fn.executable
+  local real, real_system = vim.fn.executable, vim.system
   vim.fn.executable = function(name)
     return present[name] and 1 or 0
+  end
+  vim.system = function(cmd)
+    assert(cmd[#cmd] == "-version", "availability probe must not render a document")
+    return {
+      wait = function()
+        return { code = 0, stdout = "PlantUML version 1.2020.11" }
+      end,
+    }
   end
   image.reset_cache()
   local ok, err = pcall(fn)
   vim.fn.executable = real
+  vim.system = real_system
   image.reset_cache()
   if not ok then error(err) end
 end

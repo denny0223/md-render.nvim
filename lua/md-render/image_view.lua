@@ -1,6 +1,7 @@
 -- Focus one image in a Neovim tab, anchored by Snacks.
 local M = {}
 local image = require "md-render.image"
+local async = require "md-render.async"
 
 -- Source-pixel crop for the requested view. Zoom 1 is a complete overview.
 function M.geometry(iw, ih, cols, rows, cell, zoom, cx, cy)
@@ -61,10 +62,35 @@ function M.open(path)
       end
     end,
   })
+  local function valid()
+    return not state.closed
+      and vim.api.nvim_win_is_valid(win)
+      and vim.api.nvim_buf_is_valid(buf)
+      and vim.api.nvim_win_get_buf(win) == buf
+  end
+  local function playing()
+    return valid() and state.playing and vim.api.nvim_win_get_tabpage(win) == vim.api.nvim_get_current_tabpage()
+  end
+  local function cleanup()
+    if state.closed then return end
+    state.closed = true
+    vim.on_key(nil, mouse_ns)
+    if state.job then state.job:kill(9) end
+    local media = state.media
+    if media and media._md_render_upload then media._md_render_upload:close() end
+    if state.pending then state.pending:close() end
+    if state.placement then state.placement:close() end
+    if media then Snacks.image.terminal.request { a = "d", d = "I", i = media.id } end
+    vim.fn.delete(dir, "rf")
+    pcall(vim.api.nvim_del_augroup_by_id, group)
+  end
+  vim.api.nvim_create_autocmd("BufWipeout", { group = group, buffer = buf, callback = cleanup })
+  vim.api.nvim_create_autocmd("VimLeavePre", { group = group, callback = cleanup })
   vim.api.nvim_create_autocmd("WinClosed", {
     group = group,
     pattern = tostring(win),
     callback = function()
+      cleanup()
       if not viewer_active then return end
       local fallback_win = vim.api.nvim_get_current_win()
       -- Finish the tab layout change before returning; background closes must
@@ -84,31 +110,16 @@ function M.open(path)
       end)
     end,
   })
-
-  local function valid()
-    return not state.closed
-      and vim.api.nvim_win_is_valid(win)
-      and vim.api.nvim_buf_is_valid(buf)
-      and vim.api.nvim_win_get_buf(win) == buf
-  end
-  local function playing()
-    return valid() and state.playing and vim.api.nvim_win_get_tabpage(win) == vim.api.nvim_get_current_tabpage()
-  end
-  local function cleanup()
-    if state.closed then return end
-    state.closed = true
-    vim.on_key(nil, mouse_ns)
-    if state.job then state.job:kill(15) end
-    local media = state.media
-    if media and media._md_render_upload then media._md_render_upload:close() end
-    if state.pending then state.pending:close() end
-    if state.placement then state.placement:close() end
-    if media then Snacks.image.terminal.request { a = "d", d = "I", i = media.id } end
-    vim.fn.delete(dir, "rf")
-    pcall(vim.api.nvim_del_augroup_by_id, group)
-  end
-  vim.api.nvim_create_autocmd("BufWipeout", { group = group, buffer = buf, callback = cleanup })
-  vim.api.nvim_create_autocmd("VimLeavePre", { group = group, callback = cleanup })
+  vim.api.nvim_create_autocmd("BufLeave", {
+    group = group,
+    buffer = buf,
+    callback = function()
+      -- BufWinLeave is skipped when another split still shows this buffer.
+      vim.schedule(function()
+        if not valid() then cleanup() end
+      end)
+    end,
+  })
   vim.api.nvim_create_autocmd({ "BufWinEnter", "WinEnter" }, {
     group = group,
     buffer = buf,
@@ -157,9 +168,13 @@ function M.open(path)
     local file = state.frames and state.path or dir .. "/" .. serial .. ".png"
     local started = vim.uv.hrtime()
     local function show(result)
-      if not valid() or serial ~= state.serial then return end
+      if not valid() or serial ~= state.serial then
+        if not state.frames then os.remove(file) end
+        return
+      end
       state.job = nil
-      if result.code ~= 0 then
+      if result.code ~= 0 or (not state.frames and not image.image_dimensions(file)) then
+        if not state.frames then os.remove(file) end
         vim.notify("md-render: image crop failed: " .. (result.stderr or ""), vim.log.levels.ERROR)
         if state.dirty then paint() end
         return
@@ -245,11 +260,21 @@ function M.open(path)
       show { code = 0 }
     else
       -- ponytail: crop cached PNGs; profile before changing the static-image renderer.
-      state.job = vim.system(
-        { "magick", state.path, "-crop", ("%dx%d+%d+%d"):format(g.w, g.h, g.x, g.y), "+repage", file },
-        { text = true },
-        vim.schedule_wrap(show)
-      )
+      local ok, job = pcall(async.start_system, {
+        "magick",
+        state.path,
+        "-crop",
+        ("%dx%d+%d+%d"):format(g.w, g.h, g.x, g.y),
+        "+repage",
+        "-delete",
+        "1--1",
+        file,
+      }, { text = true, timeout = 5000 }, vim.schedule_wrap(show))
+      if ok then
+        state.job = job
+      else
+        show { code = -1, stderr = tostring(job) }
+      end
     end
   end
   local function zoom(factor)
@@ -425,8 +450,7 @@ function M.open(path)
     return ""
   end, mouse_ns)
   vim.api.nvim_create_autocmd("WinResized", { group = group, callback = paint })
-  require("md-render.async").run(function()
-    local async = require "md-render.async"
+  async.run(function()
     local frames
     if image.is_video_file(path) or image.is_video_content(path) or image.is_animated_gif(path) then
       frames = async.await(2, image.extract_frames_async, path)

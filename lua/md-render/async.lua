@@ -47,6 +47,52 @@ function M.run(fn, ...)
   return task
 end
 
+--- Start a command with a finite grace period after Neovim's TERM timeout.
+--- Timed POSIX jobs own a process group; their `kill` also stops child processes.
+--- Return the job so callers can terminate it when their owner closes.
+---@param cmd string[]
+---@param opts? table
+---@param callback? fun(result: vim.SystemCompleted)
+---@return vim.SystemObj
+function M.start_system(cmd, opts, callback)
+  local job, timer, finished, expired
+  local timed = opts and opts.timeout and opts.timeout > 0
+  local group = timed and vim.fn.has "win32" == 0
+  if group then opts = vim.tbl_extend("force", {}, opts, { detach = true }) end
+  local function close_timer()
+    if timer and not timer:is_closing() then
+      timer:stop()
+      timer:close()
+    end
+  end
+  if timed then
+    timer = vim.defer_fn(function()
+      if not finished and job then
+        expired = true
+        pcall(job.kill, job, 9)
+      end
+    end, opts.timeout + 1000)
+  end
+  local ok, result = pcall(vim.system, cmd, opts, function(completed)
+    if finished then return end
+    finished = true
+    close_timer()
+    if expired then completed.code = 124 end
+    if callback then callback(completed) end
+  end)
+  if not ok then
+    close_timer()
+    error(result, 0)
+  end
+  job = result
+  if group and job.pid then
+    job.kill = function(_, signal)
+      if not finished then return vim.uv.kill(-job.pid, signal) end
+    end
+  end
+  return job
+end
+
 --- Run a command and wait for it to exit.
 ---
 --- Resumes on the main loop, because `vim.system` calls back in a |api-fast|
@@ -58,7 +104,7 @@ end
 ---@param opts? table options for `vim.system`
 ---@return vim.SystemCompleted
 function M.system(cmd, opts)
-  local result = async.await(3, vim.system, cmd, opts or {})
+  local result = async.await(3, M.start_system, cmd, opts or {})
   M.schedule()
   return result
 end

@@ -86,8 +86,8 @@ nvim +"MdRender pager" assets/showcase.md
 | [snacks.nvim](https://github.com/folke/snacks.nvim) | オプションの画像バックエンド、サイズ調整、専用画像タブ | デフォルトのネイティブバックエンドは引き続き使用可。ただし、これらのフォーク独自機能は使えません |
 | [FFmpeg](https://ffmpeg.org/) (`ffmpeg` / `ffprobe`) | ネイティブの JPEG/WebP → PNG 変換、両バックエンド共通の GIF / 動画のフレーム展開 | ImageMagick にフォールバック（画像のみ。動画には ffmpeg が必要） |
 | [ImageMagick](https://imagemagick.org/) (`magick`) | Snacks の画像変換と画像タブのズーム・パン、ネイティブの画像変換と共通の GIF フレーム展開 | ネイティブの変換は下表のツールで代替可。画像タブは PNG でも `magick` が必須で、`ffmpeg`、`sips`、`convert` のみのインストールでは代替できません |
-| [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) とヘッドレスブラウザ | 両バックエンドで Mermaid ダイアグラムを描画 | `npx -y @mermaid-js/mermaid-cli` にフォールバック（Node.js/npm が必要で、CLI をダウンロードする場合があります）。ブラウザも引き続き必要です。`mermaid_allow_npx = false` で無効化可 |
-| [PlantUML](https://plantuml.com/) (`plantuml`、または `java` と `$PLANTUML_JAR`) | PlantUML ダイアグラムを画像として描画 | 指定した場合のみ PlantUML サーバ（curl が必要）。指定が無ければコードブロックのまま |
+| [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) とヘッドレスブラウザ | 両バックエンドで Mermaid ダイアグラムを描画 | なければコードブロックを保持。npm フォールバックには `mermaid_allow_npx = true`、Node.js/npm とブラウザが必要 |
+| [PlantUML](https://plantuml.com/) 1.2020.11 以降 (`plantuml`、または `java` と `$PLANTUML_JAR`) | PlantUML ダイアグラムを画像として描画 | 指定した場合のみ PlantUML サーバ（curl が必要）。指定が無ければコードブロックのまま |
 | [budoux.lua](https://github.com/delphinus/budoux.lua) | CJK フレーズ単位の改行（BudouX） | 1文字ずつ分割（禁則処理は維持） |
 | Treesitter パーサー | コードブロックのシンタックスハイライト | ハイライトなしで表示 |
 | [nvim-web-devicons](https://github.com/nvim-tree/nvim-web-devicons) または [mini.icons](https://github.com/echasnovski/mini.icons) | コードブロックヘッダのファイルタイプアイコン | 内蔵アイコンテーブル |
@@ -152,16 +152,18 @@ add({
 
 ### 自動再生と Mermaid のフォールバック
 
-GIF／動画の自動再生と Mermaid の `npx` フォールバックは、既定ではどちらも有効です。無効にする場合はプレビューを開く前に設定してください：
+GIF／動画は既定で自動再生され、Mermaid の `npx` フォールバックは無効です。以下は既定値です。プレビューを開く前に設定してください：
 
 ```lua
 require("md-render.image").setup {
-  autoplay = false,
+  autoplay = true,
   mermaid_allow_npx = false,
 }
 ```
 
 `autoplay = false` では両バックエンドとも最初のフレームを表示し、画像タブも一時停止状態で開きます。Space で再生を開始できます。動画のフレーム準備には引き続き FFmpeg が必要で、GIF は FFmpeg または ImageMagick を使えます。`mermaid_allow_npx = false` ではインストール済みの `mmdc` のみ使い、見つからなければ Mermaid はコードブロックのまま表示します。これらのオプションは既存の画像設定に統合し、選択済みの `backend = "snacks"` も維持してください。見出しを通常の文字にするには `:MdRender textsize off` を使います。
+
+リモートの画像と動画は、文書プレビューと設定済みの Telescope／Snacks picker プレビューで自動的に読み込みます。picker の選択変更でもリクエストが始まり、`:MdRender toggle` は不要です。内蔵ダウンローダは HTTP(S) と HTTP(S) リダイレクトに対応し、URL をそのまま扱い、`.curlrc` は読みません。プロキシと CA の環境設定は引き続き使われます。独自の認証には `set_download_fn()` を使ってください。
 
 ### Snacks 画像バックエンド
 
@@ -170,7 +172,7 @@ require("md-render.image").setup {
 - [snacks.nvim](https://github.com/folke/snacks.nvim)：md-render のプレビューを開く前に読み込みと設定を完了してください。
 - Unicode プレースホルダーに対応した Kitty。tmux 内では設定ファイルに `set -g allow-passthrough on` を追加して再読み込みしてください。Snacks が対応する他のターミナルは、この連携では未検証です。上記のネイティブバックエンドの対応一覧は Snacks の互換性を保証しません。
 - Neovim の `$PATH` から `magick` を実行できる ImageMagick。ズーム・パンを含む画像機能一式に必要です。FFmpeg や `sips` だけでは足りません。
-- Mermaid を使う場合は Mermaid CLI（`mmdc`、または `npx` のフォールバック）とヘッドレスブラウザ。Snacks は画像の表示を担当し、ダイアグラムのレンダラを置き換えません。ブラウザのウィンドウは開きません。
+- Mermaid を使う場合は Mermaid CLI（`mmdc`、または明示的に有効にした `npx` フォールバック）とヘッドレスブラウザ。Snacks は画像の表示を担当し、ダイアグラムのレンダラを置き換えません。ブラウザのウィンドウは開きません。
 
 lazy.nvim では、上記の基本的な md-render の spec を次の例に置き換えます。アイコンや BudouX を使う場合は、それらの依存関係も残してください：
 
@@ -578,7 +580,7 @@ require("snacks").setup({
 <details>
 <summary><strong>Mermaid ダイアグラムが描画されない</strong></summary>
 
-Mermaid のレンダリングには [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) の `mmdc` とヘッドレスブラウザが必要です。`mmdc` がない場合、既定では `npx -y @mermaid-js/mermaid-cli` で CLI をダウンロード・実行する場合があり、初回は時間がかかります。`mermaid_allow_npx = false` でインストール済みのツールだけに制限でき、見つからなければコードブロックのまま表示します。`npm install -g @mermaid-js/mermaid-cli` でインストールすると起動を短縮できます。
+Mermaid のレンダリングには [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) の `mmdc` とヘッドレスブラウザが必要です。`npm install -g @mermaid-js/mermaid-cli` でインストールできます。見つからなければ既定ではコードブロックのまま表示します。すべての Mermaid 描画は専用の作業ディレクトリを使うため、閲覧中のプロジェクトやその上位ディレクトリの Puppeteer 設定を読み込みません。サポートされる `PUPPETEER_*` 環境設定は引き続き有効です。`mermaid_allow_npx = true` を明示すると、隔離したプロジェクト prefix で指定バージョンの CLI を npm がダウンロード・実行できます。閲覧中のプロジェクトの `.npmrc` とローカルパッケージは使いませんが、ユーザーの npm 設定、レジストリ、依存パッケージは信頼します。この実行時フォールバックは依存関係全体をロックしません。
 
 </details>
 
@@ -586,6 +588,8 @@ Mermaid のレンダリングには [@mermaid-js/mermaid-cli](https://github.com
 <summary><strong>PlantUML ダイアグラムが描画されない</strong></summary>
 
 `plantuml` / `puml` のフェンスは、`plantuml` バイナリが `PATH` にあるか、`java` があって `$PLANTUML_JAR` が読み取れる `plantuml.jar` を指しているときにローカルで描画されます。どちらか一方を入れればフェンスがダイアグラムになります。
+
+ローカル描画には PlantUML 1.2020.11 以降が必要です。[SANDBOX プロファイル](https://plantuml.com/security)で実行し、外部 include を含むローカルファイルと URL へのアクセスを禁止します。古い版、バージョンを確認できないもの、確認期限内に応答しないものは利用不可として扱います。これはレンダラのアクセス制限であり、OS のサンドボックスではありません。インストールした実行ファイル自体は信頼します。
 
 明示的に指定しない限りフォールバックはしません。PlantUML はサーバ上で描画する設計であり、他人のサーバで描画するということはダイアグラムをそこへ送るということなので、このプラグインが勝手にそれを選ぶことはしません。ローカルのレンダラが無ければ、`plantuml` のフェンスはコードブロックのままになります。サーバを指定すればそちらを使います:
 
@@ -598,7 +602,7 @@ require("md-render.image").setup {
 }
 ```
 
-サーバを使う場合は `curl` も必要です。描画したダイアグラムはソースをキーにして `stdpath("cache")/md-render/plantuml` にキャッシュされるので、送信は 1 回だけです。
+サーバを使う場合は `curl` も必要で、安全性プロファイルはサーバ側が管理します。描画したダイアグラムはソースと描画ポリシー／サーバの識別情報をキーにして `stdpath("cache")/md-render/plantuml` にキャッシュします。ローカル SANDBOX と異なるサーバの結果は共有しません。
 
 </details>
 
@@ -612,6 +616,8 @@ require("md-render.image").setup {
 ```
 
 保持されているプレビューの状態も解放するため、Neovim を再起動してからプレビューを開いてください。必要になったファイルは再ダウンロードまたは再生成されます。
+
+転送、メタデータの走査、プラグイン管理の変換処理には個別の上限があります。永続キャッシュに合計サイズの上限はまだなく、プロセスのタイムアウトはネイティブデコーダのメモリや一時ディスク使用量を制限しません。
 
 </details>
 

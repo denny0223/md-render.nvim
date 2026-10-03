@@ -1255,4 +1255,86 @@ do
   assert(ok, err)
   eq(opened, { target, target }, "public click opens the full decoded target before and after rebuild")
 end
+-- Display consumers keep excessive HTML owners literal after slicing a row.
+do
+  local opening, closing = string.rep("<b>", 33), string.rep("</b>", 33)
+  local hidden = '<a href="hidden.md">內</a>'
+  local row = "<dt>" .. opening .. "中</dt><dd>" .. hidden .. "</dd>" .. closing
+  local c = build({ "<dl>", row, "</dl>", "", "[next](next.md)" }, { max_width = 700 })
+  eq(c.lines[1], row, "owned dt closer cannot split a literal owner into active dd content")
+  eq(c.source_line_map[1], 2, "literal DL fallback keeps its physical source row")
+  eq(targets(c), { { 5, "next", "next.md" } }, "literal DL fallback retains only following navigation")
+
+  for _, case in ipairs { { "dt", true }, { "dd", true }, { "dd", false } } do
+    local name, paired = case[1], case[2]
+    local literal = opening .. "中<br>&amp;<!--keep-->" .. hidden .. "</" .. name .. "><dd>literal</dd>" .. closing
+    local source = {
+      "<dl>",
+      "<"
+        .. name
+        .. '><a href="before.md">前</a><br> '
+        .. literal
+        .. ' <br><a href="after.md">後</a>'
+        .. (paired and "</" .. name .. ">" or ""),
+      "</dl>",
+      "",
+      "[next](next.md)",
+    }
+    c = build(source, { max_width = 700 })
+    local prefix = name == "dd" and "  " or ""
+    eq(
+      c.lines,
+      { prefix .. "前", prefix .. literal, prefix .. "後", "", "next" },
+      "DL splitting ignores owned br/closers and preserves literal entities/comments"
+    )
+    eq(c.source_line_map, { 2, 2, 2, 3, 5 }, "DL segments retain physical row ownership")
+    eq(
+      targets(c),
+      { { 2, "前", "before.md" }, { 2, "後", "after.md" }, { 5, "next", "next.md" } },
+      "DL slicing preserves normal UTF-8 links before and after the owner"
+    )
+  end
+
+  local payload = "中</summary>" .. hidden .. "&amp;<!--keep-->"
+  local literal = opening .. payload .. closing
+  c = build { "<details open>", "<summary>" .. literal, '</details><a href="after.md">後</a>' }
+  eq(c.lines[1]:find(literal, 1, true) ~= nil, true, "deferred summary skips its literal-owned closer")
+  eq(c.source_line_map, { 3, 3 }, "deferred summary retains the existing closing-row source policy")
+  eq(targets(c), { { 3, "後", "after.md" } }, "deferred summary does not reactivate its hidden link")
+
+  c = build({
+    "<details open><summary>" .. literal .. '</summary><a href="body.md">體</a></details><a href="after.md">後</a>',
+  }, { max_width = 700 })
+  eq(
+    c.lines,
+    { "▼ " .. literal, "│ 體", "後" },
+    "inline summary preserves literal content and normal body/suffix"
+  )
+  eq(
+    targets(c),
+    { { 1, "體", "body.md" }, { 1, "後", "after.md" } },
+    "inline summary slicing retains normal body and suffix byte targets"
+  )
+
+  for _, same_row_close in ipairs { false, true } do
+    local source = {
+      "<details open><summary>normal",
+      opening,
+      payload,
+      closing
+        .. '</summary><a href="body.md">體</a>'
+        .. (same_row_close and '</details><a href="after.md">後</a>' or ""),
+    }
+    if not same_row_close then source[#source + 1] = '</details><a href="after.md">後</a>' end
+    c = build(source, { max_width = 700 })
+    eq(c.lines[1]:find(payload, 1, true) ~= nil, true, "joined summary preserves its literal-owned closer/link")
+    eq(c.lines[2], "│ 體", "summary tail uses body-relative literal ranges")
+    eq(c.lines[3], "後", "summary tail leaves the enclosing details suffix outside the body")
+    eq(
+      targets(c),
+      { { 4, "體", "body.md" }, { same_row_close and 4 or 5, "後", "after.md" } },
+      "joined summary retains closing-row UTF-8 body/suffix navigation"
+    )
+  end
+end
 print("html_raw_blocks_test: " .. checks .. " passed")

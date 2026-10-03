@@ -1,5 +1,9 @@
 local M = {}
 
+-- ponytail: cap nested presentation at 32 levels; deeper source stays literal.
+-- Increase only with bounded-work tests for every consumer of this shared limit.
+M.MAX_NESTING = 32
+
 local ESCAPABLE = [[!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~]]
 
 local function escaped(text, pos)
@@ -20,10 +24,9 @@ end
 --- End of a valid angle autolink, including its closing >.
 function M.autolink_end(text, start)
   if text:sub(start, start) ~= "<" then return end
-  local finish = text:find(">", start + 1, true)
-  if not finish then return end
+  local finish = text:find("[<>%z\1-\32\127]", start + 1)
+  if not finish or text:sub(finish, finish) ~= ">" then return end
   local value = text:sub(start + 1, finish - 1)
-  if value:find "[<>%z\1-\32\127]" then return end
   local scheme = value:match "^([A-Za-z][A-Za-z0-9.+-]*):"
   if scheme and #scheme >= 2 and #scheme <= 32 then return finish end
   local domain = value:match "^[A-Za-z0-9.!#$%%&'*+/=?^_`{|}~%-]+@(.+)$"
@@ -64,19 +67,22 @@ local function www_end(text, start, source_label)
   return start + #url - 1
 end
 
+local function delimiter_end(text, delimiter, pos, failed)
+  if failed and failed[delimiter] and pos >= failed[delimiter] then return end
+  local _, finish = text:find(delimiter, pos, true)
+  if failed and not finish then failed[delimiter] = pos end
+  return finish
+end
+
 --- HTML and code have equal precedence: the first complete construct wins.
-local function html_end(text, start, attributes)
+local function html_end(text, start, attributes, failed)
   local rest = text:sub(start, start + 8)
   if rest:sub(1, 5) == "<!-->" then return start + 4 end
   if rest:sub(1, 6) == "<!--->" then return start + 5 end
   for _, pair in ipairs { { "<!--", "-->" }, { "<?", "?>" }, { "<![CDATA[", "]]>" } } do
-    if rest:sub(1, #pair[1]) == pair[1] then
-      local _, finish = text:find(pair[2], start + #pair[1], true)
-      return finish
-    end
+    if rest:sub(1, #pair[1]) == pair[1] then return delimiter_end(text, pair[2], start + #pair[1], failed) end
   end
-  local declaration_end = text:match("^<![A-Za-z]+[^>]*>()", start)
-  if declaration_end then return declaration_end - 1 end
+  if text:match("^<![A-Za-z]", start) then return delimiter_end(text, ">", start + 3, failed) end
   local closing = text:match("^</[A-Za-z][A-Za-z0-9%-]*()", start)
   if closing then
     closing = skip_space(text, closing)
@@ -99,7 +105,7 @@ local function html_end(text, start, attributes)
       pos = skip_space(text, pos + 1)
       local quote = text:sub(pos, pos)
       if quote == '"' or quote == "'" then
-        local finish = text:find(quote, pos + 1, true)
+        local finish = delimiter_end(text, quote, pos + 1, failed)
         if not finish then return end
         value, quoted = text:sub(pos + 1, finish - 1), true
         pos = finish + 1
@@ -119,8 +125,9 @@ local function html_end(text, start, attributes)
   end
 end
 
-function M.html_end(text, start)
-  return html_end(text, start)
+--- Failed searches may be reused only for the same immutable source.
+function M.html_end(text, start, failed)
+  return html_end(text, start, nil, failed)
 end
 
 --- Read an actual attribute of the first complete opening tag, in source spelling.
@@ -133,13 +140,14 @@ function M.html_attribute(tag, name)
 end
 
 --- Iterate complete HTML tokens, keeping quoted attributes and comments opaque.
-function M.html_tags(text, pos)
+function M.html_tags(text, pos, failed)
   pos = pos or 1
+  failed = failed or {}
   return function()
     while pos <= #text do
       local first = text:find("<", pos, true)
       if not first then return end
-      local last = M.html_end(text, first)
+      local last = M.html_end(text, first, failed)
       pos = (last or first) + 1
       if last then return first, last, text:sub(first, last) end
     end
@@ -158,6 +166,41 @@ function M.html_closing(text, name, start)
   for first, last, token in M.html_tags(text, start) do
     local tag_name, closing = M.html_name(token)
     if closing and tag_name == name then return first, last end
+  end
+end
+
+--- Index closers and quoted video sources once for the same immutable source.
+--- Matching retains html_closing's first-following-closer semantics.
+function M.html_closing_index(text)
+  local closers, sources = {}, {}
+  for first, last, token in M.html_tags(text) do
+    local name, closing = M.html_name(token)
+    if closing then
+      closers[name] = closers[name] or {}
+      closers[name][#closers[name] + 1] = { first, last }
+    elseif name == "source" then
+      local target, quoted = M.html_attribute(token, "src")
+      if quoted then sources[#sources + 1] = { first, target } end
+    end
+  end
+  local function following(ranges, start)
+    local first, last = 1, #ranges
+    while first <= last do
+      local mid = math.floor((first + last) / 2)
+      if ranges[mid][1] < (start or 1) then
+        first = mid + 1
+      else
+        last = mid - 1
+      end
+    end
+    return ranges[first]
+  end
+  return function(name, start)
+    local range = following(closers[name:lower()] or {}, start)
+    if range then return range[1], range[2] end
+  end, function(start, finish)
+    local range = following(sources, start)
+    if range and range[1] < finish then return range[2] end
   end
 end
 
@@ -361,6 +404,8 @@ local function scan(text, refs, wanted_link, source_label, bare_url, index_label
   local wiki_close
   local last_link_start = 0
   local runs
+  local html_closing, html_source
+  local failed_html = {}
   local autolink_finish = 0
   local has_angle_link = false
   local function note_angle_link()
@@ -400,17 +445,21 @@ local function scan(text, refs, wanted_link, source_label, bare_url, index_label
         autolinks[#autolinks + 1] = { start = pos, finish = finish, angle = true }
         note_angle_link()
       end
-      finish = finish or M.html_end(text, pos)
+      finish = finish or M.html_end(text, pos, failed_html)
       if finish then
         local tag = text:sub(pos, finish)
         local target = angle_link or M.html_target(tag)
         local tag_name, closing = M.html_name(tag)
-        if tag_name == "a" and not closing and not M.html_closing(text, "a", finish + 1) then target = nil end
-        if tag_name == "video" and not closing then
-          local _, video_end = M.html_closing(text, "video", finish + 1)
-          target = video_end and M.html_target(text:sub(pos, video_end)) or nil
+        if (tag_name == "a" or tag_name == "video") and not closing and not html_closing then
+          html_closing, html_source = M.html_closing_index(text)
         end
-        standard_ranges[#standard_ranges + 1] = { start = pos, finish = finish, link = target ~= nil or nil }
+        if tag_name == "a" and not closing and not html_closing("a", finish + 1) then target = nil end
+        if tag_name == "video" and not closing then
+          local video_start = html_closing("video", finish + 1)
+          target = video_start and (target or html_source(finish + 1, video_start)) or nil
+        end
+        standard_ranges[#standard_ranges + 1] =
+          { start = pos, finish = finish, link = target ~= nil or nil, html = not angle_link or nil }
       end
       pos = (finish or pos) + 1
     elseif

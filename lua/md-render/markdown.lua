@@ -82,17 +82,40 @@ local ESCAPABLE_CHARS = [[!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~]]
 ---@param hl_count integer number of highlights to adjust (from the beginning)
 ---@param link_count integer number of links to adjust (from the beginning)
 local function adjust_positions(highlights, links, removals, hl_count, link_count)
-  if #removals == 0 then return end
+  if #removals == 0 or hl_count + link_count == 0 then return end
+  -- Each removal contributes a ramp over its source bytes. Token expansion
+  -- contributes a negative jump instead. Prefix sums make each endpoint lookup
+  -- logarithmic even when thousands of tags create thousands of highlights.
+  local changes = {}
+  for _, removal in ipairs(removals) do
+    local first, last = removal.start, removal.start + removal.count
+    if removal.count > 0 then
+      changes[#changes + 1] = { first, 1, -first }
+      changes[#changes + 1] = { last, -1, last }
+    elseif removal.count < 0 then
+      changes[#changes + 1] = { last, 0, removal.count }
+    end
+  end
+  table.sort(changes, function(a, b)
+    return a[1] < b[1]
+  end)
+  local slope, offset = 0, 0
+  for _, change in ipairs(changes) do
+    slope, offset = slope + change[2], offset + change[3]
+    change[2], change[3] = slope, offset
+  end
   local function adjust(pos)
-    local shift = 0
-    for _, r in ipairs(removals) do
-      if pos >= r.start + r.count then
-        shift = shift + r.count
-      elseif pos > r.start then
-        shift = shift + (pos - r.start)
+    local first, last = 1, #changes
+    while first <= last do
+      local mid = math.floor((first + last) / 2)
+      if changes[mid][1] <= pos then
+        first = mid + 1
+      else
+        last = mid - 1
       end
     end
-    return pos - shift
+    local change = changes[last]
+    return change and pos - change[2] * pos - change[3] or pos
   end
   for i = 1, hl_count do
     highlights[i].col = adjust(highlights[i].col)
@@ -570,10 +593,14 @@ local link_bounds = inline.link_bounds
 local function map_display_text(text, transform, keep_literals)
   if not text:find("](", 1, true) and not (keep_literals and text:find "[<\\]") then return transform(text, 0) end
   local parts, start, i = {}, 1, 1
+  local failed_html, last_comment = {}, text:match "^.*()%-%->" or 0
   local indexed_links = inline.scan(text).links
   while i <= #text do
     local c = text:sub(i, i)
-    local _, comment_end = text:find("^<!%-%-.-%-*%-%->", i)
+    local _, comment_end
+    if i + 4 <= last_comment and text:sub(i, i + 3) == "<!--" then
+      _, comment_end = text:find("-->", i + 4, true)
+    end
     if not comment_end then
       _, comment_end = text:find("^%%%%.-%%%%", i)
     end
@@ -589,8 +616,8 @@ local function map_display_text(text, transform, keep_literals)
       i = comment_end
     elseif c == "<" and inline.autolink_end(text, i) then
       i = inline.autolink_end(text, i)
-    elseif keep_literals and c == "<" and inline.html_end(text, i) then
-      local last = inline.html_end(text, i)
+    elseif keep_literals and c == "<" and inline.html_end(text, i, failed_html) then
+      local last = inline.html_end(text, i, failed_html)
       parts[#parts + 1] = transform(text:sub(start, i - 1), start - 1)
       parts[#parts + 1] = text:sub(i, last)
       start, i = last + 1, last
@@ -673,9 +700,11 @@ local function process_links(text, highlights, links, source_label, ref_links)
   local pre_link_count = #links
   local removals = {}
   local processed = ""
+  local failed_html = {}
   local i = 1
   while i <= #text do
-    local literal_end = text:sub(i, i) == "<" and (inline.autolink_end(text, i) or inline.html_end(text, i))
+    local literal_end = text:sub(i, i) == "<"
+      and (inline.autolink_end(text, i) or inline.html_end(text, i, failed_html))
     if literal_end then
       processed = processed .. text:sub(i, literal_end)
       i = literal_end + 1
@@ -833,9 +862,11 @@ end
 local function protect_emphasis(text, source, refs, footnotes, code_spans, autolink_spans, source_label)
   if not text:find "[*_~]" then return text, {}, {} end
   local pairs = {}
+  local failed_html = {}
   local parsed = inline.scan(text, refs, source_label)
   local standard_ranges = inline.standard_ranges(text, refs, source_label, parsed)
-  local function resolve(first, last, in_label)
+  local function resolve(first, last, in_label, depth)
+    if depth > inline.MAX_NESTING then return end
     local openers, lower = {}, {}
     local pos = first
     while pos <= last do
@@ -854,7 +885,7 @@ local function protect_emphasis(text, source, refs, footnotes, code_spans, autol
         if wiki_end and inline.extension_owned(standard_ranges, pos, wiki_end + 1, target_end) then wiki_end = nil end
       end
       local note, note_end = text:match("^%[%^([^%]]+)%]()", pos)
-      local literal_end = char == "<" and inline.html_end(text, pos)
+      local literal_end = char == "<" and inline.html_end(text, pos, failed_html)
       local comment_end = text:sub(pos, pos + 1) == "%%" and text:find("%%", pos + 2, true)
       local url = not in_label and bare_autolink(text, pos, {}, code_spans, autolink_spans)
       if char == "\\" and ESCAPABLE_CHARS:find(text:sub(pos + 1, pos + 1), 1, true) then
@@ -872,10 +903,10 @@ local function protect_emphasis(text, source, refs, footnotes, code_spans, autol
           local pipe = text:find("|", label_first, true)
           if pipe and pipe < wiki_end then label_first = pipe + 1 end
         end
-        resolve(label_first, label_last, true)
+        resolve(label_first, label_last, true, depth + 1)
         pos = wiki_end + 2
       elseif link_end then
-        resolve(pos + 1, suffix - 2, true)
+        resolve(pos + 1, suffix - 2, true, depth + 1)
         pos = link_end + 1
       elseif url then
         pos = pos + #url
@@ -962,7 +993,7 @@ local function protect_emphasis(text, source, refs, footnotes, code_spans, autol
       end
     end
   end
-  resolve(1, #text, false)
+  resolve(1, #text, false, 0)
   local spans, boundaries, parts, pos = {}, {}, {}, 1
   local prefix = inline.token_prefix(source .. text, 0xF1008)
   for _, pair in ipairs(pairs) do
@@ -1020,6 +1051,9 @@ local function process_bare_urls(
   for _, hl in ipairs(highlights) do
     if hl.hl == "Comment" then existing_links[#existing_links + 1] = { col_start = hl.col, col_end = hl.end_col } end
   end
+  table.sort(existing_links, function(a, b)
+    return a.col_start < b.col_start
+  end)
   local prefix = spans[1] and spans[1].placeholder:match "^(.-)%d+" or inline.token_prefix(source .. text, 0xF1006)
   local protected = {}
   for _, span in ipairs(spans) do
@@ -1027,10 +1061,22 @@ local function process_bare_urls(
   end
   local pattern = spans[1] and spans[1].placeholder:gsub("%d+", "%%d+")
   local parts, output_bytes = {}, 0
-  local i = 1
+  local i, owner_index = 1, 1
   local removals = {}
 
   while i <= #text do
+    -- Owned labels must be excluded before URL trimming scans their suffixes.
+    while existing_links[owner_index] and existing_links[owner_index].col_end <= i - 1 do
+      owner_index = owner_index + 1
+    end
+    local owner = existing_links[owner_index]
+    if owner and owner.col_start <= i - 1 then
+      local part = text:sub(i, owner.col_end)
+      parts[#parts + 1] = part
+      output_bytes = output_bytes + #part
+      i = owner.col_end + 1
+      goto next_url
+    end
     local token = pattern and text:match("^" .. pattern, i)
     local literal = token and protected[token]
     local label, url
@@ -1060,6 +1106,7 @@ local function process_bare_urls(
       output_bytes = output_bytes + 1
       i = i + 1
     end
+    ::next_url::
   end
   adjust_positions(highlights, links, removals, pre_hl_count, pre_link_count)
   return table.concat(parts)
@@ -1177,6 +1224,64 @@ local HTML_TAG_HIGHLIGHTS = {
   figcaption = "Comment",
 }
 
+--- Source-byte ownership shared by inline presentation and document display readers.
+function Markdown.html_literal_ranges(text, raw_html, ref_links)
+  if not text:find("<", 1, true) then return {} end
+  local tokens = inline.html_tags(text)
+  if not raw_html then
+    local ranges, index = inline.scan(text, ref_links).standard_ranges, 0
+    tokens = function()
+      repeat
+        index = index + 1
+      until not ranges[index] or ranges[index].html
+      local range = ranges[index]
+      if range then return range.start, range.finish, text:sub(range.start, range.finish) end
+    end
+  end
+  local depth, open_tags, ranges = 0, {}, {}
+  local owner, excessive
+  for first, last, token in tokens do
+    local name, closing = inline.html_name(token)
+    if HTML_TAG_HIGHLIGHTS[name] ~= nil or name == "a" or name == "video" then
+      if closing and (open_tags[name] or 0) > 0 then
+        open_tags[name], depth = open_tags[name] - 1, depth - 1
+        if depth == 0 then
+          if excessive then ranges[#ranges + 1] = { start = owner, finish = last } end
+          owner, excessive = nil, nil
+        end
+      elseif not closing and not token:match "/>$" then
+        if depth == 0 then owner = first end
+        open_tags[name], depth = (open_tags[name] or 0) + 1, depth + 1
+        excessive = excessive or depth > inline.MAX_NESTING
+      end
+    end
+  end
+  if excessive then ranges[#ranges + 1] = { start = owner, finish = #text } end
+  return ranges
+end
+
+--- Preserve excessive owners as literal spans; following ordinary HTML still renders.
+local function protect_html_nesting(text, highlights, links, raw_html, ref_links, literal_ranges)
+  local ranges = Markdown.html_literal_ranges(text, raw_html, ref_links)
+  if literal_ranges and #literal_ranges > 0 then
+    vim.list_extend(ranges, literal_ranges)
+    table.sort(ranges, function(a, b)
+      return a.start < b.start
+    end)
+    local owners = {}
+    for _, range in ipairs(ranges) do
+      local previous = owners[#owners]
+      if previous and range.start <= previous.finish + 1 then
+        previous.finish = math.max(previous.finish, range.finish)
+      else
+        owners[#owners + 1] = { start = range.start, finish = range.finish }
+      end
+    end
+    ranges = owners
+  end
+  return protect_ranges(text, text, ranges, highlights, links)
+end
+
 --- Process HTML tags: <a href> links, <img> images, and paired inline tags
 --- Matched code spans are already protected by the caller.
 ---@param text string
@@ -1185,6 +1290,7 @@ local HTML_TAG_HIGHLIGHTS = {
 ---@return string processed
 local function process_html_tags(text, highlights, links, decode_url, keep_rows, semantic)
   if not text:find("<", 1, true) then return text end
+  local html_closing = inline.html_closing_index(text)
   local pre_hl_count = #highlights
   local pre_link_count = #links
   local removals = {}
@@ -1195,11 +1301,11 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows,
     return rows
   end
   local processed = ""
+  local failed_html = {}
   local i = 1
   while i <= #text do
     if text:sub(i, i) == "<" then
-      local rest = text:sub(i)
-      local tag_end = inline.html_end(text, i)
+      local tag_end = inline.html_end(text, i, failed_html)
       local opening_tag = tag_end and text:sub(i, tag_end)
       local matched = false
 
@@ -1208,7 +1314,7 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows,
       local a_tag = tag_name == "a" and not closing and opening_tag
       if a_tag then
         local href = inline.html_target(a_tag)
-        local close_start, close_end = inline.html_closing(text, "a", i + #a_tag)
+        local close_start, close_end = html_closing("a", i + #a_tag)
         if href and close_start then
           href = decode_url(href)
           local content = text:sub(i + #a_tag, close_start - 1)
@@ -1258,7 +1364,7 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows,
         local video_end = opening_tag
           and tag_name == "video"
           and not closing
-          and select(2, inline.html_closing(text, "video", i + #opening_tag))
+          and select(2, html_closing("video", i + #opening_tag))
         local video_tag = video_end and text:sub(i, video_end)
         if video_tag then
           local src = inline.html_target(video_tag)
@@ -1287,14 +1393,14 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows,
 
       -- Try paired HTML tags (<b>, <strong>, <em>, etc.)
       if not matched then
-        local paired_name = rest:match "^<(%a+)[%s>]"
+        local paired_name = text:match("^<(%a+)[%s>]", i)
         if paired_name then
           local lower_tag = paired_name:lower()
           local hl = HTML_TAG_HIGHLIGHTS[lower_tag]
           if hl ~= nil then
             local open_tag = opening_tag
             if open_tag then
-              local close_start, close_end = inline.html_closing(text, paired_name, i + #open_tag)
+              local close_start, close_end = html_closing(paired_name, i + #open_tag)
               if close_start then
                 local content = text:sub(i + #open_tag, close_start - 1)
                 processed = processed .. remove_tag(i - 1, open_tag)
@@ -1472,10 +1578,11 @@ end
 local function strip_html_tags(text, highlights, semantic)
   if not text:find("<", 1, true) then return text end
   local processed = ""
+  local failed_html = {}
   local i = 1
   while i <= #text do
     if text:sub(i, i) == "<" then
-      local tag_end = inline.html_end(text, i)
+      local tag_end = inline.html_end(text, i, failed_html)
       local tag = tag_end and text:sub(i, tag_end)
       if tag and tag:match "^</?%a" and not inline.autolink_end(text, i) then
         local start_col = #processed
@@ -1498,20 +1605,25 @@ end
 
 --- Apply supported HTML display semantics without activating Markdown syntax.
 --- Physical source breaks survive tag removal, including multiline attributes.
-function Markdown.render_html(text, semantic)
+function Markdown.render_html(text, semantic, literal_ranges)
   text = text:gsub("\r\n", "\n"):gsub("\r", "\n")
-  local entities
-  text, entities = protect_entities(text, text, true)
-  text = inline.hide_html_comments(text)
+  local source = text
   local highlights, links = {}, {}
-  repeat
+  local nested_html
+  text, nested_html = protect_html_nesting(text, highlights, links, true, nil, literal_ranges)
+  local entities
+  -- Hidden literal bytes must also be excluded from the entity token namespace.
+  text, entities = protect_entities(text, source, true)
+  text = inline.hide_html_comments(text)
+  for _ = 1, inline.MAX_NESTING do
     local previous = text
     text = process_html_tags(text, highlights, links, function(url)
       return restore_spans(url, entities)
     end, true, semantic)
     if text == previous then break end
-  until false
+  end
   text = strip_html_tags(text, highlights, semantic)
+  text = restore_spans(text, nested_html, "Comment", highlights, links)
   for _, span in ipairs(entities) do
     span.content = span.content:gsub("[\r\n]", " ")
   end
@@ -1647,13 +1759,19 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   -- Blockquote (> ) - extract prefix
   local quote_prefix = ""
   local is_blockquote = false
-  while not inline_only and rendered_text:match "^>[ \t]?" do
+  local quote_depth = 0
+  while not inline_only and quote_depth < inline.MAX_NESTING and rendered_text:match "^>[ \t]?" do
     rendered_text = rendered_text:gsub("^>[ \t]?", "", 1)
     quote_prefix = quote_prefix .. "│ "
     is_blockquote = true
+    quote_depth = quote_depth + 1
   end
 
   if is_blockquote and block_context and block_context.quote_prefix then quote_prefix = block_context.quote_prefix end
+  if quote_depth == inline.MAX_NESTING and rendered_text:match "^>" then
+    rendered_text = apply_blockquote_prefix(rendered_text, quote_prefix, highlights, links)
+    return finish "blockquote"
+  end
 
   -- ATX syntax belongs to the content, after its quote containers.
   local heading_level, heading_content
@@ -1786,11 +1904,11 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     or (footnote_map and next(footnote_map) and rendered_text:find "%[%^")
   -- Declare locals before the fast-path goto so they are in scope at ::finalize::
   local backslash_escapes, entity_spans, autolink_spans, emphasis_spans, emphasis_pairs, comment_spans
-  local standard_spans, html_ranges, html_spans, html_pos
+  local standard_spans, html_ranges, html_spans, html_pos, nested_html, failed_html
   local decode_url, source_label
 
   if raw_html then
-    rendered_text, highlights, links = Markdown.render_html(rendered_text, semantic)
+    rendered_text, highlights, links = Markdown.render_html(rendered_text, semantic, block_context.literal_html_ranges)
     rendered_text = rendered_text:gsub("\n", " ")
     goto finalize
   end
@@ -1803,6 +1921,10 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     goto finalize
   end
 
+  rendered_text, nested_html = protect_html_nesting(rendered_text, highlights, links, false, ref_links)
+  for _, span in ipairs(nested_html) do
+    span.content = restore_source(restore_source(span.content, code_spans), invalid_destinations)
+  end
   rendered_text, autolink_spans = protect_autolinks(rendered_text, text, ref_links, function(label)
     return restore_source(restore_source(label, code_spans), invalid_destinations)
   end)
@@ -1835,7 +1957,10 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
       return token
     end
     rendered_text = map_display_text(rendered_text, function(part)
-      return (part:gsub("%%%%.-%%%%", stash):gsub("<!%-%-.-%-*%-%->", stash))
+      part = part:gsub("%%%%.-%%%%", stash)
+      -- Restrict matching to the closed prefix; unmatched suffixes stay literal.
+      local last = part:match "^.*()%-%->"
+      return last and (part:sub(1, last + 2):gsub("<!%-%-.-%-%->", stash)) .. part:sub(last + 3) or part
     end, true)
   end
   rendered_text, backslash_escapes = escape_backslashes(rendered_text, text, true)
@@ -1891,14 +2016,16 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   rendered_text = restore_spans(rendered_text, comment_spans, nil, highlights, links)
   -- Explicit/reference validity is settled; later autolinks need real parentheses.
   rendered_text = restore_spans(rendered_text, invalid_destinations, nil, highlights, links)
-  repeat
+  for _ = 1, inline.MAX_NESTING do
     local prev = rendered_text
     rendered_text = process_html_tags(rendered_text, highlights, links, decode_url, nil, semantic)
-  until rendered_text == prev
+    if rendered_text == prev then break end
+  end
   rendered_text = strip_html_tags(rendered_text, highlights, semantic)
-  html_ranges, html_pos = {}, 1
+  html_ranges, html_pos, failed_html = {}, 1, {}
   while html_pos <= #rendered_text do
-    local html_end = rendered_text:sub(html_pos, html_pos) == "<" and inline.html_end(rendered_text, html_pos)
+    local html_end = rendered_text:sub(html_pos, html_pos) == "<"
+      and inline.html_end(rendered_text, html_pos, failed_html)
     if html_end then html_ranges[#html_ranges + 1] = { start = html_pos, finish = html_end } end
     html_pos = (html_end or html_pos) + 1
   end
@@ -1936,6 +2063,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   if not semantic then
     rendered_text = collapse_spaces(rendered_text, highlights, links, checkbox_hl and #list_marker or 0)
   end
+  rendered_text = restore_spans(rendered_text, nested_html, "Comment", highlights, links)
   rendered_text = restore_spans(rendered_text, autolink_spans, nil, highlights, links)
   rendered_text = restore_spans(rendered_text, backslash_escapes, nil, highlights, links)
   rendered_text = restore_spans(rendered_text, code_spans, "MdRenderInlineCode", highlights, links)
@@ -2090,7 +2218,7 @@ end
 --- Strip only explicit containers; lazy quote continuation belongs to block parsing.
 local function reference_content(line)
   local depth, column = 0, 0
-  while true do
+  while depth < inline.MAX_NESTING do
     local prefix, gap, content = line:match "^( ? ? ?>)([ \t]?)(.*)$"
     if not content then break end
     column = column + #prefix

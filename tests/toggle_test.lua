@@ -514,6 +514,119 @@ test("BufWriteCmd is registered on render buffer to forward :w", function()
   cleanup_buffer(source)
 end)
 
+test("failed render writes restore events and preserve unsaved source data", function()
+  local hidden, eventignore = vim.o.hidden, vim.o.eventignore
+  vim.o.hidden = true
+  local source = setup_md_buffer { "# Unsaved source" }
+  vim.api.nvim_buf_set_name(source, vim.fn.tempname() .. "/missing.md")
+  preview.toggle()
+  vim.o.hidden, vim.o.eventignore = false, "BufRead"
+  local ok, err = pcall(vim.cmd, "write")
+  assert_false(ok, "writing to a missing parent must fail")
+  assert_true(tostring(err):find("E212", 1, true), "buffer restoration must preserve the original write error")
+  assert_eq(vim.o.eventignore, "BufRead", "failed write must restore the original eventignore")
+  assert_true(vim.bo[source].modified, "failed write must retain the source modified flag")
+  assert_eq(vim.api.nvim_buf_get_lines(source, 0, -1, false), { "# Unsaved source" }, "failed write lost edits")
+  vim.o.hidden, vim.o.eventignore = hidden, eventignore
+  cleanup_buffer(source)
+end)
+
+test("render write preserves normal save autocmds and reports formatter failure", function()
+  local hidden, eventignore = vim.o.hidden, vim.o.eventignore
+  vim.o.hidden = true
+  local source = setup_md_buffer { "# Before formatting" }
+  local path = vim.fn.tempname() .. ".md"
+  vim.api.nvim_buf_set_name(source, path)
+  local fail, pre, post = false, 0, 0
+  local group = vim.api.nvim_create_augroup("md_render_write_failure_test", { clear = true })
+  vim.api.nvim_create_autocmd("BufWritePre", {
+    group = group,
+    buffer = source,
+    callback = function()
+      pre = pre + 1
+      if fail then error "formatter failure marker" end
+      vim.api.nvim_buf_set_lines(source, 0, -1, false, { "# Formatted source" })
+    end,
+  })
+  vim.api.nvim_create_autocmd("BufWritePost", {
+    group = group,
+    buffer = source,
+    callback = function()
+      post = post + 1
+    end,
+  })
+  preview.toggle()
+  local render = vim.api.nvim_get_current_buf()
+  vim.o.eventignore = "BufRead"
+  local ok, err = pcall(vim.cmd, "write")
+  assert_true(ok, "normal write failed: " .. tostring(err))
+  assert_eq({ pre, post }, { 1, 1 }, "source save autocmds must run normally")
+  assert_eq(vim.fn.readfile(path), { "# Formatted source" }, "formatter edits were not saved")
+  assert_false(vim.bo[source].modified, "successful write left source dirty")
+  assert_eq(vim.api.nvim_get_current_buf(), render, "normal save did not restore render buffer")
+  fail = true
+  vim.api.nvim_buf_set_lines(source, 0, -1, false, { "# New unsaved source" })
+  vim.o.hidden = false
+  ok, err = pcall(vim.cmd, "write")
+  assert_false(ok, "formatter error must fail the write")
+  assert_true(tostring(err):find("formatter failure marker", 1, true), "restoration hid the formatter error")
+  assert_eq(vim.o.eventignore, "BufRead", "formatter failure left events disabled")
+  assert_true(vim.bo[source].modified, "formatter failure discarded unsaved source")
+  assert_eq(
+    vim.api.nvim_buf_get_lines(source, 0, -1, false),
+    { "# New unsaved source" },
+    "formatter failure lost edits"
+  )
+  vim.o.hidden, vim.o.eventignore = hidden, eventignore
+  vim.api.nvim_del_augroup_by_id(group)
+  cleanup_buffer(source)
+  vim.fn.delete(path)
+end)
+
+for _, phase in ipairs { "enter", "restore" } do
+  test("render write restores events after " .. phase .. " swap failure", function()
+    local hidden, eventignore = vim.o.hidden, vim.o.eventignore
+    vim.o.hidden = true
+    local source = setup_md_buffer { "# Save source" }
+    local path = vim.fn.tempname() .. ".md"
+    vim.api.nvim_buf_set_name(source, path)
+    preview.toggle()
+    local win, render = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
+    local set_buf = vim.api.nvim_win_set_buf
+    vim.api.nvim_win_set_buf = function(target_win, buf)
+      if target_win == win and buf == (phase == "enter" and source or render) then error(phase .. " swap marker") end
+      return set_buf(target_win, buf)
+    end
+    vim.o.eventignore = "BufRead"
+    local ok, err = pcall(vim.cmd, "write")
+    vim.api.nvim_win_set_buf = set_buf
+    assert_false(ok, phase .. " swap should report failure")
+    assert_true(tostring(err):find(phase .. " swap marker", 1, true), phase .. " swap error was lost")
+    assert_eq(vim.o.eventignore, "BufRead", phase .. " swap left events disabled")
+    assert_eq(vim.api.nvim_buf_get_lines(source, 0, -1, false), { "# Save source" }, "swap failure lost source")
+    assert_eq(vim.bo[source].modified, phase == "enter", "swap failure changed save result")
+    vim.o.hidden, vim.o.eventignore = hidden, eventignore
+    cleanup_buffer(source)
+    vim.fn.delete(path)
+  end)
+end
+
+test("render naming errors restore events", function()
+  local source = setup_md_buffer { "# Source" }
+  local eventignore, set_name = vim.o.eventignore, vim.api.nvim_buf_set_name
+  vim.o.eventignore = "BufRead"
+  vim.api.nvim_buf_set_name = function()
+    error "name failure marker"
+  end
+  local ok, err = pcall(preview.toggle)
+  vim.api.nvim_buf_set_name = set_name
+  assert_false(ok, "naming failure must fail render setup")
+  assert_true(tostring(err):find("name failure marker", 1, true), "naming error was lost")
+  assert_eq(vim.o.eventignore, "BufRead", "naming failure left events disabled")
+  vim.o.eventignore = eventignore
+  cleanup_buffer(source)
+end)
+
 -- ----------------------------------------------------------------------
 -- Test 14: auto_on swaps to render and sets b:md_render_auto
 -- ----------------------------------------------------------------------

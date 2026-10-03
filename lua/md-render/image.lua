@@ -29,13 +29,13 @@ local _kitty_supported = nil
 ---@field backend? "kitty"|"snacks"
 ---@field plantuml_server string? base URL of a PlantUML server, e.g. `"https://www.plantuml.com/plantuml"`
 ---@field autoplay? boolean play GIF/video animations automatically (default true)
----@field mermaid_allow_npx? boolean allow npx to download/run Mermaid CLI (default true)
+---@field mermaid_allow_npx? boolean allow npx to download/run Mermaid CLI (default false)
 
 ---@type MdRender.Image.Config
 local config = {
   backend = "kitty",
   autoplay = true,
-  mermaid_allow_npx = true,
+  mermaid_allow_npx = false,
   -- Unset on purpose. A PlantUML fence is rendered by a local `plantuml` or
   -- `java -jar $PLANTUML_JAR` if there is one; naming a server here is what
   -- allows the source of a diagram to leave the machine, and nothing else
@@ -287,27 +287,48 @@ end
 local function jpeg_dimensions(path)
   local f = io.open(path, "rb")
   if not f then return nil end
-  local data = f:read "*a"
-  f:close()
-  if not data or #data < 2 or data:byte(1) ~= 0xFF or data:byte(2) ~= 0xD8 then return nil end
-  local pos = 3
-  while pos < #data - 1 do
-    if data:byte(pos) ~= 0xFF then
-      pos = pos + 1
-      goto continue
-    end
-    local marker = data:byte(pos + 1)
-    if marker >= 0xC0 and marker <= 0xCF and marker ~= 0xC4 and marker ~= 0xC8 then
-      if pos + 9 <= #data then return be16(data, pos + 7), be16(data, pos + 5) end
-    end
-    if pos + 3 <= #data then
-      pos = pos + 2 + be16(data, pos + 2)
-    else
-      break
-    end
-    ::continue::
+  local offset, limit = 0, 16 * 1024 * 1024
+  local function read(n)
+    if offset + n > limit then return nil end
+    local data = f:read(n)
+    offset = offset + n
+    return data and #data == n and data or nil
   end
-  return nil
+  local function dimensions()
+    if read(2) ~= "\255\216" then return nil end
+    -- Bound both marker work and metadata span; skip APP/ICC payloads without
+    -- reading the compressed image (or a large trailing payload) into Lua.
+    for _ = 1, 1024 do
+      local pair = read(2)
+      if not pair or pair:byte(1) ~= 0xFF then return nil end
+      local marker = pair:byte(2)
+      if marker == 0xFF then
+        if not f:seek("cur", -1) then return nil end
+        offset = offset - 1 -- repeated FF fill byte
+      elseif marker == 0 or marker == 0xDA or marker == 0xD9 then
+        return nil -- dimensions must precede scan data/end of image
+      elseif marker ~= 1 and marker ~= 0xD8 and not (marker >= 0xD0 and marker <= 0xD7) then
+        local size = read(2)
+        if not size then return nil end
+        local length = be16(size, 1)
+        if length < 2 then return nil end
+        if marker >= 0xC0 and marker <= 0xCF and marker ~= 0xC4 and marker ~= 0xC8 and marker ~= 0xCC then
+          local data = length >= 8 and read(6)
+          if not data then return nil end
+          local components = data:byte(6)
+          if components == 0 or length ~= 8 + 3 * components or not read(3 * components) then return nil end
+          local width, height = be16(data, 4), be16(data, 2)
+          if width > 0 and height > 0 then return width, height end
+          return nil
+        end
+        offset = offset + length - 2
+        if offset > limit or not f:seek("cur", length - 2) then return nil end
+      end
+    end
+  end
+  local width, height = dimensions()
+  f:close()
+  return width, height
 end
 
 local function webp_dimensions(path)
@@ -448,7 +469,7 @@ function M.video_dimensions(path, cache_only)
     path,
     signature,
     generation,
-    vim.system(video_probe_cmd(path), { text = true, timeout = 5000 }):wait()
+    async.start_system(video_probe_cmd(path), { text = true, timeout = 5000 }):wait()
   )
 end
 
@@ -528,14 +549,14 @@ end
 
 --- Find the mmdc executable (mermaid CLI).
 --- Searches PATH first, then falls back to npx.
----@return string[]? command prefix (e.g. {"mmdc"} or {"npx", "-y", "@mermaid-js/mermaid-cli"})
+---@return string[]? command prefix
 local function find_mmdc()
   if _mmdc_checked then return _mmdc_cmd end
   _mmdc_checked = true
   if vim.fn.executable "mmdc" == 1 then
     _mmdc_cmd = { "mmdc" }
   elseif config.mermaid_allow_npx and vim.fn.executable "npx" == 1 then
-    _mmdc_cmd = { "npx", "-y", "@mermaid-js/mermaid-cli" }
+    _mmdc_cmd = { "npx", "-y", "@mermaid-js/mermaid-cli@12.0.0" }
   end
   return _mmdc_cmd
 end
@@ -609,6 +630,73 @@ local function render_diagram_file(cache_path, render)
   return installed and cache_path or nil
 end
 
+--- Built-in downloads have one literal HTTP(S) URL and a whole-process deadline.
+local function curl_download(url, output, seconds, bytes)
+  return async.system({
+    "curl",
+    "-q",
+    "--globoff",
+    "-sfL",
+    "--proto",
+    "=http,https",
+    "--proto-redir",
+    "=http,https",
+    "--max-time",
+    tostring(seconds),
+    "--max-filesize",
+    tostring(bytes),
+    "-o",
+    output,
+    "--",
+    url,
+  }, { text = true, timeout = seconds * 1000 + 1000 })
+end
+
+--- Keep npm/Puppeteer project configuration outside the viewed repository.
+local function render_mermaid_file(source, cmd_prefix, cache_path, run)
+  local tmp_dir = vim.fn.tempname()
+  if vim.fn.mkdir(tmp_dir, "p", 448) == 0 then return nil end
+  -- Puppeteer searches ancestors for executable configuration. A private cwd
+  -- alone is insufficient when the temporary directory is inside a project.
+  local ok, written = pcall(vim.fn.writefile, { "{}" }, tmp_dir .. "/.puppeteerrc")
+  if not ok or written ~= 0 then
+    vim.fn.delete(tmp_dir, "rf")
+    return nil
+  end
+  if cmd_prefix[1] == "npx" then
+    -- npm puts ancestor .bin directories before PATH, even with --prefix.
+    local prepared, isolated = pcall(function()
+      local node = vim.fn.exepath "node"
+      local bin = tmp_dir .. "/node_modules/.bin"
+      return node ~= "" and vim.fn.mkdir(bin, "p", 448) ~= 0 and uv.fs_symlink(node, bin .. "/node")
+    end)
+    if not prepared or not isolated then
+      vim.fn.delete(tmp_dir, "rf")
+      return nil
+    end
+  end
+  local input = tmp_dir .. "/diagram.mmd"
+  local f = io.open(input, "w")
+  if not f then
+    vim.fn.delete(tmp_dir, "rf")
+    return nil
+  end
+  f:write(source)
+  f:close()
+  local path = render_diagram_file(cache_path, function(output)
+    local cmd = build_mmdc_cmd(cmd_prefix, input, output)
+    local opts = { text = true, timeout = 30000, cwd = tmp_dir }
+    if cmd_prefix[1] == "npx" then
+      -- cwd alone still lets npm discover a package.json/.npmrc in an ancestor.
+      table.insert(cmd, 2, tmp_dir)
+      table.insert(cmd, 2, "--prefix")
+    end
+    return run(cmd, opts)
+  end)
+  vim.fn.delete(tmp_dir, "rf")
+  return path
+end
+
 --- Check if a mermaid diagram is already cached (no rendering).
 ---@param source string mermaid diagram source code
 ---@return string? cached_path
@@ -628,17 +716,9 @@ function M.render_mermaid(source)
   local cache_path = mermaid_cache_path(source)
   if vim.fn.filereadable(cache_path) == 1 then return cache_path end
 
-  local tmp_input = vim.fn.tempname() .. ".mmd"
-  local f = io.open(tmp_input, "w")
-  if not f then return nil end
-  f:write(source)
-  f:close()
-
-  local path = render_diagram_file(cache_path, function(output)
-    return vim.system(build_mmdc_cmd(cmd_prefix, tmp_input, output), { text = true, timeout = 30000 }):wait()
+  return render_mermaid_file(source, cmd_prefix, cache_path, function(cmd, opts)
+    return async.start_system(cmd, opts):wait()
   end)
-  os.remove(tmp_input)
-  return path
 end
 
 --- Render mermaid source code to a PNG image (asynchronous, cached).
@@ -658,17 +738,7 @@ function M.render_mermaid_async(source, callback)
   end
 
   shared_work(cache_path, function()
-    local tmp_input = vim.fn.tempname() .. ".mmd"
-    local f = io.open(tmp_input, "w")
-    if not f then return nil end
-    f:write(source)
-    f:close()
-
-    local path = render_diagram_file(cache_path, function(output)
-      return async.system(build_mmdc_cmd(cmd_prefix, tmp_input, output), { text = true, timeout = 30000 })
-    end)
-    os.remove(tmp_input)
-    return path
+    return render_mermaid_file(source, cmd_prefix, cache_path, async.system)
   end, callback)
 end
 
@@ -711,13 +781,39 @@ end
 local _plantuml_cmd = nil
 local _plantuml_checked = false
 
+local function plantuml_env()
+  local env = { PLANTUML_SECURITY_PROFILE = "SANDBOX" }
+  -- JVM properties override OS variables; each supported option source must end
+  -- with our policy while retaining unrelated user options (heap size, proxies, etc.).
+  for _, name in ipairs { "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS" } do
+    env[name] = (vim.env[name] or "") .. " -DPLANTUML_SECURITY_PROFILE=SANDBOX -Djava.awt.headless=true"
+  end
+  return env
+end
+
 local function find_plantuml()
   if _plantuml_checked then return _plantuml_cmd end
   _plantuml_checked = true
+  local candidate
   if vim.fn.executable "plantuml" == 1 then
-    _plantuml_cmd = { "plantuml" }
+    candidate = { "plantuml" }
   elseif vim.fn.executable "java" == 1 and vim.env.PLANTUML_JAR and vim.fn.filereadable(vim.env.PLANTUML_JAR) == 1 then
-    _plantuml_cmd = { "java", "-jar", vim.env.PLANTUML_JAR }
+    candidate = { "java", "-DPLANTUML_SECURITY_PROFILE=SANDBOX", "-jar", vim.env.PLANTUML_JAR }
+  end
+  if not candidate then return nil end
+  -- Releases before 1.2020.11 silently ignore the security profile. Probe only
+  -- the tool version, never document source, and cache an unavailable result too.
+  local ok, result = pcall(function()
+    local cmd = vim.list_extend(vim.list_extend({}, candidate), { "-version" })
+    return async.start_system(cmd, { text = true, timeout = 1500, env = plantuml_env() }):wait()
+  end)
+  if ok and result.code == 0 then
+    local version = (result.stdout or "") .. "\n" .. (result.stderr or "")
+    local major, year, release = version:match "PlantUML version%s+(%d+)%.(%d+)%.(%d+)"
+    major, year, release = tonumber(major), tonumber(year), tonumber(release)
+    if major and (major > 1 or (major == 1 and (year > 2020 or (year == 2020 and release >= 11)))) then
+      _plantuml_cmd = candidate
+    end
   end
   return _plantuml_cmd
 end
@@ -731,21 +827,29 @@ function M.has_plantuml()
   return M.config().plantuml_server ~= nil and vim.fn.executable "curl" == 1
 end
 
---- Compute cache path for PlantUML source.
---- Hashes source only: unlike mermaid's -t/-b flags, nothing here varies the
---- output by theme or background.
+--- Keep local SANDBOX results separate from legacy and remote-server output.
 ---@param source string
+---@param server? string normalized remote server URL; nil means local SANDBOX
 ---@return string
-local function plantuml_cache_path(source)
-  local hash = vim.fn.sha256(source):sub(1, 16)
+local function plantuml_cache_path(source, server)
+  local policy = server and "remote:" .. server or "local:SANDBOX:2"
+  local hash = vim.fn.sha256("v2|" .. policy .. "|" .. source):sub(1, 16)
   return get_plantuml_cache_dir() .. "/" .. hash .. ".png"
+end
+
+local function plantuml_server()
+  local server = config.plantuml_server
+  return server and server:gsub("/+$", "") or nil
 end
 
 --- Check if a PlantUML diagram is already cached (no rendering).
 ---@param source string PlantUML diagram source code
 ---@return string? cached_path
 function M.get_plantuml_cached(source)
-  local cache_path = plantuml_cache_path(source)
+  local local_renderer = find_plantuml() ~= nil
+  local server = not local_renderer and plantuml_server() or nil
+  if not local_renderer and not server then return nil end
+  local cache_path = plantuml_cache_path(source, server)
   if vim.fn.filereadable(cache_path) == 1 then return cache_path end
   return nil
 end
@@ -761,13 +865,13 @@ end
 ---@param source string
 ---@param cache_path string
 ---@return string? png_path
-local function render_plantuml_remote(source, cache_path)
-  local server = M.config().plantuml_server
-  if not server or vim.fn.executable "curl" ~= 1 then return nil end
-  local url = server:gsub("/+$", "") .. "/png/~h" .. plantuml_encode_hex(source)
+local function render_plantuml_remote(source, server)
+  if not M.is_url(server) or vim.fn.executable "curl" ~= 1 then return nil end
+  local cache_path = plantuml_cache_path(source, server)
+  if vim.fn.filereadable(cache_path) == 1 then return cache_path end
+  local url = server .. "/png/~h" .. plantuml_encode_hex(source)
   return render_diagram_file(cache_path, function(output)
-    local cmd = { "curl", "-sfL", "--max-time", "15", "--max-filesize", "20000000", "-o", output, url }
-    return async.system(cmd, { text = true })
+    return curl_download(url, output, 15, 20000000)
   end)
 end
 
@@ -777,27 +881,41 @@ end
 ---@param source string PlantUML diagram source code
 ---@param callback fun(png_path: string?)
 function M.render_plantuml_async(source, callback)
-  local cache_path = plantuml_cache_path(source)
+  local cmd_prefix = find_plantuml()
+  local server = plantuml_server()
+  if not cmd_prefix and not server then
+    callback(nil)
+    return
+  end
+  local cache_path = plantuml_cache_path(source, not cmd_prefix and server or nil)
   if vim.fn.filereadable(cache_path) == 1 then
     callback(cache_path)
     return
   end
 
-  shared_work(cache_path, function()
-    local cmd_prefix = find_plantuml()
-    if not cmd_prefix then return render_plantuml_remote(source, cache_path) end
+  -- Capture the fallback policy too: a settings change must not join a request
+  -- whose local failure would send the source to a different server.
+  shared_work(cache_path .. "|" .. (server or ""), function()
+    if not cmd_prefix then return render_plantuml_remote(source, server) end
 
     local cmd = vim.list_extend(vim.list_extend({}, cmd_prefix), { "-tpng", "-pipe" })
-    local result = async.system(cmd, { stdin = source, text = false, timeout = 30000 })
-    if result.code == 0 and result.stdout and #result.stdout > 0 then
-      local f = io.open(cache_path, "wb")
-      if f then
-        f:write(result.stdout)
-        f:close()
+    local path = render_diagram_file(cache_path, function(output)
+      local result = async.system(cmd, {
+        stdin = source,
+        text = false,
+        timeout = 30000,
+        env = plantuml_env(),
+      })
+      if result.code == 0 and result.stdout and #result.stdout > 0 then
+        local f = io.open(output, "wb")
+        if f then
+          f:write(result.stdout)
+          f:close()
+        end
       end
-    end
-    if vim.fn.filereadable(cache_path) == 1 then return cache_path end
-    return render_plantuml_remote(source, cache_path)
+      return result
+    end)
+    return path or render_plantuml_remote(source, server)
   end, callback)
 end
 
@@ -949,8 +1067,8 @@ end
 --- Custom download function for authenticated or special URL handling.
 --- Signature: fn(url, output_path, callback) -> handled
 ---   - url: the image URL to download
----   - output_path: absolute path where the image file should be saved
----   - callback: fun(ok: boolean) — call with true on success, false on failure
+---   - output_path: absolute temporary path where the completed file should be saved
+---   - callback: fun(ok: boolean) — finish writing before calling true; false means failure
 ---   - return true if this function handles the URL (callback will be called later)
 ---   - return false to fall back to the default curl downloader
 ---@type fun(url: string, output_path: string, callback: fun(ok: boolean)): boolean
@@ -1032,8 +1150,7 @@ function M.get_cached(url)
   if _url_cache[url] and vim.fn.filereadable(_url_cache[url]) == 1 then
     -- Validate cached file is a recognized image or video format
     if M.image_dimensions(_url_cache[url]) or M.is_video_content(_url_cache[url]) then return _url_cache[url] end
-    -- Stale/corrupt cache entry: remove file and clear in-memory cache
-    os.remove(_url_cache[url])
+    -- Clear only our reference; a peer may have replaced these invalid bytes.
     _url_cache[url] = nil
     return nil
   end
@@ -1044,8 +1161,7 @@ function M.get_cached(url)
       _url_cache[url] = cache_path
       return cache_path
     end
-    -- Stale/corrupt cache file: remove it
-    os.remove(cache_path)
+    -- A successful download atomically replaces invalid cache files.
     return nil
   end
   -- Try video extensions (file may have been renamed by finalize_download)
@@ -1074,31 +1190,25 @@ local function detect_video_ext(path)
   return nil
 end
 
---- Validate a downloaded file and update cache.
---- If the file is video with a wrong extension, rename it to the correct one.
+--- Validate completed output, then atomically publish it. Never remove a peer's cache entry.
 ---@param url string
+---@param output string private staging path
 ---@param cache_path string
+---@param video boolean skip image header validation for explicit video downloads
 ---@return string? path  nil when the download is not usable
-local function finalize_download(url, cache_path)
-  if vim.fn.filereadable(cache_path) == 1 then
-    if M.image_dimensions(cache_path) then
-      _url_cache[url] = cache_path
-      return cache_path
-    end
+local function finalize_download(url, output, cache_path, video)
+  local stat = uv.fs_stat(output)
+  if not stat or stat.type ~= "file" or stat.size == 0 then return nil end
+  if not video and not M.image_dimensions(output) then
     -- Check if it's a video with wrong extension
-    local video_ext = detect_video_ext(cache_path)
-    if video_ext then
-      local current_ext = cache_path:match "%.(%w+)$"
-      if current_ext and current_ext ~= video_ext then
-        local correct_path = cache_path:gsub("%." .. current_ext .. "$", "." .. video_ext)
-        os.rename(cache_path, correct_path)
-        cache_path = correct_path
-      end
-      _url_cache[url] = cache_path
-      return cache_path
-    end
+    local video_ext = detect_video_ext(output)
+    if not video_ext then return nil end
+    cache_path = cache_path:gsub("%.[^./]+$", "." .. video_ext)
   end
-  os.remove(cache_path)
+  if uv.fs_rename(output, cache_path) then
+    _url_cache[url] = cache_path
+    return cache_path
+  end
   return nil
 end
 
@@ -1125,11 +1235,27 @@ local function custom_download(url, cache_path)
   return taken, ok
 end
 
+--- Keep partial built-in and custom output invisible to cache readers.
+local function download_file(url, cache_path, video)
+  local nonce = vim.fn.sha256(vim.fn.tempname()):sub(1, 16)
+  local output = cache_path:gsub("(%.[^./]+)$", "." .. nonce .. "%1")
+  local ok, result = pcall(function()
+    local taken, arrived = custom_download(url, output)
+    if not taken then
+      arrived = curl_download(url, output, video and 30 or 10, video and 104857600 or 20000000).code == 0
+    end
+    if arrived then return finalize_download(url, output, cache_path, video) end
+  end)
+  os.remove(output)
+  if not ok then vim.notify("md-render: " .. tostring(result), vim.log.levels.ERROR) end
+  return ok and result or nil
+end
+
 --- Download a URL to a local file asynchronously.
 ---@param url string
 ---@param callback fun(path: string?)  called with local path on success, nil on failure
 function M.download_async(url, callback)
-  if M.is_badge_url(url) then
+  if not M.is_url(url) or M.is_badge_url(url) then
     callback(nil)
     return
   end
@@ -1143,20 +1269,7 @@ function M.download_async(url, callback)
   local cache_path = url_to_cache_path(url)
 
   shared_work(cache_path, function()
-    -- Try custom download function first (e.g. for authenticated GitHub Enterprise URLs)
-    local taken, ok = custom_download(url, cache_path)
-    if taken then
-      if not ok then return nil end
-      return finalize_download(url, cache_path)
-    end
-
-    -- Default: download with curl
-    local cmd = { "curl", "-sfL", "--max-time", "10", "--max-filesize", "20000000", "-o", cache_path, url }
-    if async.system(cmd, { text = true }).code ~= 0 then
-      os.remove(cache_path)
-      return nil
-    end
-    return finalize_download(url, cache_path)
+    return download_file(url, cache_path, false)
   end, callback)
 end
 
@@ -1165,9 +1278,11 @@ end
 ---@param url string
 ---@return string? cached_path
 function M.get_video_cached(url)
-  if _url_cache[url] and vim.fn.filereadable(_url_cache[url]) == 1 then return _url_cache[url] end
+  local current = _url_cache[url] and uv.fs_stat(_url_cache[url])
+  if current and current.type == "file" and current.size > 0 then return _url_cache[url] end
   local cache_path = url_to_cache_path(url)
-  if vim.fn.filereadable(cache_path) == 1 then
+  local stat = uv.fs_stat(cache_path)
+  if stat and stat.type == "file" and stat.size > 0 then
     _url_cache[url] = cache_path
     return cache_path
   end
@@ -1179,6 +1294,10 @@ end
 ---@param url string
 ---@param callback fun(path: string?)  called with local path on success, nil on failure
 function M.download_video_async(url, callback)
+  if not M.is_url(url) then
+    callback(nil)
+    return
+  end
   local cached = M.get_video_cached(url)
   if cached then
     callback(cached)
@@ -1187,26 +1306,8 @@ function M.download_video_async(url, callback)
 
   local cache_path = url_to_cache_path(url)
 
-  --- Both paths below accept the download on the same terms.
-  ---@param arrived boolean
-  ---@return string?
-  local function settle(arrived)
-    if arrived and vim.fn.filereadable(cache_path) == 1 then
-      _url_cache[url] = cache_path
-      return cache_path
-    end
-    os.remove(cache_path)
-    return nil
-  end
-
   shared_work(cache_path, function()
-    -- Try custom download function first (e.g. for authenticated GitHub Enterprise URLs)
-    local taken, ok = custom_download(url, cache_path)
-    if taken then return settle(ok) end
-
-    -- Default: download with curl (larger limits for video)
-    local cmd = { "curl", "-sfL", "--max-time", "30", "--max-filesize", "104857600", "-o", cache_path, url }
-    return settle(async.system(cmd, { text = true }).code == 0)
+    return download_file(url, cache_path, true)
   end, callback)
 end
 
@@ -1320,7 +1421,7 @@ local function build_convert_cmd(tool, src, dst)
       dst,
     }
   else
-    return { "magick", src, "-resize", dim .. "x" .. dim .. ">", dst }
+    return { "magick", src, "-delete", "1--1", "-resize", dim .. "x" .. dim .. ">", dst }
   end
 end
 
@@ -1348,82 +1449,36 @@ local function get_converted_cache_path(src_path)
   return string.format("%s/%s_%d_%d.png", get_converted_cache_dir(), hash, mtime, MAX_CONVERT_DIM)
 end
 
---- Atomically install a freshly converted PNG into the cache.
---- Renames tmp → cache_path; on collision (race), keeps the existing cache file.
----@param tmp string
----@param cache_path string
----@return boolean ok
-local function install_to_cache(tmp, cache_path)
-  if vim.fn.filereadable(cache_path) == 1 then
-    os.remove(tmp)
-    return true
-  end
-  local ok = uv.fs_rename(tmp, cache_path)
-  if not ok then
-    -- Rename failed (e.g. cross-device); fall back to copy + unlink
-    local data
-    local f = io.open(tmp, "rb")
-    if f then
-      data = f:read "*a"
-      f:close()
-    end
-    if not data then return false end
-    local out = io.open(cache_path, "wb")
-    if not out then return false end
-    out:write(data)
-    out:close()
-    os.remove(tmp)
-  end
-  return true
-end
-
---- Ensure image is in a format the terminal can display natively (synchronous).
---- PNG and GIF are passed through. JPEG/WebP are converted to PNG and cached
---- on disk so subsequent calls for the same source skip re-conversion.
----@param path string
----@return string? png_path, boolean is_temp
-function M.ensure_png(path)
+local function ensure_png(path, system)
   if M.is_native_format(path) then return path, false end
   local tool = find_convert_tool()
   if not tool then return nil, false end
   local cache_path = get_converted_cache_path(path)
-  if cache_path and vim.fn.filereadable(cache_path) == 1 then return cache_path, false end
-  local tmp = vim.fn.tempname() .. ".png"
-  local result = vim.system(build_convert_cmd(tool, path, tmp), { text = true }):wait()
-  if result.code ~= 0 then return nil, false end
-  if cache_path and install_to_cache(tmp, cache_path) then return cache_path, false end
-  return tmp, true
+  if not cache_path then return nil, false end
+  if vim.fn.filereadable(cache_path) == 1 then return cache_path, false end
+  local output = render_diagram_file(cache_path, function(tmp)
+    local result = system(build_convert_cmd(tool, path, tmp), { text = true, timeout = 30000 })
+    if result.code == 0 and not png_dimensions(tmp) then result.code = 1 end
+    return result
+  end)
+  return output, false
+end
+
+--- Ensure image is PNG (synchronous), caching conversions on disk.
+---@param path string
+---@return string? png_path, boolean is_temp
+function M.ensure_png(path)
+  return ensure_png(path, function(cmd, opts)
+    return async.start_system(cmd, opts):wait()
+  end)
 end
 
 --- Ensure image is in a native format (asynchronous).
 ---@param path string
 ---@param callback fun(png_path: string?, is_temp: boolean)
 function M.ensure_png_async(path, callback)
-  if M.is_native_format(path) then
-    callback(path, false)
-    return
-  end
-  local tool = find_convert_tool()
-  if not tool then
-    callback(nil, false)
-    return
-  end
-  local cache_path = get_converted_cache_path(path)
-  if cache_path and vim.fn.filereadable(cache_path) == 1 then
-    callback(cache_path, false)
-    return
-  end
-  local tmp = vim.fn.tempname() .. ".png"
   async.run(function()
-    if async.system(build_convert_cmd(tool, path, tmp), { text = true }).code ~= 0 then
-      callback(nil, false)
-      return
-    end
-    if cache_path and install_to_cache(tmp, cache_path) then
-      callback(cache_path, false)
-    else
-      callback(tmp, true)
-    end
+    callback(ensure_png(path, async.system))
   end)
 end
 
@@ -1814,8 +1869,9 @@ local function build_frame_extract_cmd(tool, path, cache_dir, total_frames)
     if total_frames > MAX_ANIM_FRAMES then
       local step = math.ceil(total_frames / MAX_ANIM_FRAMES)
       local delete = {}
-      for i = 0, total_frames - 1 do
-        if i % step ~= 0 then table.insert(delete, tostring(i)) end
+      for kept = 0, total_frames - 1, step do
+        local first, last = kept + 1, math.min(kept + step - 1, total_frames - 1)
+        if first <= last then table.insert(delete, first == last and tostring(first) or first .. "-" .. last) end
       end
       if #delete > 0 then
         table.insert(cmd, "-delete")
@@ -1836,6 +1892,7 @@ M._build_frame_extract_cmd = build_frame_extract_cmd -- exposed for testing
 -- to (nil) globals instead of the locals.
 local get_frames_cache_dir
 local get_cached_frames
+local extract_frames
 
 --- Extract frames from an animated GIF and transmit each as a separate image.
 --- Large GIFs are resized and frames are sampled to stay under MAX_ANIM_FRAMES.
@@ -1853,40 +1910,11 @@ function M.transmit_animated(path)
   if not anim_tool then return nil end
 
   local cache_dir = get_frames_cache_dir(path)
-
-  -- Check frame cache first
-  local cached = get_cached_frames(path, cache_dir)
-  if not cached then
-    local total_frames = 1
-    if anim_tool == "magick" then
-      local count_result = vim
-        .system({ "magick", "identify", "-format", "%n\n", path }, { text = true, timeout = 5000 })
-        :wait()
-      if count_result.code ~= 0 then
-        warn_extract_failed(anim_tool, count_result)
-        return nil
-      end
-      total_frames = tonumber((count_result.stdout or ""):match "%d+") or 1
-    end
-
-    vim.fn.mkdir(cache_dir, "p")
-
-    local cmd = build_frame_extract_cmd(anim_tool, path, cache_dir, total_frames)
-    local result = vim.system(cmd, { text = true, timeout = 30000 }):wait()
-
-    if result.code ~= 0 then
-      warn_extract_failed(anim_tool, result)
-      vim.fn.delete(cache_dir, "rf")
-      return nil
-    end
-
-    cached = vim.fn.glob(cache_dir .. "/frame_*.png", false, true)
-    table.sort(cached)
-    if #cached == 0 then
-      vim.fn.delete(cache_dir, "rf")
-      return nil
-    end
-  end
+  if not cache_dir then return nil end
+  local cached = extract_frames(path, cache_dir, anim_tool, function(cmd, opts)
+    return async.start_system(cmd, opts):wait()
+  end)
+  if not cached then return nil end
 
   -- Read actual frame dimensions (may differ from original GIF due to resize)
   local frame_w, frame_h = M.image_dimensions(cached[1])
@@ -1946,29 +1974,61 @@ function M.transmit_image_async(path, callback)
 end
 
 --- Get persistent cache directory for extracted GIF frames.
---- Uses a hash of the source path to create a stable directory name.
+--- Keep source versions immutable so an old view can finish reading its frames.
 ---@param gif_path string
----@return string
+---@return string?
 function get_frames_cache_dir(gif_path)
-  local hash = vim.fn.sha256(gif_path):sub(1, 16)
-  -- v2 discards frames with the old, unnormalized PNG pixel aspect ratio.
-  local dir = get_cache_dir() .. "/frames_" .. hash .. "_v2"
-  return dir
+  local signature = video_signature(gif_path)
+  if not signature then return nil end
+  local hash = vim.fn.sha256(gif_path .. ":" .. signature):sub(1, 16)
+  -- v3 directories are published atomically, after successful extraction.
+  return get_cache_dir() .. "/frames_" .. hash .. "_v3"
 end
 
---- Check if cached frames are still valid (exist and are newer than source GIF).
----@param gif_path string
+--- Only completed directories are visible at a cache path.
 ---@param cache_dir string
 ---@return string[]?  sorted list of frame PNG paths, or nil if cache miss
-function get_cached_frames(gif_path, cache_dir)
+function get_cached_frames(cache_dir)
   local frames = vim.fn.glob(cache_dir .. "/frame_*.png", false, true)
-  if #frames == 0 then return nil end
+  if #frames == 0 or #frames > MAX_ANIM_FRAMES then return nil end
   table.sort(frames)
-  -- Invalidate if source GIF is newer than cached frames
-  local gif_mtime = vim.fn.getftime(gif_path)
-  local frame_mtime = vim.fn.getftime(frames[1])
-  if gif_mtime > frame_mtime then
-    vim.fn.delete(cache_dir, "rf")
+  return frames
+end
+
+function extract_frames(path, cache_dir, tool, system)
+  local cached = get_cached_frames(cache_dir)
+  if cached then return cached end
+  local staging = cache_dir .. "." .. vim.fn.sha256(vim.fn.tempname()):sub(1, 16)
+  local ok, frames = pcall(function()
+    local total = 1
+    if tool == "magick" then
+      local count = system({ "magick", "identify", "-format", "%n\n", path }, { text = true, timeout = 5000 })
+      if count.code ~= 0 then
+        warn_extract_failed(tool, count)
+        return nil
+      end
+      total = tonumber((count.stdout or ""):match "%d+")
+      if not total or total < 1 or total > 2147483647 then return nil end
+    end
+    vim.fn.mkdir(staging, "p")
+    local result = system(build_frame_extract_cmd(tool, path, staging, total), { text = true, timeout = 30000 })
+    if result.code ~= 0 then
+      warn_extract_failed(tool, result)
+      return nil
+    end
+    local produced = get_cached_frames(staging)
+    if not produced or get_frames_cache_dir(path) ~= cache_dir then return nil end
+    for _, frame in ipairs(produced) do
+      if not png_dimensions(frame) then return nil end
+    end
+    -- A peer may already have published this immutable source version. Never
+    -- remove its directory on a collision or when our own process fails.
+    if not uv.fs_rename(staging, cache_dir) and not get_cached_frames(cache_dir) then return nil end
+    return get_cached_frames(cache_dir)
+  end)
+  vim.fn.delete(staging, "rf")
+  if not ok then
+    vim.notify("md-render: " .. tostring(frames), vim.log.levels.ERROR)
     return nil
   end
   return frames
@@ -1985,44 +2045,12 @@ function M.extract_frames_async(path, callback)
   end
 
   local cache_dir = get_frames_cache_dir(path)
-
+  if not cache_dir then
+    callback(nil)
+    return
+  end
   shared_work(cache_dir, function()
-    -- Check frame cache first
-    local frames = get_cached_frames(path, cache_dir)
-
-    if not frames then
-      local total_frames = 1
-      if anim_tool == "magick" then
-        local count_result = async.system(
-          { "magick", "identify", "-format", "%n\n", path },
-          { text = true, timeout = 5000 }
-        )
-        if count_result.code ~= 0 then
-          warn_extract_failed(anim_tool, count_result)
-          return nil
-        end
-        total_frames = tonumber((count_result.stdout or ""):match "%d+") or 1
-      end
-
-      vim.fn.mkdir(cache_dir, "p")
-
-      local cmd = build_frame_extract_cmd(anim_tool, path, cache_dir, total_frames)
-      local result = async.system(cmd, { text = true, timeout = 30000 })
-      if result.code ~= 0 then
-        warn_extract_failed(anim_tool, result)
-        vim.fn.delete(cache_dir, "rf")
-        return nil
-      end
-
-      frames = vim.fn.glob(cache_dir .. "/frame_*.png", false, true)
-      table.sort(frames)
-      if #frames == 0 then
-        vim.fn.delete(cache_dir, "rf")
-        return nil
-      end
-    end
-
-    return frames
+    return extract_frames(path, cache_dir, anim_tool, async.system)
   end, callback)
 end
 

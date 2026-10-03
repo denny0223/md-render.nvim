@@ -1,6 +1,11 @@
 -- Run: nvim --headless -u NONE --noplugin -i NONE -l tests/obsidian_test.lua
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
 local obsidian = require "md-render.obsidian"
+local hrtime = vim.uv.hrtime
+local now = hrtime()
+vim.uv.hrtime = function()
+  return now
+end
 local root = vim.fn.tempname()
 for _, dir in ipairs { ".obsidian", "a", "b", "notes/one/attachments", "notes/two/attachments" } do
   vim.fn.mkdir(root .. "/" .. dir, "p")
@@ -32,11 +37,7 @@ assert(obsidian.resolve("same.png", one), "invalid attachment setting should ret
 
 -- One bounded fallback index serves both repeated and different misses. Expiry
 -- must discover files created during the real session, without reset_cache().
-local hrtime, fs_dir = vim.uv.hrtime, vim.fs.dir
-local now, scans = hrtime(), 0
-vim.uv.hrtime = function()
-  return now
-end
+local fs_dir, scans = vim.fs.dir, 0
 vim.fs.dir = function(path, opts)
   if path == root then scans = scans + 1 end
   return fs_dir(path, opts)
@@ -89,7 +90,7 @@ vim.uv.hrtime = function()
 end
 assert(obsidian.resolve("absent.png", one) == nil)
 assert(entries > 0 and entries <= 5, "fallback ignored its elapsed-time budget")
-vim.uv.hrtime, vim.fs.dir = hrtime, fs_dir
+vim.fs.dir = fs_dir
 
 -- Native recursive iterators can open every queued empty directory without
 -- yielding another entry. Check the budget before directory opens as well.
@@ -111,7 +112,7 @@ vim.uv.fs_scandir = function(path, ...)
 end
 assert(obsidian.resolve("missing.png", empty_root) == nil)
 assert(opens <= 6 and now - start <= 50 * 1000000, "empty directories bypassed the scan deadline")
-vim.uv.hrtime, vim.uv.fs_scandir = hrtime, scandir
+vim.uv.fs_scandir = scandir
 vim.fn.delete(empty_root, "rf")
 
 -- Oversized/invalid configuration must retain fallback, and a growing file
@@ -140,5 +141,6 @@ vim.uv.fs_read, vim.uv.fs_stat = fs_read, fs_stat
 vim.fn.writefile({ "{invalid json" }, config_path)
 obsidian.reset_cache()
 assert(obsidian.resolve("same.png", one), "malformed configuration disabled vault fallback")
+vim.uv.hrtime = hrtime
 vim.fn.delete(root, "rf")
 print "Obsidian resolution: bounded reads/scans, live cache expiry, explicit paths and attachment precedence OK"

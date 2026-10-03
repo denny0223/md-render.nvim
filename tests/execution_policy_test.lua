@@ -14,6 +14,7 @@ local original = {
 }
 local root = vim.fn.tempname()
 vim.fn.mkdir(root .. "/project/control", "p")
+root = assert(uv.fs_realpath(root))
 vim.fn.writefile({ '{"private":true}' }, root .. "/project/package.json")
 vim.fn.writefile({ "@mermaid-js:registry=https://document-project.invalid" }, root .. "/project/.npmrc")
 local node = original.exepath "node"

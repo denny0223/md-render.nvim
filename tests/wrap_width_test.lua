@@ -133,6 +133,137 @@ end
 assert(table.concat(bold) == label, "bold spans lost text after wrapping")
 assert(table.concat(links) == label, "link spans lost text after wrapping")
 
+-- Input order controls overlapping styles and links; wrapping must not sort it.
+do
+  local Builder = require("md-render.content_builder").ContentBuilder
+  local b = Builder.new()
+  b:add_line "lead"
+  b:set_source_line(7)
+  local quote, marker = "│ ", "• "
+  local offset = #quote + #marker
+  b:add_wrapped_markdown(
+    quote .. marker .. "中文 AB\n\n乙丙 CD",
+    {
+      { col = offset + 18, end_col = offset + 20, hl = "Last" },
+      { col = offset - 2, end_col = offset + 17, hl = "Cross" },
+      { col = #quote, end_col = offset, hl = "Special" },
+      { col = 0, end_col = #quote, hl = "FloatBorder" },
+      { col = offset, end_col = offset + 20, hl = "Bold" },
+      { col = offset + 6, end_col = offset + 7, hl = "Gap" },
+      { col = offset + 9, end_col = offset + 11, hl = "Breaks" },
+      { col = offset + 11, end_col = offset + 17, hl = "Inner" },
+    },
+    {
+      { col_start = offset + 18, col_end = offset + 20, url = "/last" },
+      { col_start = offset - 1, col_end = offset + 20, url = "/all" },
+      { col_start = offset, col_end = offset + 6, url = "/first" },
+      { col_start = offset + 6, col_end = offset + 7, url = "/gap" },
+      { col_start = offset + 9, col_end = offset + 11, url = "/break" },
+      { col_start = offset + 11, col_end = offset + 17, url = "/utf8" },
+      { col_start = 0, col_end = offset, url = "/marker" },
+    },
+    "  ",
+    10,
+    quote,
+    marker,
+    1,
+    {
+      { col = offset + 9, source_line = 1 },
+      { col = offset + 10, source_line = 2 },
+    }
+  )
+  local content = b:result()
+  assert(
+    vim.deep_equal(content.lines, {
+      "lead",
+      "  │ • 中文",
+      "",
+      "  │   AB",
+      "",
+      "  │   ",
+      "",
+      "  │   乙丙",
+      "",
+      "  │   CD",
+      "",
+    }),
+    "quote/list wrapping preserves empty rows and hard breaks"
+  )
+  local styles, metadata = {}, {}
+  for _, entry in ipairs(content.highlights) do
+    for _, group in ipairs(entry.groups) do
+      styles[#styles + 1] = { entry.line, group.col, group.end_col, group.hl }
+    end
+  end
+  assert(
+    vim.deep_equal(styles, {
+      { 1, 10, 16, "Cross" },
+      { 1, 6, 10, "Special" },
+      { 1, 2, 6, "FloatBorder" },
+      { 1, 10, 16, "Bold" },
+      { 3, 2, 6, "FloatBorder" },
+      { 3, 8, 10, "Cross" },
+      { 3, 8, 10, "Bold" },
+      { 5, 2, 6, "FloatBorder" },
+      { 7, 2, 6, "FloatBorder" },
+      { 7, 8, 14, "Cross" },
+      { 7, 8, 14, "Bold" },
+      { 7, 8, 14, "Inner" },
+      { 9, 2, 6, "FloatBorder" },
+      { 9, 8, 10, "Last" },
+      { 9, 8, 10, "Bold" },
+    }),
+    "style order and UTF-8 byte offsets survive prefix changes"
+  )
+  for _, link in ipairs(content.link_metadata) do
+    metadata[#metadata + 1] = { link.line, link.col_start, link.col_end, link.url }
+  end
+  assert(
+    vim.deep_equal(metadata, {
+      { 1, 10, 16, "/all" },
+      { 1, 10, 16, "/first" },
+      { 3, 8, 10, "/all" },
+      { 7, 8, 14, "/all" },
+      { 7, 8, 14, "/utf8" },
+      { 9, 8, 10, "/last" },
+      { 9, 8, 10, "/all" },
+    }),
+    "links retain row order and input order within each row"
+  )
+end
+
+-- Short raw HTML rows must not scan every highlight/link for every row.
+jit.off()
+jit.flush()
+for _, case in ipairs { { 1500, "<h1>", "<h1>", 30000000 }, { 4000, '<a href="CaseSensitive">甲</a>', "甲", 60000000 } } do
+  local source = { "<div>" }
+  for _ = 1, case[1] do
+    source[#source + 1] = case[2]
+  end
+  source[#source + 1] = "</div>"
+  local instructions = 0
+  debug.sethook(function()
+    instructions = instructions + 1000
+    assert(instructions < case[4], "raw rows exceeded the bounded distribution work budget")
+  end, "", 1000)
+  local ok, content = pcall(preview.build_content, source, { max_width = 120, indent = "", text_scale = false })
+  debug.sethook()
+  assert(ok, content)
+  assert(#content.lines == case[1] and #content.highlights == case[1], "large raw group retains every styled row")
+  for row, line in ipairs(content.lines) do
+    assert(line == case[3] and content.source_line_map[row] == row + 1, "raw rows retain physical source positions")
+  end
+  if case[3] == "甲" then
+    assert(#content.link_metadata == case[1], "large raw group retains every link")
+    for row, link in ipairs(content.link_metadata) do
+      assert(
+        link.line == row - 1 and link.col_start == 0 and link.col_end == #case[3] and link.url == "CaseSensitive",
+        "raw links retain ordered UTF-8 byte ranges and literal destinations"
+      )
+    end
+  end
+end
+
 -- Wrapping receives rendered text: whitespace is content, and each emitted
 -- row must be an exact source slice for highlight/link byte offsets to work.
 local wrap = require "md-render.wrap"

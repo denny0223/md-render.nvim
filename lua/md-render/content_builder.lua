@@ -221,6 +221,20 @@ local inline = require "md-render.inline"
 
 local wrap_words = wrap_mod.wrap_words
 
+-- Wrapped rows are ordered source slices, so their byte ends are nondecreasing.
+local function first_span_row(wrapped_lines, line_starts, col)
+  local first, last = 1, #wrapped_lines
+  while first <= last do
+    local middle = math.floor((first + last) / 2)
+    if line_starts[middle] + #wrapped_lines[middle] <= col then
+      first = middle + 1
+    else
+      last = middle - 1
+    end
+  end
+  return first
+end
+
 --- Distribute markdown highlights across wrapped lines
 ---@param md_highlights MdRender.Markdown.Highlight[]
 ---@param wrapped_lines string[] The wrapped line texts
@@ -244,10 +258,8 @@ local function distribute_highlights(
   list_prefix_len = list_prefix_len or 0
   list_cont_len = list_cont_len or list_prefix_len
   local per_line = {}
-  for idx, wline in ipairs(wrapped_lines) do
-    local line_start_pos = line_starts[idx]
-    local lm_len = idx == 1 and list_prefix_len or list_cont_len
-    local line_prefix = (quote_prefix ~= "" and (indent .. quote_prefix) or indent) .. string.rep(" ", lm_len)
+  local prefix_len = #indent + #quote_prefix
+  for idx = 1, #wrapped_lines do
     local line_hls = {}
 
     -- Add FloatBorder highlight for blockquote prefix on continuation lines
@@ -258,44 +270,39 @@ local function distribute_highlights(
         hl = "FloatBorder",
       })
     end
+    per_line[idx] = line_hls
+  end
 
-    for _, hl in ipairs(md_highlights) do
+  for _, hl in ipairs(md_highlights) do
+    -- Marker-area highlights and the original quote prefix stay on line 1.
+    if (hl.end_col <= content_offset and hl.hl ~= "FloatBorder") or (hl.hl == "FloatBorder" and hl.col == 0) then
+      if per_line[1] then
+        table.insert(per_line[1], {
+          col = #indent + hl.col,
+          end_col = #indent + hl.end_col,
+          hl = hl.hl,
+        })
+      end
+    else
       local hl_start = hl.col - content_offset
       local hl_end = hl.end_col - content_offset
-
-      -- Marker-area highlights (list markers, checkbox icons) that end at or before
-      -- the content start should only appear on line 1 with their original positions
-      if hl.end_col <= content_offset and hl.hl ~= "FloatBorder" then
-        if idx == 1 then
-          table.insert(line_hls, {
-            col = #indent + hl.col,
-            end_col = #indent + hl.end_col,
-            hl = hl.hl,
-          })
-        end
-      elseif hl.hl == "FloatBorder" and hl.col == 0 then
-        if idx == 1 then
-          table.insert(line_hls, {
-            col = #indent + hl.col,
-            end_col = #indent + hl.end_col,
-            hl = hl.hl,
-          })
-        end
-      else
+      for idx = first_span_row(wrapped_lines, line_starts, hl_start), #wrapped_lines do
+        local wline = wrapped_lines[idx]
+        local line_start_pos = line_starts[idx]
+        if line_start_pos >= hl_end then break end
         local wline_end = line_start_pos + #wline
         if #wline > 0 and hl_end > line_start_pos and hl_start < wline_end then
           local local_start = math.max(0, hl_start - line_start_pos)
           local local_end = math.min(#wline, hl_end - line_start_pos)
-          table.insert(line_hls, {
-            col = local_start + #line_prefix,
-            end_col = local_end + #line_prefix,
+          local lm_len = idx == 1 and list_prefix_len or list_cont_len
+          table.insert(per_line[idx], {
+            col = local_start + prefix_len + lm_len,
+            end_col = local_end + prefix_len + lm_len,
             hl = hl.hl,
           })
         end
       end
     end
-
-    per_line[idx] = line_hls
   end
   return per_line
 end
@@ -324,28 +331,35 @@ local function distribute_links(
 )
   list_prefix_len = list_prefix_len or 0
   list_cont_len = list_cont_len or list_prefix_len
-  local entries = {}
-  for idx, wline in ipairs(wrapped_lines) do
-    local line_start_pos = line_starts[idx]
-    local lm_len = idx == 1 and list_prefix_len or list_cont_len
-    local line_prefix = (quote_prefix ~= "" and (indent .. quote_prefix) or indent) .. string.rep(" ", lm_len)
-
-    for _, link in ipairs(md_links) do
-      local link_start = link.col_start - content_offset
-      local link_end = link.col_end - content_offset
+  local per_line = {}
+  local prefix_len = #indent + #quote_prefix
+  for _, link in ipairs(md_links) do
+    local link_start = link.col_start - content_offset
+    local link_end = link.col_end - content_offset
+    for idx = first_span_row(wrapped_lines, line_starts, link_start), #wrapped_lines do
+      local wline = wrapped_lines[idx]
+      local line_start_pos = line_starts[idx]
+      if line_start_pos >= link_end then break end
       local wline_end = line_start_pos + #wline
 
       if #wline > 0 and link_end > line_start_pos and link_start < wline_end then
         local local_start = math.max(0, link_start - line_start_pos)
         local local_end = math.min(#wline, link_end - line_start_pos)
+        local lm_len = idx == 1 and list_prefix_len or list_cont_len
+        local entries = per_line[idx] or {}
         table.insert(entries, {
           line = base_line + idx - 1,
-          col_start = local_start + #line_prefix,
-          col_end = local_end + #line_prefix,
+          col_start = local_start + prefix_len + lm_len,
+          col_end = local_end + prefix_len + lm_len,
           url = link.url,
         })
+        per_line[idx] = entries
       end
     end
+  end
+  local entries = {}
+  for idx = 1, #wrapped_lines do
+    if per_line[idx] then vim.list_extend(entries, per_line[idx]) end
   end
   return entries
 end
@@ -1143,8 +1157,37 @@ end
 
 -- Display readers consume the same complete tokens as the inline scanner.
 -- Raw-text elements own their payload even inside another accepted HTML block.
-local function html_structure_tags(text, state, owned_ranges)
+local function html_literal_owned(ranges, pos)
+  local first, last = 1, ranges and #ranges or 0
+  while first <= last do
+    local mid = math.floor((first + last) / 2)
+    if ranges[mid].start <= pos then
+      first = mid + 1
+    else
+      last = mid - 1
+    end
+  end
+  local range = ranges and ranges[last]
+  return range and pos <= range.finish and range or nil
+end
+
+local function html_literal_slice(ranges, first, last)
+  if not ranges then return nil end
+  local sliced = {}
+  for _, range in ipairs(ranges) do
+    if range.finish >= first and (not last or range.start <= last) then
+      sliced[#sliced + 1] = {
+        start = math.max(first, range.start) - first + 1,
+        finish = math.min(last or range.finish, range.finish) - first + 1,
+      }
+    end
+  end
+  return sliced
+end
+
+local function html_structure_tags(text, state, owned_ranges, literal_ranges)
   state = state or {}
+  local failed_html = {}
   local pos, owner_index, lower = 1, 1, nil
   return function()
     while pos <= #text do
@@ -1152,7 +1195,7 @@ local function html_structure_tags(text, state, owned_ranges)
         lower = lower or text:lower()
         local first = lower:find("</" .. state.raw_tag, pos, true)
         while first do
-          local last = inline.html_end(text, first)
+          local last = inline.html_end(text, first, failed_html)
           local token = last and text:sub(first, last)
           if token and inline.html_name(token) == state.raw_tag then
             pos, state.raw_tag = last + 1, nil
@@ -1162,7 +1205,7 @@ local function html_structure_tags(text, state, owned_ranges)
         end
         return
       else
-        local first, last, token = inline.html_tags(text, pos)()
+        local first, last, token = inline.html_tags(text, pos, failed_html)()
         if not first then return end
         pos = last + 1
         while owned_ranges and owned_ranges[owner_index] and owned_ranges[owner_index].finish < first do
@@ -1175,7 +1218,11 @@ local function html_structure_tags(text, state, owned_ranges)
             escape_start = escape_start - 1
           end
         end
-        if not (owner and owner.start < first) and (first - escape_start) % 2 == 0 then
+        if
+          not (owner and owner.start < first)
+          and not html_literal_owned(literal_ranges, first)
+          and (first - escape_start) % 2 == 0
+        then
           if not owned_ranges and html_block.start(token, false) == 1 then state.raw_tag = inline.html_name(token) end
           return first, last, token
         end
@@ -1187,25 +1234,44 @@ end
 local function html_opening(text, name)
   local first = text:lower():match("^%s*()<" .. name .. "[%s/>]")
   local last = first and inline.html_end(text, first)
-  if last then return text:sub(first, last), text:sub(last + 1) end
+  if last then return text:sub(first, last), text:sub(last + 1), first end
 end
 
-local function html_pair(text, name)
-  local tag, rest = html_opening(text, name)
-  if not tag then return end
-  local first, last = inline.html_closing(rest, inline.html_name(tag))
-  if first then return rest:sub(1, first - 1), rest:sub(last + 1), tag end
+local function html_display_closing(text, name, start, literal_ranges)
+  local first, last = inline.html_closing(text, name, start)
+  local owner = first and html_literal_owned(literal_ranges, first)
+  while owner do
+    first, last = inline.html_closing(text, name, owner.finish + 1)
+    owner = first and html_literal_owned(literal_ranges, first)
+  end
+  return first, last
 end
 
-local function html_breaks(text)
-  local parts, pos = {}, 1
+local function html_pair(text, name, literal_ranges)
+  local tag, rest, opening = html_opening(text, name)
+  if not tag or html_literal_owned(literal_ranges, opening) then return end
+  local content_first = #text - #rest + 1
+  local first, last = html_display_closing(text, inline.html_name(tag), content_first, literal_ranges)
+  if first then return text:sub(content_first, first - 1), text:sub(last + 1), tag, content_first end
+end
+
+local function html_breaks(text, literal_ranges)
+  local parts, starts, pos = {}, {}, 1
   for first, last, token in inline.html_tags(text) do
-    if token:lower():match "^<br%s*/?>$" then
+    if token:lower():match "^<br%s*/?>$" and not html_literal_owned(literal_ranges, first) then
+      starts[#starts + 1] = pos
       parts[#parts + 1], pos = text:sub(pos, first - 1), last + 1
     end
   end
+  starts[#starts + 1] = pos
   parts[#parts + 1] = text:sub(pos)
-  return parts
+  return parts, starts
+end
+
+local function html_trim(text, literal_ranges)
+  local first = html_literal_owned(literal_ranges, 1) and 1 or text:match "^%s*()"
+  local last = html_literal_owned(literal_ranges, #text) and #text or text:match "()%s*$" - 1
+  return text:sub(first, last), html_literal_slice(literal_ranges, first, last)
 end
 
 local function table_depth_change(text)
@@ -1225,22 +1291,28 @@ end
 --- A nil result means a wrapper-only line with no display content.
 ---@param line string
 ---@return string?
-local function unwrap_html_wrapper(line)
+local function unwrap_html_wrapper(line, literal_ranges)
+  local offset = 0
   for _, name in ipairs { "div", "span" } do
-    if line:lower():match("^%s*</" .. name .. ">%s*$") then return nil end
-    local tag, rest = html_opening(line, name)
-    if tag and tag:sub(-2) ~= "/>" then
+    local closing = line:lower():match("^%s*()</" .. name .. ">%s*$")
+    if closing and not html_literal_owned(literal_ranges, offset + closing) then return nil end
+    local tag, rest, opening = html_opening(line, name)
+    if tag and tag:sub(-2) ~= "/>" and not html_literal_owned(literal_ranges, offset + opening) then
       if rest:match "^%s*$" then return nil end
       local first, last = inline.html_closing(rest, name)
-      if first and rest:sub(last + 1):match "^%s*$" then
-        local inner = rest:sub(1, first - 1):match "^%s*(.-)%s*$"
-        if inner:match "%S" then line = inner end
+      local body_offset = offset + #line - #rest
+      if first and not html_literal_owned(literal_ranges, body_offset + first) and rest:sub(last + 1):match "^%s*$" then
+        local gap, inner = rest:sub(1, first - 1):match "^(%s*)(.-)%s*$"
+        if inner:match "%S" then
+          line, offset = inner, body_offset + #gap
+        end
       elseif not first then
+        offset = body_offset + #rest:match "^%s*"
         line = rest:gsub("^%s+", "")
       end
     end
   end
-  return line
+  return line, offset
 end
 
 --- A standalone image tag consumes its quoted attributes as one token.
@@ -2649,6 +2721,29 @@ local function mark_html_token_rows(lines, source_origins, list_bases)
     end
   end
   for _, group in pairs(groups) do
+    local html = table.concat(group.lines, "\n")
+    local literal_ranges = Markdown.html_literal_ranges(html, true)
+    local literal_index, literal_offset = 1, 1
+    for row, line in ipairs(group.lines) do
+      local finish = literal_offset + #line
+      local ranges = {}
+      while literal_ranges[literal_index] and literal_ranges[literal_index].finish < literal_offset do
+        literal_index = literal_index + 1
+      end
+      local index = literal_index
+      while literal_ranges[index] and literal_ranges[index].start <= finish do
+        local range = literal_ranges[index]
+        ranges[#ranges + 1] = {
+          start = math.max(literal_offset, range.start) - literal_offset + 1,
+          finish = math.min(finish, range.finish) - literal_offset + 1,
+        }
+        if range.finish > finish then break end
+        index = index + 1
+      end
+      literal_index = index
+      source_origins[group.sources[row]].html_literal_ranges = #ranges > 0 and ranges or nil
+      literal_offset = finish + 1
+    end
     local kind = html_block.start(group.lines[1], false)
     -- Types 1–5 have their own literal closing-line and suffix contract.
     if kind and kind >= 6 then
@@ -2659,7 +2754,7 @@ local function mark_html_token_rows(lines, source_origins, list_bases)
         source_origins[group.sources[row]].html_summary_end = false
       end
       local row, details_closers, multiline_raw = 1, {}, false
-      for first, last, token in html_structure_tags(table.concat(group.lines, "\n")) do
+      for first, last, token in html_structure_tags(html, nil, nil, literal_ranges) do
         while starts[row + 1] and starts[row + 1] <= first do
           row = row + 1
         end
@@ -2799,8 +2894,11 @@ function ContentBuilder:render_document(lines, opts)
       end
       group.blanks[#group.lines + 1] = line:match "^[ \t]*$" ~= nil
       if not origin.html_token_continuation then
-        line = unwrap_html_wrapper(line) or ""
-        local p_content, p_rest = html_pair(line, "p")
+        local offset
+        line, offset = unwrap_html_wrapper(line, origin.html_literal_ranges)
+        line = line or ""
+        local p_content, p_rest =
+          html_pair(line, "p", html_literal_slice(origin.html_literal_ranges, (offset or 0) + 1))
         if p_content and line:lower():match "^%s*<p[%s>]" and p_rest:match "^%s*$" then
           line = p_content:match "^%s*(.-)%s*$"
         end
@@ -2811,24 +2909,32 @@ function ContentBuilder:render_document(lines, opts)
   end
   for _, group in pairs(html_groups) do
     local html = table.concat(group.lines, "\n")
+    local literal_ranges = markdown.html_literal_ranges(html, true)
+    local html_closing = inline.html_closing_index(html)
     local source_starts, source_offset = {}, 1
     for row, line in ipairs(group.lines) do
       source_starts[row], source_offset = source_offset, source_offset + #line + 1
     end
     local index = 1
     while index <= #group.lines do
-      local tag, first = html_opening(group.lines[index], "h[1-6]")
+      local tag, first, opening = html_opening(group.lines[index], "h[1-6]")
       local level = tag and tag:lower():match "^<h([1-6])"
       -- Quoted headings use readable raw rows rather than the heading display path.
       local origin = source_origins[group.sources[index]]
       if
         level
+        and not html_literal_owned(literal_ranges, source_starts[index] + opening - 1)
         and #origin.quote_columns == 0
         and not origin.html_token_continuation
         and not origin.html_details_fallback
       then
         local body_start = source_starts[index] + #group.lines[index] - #first
-        local close_first, close_last = inline.html_closing(html, "h" .. level, body_start)
+        local close_first, close_last = html_closing("h" .. level, body_start)
+        local owner = close_first and html_literal_owned(literal_ranges, close_first)
+        while owner do
+          close_first, close_last = html_closing("h" .. level, owner.finish + 1)
+          owner = close_first and html_literal_owned(literal_ranges, close_first)
+        end
         if close_first then
           local last = index
           while source_starts[last + 1] and source_starts[last + 1] <= close_last do
@@ -3133,12 +3239,13 @@ function ContentBuilder:render_document(lines, opts)
 
   -- A complete details element can share a physical row with its body and
   -- following text. Render each fragment under that row's existing owner.
-  local function render_details_fragment(text, indent, max_width, body, raw_html)
+  local function render_details_fragment(text, indent, max_width, body, raw_html, literal_ranges)
     if not text:match "%S" then return end
     local before = #self.lines
     local width = body and math.max(1, max_width - vim.fn.strdisplaywidth "│ ") or max_width
     self:add_markdown_line(text, indent, width, repo_base_url, autolinks, ref_links, footnote_map, nil, {
       raw_html = raw_html,
+      literal_html_ranges = literal_ranges,
     })
     if body then apply_details_body_prefix(before, #self.lines) end
     lines_shown = lines_shown + #self.lines - before
@@ -3528,6 +3635,10 @@ function ContentBuilder:render_document(lines, opts)
       quoted_content = strip_container_prefix(quoted_content, origin.list_column, quote_column)
       line = string.rep("> ", quote_depth) .. quoted_content
     end
+    local literal_ranges = origin.html_literal_ranges
+    local html_payload = origin.html and html_source_line(line, origin, src_indices[src_idx], list_bases)
+    local literal_html = html_literal_owned(literal_ranges, (html_payload or line):match "^%s*()") ~= nil
+    if html_payload then literal_ranges = html_literal_slice(literal_ranges, 1 - (#line - #html_payload)) end
     if
       in_code_block
       and (origin.code == false or origin.code_opener or container_indent ~= code_container_indent)
@@ -3630,7 +3741,7 @@ function ContentBuilder:render_document(lines, opts)
     -- Consume comment-owned lines before definitions, tags, and Setext headings
     -- can reinterpret them. Only the closing line may contain visible text.
     local comment = comments[src_indices[src_idx]]
-    if comment and not in_code_block and not in_callout_code_block then
+    if comment and not literal_html and not in_code_block and not in_callout_code_block then
       local comment_suffix = comment.suffix
       if not skip_details_body and comment_suffix:match "%S" then
         flush_table()
@@ -3725,13 +3836,18 @@ function ContentBuilder:render_document(lines, opts)
     end
 
     -- Strip wrapper tags before ordinary block processing.
-    local display_html = not in_code_block
+    local structure_html = not in_code_block
       and not in_callout_code_block
       and not origin.html_token_continuation
       and not origin.html_details_fallback
+    local display_html = structure_html and not literal_html
     if display_html then
-      line = unwrap_html_wrapper(line)
+      local offset
+      line, offset = unwrap_html_wrapper(line, literal_ranges)
       if not line then goto continue end
+      literal_ranges = html_literal_slice(literal_ranges, offset + 1)
+      literal_html = html_literal_owned(literal_ranges, line:match "^%s*()") ~= nil
+      display_html = not literal_html
     end
 
     local setext_rank = not in_code_block
@@ -3745,7 +3861,7 @@ function ContentBuilder:render_document(lines, opts)
     local html_heading_level, html_heading_source
     if display_html then
       local heading = line:lower():match "^%s*<h[1-6]" and html_headings[src_indices[src_idx]]
-      local h_content, h_rest, h_tag = html_pair(line, "h[1-6]")
+      local h_content, h_rest, h_tag = html_pair(line, "h[1-6]", literal_ranges)
       local h_level = h_tag and h_rest:match "^%s*$" and h_tag:lower():match "^<h([1-6])"
       if heading then
         h_level, h_content = heading.level, heading.content
@@ -3754,9 +3870,10 @@ function ContentBuilder:render_document(lines, opts)
         html_heading_level = tonumber(h_level)
         html_heading_source = h_content
         local heading_parts, image_tags, pos = {}, {}, 1
+        local heading_literals = markdown.html_literal_ranges(h_content, true)
         for first, last, token in inline.html_tags(h_content) do
           heading_parts[#heading_parts + 1] = h_content:sub(pos, first - 1)
-          if token:lower():match "^<img%s" then
+          if token:lower():match "^<img%s" and not html_literal_owned(heading_literals, first) then
             image_tags[#image_tags + 1] = token
           else
             heading_parts[#heading_parts + 1] = token
@@ -3793,10 +3910,10 @@ function ContentBuilder:render_document(lines, opts)
       and (html_heading_level ~= nil or (not origin.html and (setext_rank ~= nil or atx_level ~= nil)))
 
     -- Handle <details>/<summary> HTML blocks (outside code blocks)
-    if display_html or in_details_summary then
+    if structure_html or in_details_summary then
       local detail_tokens = {}
       local owned_ranges = not origin.html and inline.standard_ranges(line, ref_links) or nil
-      for first, last, token in html_structure_tags(line, details_raw_state, owned_ranges) do
+      for first, last, token in html_structure_tags(line, details_raw_state, owned_ranges, literal_ranges) do
         local name, closing = inline.html_name(token)
         if name == "details" then
           detail_tokens[#detail_tokens + 1] = { first = first, last = last, closing = closing }
@@ -3811,7 +3928,7 @@ function ContentBuilder:render_document(lines, opts)
       -- A real closing tag can follow body text or another nested fold on the
       -- same row. Find the enclosing fold's end before applying collapsed-body
       -- skipping, so its suffix always returns to the surrounding document.
-      if in_details and display_html and not origin.html_token_open then
+      if in_details and structure_html and not origin.html_token_open then
         details_tokens_counted = true
         local depth, saw_closing, closing_first, closing_last = details_depth, false
         for _, token in ipairs(detail_tokens) do
@@ -3831,20 +3948,41 @@ function ContentBuilder:render_document(lines, opts)
           if in_details_summary then
             table.insert(details_summary_parts, body)
             local summary = table.concat(details_summary_parts, "\n")
-            local first, last = inline.html_closing(summary, "summary")
+            local summary_literals = markdown.html_literal_ranges(summary, true)
+            local first, last = html_display_closing(summary, "summary", 1, summary_literals)
             body = last and summary:sub(last + 1) or ""
             details_summary_parts = { first and summary:sub(1, first - 1) or summary }
             finish_details_summary(src_indices[src_idx])
           elseif not details_summary_rendered then
-            local summary, rest = html_pair(body, "summary")
+            local summary, rest = html_pair(body, "summary", literal_ranges)
             render_details_summary(summary or "Details", origin.html ~= nil)
             body = rest or body
           end
-          if not skip_details_body then render_details_fragment(body, indent, max_width, true, origin.html ~= nil) end
+          if not skip_details_body then
+            render_details_fragment(
+              body,
+              indent,
+              max_width,
+              true,
+              origin.html ~= nil,
+              html_literal_slice(
+                literal_ranges,
+                (closing_first or #line + 1) - #body,
+                closing_first and closing_first - 1
+              )
+            )
+          end
           if closing_first then
             in_details, skip_details_body, details_summary_rendered = false, false, false
             details_src_idx = nil
-            render_details_fragment(line:sub(closing_last + 1), indent, max_width, false, origin.html ~= nil)
+            render_details_fragment(
+              line:sub(closing_last + 1),
+              indent,
+              max_width,
+              false,
+              origin.html ~= nil,
+              html_literal_slice(literal_ranges, closing_last + 1)
+            )
           else
             details_depth = depth
           end
@@ -3872,15 +4010,31 @@ function ContentBuilder:render_document(lines, opts)
       if close_first then
         flush_table()
         local inner = details_tail:sub(1, close_first - 1)
-        local summary, body = html_pair(inner, "summary")
+        local tail_first = #line - #details_tail + 1
+        local inner_literals = html_literal_slice(literal_ranges, tail_first, tail_first + #inner - 1)
+        local summary, body = html_pair(inner, "summary", inner_literals)
         details_src_idx = src_indices[src_idx]
         details_default_open = inline.html_attribute(inline_details, "open") ~= nil
         render_details_summary(summary or "Details", origin.html ~= nil)
         if not skip_details_body then
-          render_details_fragment(body or inner, indent, max_width, true, origin.html ~= nil)
+          render_details_fragment(
+            body or inner,
+            indent,
+            max_width,
+            true,
+            origin.html ~= nil,
+            html_literal_slice(inner_literals, #inner - #(body or inner) + 1)
+          )
         end
         skip_details_body, details_summary_rendered, details_src_idx = false, false, nil
-        render_details_fragment(details_tail:sub(close_last + 1), indent, max_width, false, origin.html ~= nil)
+        render_details_fragment(
+          details_tail:sub(close_last + 1),
+          indent,
+          max_width,
+          false,
+          origin.html ~= nil,
+          html_literal_slice(literal_ranges, tail_first + close_last)
+        )
         goto continue
       end
       -- Handle </details> end tag
@@ -3903,7 +4057,14 @@ function ContentBuilder:render_document(lines, opts)
           end
         end
         if not skip_details_body then
-          render_details_fragment(line:sub(closing_last + 1), indent, max_width, in_details, origin.html ~= nil)
+          render_details_fragment(
+            line:sub(closing_last + 1),
+            indent,
+            max_width,
+            in_details,
+            origin.html ~= nil,
+            html_literal_slice(literal_ranges, closing_last + 1)
+          )
         end
         goto continue
       end
@@ -3918,7 +4079,7 @@ function ContentBuilder:render_document(lines, opts)
       if details_tag then
         if in_details then
           if not details_tokens_counted then details_depth = details_depth + 1 end
-          render_details_fragment(line, indent, max_width, true, origin.html ~= nil)
+          render_details_fragment(line, indent, max_width, true, origin.html ~= nil, literal_ranges)
           goto continue
         end
         in_details = true
@@ -3937,23 +4098,30 @@ function ContentBuilder:render_document(lines, opts)
 
         -- Check for inline <summary>...</summary>
         local found_summary = false
-        for first, _, token in html_structure_tags(details_rest) do
+        local rest_literals = html_literal_slice(literal_ranges, #line - #details_rest + 1)
+        for first, _, token in html_structure_tags(details_rest, nil, nil, rest_literals) do
           local name, closing = inline.html_name(token)
           if name == "summary" and not closing then
             found_summary = true
             local s, summary_rest
             if origin.html_summary_end ~= false then
-              s, summary_rest = html_pair(details_rest:sub(first), "summary")
+              s, summary_rest = html_pair(details_rest:sub(first), "summary", html_literal_slice(rest_literals, first))
             end
             if s then
               render_details_summary(s ~= "" and s or "Details", origin.html ~= nil)
               if not skip_details_body then
+                local body_literals = html_literal_slice(rest_literals, 1, first - 1)
+                local suffix_literals = html_literal_slice(rest_literals, #details_rest - #summary_rest + 1)
+                for _, range in ipairs(html_literal_slice(suffix_literals, 2 - first) or {}) do
+                  body_literals[#body_literals + 1] = range
+                end
                 render_details_fragment(
                   details_rest:sub(1, first - 1) .. summary_rest,
                   indent,
                   max_width,
                   true,
-                  origin.html ~= nil
+                  origin.html ~= nil,
+                  body_literals
                 )
               end
             else
@@ -3967,7 +4135,7 @@ function ContentBuilder:render_document(lines, opts)
         if not found_summary and details_rest:match "%S" then
           render_details_summary("Details", origin.html ~= nil)
           if not skip_details_body then
-            render_details_fragment(details_rest, indent, max_width, true, origin.html ~= nil)
+            render_details_fragment(details_rest, indent, max_width, true, origin.html ~= nil, rest_literals)
           end
         end
         goto continue
@@ -3981,13 +4149,21 @@ function ContentBuilder:render_document(lines, opts)
           -- Only the full accepted source can identify a real closing row.
           if origin.html_summary_end ~= false then
             local text = table.concat(details_summary_parts, "\n")
-            local first, last = inline.html_closing(text, "summary")
+            local summary_literals = markdown.html_literal_ranges(text, true)
+            local first, last = html_display_closing(text, "summary", 1, summary_literals)
             if first then
               local body = text:sub(1, first - 1):gsub("\n$", "")
               details_summary_parts = vim.split(body, "\n", { plain = true })
               finish_details_summary(src_indices[src_idx])
               if not skip_details_body then
-                render_details_fragment(text:sub(last + 1), indent, max_width, true, origin.html ~= nil)
+                render_details_fragment(
+                  text:sub(last + 1),
+                  indent,
+                  max_width,
+                  true,
+                  origin.html ~= nil,
+                  html_literal_slice(summary_literals, last + 1)
+                )
               end
               goto continue
             end
@@ -3998,19 +4174,26 @@ function ContentBuilder:render_document(lines, opts)
         -- Single-line <summary>text</summary>
         local s, summary_rest
         if origin.html_summary_end ~= false then
-          s, summary_rest = html_pair(line, "summary")
+          s, summary_rest = html_pair(line, "summary", literal_ranges)
         end
         if s then
           render_details_summary(s ~= "" and s or "Details", origin.html ~= nil)
           if not skip_details_body then
-            render_details_fragment(summary_rest, indent, max_width, true, origin.html ~= nil)
+            render_details_fragment(
+              summary_rest,
+              indent,
+              max_width,
+              true,
+              origin.html ~= nil,
+              html_literal_slice(literal_ranges, #line - #summary_rest + 1)
+            )
           end
           goto continue
         end
 
         -- Multi-line <summary> start
-        local _, start_text = html_opening(line, "summary")
-        if start_text then
+        local _, start_text, opening = html_opening(line, "summary")
+        if start_text and not html_literal_owned(literal_ranges, opening) then
           in_details_summary = true
           details_summary_parts = {}
           details_summary_owner, details_summary_src = origin.html, src_indices[src_idx]
@@ -4041,7 +4224,7 @@ function ContentBuilder:render_document(lines, opts)
         -- Extract <figcaption> content for rendering when </figure> is reached
         local cap, cap_rest
         if line:lower():match "^%s*<figcaption>" then
-          cap, cap_rest = html_pair(line, "figcaption")
+          cap, cap_rest = html_pair(line, "figcaption", literal_ranges)
         end
         if cap_rest and not cap_rest:match "^%s*$" then cap = nil end
         if cap and cap:match "%S" then
@@ -4078,7 +4261,7 @@ function ContentBuilder:render_document(lines, opts)
         goto continue
       end
       -- Single-line <p>...</p>: extract inner content and process it
-      local p_inner, p_after = html_pair(line, "p")
+      local p_inner, p_after = html_pair(line, "p", literal_ranges)
       if p_inner and line:lower():match "^%s*<p[%s>]" and p_after:match "^%s*$" and p_inner:match "%S" then
         line = p_inner:match "^%s*(.-)%s*$" -- Fall through with extracted content
       end
@@ -4099,23 +4282,32 @@ function ContentBuilder:render_document(lines, opts)
         -- Parse <dt> and <dd> elements from the line
         -- A line may contain <dt>term</dt><dd>description patterns
         flush_table()
-        local rest = line
+        local rest, rest_literals = line, literal_ranges
+        local function advance_rest(next_rest)
+          rest_literals = html_literal_slice(rest_literals, #rest - #next_rest + 1)
+          local trimmed = html_literal_owned(rest_literals, 1) and next_rest or next_rest:gsub("^%s+", "")
+          rest_literals = html_literal_slice(rest_literals, #next_rest - #trimmed + 1)
+          rest = trimmed
+        end
         -- Strip standalone <dl> opening if present
         local _, dl_rest = html_opening(rest, "dl")
-        if dl_rest then rest = dl_rest:gsub("^%s*", "") end
+        if dl_rest then advance_rest(dl_rest) end
         if rest:match "^%s*$" then goto continue end
         while rest and rest ~= "" do
           -- Try to match <dt>...</dt> or <dt>...
-          local dt_content, dt_rest
+          local dt_content, dt_rest, _, dt_first
           if rest:lower():match "^%s*<dt>" then
-            dt_content, dt_rest = html_pair(rest, "dt")
+            dt_content, dt_rest, _, dt_first = html_pair(rest, "dt", rest_literals)
           end
           if dt_content then
-            rest = dt_rest:gsub("^%s+", "")
+            local dt_literals = html_literal_slice(rest_literals, dt_first, dt_first + #dt_content - 1)
+            advance_rest(dt_rest)
             -- Split on <br> / <br/> / <br /> and render each segment
             local dt_lines_before = #self.lines
-            for _, seg in ipairs(html_breaks(dt_content)) do
-              seg = seg:gsub("^%s+", ""):gsub("%s+$", "")
+            local parts, starts = html_breaks(dt_content, dt_literals)
+            for index, seg in ipairs(parts) do
+              local seg_literals = html_literal_slice(dt_literals, starts[index], starts[index] + #seg - 1)
+              seg, seg_literals = html_trim(seg, seg_literals)
               if seg ~= "" then
                 local dt_rendered, dt_hls, dt_links = markdown.render(
                   seg,
@@ -4124,7 +4316,7 @@ function ContentBuilder:render_document(lines, opts)
                   ref_links,
                   nil,
                   true,
-                  { raw_html = origin.html ~= nil }
+                  { raw_html = origin.html ~= nil, literal_html_ranges = seg_literals }
                 )
                 table.insert(dt_hls, { col = 0, end_col = #dt_rendered, hl = "Bold" })
                 self:add_simple_markdown(dt_rendered, dt_hls, dt_links, indent)
@@ -4136,23 +4328,30 @@ function ContentBuilder:render_document(lines, opts)
             lines_shown = lines_shown + (#self.lines - dt_lines_before)
           end
           -- Try to match <dd>...</dd> or <dd>... (may not have closing tag)
-          local dd_content, dd_rest
+          local dd_content, dd_rest, _, dd_first, dd_literals
           if rest:lower():match "^%s*<dd>" then
-            dd_content, dd_rest = html_pair(rest, "dd")
+            dd_content, dd_rest, _, dd_first = html_pair(rest, "dd", rest_literals)
           end
           if dd_content then
-            rest = dd_rest:gsub("^%s+", "")
+            dd_literals = html_literal_slice(rest_literals, dd_first, dd_first + #dd_content - 1)
+            advance_rest(dd_rest)
           else
-            dd_content = select(2, html_opening(rest, "dd"))
-            if dd_content then rest = "" end
+            local _, content, opening = html_opening(rest, "dd")
+            if content and not html_literal_owned(rest_literals, opening) then
+              dd_content = content
+              dd_literals = html_literal_slice(rest_literals, #rest - #content + 1)
+              advance_rest ""
+            end
           end
           if dd_content and dd_content ~= "" then
             local dd_indent = indent .. "  "
             local dd_width = math.max(1, base_max_width - vim.api.nvim_strwidth(dd_indent))
             local dd_lines_before = #self.lines
             -- Split on <br> / <br/> / <br /> and render each segment
-            for _, seg in ipairs(html_breaks(dd_content)) do
-              seg = seg:gsub("^%s+", ""):gsub("%s+$", "")
+            local parts, starts = html_breaks(dd_content, dd_literals)
+            for index, seg in ipairs(parts) do
+              local seg_literals = html_literal_slice(dd_literals, starts[index], starts[index] + #seg - 1)
+              seg, seg_literals = html_trim(seg, seg_literals)
               if seg ~= "" then
                 local dd_rendered, dd_hls, dd_links = markdown.render(
                   seg,
@@ -4161,7 +4360,7 @@ function ContentBuilder:render_document(lines, opts)
                   ref_links,
                   nil,
                   true,
-                  { raw_html = origin.html ~= nil }
+                  { raw_html = origin.html ~= nil, literal_html_ranges = seg_literals }
                 )
                 if vim.api.nvim_strwidth(dd_rendered) > dd_width then
                   self:add_wrapped_markdown(dd_rendered, dd_hls, dd_links, dd_indent, dd_width, "")
@@ -4180,6 +4379,7 @@ function ContentBuilder:render_document(lines, opts)
             local before = #self.lines
             self:add_markdown_line(rest, indent, base_max_width, repo_base_url, autolinks, ref_links, nil, nil, {
               raw_html = origin.html ~= nil,
+              literal_html_ranges = rest_literals,
             })
             if in_details and details_summary_rendered then apply_details_body_prefix(before, #self.lines) end
             lines_shown = lines_shown + #self.lines - before
@@ -4325,7 +4525,8 @@ function ContentBuilder:render_document(lines, opts)
 
     -- Handle markdown thematic breaks (---, ***, ___, etc.)
     if
-      origin.html_token_continuation
+      literal_html
+      or origin.html_token_continuation
       or (origin.html and not html_image_tag(line) and not line:lower():match "^%s*<video[%s>].-</video>%s*$")
     then
       if prev_was_hr and not is_blank then

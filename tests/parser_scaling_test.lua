@@ -30,6 +30,122 @@ local function bounded(source, expected, expected_link, budget)
   return instructions
 end
 
+-- Lua instruction hooks cannot see C string searches or suffix copies. Count their byte ranges,
+-- including failed comment candidates and redundant quantifier backtracking.
+local function native_measured(render, source_bytes)
+  local find, match, gsub, sub = string.find, string.match, string.gsub, string.sub
+  local bytes = 0
+  local delimiters = { [">"] = true, ["-->"] = true, ["?>"] = true, ["]]>"] = true, ['"'] = true, ["'"] = true }
+  local comment = "<!%-%-.-%-%->"
+  local old_comment = "<!%-%-.-%-*%-%->"
+  local function charge(count)
+    bytes = bytes + math.max(0, count)
+    assert(bytes <= 64 * source_bytes, "paragraph exceeded its native string-work byte budget")
+  end
+  local function comment_work(text, first, redundant)
+    local _, finish = find(text, "-->", first + 4, true)
+    charge((finish or #text) - first - 3)
+    if redundant and finish then
+      for run, tail in text:sub(first + 4, finish - 3):gmatch "(%-+)([^%-])" do
+        if tail ~= ">" then charge(#run * (#run + 1) / 2) end
+      end
+    end
+    return finish
+  end
+  string.find = function(text, pattern, first, plain)
+    first = first or 1
+    if pattern == "^" .. old_comment and match(text, "^<!%-%-", first) then comment_work(text, first, true) end
+    local a, b = find(text, pattern, first, plain)
+    if plain and delimiters[pattern] or pattern == "[<>%z\1-\32\127]" then charge((b or #text) - first + 1) end
+    return a, b
+  end
+  string.match = function(text, pattern, first)
+    first = first or 1
+    if pattern == "^.*()%-%->" then
+      charge(#text - first + 1)
+    elseif pattern == "^<![A-Za-z]+[^>]*>()" then
+      local name_end = match(text, "^<![A-Za-z]+()", first)
+      if name_end then
+        local finish = find(text, ">", first + 3, true)
+        charge((finish or #text) - first + 1)
+        if not finish then charge((name_end - first - 2) ^ 2 / 2) end
+      end
+    end
+    return match(text, pattern, first)
+  end
+  string.gsub = function(text, pattern, replace, limit)
+    if pattern == comment or pattern == old_comment then
+      local pos = 1
+      while pos <= #text do
+        local first = find(text, "<!--", pos, true)
+        if not first then break end
+        local finish = comment_work(text, first, pattern == old_comment)
+        pos = finish and finish + 1 or first + 1
+      end
+    end
+    return gsub(text, pattern, replace, limit)
+  end
+  string.sub = function(text, first, last)
+    local result = sub(text, first, last)
+    if not last and first > 1 then charge(#result) end
+    return result
+  end
+  local result = { pcall(render) }
+  string.find, string.match, string.gsub, string.sub = find, match, gsub, sub
+  assert(result[1], result[2])
+  return bytes, unpack(result, 2)
+end
+
+for _, source in ipairs {
+  string.rep("<!--", 8000),
+  string.rep("<?", 8000),
+  string.rep("<![CDATA[", 3000),
+  string.rep("<!D", 8000),
+  "<!" .. string.rep("D", 8000),
+} do
+  for _, render in ipairs { markdown.render, markdown.render_html, inline.hide_html_comments } do
+    local _, text = native_measured(function()
+      return render(source)
+    end, #source)
+    assert(text == source, "unmatched HTML remains readable under the native work budget")
+  end
+  native_measured(function()
+    return inline.scan(source)
+  end, #source)
+end
+
+for _, render in ipairs { markdown.render, markdown.render_html } do
+  local flat = string.rep("<b>中</b>", 4000)
+  local _, rendered = native_measured(function()
+    return render(flat)
+  end, #flat)
+  assert(rendered == string.rep("中", 4000), "large flat HTML avoids repeated suffix copies")
+  local source = "前<!--" .. string.rep("-", 8000) .. "x-->後"
+  local _, text = native_measured(function()
+    return render(source)
+  end, #source)
+  assert(text == "前後", "long paired comment retains its original closing semantics")
+  local unmatched = string.rep("<!--", 8000)
+  source = unmatched .. ' <b>後</b> <a href="after.md">正常</a>'
+  local _, following, _, links = native_measured(function()
+    return render(source)
+  end, #source)
+  assert(following == unmatched .. " 後 正常", "native search fallback cannot suppress later HTML")
+  assert(
+    #links == 1 and links[1].url == "after.md" and following:sub(links[1].col_start + 1, links[1].col_end) == "正常",
+    "native search fallback preserves later UTF-8 links"
+  )
+end
+for _, case in ipairs {
+  { "前<!-->尾", "前<!-->尾", "前尾" },
+  { "前<!--->尾", "前<!--->尾", "前尾" },
+  { "前<!-->隱藏--><!--正常-->尾", "前尾", "前隱藏-->尾" },
+  { "前<!--->隱藏--><!--正常-->尾", "前尾", "前隱藏-->尾" },
+} do
+  assert(markdown.render(case[1]) == case[2], "normal comments retain short-form semantics")
+  assert(markdown.render_html(case[1]) == case[3], "raw comments retain short-form semantics")
+end
+
 local brackets = string.rep("[", 4000)
 bounded(brackets, brackets)
 bounded(brackets .. " www.example.com", brackets .. " www.example.com", "http://www.example.com")
@@ -298,6 +414,91 @@ assert(
   html_link and html_rows.source_line_map[html_link.line + 1] == 5,
   "multiline HTML fallback retains following link source row"
 )
+
+-- Document display readers share the raw HTML owner's literal boundary.
+-- A heading, fold, table or media row cannot reactivate its hidden children.
+local opening_html, closing_html = string.rep("<b>", depth_limit + 1), string.rep("</b>", depth_limit + 1)
+for _, middle in ipairs {
+  '<h1><a href="hidden.md">中</a></h1>',
+  '<details><summary><a href="hidden.md">中</a></summary>body</details>',
+  '<table><tr><th><a href="hidden.md">中</a></th></tr></table>',
+  '<img src="hidden.png" alt="中">',
+  '<video src="hidden.mp4"></video>',
+  '<div><a href="hidden.md">中</a></div>',
+  '<span><a href="hidden.md">中</a></span>',
+  '<p><a href="hidden.md">中</a></p>',
+  '<figure><figcaption><a href="hidden.md">中</a></figcaption></figure>',
+  '<dl><dt><a href="hidden.md">中</a></dt><dd>body</dd></dl>',
+  "<!--literal &amp; comment-->",
+} do
+  local content = following_content { "<div>", opening_html, middle, closing_html, "</div>" }
+  local found
+  for row, line in ipairs(content.lines) do
+    if line == middle then
+      assert(content.source_line_map[row] == 3, "literal display row keeps its physical source")
+      found = true
+    end
+  end
+  assert(found, "document HTML display must preserve each literal-owned element")
+  assert(#content.callout_folds == 0 and #content.image_placements == 0, "literal owners cannot open folds or media")
+  for _, link in ipairs(content.link_metadata) do
+    assert(
+      link.url ~= "hidden.md" and link.url ~= "hidden.png" and link.url ~= "hidden.mp4",
+      "literal target activated"
+    )
+  end
+end
+local inner_image = '<img src="hidden.png" alt="中">'
+local literal_image = opening_html .. inner_image .. closing_html
+local outer_heading = document { "<h1>前 " .. literal_image .. " 後</h1>" }
+assert(
+  outer_heading.lines[1] == "# 前 " .. literal_image .. " 後",
+  "normal outer heading retains its literal image child"
+)
+assert(
+  #outer_heading.image_placements == 0 and #outer_heading.link_metadata == 0,
+  "heading cannot extract literal media"
+)
+assert(next(outer_heading.heading_anchors) ~= nil, "normal outer heading keeps navigation")
+
+local sibling_html = '<a href="before.md">前</a> '
+  .. opening_html
+  .. '<a href="hidden.md">中</a>'
+  .. closing_html
+  .. ' <a href="after.md">後</a>'
+local siblings = document { "<div>", sibling_html, "</div>" }
+assert(#siblings.link_metadata == 2, "same-row normal HTML siblings remain active")
+for _, link in ipairs(siblings.link_metadata) do
+  local label = siblings.lines[link.line + 1]:sub(link.col_start + 1, link.col_end)
+  assert(label == (link.url == "before.md" and "前" or "後"), "same-row sibling UTF-8 position")
+  assert(siblings.source_line_map[link.line + 1] == 2, "same-row sibling source mapping")
+end
+local details_tail = "&amp;<!--literal-->" .. closing_html
+local details = document {
+  "<details open><summary>normal</summary>",
+  opening_html,
+  details_tail .. '</details><a href="after.md">後</a>',
+  '<a href="outside.md">尾</a>',
+  "",
+}
+local literal_tail, outside
+for row, line in ipairs(details.lines) do
+  if line:find(details_tail, 1, true) then
+    literal_tail = true
+    assert(details.source_line_map[row] == 3, "split details literal fragment keeps its source")
+  end
+  if line == "尾" then outside = true end
+end
+assert(literal_tail and outside, "literal details tail preserves spelling and closes its normal outer fold")
+assert(#details.link_metadata == 2, "normal details suffix and following row remain active")
+
+local unmatched_headings = { "<div>" }
+for _ = 1, 1000 do
+  unmatched_headings[#unmatched_headings + 1] = "<h1>"
+end
+unmatched_headings[#unmatched_headings + 1] = "</div>"
+following_content(unmatched_headings)
+
 local literal_quote =
   following_content { string.rep("> ", depth_limit + 1) .. "**中** [literal](must-stay-literal.md)" }
 assert(

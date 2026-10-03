@@ -663,6 +663,18 @@ local function render_mermaid_file(source, cmd_prefix, cache_path, run)
     vim.fn.delete(tmp_dir, "rf")
     return nil
   end
+  if cmd_prefix[1] == "npx" then
+    -- npm puts ancestor .bin directories before PATH, even with --prefix.
+    local prepared, isolated = pcall(function()
+      local node = vim.fn.exepath "node"
+      local bin = tmp_dir .. "/node_modules/.bin"
+      return node ~= "" and vim.fn.mkdir(bin, "p", 448) ~= 0 and uv.fs_symlink(node, bin .. "/node")
+    end)
+    if not prepared or not isolated then
+      vim.fn.delete(tmp_dir, "rf")
+      return nil
+    end
+  end
   local input = tmp_dir .. "/diagram.mmd"
   local f = io.open(input, "w")
   if not f then

@@ -650,11 +650,17 @@ local function curl_download(url, output, seconds, bytes)
   }, { text = true, timeout = seconds * 1000 + 1000 })
 end
 
---- Keep npm's project configuration and package resolution outside the viewed repository.
---- Installed mmdc retains the caller's working directory.
+--- Keep npm/Puppeteer project configuration outside the viewed repository.
 local function render_mermaid_file(source, cmd_prefix, cache_path, run)
   local tmp_dir = vim.fn.tempname()
   if vim.fn.mkdir(tmp_dir, "p", 448) == 0 then return nil end
+  -- Puppeteer searches ancestors for executable configuration. A private cwd
+  -- alone is insufficient when the temporary directory is inside a project.
+  local ok, written = pcall(vim.fn.writefile, { "{}" }, tmp_dir .. "/.puppeteerrc")
+  if not ok or written ~= 0 then
+    vim.fn.delete(tmp_dir, "rf")
+    return nil
+  end
   local input = tmp_dir .. "/diagram.mmd"
   local f = io.open(input, "w")
   if not f then
@@ -665,12 +671,11 @@ local function render_mermaid_file(source, cmd_prefix, cache_path, run)
   f:close()
   local path = render_diagram_file(cache_path, function(output)
     local cmd = build_mmdc_cmd(cmd_prefix, input, output)
-    local opts = { text = true, timeout = 30000 }
+    local opts = { text = true, timeout = 30000, cwd = tmp_dir }
     if cmd_prefix[1] == "npx" then
       -- cwd alone still lets npm discover a package.json/.npmrc in an ancestor.
       table.insert(cmd, 2, tmp_dir)
       table.insert(cmd, 2, "--prefix")
-      opts.cwd = tmp_dir
     end
     return run(cmd, opts)
   end)

@@ -3,7 +3,8 @@ package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/in
 
 local image = require "md-render.image"
 local uv = vim.uv or vim.loop
-local original = { system = vim.system, executable = vim.fn.executable, tempname = vim.fn.tempname }
+local original =
+  { system = vim.system, executable = vim.fn.executable, tempname = vim.fn.tempname, writefile = vim.fn.writefile }
 local root = vim.fn.tempname()
 vim.fn.mkdir(root .. "/project", "p")
 vim.fn.writefile({ '{"private":true}' }, root .. "/project/package.json")
@@ -32,9 +33,13 @@ vim.system = function(cmd, opts, callback)
     if arg == "-o" then output = cmd[i + 1] end
   end
   assert(vim.fn.filereadable(input) == 1)
+  assert(vim.fs.dirname(input) == opts.cwd and vim.fn.isdirectory(opts.cwd) == 1)
+  assert(
+    table.concat(vim.fn.readfile(opts.cwd .. "/.puppeteerrc"), "\n") == "{}",
+    "Puppeteer config search is not bounded"
+  )
   if cmd[1] == "npx" then
     assert(cmd[2] == "--prefix" and cmd[3] == opts.cwd)
-    assert(vim.fs.dirname(input) == opts.cwd and vim.fn.isdirectory(opts.cwd) == 1)
     assert(vim.tbl_contains(cmd, "@mermaid-js/mermaid-cli@12.0.0"))
     if npm ~= "" and python ~= "" then
       local query = {
@@ -60,7 +65,10 @@ vim.system = function(cmd, opts, callback)
       )
     end
   else
-    assert(cmd[1] == "mmdc" and opts.cwd == nil, "installed renderer keeps its existing cwd")
+    assert(
+      cmd[1] == "mmdc" and not vim.tbl_contains(cmd, "--prefix"),
+      "npm options must not reach the installed renderer"
+    )
   end
   assert(uv.fs_copyfile("tests/fixtures/test_4x4.png", output))
   jobs[#jobs + 1] = { callback = callback, input = input, output = output }
@@ -105,6 +113,17 @@ assert(vim.fn.isdirectory(vim.fs.dirname(jobs[4].input)) == 0, "failed async job
 fail, local_mmdc = false, true
 image.reset_cache()
 assert(image.render_mermaid "graph LR; E-->F")
+local before, denied_dir = calls, nil
+vim.fn.writefile = function(_, path)
+  denied_dir = vim.fs.dirname(path)
+  error "controlled Puppeteer sentinel write failure"
+end
+assert(image.render_mermaid "graph LR; F-->G" == nil)
+assert(
+  calls == before and denied_dir and vim.fn.isdirectory(denied_dir) == 0,
+  "failed config isolation launched a tool or leaked a job"
+)
+vim.fn.writefile = original.writefile
 vim.fn.delete(root, "rf")
 print(
   "Execution policy: npm opt-in, local precedence, isolated project context, and cleanup passed"

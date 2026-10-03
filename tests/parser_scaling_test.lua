@@ -3,6 +3,7 @@
 -- Growth benchmark: prefix the command with MD_RENDER_PARSER_BENCHMARK=1 (use timeout 30s).
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
 local markdown = require "md-render.markdown"
+local inline = require "md-render.inline"
 jit.off()
 
 local function measured(render, budget)
@@ -62,6 +63,19 @@ for _, tag in ipairs { "<b>", '<a href="u">', "<video>" } do
   local source = string.rep(tag, 4000) .. "中"
   bounded(source, source)
 end
+for _, body in ipairs { "中", '<source src="clip.mp4">' } do
+  local source = string.rep("<video>", 4000) .. body .. string.rep("</video>", 4000)
+  bounded(source, source)
+  local _, parsed = measured(function()
+    return inline.scan(source)
+  end)
+  assert(parsed.standard_ranges[1].link == (body ~= "中" and true or nil), "nested video source ownership")
+end
+local video = '<video><source src="outer.mp4"><video></video></video><source src="later.mp4">'
+local video_ranges = inline.scan(video).standard_ranges
+assert(video_ranges[1].link and not video_ranges[3].link, "video sources before an opener cannot belong to it")
+video_ranges = inline.scan('<video></video><source src="later.mp4">').standard_ranges
+assert(not video_ranges[1].link, "video source lookup cannot pass its closing tag")
 bounded(string.rep("<b>中</b>", 4000), string.rep("中", 4000))
 bounded(string.rep("<b><i>中</i></b>", 2000), string.rep("中", 2000))
 bounded(string.rep("[中](<b>) ", 2000), string.rep("中 ", 2000))
@@ -70,6 +84,7 @@ bounded(string.rep("\\<b>", 2000), string.rep("<b>", 2000))
 for _, pathological in ipairs {
   html(3200, true),
   string.rep('<a href="u">', 2000) .. string.rep("</a>", 2000),
+  string.rep("<video>", 2000) .. '<source src="clip.mp4">' .. string.rep("</video>", 2000),
   string.rep("![", 4000) .. "*中*" .. string.rep("](u)", 4000),
 } do
   local _, text, _, links = measured(function()

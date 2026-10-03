@@ -165,19 +165,21 @@ function M.html_closing(text, name, start)
   end
 end
 
---- Index closers once when many openers search the same immutable source.
+--- Index closers and quoted video sources once for the same immutable source.
 --- Matching retains html_closing's first-following-closer semantics.
 function M.html_closing_index(text)
-  local closers = {}
+  local closers, sources = {}, {}
   for first, last, token in M.html_tags(text) do
     local name, closing = M.html_name(token)
     if closing then
       closers[name] = closers[name] or {}
       closers[name][#closers[name] + 1] = { first, last }
+    elseif name == "source" then
+      local target, quoted = M.html_attribute(token, "src")
+      if quoted then sources[#sources + 1] = { first, target } end
     end
   end
-  return function(name, start)
-    local ranges = closers[name:lower()] or {}
+  local function following(ranges, start)
     local first, last = 1, #ranges
     while first <= last do
       local mid = math.floor((first + last) / 2)
@@ -187,7 +189,14 @@ function M.html_closing_index(text)
         last = mid - 1
       end
     end
-    if ranges[first] then return ranges[first][1], ranges[first][2] end
+    return ranges[first]
+  end
+  return function(name, start)
+    local range = following(closers[name:lower()] or {}, start)
+    if range then return range[1], range[2] end
+  end, function(start, finish)
+    local range = following(sources, start)
+    if range and range[1] < finish then return range[2] end
   end
 end
 
@@ -391,7 +400,7 @@ local function scan(text, refs, wanted_link, source_label, bare_url, index_label
   local wiki_close
   local last_link_start = 0
   local runs
-  local html_closing
+  local html_closing, html_source
   local autolink_finish = 0
   local has_angle_link = false
   local function note_angle_link()
@@ -436,13 +445,13 @@ local function scan(text, refs, wanted_link, source_label, bare_url, index_label
         local tag = text:sub(pos, finish)
         local target = angle_link or M.html_target(tag)
         local tag_name, closing = M.html_name(tag)
-        if (tag_name == "a" or tag_name == "video") and not closing then
-          html_closing = html_closing or M.html_closing_index(text)
+        if (tag_name == "a" or tag_name == "video") and not closing and not html_closing then
+          html_closing, html_source = M.html_closing_index(text)
         end
         if tag_name == "a" and not closing and not html_closing("a", finish + 1) then target = nil end
         if tag_name == "video" and not closing then
-          local _, video_end = html_closing("video", finish + 1)
-          target = video_end and M.html_target(text:sub(pos, video_end)) or nil
+          local video_start = html_closing("video", finish + 1)
+          target = video_start and (target or html_source(finish + 1, video_start)) or nil
         end
         standard_ranges[#standard_ranges + 1] =
           { start = pos, finish = finish, link = target ~= nil or nil, html = not angle_link or nil }

@@ -59,6 +59,43 @@ for _, depth in ipairs { depth_limit - 1, depth_limit, depth_limit + 1, 3200 } d
   end)
   assert(rendered == expected, "raw HTML and inline HTML have the same nesting fallback")
 end
+for _, depth in ipairs { depth_limit, depth_limit + 1 } do
+  local source = string.rep("<b>", depth) .. "&amp;<!--secret-->" .. string.rep("</b>", depth)
+  local expected = depth <= depth_limit and "&" or source
+  for _, render in ipairs { markdown.render, markdown.render_html } do
+    local _, rendered = measured(function()
+      return render(source)
+    end)
+    assert(rendered == expected, "literal HTML fallback must retain entity spelling and comments")
+  end
+end
+local literal_html = string.rep("<b>", depth_limit + 1)
+  .. "&amp;<!--secret-->\u{F1004}1\u{F1005}"
+  .. string.rep("</b>", depth_limit + 1)
+local token_entities = "&#" .. 0xF100C .. ";1&#" .. 0xF100D .. ";"
+for _, render in ipairs { markdown.render, markdown.render_html } do
+  local _, rendered, _, links = measured(function()
+    return render(
+      '<a href="before&amp;.md">前&amp;</a> '
+        .. literal_html
+        .. " &amp; "
+        .. token_entities
+        .. ' <a href="after&amp;.md">後&amp;</a>'
+    )
+  end)
+  assert(
+    rendered == "前& " .. literal_html .. " & \u{F100C}1\u{F100D} 後&",
+    "literal fallback and decoded entities cannot impersonate one another's tokens"
+  )
+  assert(
+    #links == 2
+      and links[1].url == "before&.md"
+      and rendered:sub(links[1].col_start + 1, links[1].col_end) == "前&"
+      and links[2].url == "after&.md"
+      and rendered:sub(links[2].col_start + 1, links[2].col_end) == "後&",
+    "entity restoration around literal HTML must retain decoded targets and UTF-8 link positions"
+  )
+end
 for _, tag in ipairs { "<b>", '<a href="u">', "<video>" } do
   local source = string.rep(tag, 4000) .. "中"
   bounded(source, source)
@@ -129,6 +166,35 @@ for _, depth in ipairs { depth_limit - 1, depth_limit, depth_limit + 1, 4000 } d
   local body = depth <= depth_limit and "中" or "*中*"
   local expected = "!" .. string.rep("![", depth - 2) .. body .. string.rep("](u)", depth - 2)
   assert(rendered == expected, "deep image labels retain their literal tail")
+end
+-- Interpreter hooks cannot measure the native string scans inside URL trimming.
+-- Explicit image/link ownership must exclude their labels before that work starts.
+for _, scheme in ipairs { "http", "https" } do
+  local destination = scheme .. "://x"
+  local nested = string.rep("![", 4000) .. "中" .. string.rep("](" .. destination .. ")", 4000)
+  local expected = "!" .. string.rep("![", 3998) .. "中" .. string.rep("](" .. destination .. ")", 3998)
+  local trim = inline.trim_autolink
+  inline.trim_autolink = function(url)
+    assert(url:sub(1, #destination) ~= destination, "owned HTTP URL reached the bare URL trimmer")
+    return trim(url)
+  end
+  local _, rendered, _, links = measured(function()
+    return markdown.render("前: [先](before.md) " .. nested .. " 尾: [正常](after.md) https://later.example")
+  end)
+  inline.trim_autolink = trim
+  assert(rendered == "前: 先 " .. expected .. " 尾: 正常 https://later.example", "owned HTTP label changed")
+  local found = {}
+  for _, link in ipairs(links) do
+    found[link.url] = rendered:sub(link.col_start + 1, link.col_end)
+  end
+  assert(
+    #links == 4
+      and found[destination] == expected:sub(2)
+      and found["before.md"] == "先"
+      and found["after.md"] == "正常"
+      and found["https://later.example"] == "https://later.example",
+    "skipping owned HTTP labels must preserve surrounding UTF-8 links and bare URLs"
+  )
 end
 
 local ContentBuilder = require("md-render.content_builder").ContentBuilder
@@ -214,12 +280,17 @@ following_content { string.rep("![", 4000) .. "*中*" .. string.rep("](u)", 4000
 local html_rows = following_content {
   "<div>",
   string.rep("<b>", depth_limit + 1),
-  "中",
+  "中 &amp;<!--secret-->",
   string.rep("</b>", depth_limit + 1),
   '<a href="after-html.md">後</a>',
   "</div>",
 }
 local html_link
+local literal_row
+for row, text in ipairs(html_rows.lines) do
+  if text:find("中 &amp;<!--secret-->", 1, true) then literal_row = row end
+end
+assert(literal_row and html_rows.source_line_map[literal_row] == 3, "literal HTML body retains its physical source row")
 for _, link in ipairs(html_rows.link_metadata) do
   if link.url == "after-html.md" then html_link = link end
 end

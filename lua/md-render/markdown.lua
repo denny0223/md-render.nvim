@@ -1044,6 +1044,9 @@ local function process_bare_urls(
   for _, hl in ipairs(highlights) do
     if hl.hl == "Comment" then existing_links[#existing_links + 1] = { col_start = hl.col, col_end = hl.end_col } end
   end
+  table.sort(existing_links, function(a, b)
+    return a.col_start < b.col_start
+  end)
   local prefix = spans[1] and spans[1].placeholder:match "^(.-)%d+" or inline.token_prefix(source .. text, 0xF1006)
   local protected = {}
   for _, span in ipairs(spans) do
@@ -1051,10 +1054,22 @@ local function process_bare_urls(
   end
   local pattern = spans[1] and spans[1].placeholder:gsub("%d+", "%%d+")
   local parts, output_bytes = {}, 0
-  local i = 1
+  local i, owner_index = 1, 1
   local removals = {}
 
   while i <= #text do
+    -- Owned labels must be excluded before URL trimming scans their suffixes.
+    while existing_links[owner_index] and existing_links[owner_index].col_end <= i - 1 do
+      owner_index = owner_index + 1
+    end
+    local owner = existing_links[owner_index]
+    if owner and owner.col_start <= i - 1 then
+      local part = text:sub(i, owner.col_end)
+      parts[#parts + 1] = part
+      output_bytes = output_bytes + #part
+      i = owner.col_end + 1
+      goto next_url
+    end
     local token = pattern and text:match("^" .. pattern, i)
     local literal = token and protected[token]
     local label, url
@@ -1084,6 +1099,7 @@ local function process_bare_urls(
       output_bytes = output_bytes + 1
       i = i + 1
     end
+    ::next_url::
   end
   adjust_positions(highlights, links, removals, pre_hl_count, pre_link_count)
   return table.concat(parts)
@@ -1561,12 +1577,14 @@ end
 --- Physical source breaks survive tag removal, including multiline attributes.
 function Markdown.render_html(text, semantic)
   text = text:gsub("\r\n", "\n"):gsub("\r", "\n")
-  local entities
-  text, entities = protect_entities(text, text, true)
-  text = inline.hide_html_comments(text)
+  local source = text
   local highlights, links = {}, {}
   local nested_html
   text, nested_html = protect_html_nesting(text, highlights, links, true)
+  local entities
+  -- Hidden literal bytes must also be excluded from the entity token namespace.
+  text, entities = protect_entities(text, source, true)
+  text = inline.hide_html_comments(text)
   for _ = 1, inline.MAX_NESTING do
     local previous = text
     text = process_html_tags(text, highlights, links, function(url)

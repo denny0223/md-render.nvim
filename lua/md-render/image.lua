@@ -315,6 +315,8 @@ local function jpeg_dimensions(path)
         if marker >= 0xC0 and marker <= 0xCF and marker ~= 0xC4 and marker ~= 0xC8 and marker ~= 0xCC then
           local data = length >= 8 and read(6)
           if not data then return nil end
+          local components = data:byte(6)
+          if components == 0 or length ~= 8 + 3 * components or not read(3 * components) then return nil end
           local width, height = be16(data, 4), be16(data, 2)
           if width > 0 and height > 0 then return width, height end
           return nil
@@ -1136,8 +1138,7 @@ function M.get_cached(url)
   if _url_cache[url] and vim.fn.filereadable(_url_cache[url]) == 1 then
     -- Validate cached file is a recognized image or video format
     if M.image_dimensions(_url_cache[url]) or M.is_video_content(_url_cache[url]) then return _url_cache[url] end
-    -- Stale/corrupt cache entry: remove file and clear in-memory cache
-    os.remove(_url_cache[url])
+    -- Clear only our reference; a peer may have replaced these invalid bytes.
     _url_cache[url] = nil
     return nil
   end
@@ -1148,8 +1149,7 @@ function M.get_cached(url)
       _url_cache[url] = cache_path
       return cache_path
     end
-    -- Stale/corrupt cache file: remove it
-    os.remove(cache_path)
+    -- A successful download atomically replaces invalid cache files.
     return nil
   end
   -- Try video extensions (file may have been renamed by finalize_download)

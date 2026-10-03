@@ -63,6 +63,7 @@ local function sof(marker)
   return segment(marker or 0xC0, string.char(8, 0, 12, 0, 34, 1, 1, 0x11, 0))
 end
 local soi = "\255\216"
+assert(image.image_dimensions(file("sof-prefix", soi .. sof())) == 34, "complete SOF metadata needs no entropy data")
 for _, marker in ipairs { 0xC0, 0xC2 } do
   local path = file("jpeg-" .. marker, soi .. segment(0xE1, "metadata") .. "\255" .. sof(marker))
   local f = assert(io.open(path, "ab"))
@@ -96,6 +97,10 @@ for i, data in ipairs {
   soi .. "\255\225\0\1" .. sof(), -- invalid length
   soi .. "\255\225\0\20short", -- truncated segment
   soi .. "\255\192\0\8short", -- truncated SOF
+  soi .. "\255\192\0\11" .. string.char(8, 0, 12, 0, 34, 1), -- missing component descriptors
+  soi .. "\255\192\0\14" .. string.char(8, 0, 12, 0, 34, 2, 1, 0x11, 0), -- truncated second component
+  soi .. "\255\192\255\255" .. string.char(8, 0, 12, 0, 34, 1, 1, 0x11, 0), -- mismatched declared length
+  soi .. segment(0xC0, string.char(8, 0, 12, 0, 34, 0)), -- invalid component count
   soi .. string.rep("\255\1", 1024) .. sof(), -- marker budget
   soi .. string.rep("\255", 2048) .. sof(), -- fill-byte budget
   soi .. "\255\218" .. sof(), -- do not search entropy data for a false SOF

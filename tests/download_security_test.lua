@@ -174,5 +174,32 @@ wait_for(function()
 end)
 assert(values[1] and values[1]:match "%.mp4$", "video content lost its corrected published extension")
 image.set_download_fn(nil)
+
+for _, in_memory in ipairs { false, true } do
+  local url = "https://example.invalid/stale-reader-" .. tostring(in_memory) .. ".png"
+  local path = cache_path(url)
+  if in_memory then
+    write(path, png)
+    assert(image.get_cached(url) == path)
+  end
+  write(path, "legacy incomplete image")
+  local is_video_content, published = image.is_video_content, false
+  image.is_video_content = function(input)
+    local recognized = is_video_content(input)
+    if input == path then
+      assert(not recognized)
+      -- A peer finishes after this reader saw invalid bytes, before its miss returns.
+      write(path .. ".peer", png)
+      assert(uv.fs_rename(path .. ".peer", path))
+      published = true
+    end
+    return recognized
+  end
+  local stale = image.get_cached(url)
+  image.is_video_content = is_video_content
+  assert(published and not stale)
+  assert(image.image_dimensions(path) == 4, "stale reader deleted its peer's completed cache")
+  assert(image.get_cached(url) == path, "reader did not discover the completed replacement")
+end
 vim.fn.delete(temp, "rf")
 print "Downloads: literal URLs, staged built-in/custom publication, bounded jobs, validation, and failure cleanup passed"

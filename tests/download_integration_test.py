@@ -27,7 +27,10 @@ def main():
                 self.end_headers()
                 return
             self.send_response(200)
-            data = b"not an image" if self.path == "/broken.png" else png
+            data = {
+                "/broken.png": b"not an image",
+                "/truncated.jpg": bytes.fromhex("FFD8FFC0001108000C002203"),
+            }.get(self.path, png)
             self.send_header("Content-Length", str(len(data) + (100 if self.path == "/partial.png" else 0)))
             self.end_headers()
             self.wfile.write(data)
@@ -56,7 +59,7 @@ vim.system = function(cmd, opts, callback)
   end)
 end
 local image = require "md-render.image"
-for _, name in ipairs { "/ordinary.png", "/brace{a,b}.png", "/bracket[1-3].png", "/redirect", "/broken.png", "/partial.png" } do
+for _, name in ipairs { "/ordinary.png", "/brace{a,b}.png", "/bracket[1-3].png", "/redirect", "/broken.png", "/partial.png", "/truncated.jpg" } do
   local done, output = false, nil
   image.download_async(config.base .. name, function(path) done, output = true, path end)
   assert(vim.wait(20000, function() return done end), "download timed out: " .. name)
@@ -64,6 +67,10 @@ for _, name in ipairs { "/ordinary.png", "/brace{a,b}.png", "/bracket[1-3].png",
   assert((output ~= nil) == success, "unexpected result: " .. name)
   if success then assert(image.image_dimensions(output) == 4) end
   if name == "/redirect" then assert(codes[#codes] == 1, "redirect was not rejected as a forbidden protocol") end
+  if name == "/truncated.jpg" then
+    assert(codes[#codes] == 0, "JPEG rejection must follow a complete HTTP transfer")
+    assert(not image.get_cached(config.base .. name), "truncated JPEG entered the cache")
+  end
 end
 local executable = vim.fn.executable
 vim.fn.executable = function(name) return (name == "plantuml" or name == "java") and 0 or executable(name) end
@@ -76,20 +83,22 @@ assert(image.image_dimensions(output) == 4)
 ''')
             env = os.environ | {
                 "MD_RENDER_SECURITY_CONFIG": json.dumps({"repo": str(repo), "temp": str(temp), "base": base}),
+                "XDG_CONFIG_HOME": str(temp / "xdg-config"),
+                "XDG_DATA_HOME": str(temp / "xdg-data"),
                 "XDG_CACHE_HOME": str(temp / "xdg-cache"),
                 "XDG_STATE_HOME": str(temp / "xdg-state"),
                 "NVIM_LOG_FILE": str(temp / "nvim.log"),
                 "CURL_HOME": str(temp),
             }
             result = subprocess.run(
-                ["nvim", "--headless", "-u", "NONE", "--noplugin", "-l", str(runner)],
+                ["nvim", "-n", "-i", "NONE", "--headless", "-u", "NONE", "--noplugin", "-l", str(runner)],
                 cwd=repo, env=env, capture_output=True, text=True, timeout=60,
             )
             assert result.returncode == 0, result.stdout + result.stderr
-            assert requests[:6] == [
-                "/ordinary.png", "/brace{a,b}.png", "/bracket[1-3].png", "/redirect", "/broken.png", "/partial.png",
+            assert requests[:7] == [
+                "/ordinary.png", "/brace{a,b}.png", "/bracket[1-3].png", "/redirect", "/broken.png", "/partial.png", "/truncated.jpg",
             ], requests
-            assert len(requests) == 7 and requests[6].startswith("/plantuml/png/~h"), requests
+            assert len(requests) == 8 and requests[7].startswith("/plantuml/png/~h"), requests
             assert len(list((temp / "md-render/images").iterdir())) == 3, "failed download left cache/staging output"
             assert len(list((temp / "md-render/plantuml").iterdir())) == 1, "diagram staging output leaked"
     finally:

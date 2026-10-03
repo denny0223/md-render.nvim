@@ -73,9 +73,22 @@ vim.system = function(cmd, opts, callback)
   assert(cmd[1] == "ffprobe" and opts.timeout == 5000, "bounded dimensions probe")
   assert(not vim.tbl_contains(cmd, "-count_frames"), "dimensions probe must not count frames")
   calls = calls + 1
-  if callback then jobs[#jobs + 1] = callback end
+  local completed
+  local function complete(result)
+    if completed then return end
+    completed = true
+    if callback then callback(result) end
+  end
+  if callback then jobs[#jobs + 1] = complete end
   return {
     wait = function()
+      for i, pending in ipairs(jobs) do
+        if pending == complete then
+          table.remove(jobs, i)
+          break
+        end
+      end
+      complete(response)
       return response
     end,
   }

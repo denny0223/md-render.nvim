@@ -187,8 +187,16 @@ local diagram_jobs, local_plantuml = {}, true
 vim.fn.executable = function(cmd)
   return (cmd == "mmdc" or cmd == "curl" or (cmd == "plantuml" and local_plantuml)) and 1 or 0
 end
-vim.system = function(cmd, _, callback)
+vim.system = function(cmd, opts, callback)
   assert(cmd[1] == "mmdc" or cmd[1] == "plantuml" or cmd[1] == "curl")
+  if cmd[#cmd] == "-version" then
+    assert(opts.stdin == nil and opts.timeout == 1500)
+    return {
+      wait = function()
+        return { code = 0, stdout = "PlantUML version 1.2020.11" }
+      end,
+    }
+  end
   local job = { callback = callback }
   for i, arg in ipairs(cmd) do
     if arg == "-i" then job.input = cmd[i + 1] end

@@ -762,13 +762,39 @@ end
 local _plantuml_cmd = nil
 local _plantuml_checked = false
 
+local function plantuml_env()
+  local env = { PLANTUML_SECURITY_PROFILE = "SANDBOX" }
+  -- JVM properties override OS variables; each supported option source must end
+  -- with our policy while retaining unrelated user options (heap size, proxies, etc.).
+  for _, name in ipairs { "JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS" } do
+    env[name] = (vim.env[name] or "") .. " -DPLANTUML_SECURITY_PROFILE=SANDBOX -Djava.awt.headless=true"
+  end
+  return env
+end
+
 local function find_plantuml()
   if _plantuml_checked then return _plantuml_cmd end
   _plantuml_checked = true
+  local candidate
   if vim.fn.executable "plantuml" == 1 then
-    _plantuml_cmd = { "plantuml" }
+    candidate = { "plantuml" }
   elseif vim.fn.executable "java" == 1 and vim.env.PLANTUML_JAR and vim.fn.filereadable(vim.env.PLANTUML_JAR) == 1 then
-    _plantuml_cmd = { "java", "-DPLANTUML_SECURITY_PROFILE=SANDBOX", "-jar", vim.env.PLANTUML_JAR }
+    candidate = { "java", "-DPLANTUML_SECURITY_PROFILE=SANDBOX", "-jar", vim.env.PLANTUML_JAR }
+  end
+  if not candidate then return nil end
+  -- Releases before 1.2020.11 silently ignore the security profile. Probe only
+  -- the tool version, never document source, and cache an unavailable result too.
+  local ok, result = pcall(function()
+    local cmd = vim.list_extend(vim.list_extend({}, candidate), { "-version" })
+    return vim.system(cmd, { text = true, timeout = 1500, env = plantuml_env() }):wait()
+  end)
+  if ok and result.code == 0 then
+    local version = (result.stdout or "") .. "\n" .. (result.stderr or "")
+    local major, year, release = version:match "PlantUML version%s+(%d+)%.(%d+)%.(%d+)"
+    major, year, release = tonumber(major), tonumber(year), tonumber(release)
+    if major and (major > 1 or (major == 1 and (year > 2020 or (year == 2020 and release >= 11)))) then
+      _plantuml_cmd = candidate
+    end
   end
   return _plantuml_cmd
 end
@@ -787,7 +813,7 @@ end
 ---@param server? string normalized remote server URL; nil means local SANDBOX
 ---@return string
 local function plantuml_cache_path(source, server)
-  local policy = server and "remote:" .. server or "local:SANDBOX"
+  local policy = server and "remote:" .. server or "local:SANDBOX:2"
   local hash = vim.fn.sha256("v2|" .. policy .. "|" .. source):sub(1, 16)
   return get_plantuml_cache_dir() .. "/" .. hash .. ".png"
 end
@@ -859,7 +885,7 @@ function M.render_plantuml_async(source, callback)
         stdin = source,
         text = false,
         timeout = 30000,
-        env = { PLANTUML_SECURITY_PROFILE = "SANDBOX" },
+        env = plantuml_env(),
       })
       if result.code == 0 and result.stdout and #result.stdout > 0 then
         local f = io.open(output, "wb")

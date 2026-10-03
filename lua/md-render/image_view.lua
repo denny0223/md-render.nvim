@@ -1,6 +1,7 @@
 -- Focus one image in a Neovim tab, anchored by Snacks.
 local M = {}
 local image = require "md-render.image"
+local async = require "md-render.async"
 
 -- Source-pixel crop for the requested view. Zoom 1 is a complete overview.
 function M.geometry(iw, ih, cols, rows, cell, zoom, cx, cy)
@@ -74,7 +75,7 @@ function M.open(path)
     if state.closed then return end
     state.closed = true
     vim.on_key(nil, mouse_ns)
-    if state.job then state.job:kill(15) end
+    if state.job then state.job:kill(9) end
     local media = state.media
     if media and media._md_render_upload then media._md_render_upload:close() end
     if state.pending then state.pending:close() end
@@ -259,7 +260,7 @@ function M.open(path)
       show { code = 0 }
     else
       -- ponytail: crop cached PNGs; profile before changing the static-image renderer.
-      local ok, job = pcall(vim.system, {
+      local ok, job = pcall(async.start_system, {
         "magick",
         state.path,
         "-crop",
@@ -449,8 +450,7 @@ function M.open(path)
     return ""
   end, mouse_ns)
   vim.api.nvim_create_autocmd("WinResized", { group = group, callback = paint })
-  require("md-render.async").run(function()
-    local async = require "md-render.async"
+  async.run(function()
     local frames
     if image.is_video_file(path) or image.is_video_content(path) or image.is_animated_gif(path) then
       frames = async.await(2, image.extract_frames_async, path)

@@ -469,7 +469,7 @@ function M.video_dimensions(path, cache_only)
     path,
     signature,
     generation,
-    vim.system(video_probe_cmd(path), { text = true, timeout = 5000 }):wait()
+    async.start_system(video_probe_cmd(path), { text = true, timeout = 5000 }):wait()
   )
 end
 
@@ -717,7 +717,7 @@ function M.render_mermaid(source)
   if vim.fn.filereadable(cache_path) == 1 then return cache_path end
 
   return render_mermaid_file(source, cmd_prefix, cache_path, function(cmd, opts)
-    return vim.system(cmd, opts):wait()
+    return async.start_system(cmd, opts):wait()
   end)
 end
 
@@ -805,7 +805,7 @@ local function find_plantuml()
   -- the tool version, never document source, and cache an unavailable result too.
   local ok, result = pcall(function()
     local cmd = vim.list_extend(vim.list_extend({}, candidate), { "-version" })
-    return vim.system(cmd, { text = true, timeout = 1500, env = plantuml_env() }):wait()
+    return async.start_system(cmd, { text = true, timeout = 1500, env = plantuml_env() }):wait()
   end)
   if ok and result.code == 0 then
     local version = (result.stdout or "") .. "\n" .. (result.stderr or "")
@@ -1469,7 +1469,7 @@ end
 ---@return string? png_path, boolean is_temp
 function M.ensure_png(path)
   return ensure_png(path, function(cmd, opts)
-    return vim.system(cmd, opts):wait()
+    return async.start_system(cmd, opts):wait()
   end)
 end
 
@@ -1912,7 +1912,7 @@ function M.transmit_animated(path)
   local cache_dir = get_frames_cache_dir(path)
   if not cache_dir then return nil end
   local cached = extract_frames(path, cache_dir, anim_tool, function(cmd, opts)
-    return vim.system(cmd, opts):wait()
+    return async.start_system(cmd, opts):wait()
   end)
   if not cached then return nil end
 

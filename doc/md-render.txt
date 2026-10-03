@@ -730,7 +730,8 @@ A fenced block tagged `plantuml` or `puml` is rendered as an image, the way a
 `mermaid` fence is.  Rendering is done by a `plantuml` on the PATH, or by
 `java -jar $PLANTUML_JAR` when that variable points at a readable jar.
 
-Local rendering uses PlantUML's SANDBOX profile, blocking local-file and URL
+Local rendering requires PlantUML 1.2020.11 or newer; older, unrecognized or
+unresponsive versions are unavailable. Its SANDBOX profile blocks local-file and URL
 access, including external includes. This is a renderer policy, not an OS
 sandbox; the installed executable remains trusted.
 
@@ -1270,10 +1271,13 @@ image tabs paused; Space can still start playback. Frame preparation still
 requires FFmpeg for videos; GIFs can use FFmpeg or ImageMagick.
 mermaid_allow_npx=false uses only an installed mmdc, retaining Mermaid as code
 if it is unavailable.
-Explicit mermaid_allow_npx=true permits npm to download and run a specified
-CLI version in a private working directory with an isolated project prefix.
-The viewed project's .npmrc and local packages do not affect resolution;
-your npm configuration, registry and package dependencies remain trusted.
+Every Mermaid launch uses a private working directory, so Puppeteer
+configuration from the viewed project or its ancestors is not loaded;
+supported PUPPETEER_* environment settings still apply. Explicit
+mermaid_allow_npx=true permits npm to download and run a specified CLI version
+with an isolated project prefix. The viewed project's .npmrc and local
+packages do not affect resolution; your npm configuration, registry and
+package dependencies remain trusted.
 The runtime fallback does not lock those dependencies. Merge these options
 into your existing image setup, retaining backend="snacks" if selected.
 Use :MdRender textsize off for ordinary text headings.
@@ -1345,6 +1349,7 @@ image.set_download_fn({fn}) ~
 	  {fn}  (function) Function with signature:
 		  fn(url: string, dest: string, callback: function)
 
+	Return true when handling the request; false uses the built-in downloader.
 	The dest is a temporary absolute output path, not the final cache path.
 	Finish writing and close it before calling callback(true); use
 	callback(false) on failure. The plugin publishes successful output.
@@ -1558,7 +1563,7 @@ that use them. Install command-line tools separately on Neovim's PATH.
                        permits CLI download/execution via Node.js/npm.
                        https://github.com/mermaid-js/mermaid-cli
 
-  PlantUML             Render PlantUML diagrams as images.  Falls back to a
+  PlantUML 1.2020.11+  Render PlantUML diagrams as images.  Falls back to a
   (plantuml, or java   server only when one is named; see |md-render-plantuml|.
   with $PLANTUML_JAR)  https://plantuml.com/
 

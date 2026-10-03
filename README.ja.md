@@ -87,7 +87,7 @@ nvim +"MdRender pager" assets/showcase.md
 | [FFmpeg](https://ffmpeg.org/) (`ffmpeg` / `ffprobe`) | ネイティブの JPEG/WebP → PNG 変換、両バックエンド共通の GIF / 動画のフレーム展開 | ImageMagick にフォールバック（画像のみ。動画には ffmpeg が必要） |
 | [ImageMagick](https://imagemagick.org/) (`magick`) | Snacks の画像変換と画像タブのズーム・パン、ネイティブの画像変換と共通の GIF フレーム展開 | ネイティブの変換は下表のツールで代替可。画像タブは PNG でも `magick` が必須で、`ffmpeg`、`sips`、`convert` のみのインストールでは代替できません |
 | [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) とヘッドレスブラウザ | 両バックエンドで Mermaid ダイアグラムを描画 | なければコードブロックを保持。npm フォールバックには `mermaid_allow_npx = true`、Node.js/npm とブラウザが必要 |
-| [PlantUML](https://plantuml.com/) (`plantuml`、または `java` と `$PLANTUML_JAR`) | PlantUML ダイアグラムを画像として描画 | 指定した場合のみ PlantUML サーバ（curl が必要）。指定が無ければコードブロックのまま |
+| [PlantUML](https://plantuml.com/) 1.2020.11 以降 (`plantuml`、または `java` と `$PLANTUML_JAR`) | PlantUML ダイアグラムを画像として描画 | 指定した場合のみ PlantUML サーバ（curl が必要）。指定が無ければコードブロックのまま |
 | [budoux.lua](https://github.com/delphinus/budoux.lua) | CJK フレーズ単位の改行（BudouX） | 1文字ずつ分割（禁則処理は維持） |
 | Treesitter パーサー | コードブロックのシンタックスハイライト | ハイライトなしで表示 |
 | [nvim-web-devicons](https://github.com/nvim-tree/nvim-web-devicons) または [mini.icons](https://github.com/echasnovski/mini.icons) | コードブロックヘッダのファイルタイプアイコン | 内蔵アイコンテーブル |
@@ -580,7 +580,7 @@ require("snacks").setup({
 <details>
 <summary><strong>Mermaid ダイアグラムが描画されない</strong></summary>
 
-Mermaid のレンダリングには [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) の `mmdc` とヘッドレスブラウザが必要です。`npm install -g @mermaid-js/mermaid-cli` でインストールできます。見つからなければ既定ではコードブロックのまま表示します。`mermaid_allow_npx = true` を明示すると、隔離したプロジェクト環境で指定バージョンの CLI を npm がダウンロード・実行できます。閲覧中のプロジェクトの `.npmrc` とローカルパッケージは使いませんが、ユーザーの npm 設定、レジストリ、依存パッケージは信頼します。この実行時フォールバックは依存関係全体をロックしません。
+Mermaid のレンダリングには [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) の `mmdc` とヘッドレスブラウザが必要です。`npm install -g @mermaid-js/mermaid-cli` でインストールできます。見つからなければ既定ではコードブロックのまま表示します。すべての Mermaid 描画は専用の作業ディレクトリを使うため、閲覧中のプロジェクトやその上位ディレクトリの Puppeteer 設定を読み込みません。サポートされる `PUPPETEER_*` 環境設定は引き続き有効です。`mermaid_allow_npx = true` を明示すると、隔離したプロジェクト prefix で指定バージョンの CLI を npm がダウンロード・実行できます。閲覧中のプロジェクトの `.npmrc` とローカルパッケージは使いませんが、ユーザーの npm 設定、レジストリ、依存パッケージは信頼します。この実行時フォールバックは依存関係全体をロックしません。
 
 </details>
 
@@ -589,7 +589,7 @@ Mermaid のレンダリングには [@mermaid-js/mermaid-cli](https://github.com
 
 `plantuml` / `puml` のフェンスは、`plantuml` バイナリが `PATH` にあるか、`java` があって `$PLANTUML_JAR` が読み取れる `plantuml.jar` を指しているときにローカルで描画されます。どちらか一方を入れればフェンスがダイアグラムになります。
 
-ローカル描画は PlantUML の SANDBOX プロファイルで実行し、外部 include を含むローカルファイルと URL へのアクセスを禁止します。これはレンダラのアクセス制限であり、OS のサンドボックスではありません。インストールした実行ファイル自体は信頼します。
+ローカル描画には PlantUML 1.2020.11 以降が必要です。[SANDBOX プロファイル](https://plantuml.com/security)で実行し、外部 include を含むローカルファイルと URL へのアクセスを禁止します。古い版、バージョンを確認できないもの、確認期限内に応答しないものは利用不可として扱います。これはレンダラのアクセス制限であり、OS のサンドボックスではありません。インストールした実行ファイル自体は信頼します。
 
 明示的に指定しない限りフォールバックはしません。PlantUML はサーバ上で描画する設計であり、他人のサーバで描画するということはダイアグラムをそこへ送るということなので、このプラグインが勝手にそれを選ぶことはしません。ローカルのレンダラが無ければ、`plantuml` のフェンスはコードブロックのままになります。サーバを指定すればそちらを使います:
 

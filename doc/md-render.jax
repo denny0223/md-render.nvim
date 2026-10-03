@@ -712,8 +712,9 @@ PlantUML ダイアグラム                                     *md-render-plant
 
 `plantuml` または `puml` のコードフェンスは画像として描画します。PATH 上の
 plantuml、または java と読み取り可能な $PLANTUML_JAR を使います。
-ローカル描画は SANDBOX プロファイルで実行し、外部 include を含むローカル
-ファイルと URL へのアクセスを禁止します。これはレンダラのポリシーであり、
+ローカル描画には PlantUML 1.2020.11 以降が必要です。古い版、バージョンを確認
+できないもの、期限内に応答しないものは利用不可です。SANDBOX は外部 include を含むローカルファイルと
+URL へのアクセスを禁止します。これはレンダラのポリシーであり、
 OS のサンドボックスではありません。インストール済み実行ファイルは信頼します。
 
 ローカルのツールがなければコードのまま表示します。サーバを明示すると
@@ -1242,9 +1243,11 @@ autoplay=false では両バックエンドとも GIF／動画の最初のフレ�
 引き続き FFmpeg が必要で、GIF は FFmpeg または ImageMagick を使えます。
 mermaid_allow_npx=false はインストール済みの mmdc のみ使い、なければ Mermaid
 をコードのまま表示します。
-mermaid_allow_npx=true を明示すると、npm による指定バージョンの CLI の
-ダウンロード・実行を許可します。専用の作業ディレクトリと隔離したプロジェクト
-prefix を使い、閲覧中のプロジェクトの .npmrc やローカルパッケージの影響を
+すべての Mermaid 描画は専用の作業ディレクトリを使い、閲覧中のプロジェクトや
+上位ディレクトリの Puppeteer 設定を読み込みません。対応する PUPPETEER_* 環境
+設定は引き続き有効です。mermaid_allow_npx=true を明示すると、npm に
+よる指定バージョンの CLI のダウンロード・実行を許可し、隔離したプロジェクト
+prefix を使います。閲覧中のプロジェクトの .npmrc やローカルパッケージの影響を
 避けます。利用者の npm 設定、レジストリ、依存パッケージは引き続き信頼します。
 実行時のフォールバックでは依存パッケージを固定しません。
 既存の画像設定に統合し、選択済みの backend="snacks" も維持してください。
@@ -1315,6 +1318,7 @@ image.set_download_fn({fn}) ~
 	  {fn}  (function) 以下のシグネチャを持つ関数:
 		  fn(url: string, dest: string, callback: function)
 
+	処理する場合は true を返し、false なら内蔵ダウンローダを使います。
 	dest は一時出力の絶対パスで、最終キャッシュのパスではありません。
 	書き込みとクローズ後に callback(true)、失敗時に callback(false) を
 	呼びます。成功した出力はプラグインがキャッシュに配置します。
@@ -1525,7 +1529,7 @@ Details ~
                        Node.js/npm による CLI のダウンロード・実行を許可。
                        https://github.com/mermaid-js/mermaid-cli
 
-  PlantUML             PlantUML を画像として描画。指定したサーバのみ
+  PlantUML 1.2020.11+  PlantUML を画像として描画。指定したサーバのみ
   (plantuml、または    フォールバックに使います。|md-render-plantuml| を参照。
   java と             https://plantuml.com/
   $PLANTUML_JAR)

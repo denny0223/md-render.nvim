@@ -87,7 +87,7 @@ These dependencies are optional for basic Markdown rendering, but required for t
 | [FFmpeg](https://ffmpeg.org/) (`ffmpeg` / `ffprobe`) | Native JPEG/WebP → PNG conversion; GIF / video frame extraction for both backends | Falls back to ImageMagick (images only; video requires ffmpeg) |
 | [ImageMagick](https://imagemagick.org/) (`magick`) | Snacks image conversion and image-tab zoom/pan; native image conversion and shared GIF frame extraction | Native conversion can use the tools below. The image tab requires `magick`, including for PNG; `ffmpeg`, `sips`, or an installation providing only `convert` cannot replace it |
 | [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) and its headless browser | Render Mermaid diagrams with either backend | Retains the code block if unavailable. Optional npm fallback requires `mermaid_allow_npx = true`, Node.js/npm and the browser |
-| [PlantUML](https://plantuml.com/) (`plantuml`, or `java` with `$PLANTUML_JAR`) | Render PlantUML diagrams as images | A PlantUML server, if you name one (needs curl); otherwise the fence stays a code block |
+| [PlantUML](https://plantuml.com/) 1.2020.11+ (`plantuml`, or `java` with `$PLANTUML_JAR`) | Render PlantUML diagrams as images | A PlantUML server, if you name one (needs curl); otherwise the fence stays a code block |
 | [budoux.lua](https://github.com/delphinus/budoux.lua) | CJK phrase-level line breaking (BudouX) | Character-level splitting (kinsoku rules still apply) |
 | Treesitter parsers | Syntax highlighting in code blocks | Code blocks rendered without highlighting |
 | [nvim-web-devicons](https://github.com/nvim-tree/nvim-web-devicons) or [mini.icons](https://github.com/echasnovski/mini.icons) | File type icons in code block headers | Built-in icon table |
@@ -577,7 +577,7 @@ Use a document preview such as `:MdRender tab`, select the [Snacks backend](#opt
 <details>
 <summary><strong>Mermaid diagrams don't render</strong></summary>
 
-Mermaid rendering requires the `mmdc` binary from [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) and its headless browser. Install it with `npm install -g @mermaid-js/mermaid-cli`; without it, Mermaid remains a code block by default. Explicitly setting `mermaid_allow_npx = true` permits npm to download and execute a specified CLI version in an isolated project context. This avoids the viewed project's `.npmrc` and local packages, but still trusts your npm configuration, registry and the package's dependencies; those dependencies are not locked by the runtime fallback.
+Mermaid rendering requires the `mmdc` binary from [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) and its headless browser. Install it with `npm install -g @mermaid-js/mermaid-cli`; without it, Mermaid remains a code block by default. Every Mermaid launch uses a private working directory, so Puppeteer configuration from the viewed project or its ancestor directories is not loaded; supported `PUPPETEER_*` environment settings still apply. Explicitly setting `mermaid_allow_npx = true` also permits npm to download and execute a specified CLI version with an isolated project prefix. This avoids the viewed project's `.npmrc` and local packages, but still trusts your npm configuration, registry and the package's dependencies; those dependencies are not locked by the runtime fallback.
 
 </details>
 
@@ -586,7 +586,7 @@ Mermaid rendering requires the `mmdc` binary from [@mermaid-js/mermaid-cli](http
 
 Fenced blocks tagged `plantuml` or `puml` are rendered locally when a `plantuml` binary is on your `PATH` (most package managers ship one), or when `java` is available and `$PLANTUML_JAR` points at a readable `plantuml.jar`. Install one of those and the fence becomes a diagram.
 
-Local rendering uses PlantUML's SANDBOX profile, which blocks access to local files and URLs, including external includes. It is a renderer policy, not an OS sandbox; the installed executable remains trusted.
+Local rendering requires PlantUML 1.2020.11 or newer and uses its [SANDBOX profile](https://plantuml.com/security), which blocks access to local files and URLs, including external includes. Older, unrecognized or unresponsive versions are treated as unavailable. It is a renderer policy, not an OS sandbox; the installed executable remains trusted.
 
 There is no fallback unless you ask for one. PlantUML renders on a server by design, and rendering on somebody else's means sending the diagram there, so the plugin will not choose that for you — without a local renderer, a `plantuml` fence stays a code block. Name a server and it will be used:
 

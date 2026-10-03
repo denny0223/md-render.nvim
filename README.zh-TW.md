@@ -86,7 +86,7 @@ nvim +"MdRender pager" assets/showcase.md
 | [FFmpeg](https://ffmpeg.org/)（`ffmpeg` / `ffprobe`） | 原生後端的 JPEG/WebP → PNG 轉換，以及兩個後端共用的 GIF 動畫與影片影格擷取 | 圖片可改用 ImageMagick；影片仍需要 ffmpeg |
 | [ImageMagick](https://imagemagick.org/)（`magick`） | Snacks 圖片轉換、圖片分頁縮放與平移，以及原生圖片轉換與共用的 GIF 影格擷取 | 原生後端可使用下表的替代工具。圖片分頁即使開啟 PNG 也需要 `magick`，無法用 `ffmpeg`、`sips` 或只有 `convert` 指令的安裝取代 |
 | [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli)（`mmdc`）及其無頭瀏覽器 | 兩種後端都用它產生 Mermaid 圖表 | 找不到時保留程式碼區塊。選用 npm 替代方式須設定 `mermaid_allow_npx = true`，並備妥 Node.js/npm 與瀏覽器 |
-| [PlantUML](https://plantuml.com/)（`plantuml`，或 `java` 搭配 `$PLANTUML_JAR`） | 產生 PlantUML 圖表 | 只有在你指定伺服器時，才會改用該伺服器，並需要 curl；否則維持程式碼區塊 |
+| [PlantUML](https://plantuml.com/) 1.2020.11 以上（`plantuml`，或 `java` 搭配 `$PLANTUML_JAR`） | 產生 PlantUML 圖表 | 只有在你指定伺服器時，才會改用該伺服器，並需要 curl；否則維持程式碼區塊 |
 | [budoux.lua](https://github.com/delphinus/budoux.lua) | 使用 BudouX，讓中日韓文字依詞組換行 | 未安裝時依字元斷行，仍保留行首行尾禁則 |
 | Treesitter 剖析器 | 程式碼區塊的語法醒目提示 | 未安裝時仍會顯示程式碼，但沒有語法醒目提示 |
 | [nvim-web-devicons](https://github.com/nvim-tree/nvim-web-devicons) 或 [mini.icons](https://github.com/echasnovski/mini.icons) | 程式碼區塊標題的檔案類型圖示 | 改用內建圖示表 |
@@ -570,7 +570,7 @@ require("snacks").setup({
 <details>
 <summary><strong>Mermaid 圖表沒有顯示</strong></summary>
 
-Mermaid 圖表需要 [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) 提供的 `mmdc` 指令及其無頭瀏覽器。可用 `npm install -g @mermaid-js/mermaid-cli` 安裝；找不到時，預設保留為程式碼區塊。明確設定 `mermaid_allow_npx = true` 後，才允許 npm 在隔離的專案環境下載並執行指定版本的 CLI。這會避開文件所在專案的 `.npmrc` 與本機套件，但仍信任你的 npm 設定、套件來源及相依套件；執行時的替代方式並未鎖定完整相依版本。
+Mermaid 圖表需要 [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) 提供的 `mmdc` 指令及其無頭瀏覽器。可用 `npm install -g @mermaid-js/mermaid-cli` 安裝；找不到時，預設保留為程式碼區塊。每次 Mermaid 繪圖都使用獨立工作目錄，因此不會載入文件所在專案或其上層目錄的 Puppeteer 設定；受支援的 `PUPPETEER_*` 環境設定仍有效。明確設定 `mermaid_allow_npx = true` 後，才允許 npm 以隔離的專案 prefix 下載並執行指定版本的 CLI。這會避開文件所在專案的 `.npmrc` 與本機套件，但仍信任你的 npm 設定、套件來源及相依套件；執行時的替代方式並未鎖定完整相依版本。
 
 </details>
 
@@ -579,7 +579,7 @@ Mermaid 圖表需要 [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mer
 
 標記為 `plantuml` 或 `puml` 的程式碼區塊，會在 `$PATH` 中有 `plantuml` 時使用本機繪圖；另一種方式是安裝 `java`，並讓 `$PLANTUML_JAR` 指向可讀取的 `plantuml.jar`。任一方式可用時，就能將區塊轉為圖表。
 
-本機繪圖使用 PlantUML 的 SANDBOX 模式，封鎖本機檔案與 URL 存取，包括外部引用。這是繪圖工具的存取政策，並非作業系統沙箱；已安裝的執行檔仍屬信任範圍。
+本機繪圖需要 PlantUML 1.2020.11 以上版本，並使用 [SANDBOX 模式](https://plantuml.com/security)，封鎖本機檔案與 URL 存取，包括外部引用。較舊、無法辨識或未在有限時間內回應版本查詢的工具視為不可用。這是繪圖工具的存取政策，並非作業系統沙箱；已安裝的執行檔仍屬信任範圍。
 
 外掛不會自動替你選擇遠端服務。使用別人的 PlantUML 伺服器，代表會把圖表原始文字傳送給對方；因此沒有本機工具時，預設保留為程式碼區塊。若要使用伺服器，請明確指定：
 

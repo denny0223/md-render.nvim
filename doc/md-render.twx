@@ -611,8 +611,9 @@ PlantUML 圖表                                             *md-render-plantuml*
 相同。外掛會使用 PATH 中的 `plantuml`；若 $PLANTUML_JAR 指向可讀取的 jar，
 也可使用 `java -jar $PLANTUML_JAR`。
 
-本機繪圖使用 PlantUML 的 SANDBOX 模式，封鎖本機檔案與 URL 存取，包括外部
-引用。這是繪圖工具的存取政策，並非作業系統沙箱；已安裝的執行檔仍屬信任範圍。
+本機繪圖需要 PlantUML 1.2020.11 以上版本；較舊、無法辨識或未及時回應的版本
+視為不可用。
+SANDBOX 模式封鎖本機檔案與 URL 存取，包括外部引用。這是繪圖工具的存取政策，並非作業系統沙箱；已安裝的執行檔仍屬信任範圍。
 
 兩者都沒有時，內容會維持程式碼區塊。使用別人的 PlantUML 伺服器需要將圖表內容
 傳送過去，因此外掛不會自行選擇遠端伺服器作為替代方式。指定伺服器後才會使用：
@@ -1113,9 +1114,10 @@ image.setup({opts}) ~
 autoplay=false 讓兩個後端只顯示 GIF／影片第一個影格；圖片分頁初始為暫停，
 仍可按空白鍵開始播放。影片仍需要 FFmpeg 準備影格；GIF 可使用 FFmpeg 或
 ImageMagick。mermaid_allow_npx=false 限定使用已安裝的 mmdc，找不到
-時保留 Mermaid 程式碼。明確設定 mermaid_allow_npx=true 才允許 npm 下載並
-執行指定版本的 CLI，使用獨立工作目錄與隔離的專案 prefix。文件所在專案的
-.npmrc 和本機套件不影響解析；你的 npm 設定、套件來源與相依套件仍屬信任範圍，
+時保留 Mermaid 程式碼。每次繪圖都使用獨立工作目錄，不會載入文件所在專案或
+上層目錄的 Puppeteer 設定；受支援的 PUPPETEER_* 環境設定仍有效。明確設定 mermaid_allow_npx=true 才允許 npm 下載並執行指定版本
+的 CLI，並使用隔離的專案 prefix。文件所在專案的 .npmrc 和本機套件不影響解析；
+你的 npm 設定、套件來源與相依套件仍屬信任範圍，
 執行時的替代方式不會鎖定相依套件。請將選項合併至既有圖片設定，保留已選用的
 backend="snacks"。
 若要使用一般文字標題，可執行 :MdRender textsize off。
@@ -1177,6 +1179,7 @@ image.set_download_fn({fn}) ~
 	  {fn}  (function) 函式簽章：
 	          fn(url: string, dest: string, callback: function)
 
+	接受工作時回傳 true；回傳 false 則使用內建下載器。
 	dest 是暫存輸出的絕對路徑，並非最終快取路徑。寫入完成並關閉檔案後，
 	呼叫 callback(true)；失敗時呼叫 callback(false)。外掛會發布成功的輸出。
 
@@ -1370,7 +1373,7 @@ DETAILS 區塊 ~
                        下載並執行 CLI。
                        https://github.com/mermaid-js/mermaid-cli
 
-  PlantUML             將 PlantUML 圖表轉為圖片。只有在你指定伺服器時，
+  PlantUML 1.2020.11+  將 PlantUML 圖表轉為圖片。只有在你指定伺服器時，
   （plantuml，或 java  才會改用該伺服器；請見 |md-render-plantuml|。
   搭配 $PLANTUML_JAR） https://plantuml.com/
 

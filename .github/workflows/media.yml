@@ -140,8 +140,10 @@ jobs:
           node -e "console.log('puppeteer', require('/tmp/md-render-mermaid/node_modules/puppeteer/package.json').version)"
           browser=$(node -e "require('/tmp/md-render-mermaid/node_modules/puppeteer').executablePath().then(console.log)")
           "$browser" --version
-      - name: Render through the plugin from a cold cache
-        run: nvim --headless -u NONE --noplugin -l tests/mermaid_integration.lua
+      - name: Render through the plugin and isolate Puppeteer configuration
+        run: |
+          nvim --headless -u NONE --noplugin -l tests/mermaid_integration.lua
+          nvim --headless -u NONE --noplugin -l tests/mermaid_security_integration.lua
 
   # The scheduled run is only meaningful if someone hears about it. A failing
   # cron job on a repo nobody is watching is the same as no test at all.

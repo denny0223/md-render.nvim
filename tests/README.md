@@ -29,7 +29,7 @@ Layer 2 exists because of a silent breakage: FFmpeg 9 removed `-vsync`, frame ex
 make test
 ```
 
-This needs Neovim and Python 3. In addition to the Lua checks, `tests/tooling_test.py` exercises capture failure, fresh baselines, process ownership, metric parsing and staged vendor updates with isolated command stubs. It launches no real terminal and downloads nothing. If ImageMagick 7 is installed, it also checks the actual normalized RMSE interface with identical, different and corrupt images. Run it alone with `make test-harness`.
+This needs Neovim and Python 3. In addition to the Lua checks, `tests/tooling_test.py` exercises capture failure, fresh baselines, process ownership, metric parsing and staged vendor updates with isolated command stubs. It launches no real terminal and downloads nothing. If ImageMagick 7 is installed, it also checks the actual normalized RMSE interface with identical, different and corrupt images. `make test-harness` also runs `download_integration_test.py` when curl is available: a temporary loopback HTTP server exercises the real plugin downloader, literal URLs, rejected redirect protocols and cleanup without contacting external services.
 
 ### Optional Snacks integration tests
 
@@ -79,10 +79,11 @@ Spanning majors is the point. Ubuntu 24.04 still ships FFmpeg 6.1, so a job that
 
 ### Real Mermaid renderer
 
-The media workflow has one Mermaid lane using CLI 12.0.0 and Puppeteer 25.12.0, which selects its own fixed browser revision. The fixture in `tests/fixtures/mermaid-cli/` locks its npm dependencies; CI runs `npm ci --ignore-scripts`, then explicitly runs the locked Puppeteer browser installer. It prints the CLI, Puppeteer and browser versions, then renders a small diagram through the plugin from an empty temporary cache. The output must pass real PNG decoding with positive dimensions. Missing tools and a broken browser fail this explicit integration check:
+The media workflow has one Mermaid lane using CLI 12.0.0 and Puppeteer 25.12.0, which selects its own fixed browser revision. The fixture in `tests/fixtures/mermaid-cli/` locks its npm dependencies; CI runs `npm ci --ignore-scripts`, then explicitly runs the locked Puppeteer browser installer. It prints the CLI, Puppeteer and browser versions, then renders a small diagram through the plugin from an empty temporary cache. The output must pass real PNG decoding with positive dimensions. A second real-process regression proves that executable Puppeteer configuration in the document and temporary ancestor directories runs in the controls but not through the plugin. Missing tools and a broken browser fail these explicit integration checks:
 
 ```sh
 nvim --headless -u NONE --noplugin -l tests/mermaid_integration.lua
+nvim --headless -u NONE --noplugin -l tests/mermaid_security_integration.lua
 ```
 
 Install `mmdc`, its browser and a PNG decoder (ImageMagick or macOS `sips`) before running it locally. The ordinary `make test` target does not invoke this check or install a browser. The CI-only wrapper supplies `--no-sandbox` to the browser for its fixed fixture on the hosted runner; plugin configuration and ordinary local runs do not use that override.

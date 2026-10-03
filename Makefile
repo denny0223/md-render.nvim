@@ -6,7 +6,8 @@ TEST_FILES := $(sort $(wildcard tests/*_test.lua))
 
 test: test-harness $(TEST_FILES)
 
-# Stdlib-only checks for test/maintenance tools; never launches a real terminal.
+# Maintenance checks plus loopback-only download integration; never launches a
+# real terminal or contacts an external network.
 test-harness:
 	python3 tests/tooling_test.py
 	python3 tests/download_integration_test.py

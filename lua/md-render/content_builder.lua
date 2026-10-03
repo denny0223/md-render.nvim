@@ -1238,13 +1238,11 @@ local function html_opening(text, name)
 end
 
 local function html_display_closing(text, name, start, literal_ranges)
-  local first, last = inline.html_closing(text, name, start)
-  local owner = first and html_literal_owned(literal_ranges, first)
-  while owner do
-    first, last = inline.html_closing(text, name, owner.finish + 1)
-    owner = first and html_literal_owned(literal_ranges, first)
+  name = name:lower()
+  for first, last, token in inline.html_tags(text, start) do
+    local tag_name, closing = inline.html_name(token)
+    if closing and tag_name == name and not html_literal_owned(literal_ranges, first) then return first, last end
   end
-  return first, last
 end
 
 local function html_pair(text, name, literal_ranges)

@@ -418,6 +418,33 @@ assert(
 -- Document display readers share the raw HTML owner's literal boundary.
 -- A heading, fold, table or media row cannot reactivate its hidden children.
 local opening_html, closing_html = string.rep("<b>", depth_limit + 1), string.rep("</b>", depth_limit + 1)
+do
+  -- Skipping literal-owned summary closers must retain failed delimiter state.
+  local literal = string.rep(opening_html .. "<!--x</summary>" .. closing_html, 200)
+  local source = {
+    "<details open><summary>" .. literal .. '</summary><a href="body.md">體</a></details><a href="after.md">後</a>',
+    "",
+    "[next](next.md)",
+  }
+  local _, content = native_measured(function()
+    local builder = ContentBuilder.new()
+    builder:render_document(source, { max_width = 400000, indent = "", text_scale = false })
+    return builder:result()
+  end, #source[1])
+  assert(content.lines[1] == "▼ " .. literal, "summary lookup preserves every malformed literal owner")
+  assert(#content.link_metadata == 3, "literal summary cannot consume its normal body and following links")
+  local labels = { ["body.md"] = "體", ["after.md"] = "後", ["next.md"] = "next" }
+  for _, link in ipairs(content.link_metadata) do
+    assert(
+      content.lines[link.line + 1]:sub(link.col_start + 1, link.col_end) == labels[link.url],
+      "bounded summary lookup retains normal UTF-8 link bytes"
+    )
+    assert(
+      content.source_line_map[link.line + 1] == (link.url == "next.md" and 3 or 1),
+      "bounded summary lookup retains physical source rows"
+    )
+  end
+end
 for _, middle in ipairs {
   '<h1><a href="hidden.md">中</a></h1>',
   '<details><summary><a href="hidden.md">中</a></summary>body</details>',

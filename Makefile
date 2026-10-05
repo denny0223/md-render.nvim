@@ -10,6 +10,7 @@ test: test-harness $(TEST_FILES)
 # real terminal or contacts an external network.
 test-harness:
 	python3 tests/tooling_test.py
+	python3 tests/tmux_diagnostics_test.py
 	python3 tests/download_integration_test.py
 
 $(TEST_FILES):

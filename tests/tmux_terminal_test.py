@@ -4,6 +4,7 @@
 Run under X11 or xvfb-run. Requires Kitty >= 0.40 and Neovim >= 0.12.
 Requires tmux >= 3.6 unless checking older versions with --expect-plain.
 Optional --output DIR retains terminal snapshots and screenshots (ImageMagick).
+--output-on-failure DIR collects diagnostics only after a failure.
 --images additionally requires image-heading Python dependencies, Pillow and ImageMagick.
 """
 import argparse
@@ -19,6 +20,7 @@ import socket as network
 import subprocess
 import tempfile
 import time
+import traceback
 import unicodedata
 
 from terminal_test import level_of, parse_meta
@@ -28,13 +30,44 @@ OSC66 = re.compile(r"\x1b\]66;([^;]*);(.*?)(?:\x1b\\|\x07)", re.S)
 SGR = re.compile(r"\x1b\[[0-9;:]*m")
 OSC8 = re.compile(r"\x1b\]8;.*?(?:\x1b\\|\x07)")
 
+TMUX_REFRESH_TRACE = r'''
+do
+  local original_system = vim.system
+  local socket = (vim.env.TMUX or ''):match('^(.*),%d+,%d+$')
+  _G.tmux_refresh_events = {}
+  vim.system = function(cmd, ...)
+    if type(cmd) ~= 'table' or not socket or #cmd ~= 6
+      or cmd[1] ~= 'tmux' or cmd[2] ~= '-S' or cmd[3] ~= socket
+      or cmd[4] ~= 'refresh-client' or cmd[5] ~= '-t' or type(cmd[6]) ~= 'string' then
+      return original_system(cmd, ...)
+    end
+    local opts, on_exit = ...
+    if type(opts) == 'function' then on_exit, opts = opts, nil end
+    if on_exit ~= nil and type(on_exit) ~= 'function' then return original_system(cmd, ...) end
+    local entry = {started=vim.uv.hrtime()/1e9, socket=socket, client=cmd[6]}
+    table.insert(_G.tmux_refresh_events, entry)
+    local ok, obj = pcall(original_system, cmd, opts, function(result)
+      entry.finished = vim.uv.hrtime()/1e9
+      entry.code, entry.signal, entry.stderr = result.code, result.signal, result.stderr
+      if on_exit then return on_exit(result) end
+    end)
+    if not ok then
+      entry.spawn_error = tostring(obj)
+      error(obj, 0)
+    end
+    entry.pid = obj.pid
+    return obj
+  end
+end
+'''
+
 
 def cell_width(text):
     return sum(0 if unicodedata.combining(ch) else 2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
 
 
 def scaled_positions(screen):
-    """Read actual Kitty cell positions, including each multicell run's width."""
+    """Estimate Kitty cell positions and widths from serialized OSC66 runs."""
     for row, line in enumerate(screen.splitlines()):
         column = end = 0
         for match in OSC66.finditer(line):
@@ -47,9 +80,33 @@ def scaled_positions(screen):
             end = match.end()
 
 
+def rich_frame(screen, geometry, snapshot):
+    """Return a painted target and its origin only after resize has settled."""
+    ctx = snapshot.get("context") or {}
+    if (snapshot.get("backend") != "native" or not ctx.get("supported") or not ctx.get("drawable")
+            or any(ctx.get(key) != geometry[key] for key in ("left", "top", "width", "height"))
+            or (snapshot.get("columns"), snapshot.get("rows")) != (geometry["width"], geometry["height"])
+            or not ctx.get("key") or snapshot.get("tmux_key") != ctx["key"] + ":true"
+            or not snapshot.get("placements") or snapshot.get("drawn") != snapshot["placements"]
+            or snapshot.get("last_drawn") != snapshot["placements"]):
+        return None
+    runs = OSC66.findall(screen)
+    positions = list(scaled_positions(screen))
+    if (not all(any(level_of(meta) == level for meta, _ in runs) for level in range(1, 7))
+            or not all(ctx["top"] <= row and row + height <= ctx["top"] + ctx["height"]
+                       and ctx["left"] <= col and col + width <= ctx["left"] + ctx["width"]
+                       for row, col, height, width in positions)):
+        return None
+    for (_, text), position in zip(runs, positions):
+        if text == "SECOND" and position[0] - ctx["top"] + 1 == snapshot.get("source_link_row"):
+            return position, ctx
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path)
+    outputs = parser.add_mutually_exclusive_group()
+    outputs.add_argument("--output", type=Path)
+    outputs.add_argument("--output-on-failure", type=Path)
     parser.add_argument("--checkout", type=Path, default=REPO, help="plugin checkout to test")
     parser.add_argument("--ssh", action="store_true", help="attach through an isolated loopback OpenSSH server")
     parser.add_argument("--passthrough", choices=("on", "all"), default="on")
@@ -57,6 +114,10 @@ def main():
     parser.add_argument("--expect-plain", action="store_true", help="verify fallback for tmux older than 3.6")
     parser.add_argument("--images", action="store_true", help="check image pixels, links and auto fallback; requires --passthrough all")
     options = parser.parse_args()
+    if options.output_on_failure and options.output_on_failure.exists() and (
+        not options.output_on_failure.is_dir() or any(options.output_on_failure.iterdir())
+    ):
+        parser.error("--output-on-failure requires a new or empty directory")
     if options.images and (options.passthrough != "all" or options.expect_plain):
         parser.error("--images requires --passthrough all and cannot use --expect-plain")
     capture_command = ["magick", "import"] if shutil.which("magick") else ["import"]
@@ -66,6 +127,7 @@ def main():
     if options.snacks:
         assert shutil.which(convert_command[0]), "ImageMagick conversion is required"
     output = options.output
+    diagnostic_output = options.output_on_failure or output
     if output:
         output.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
@@ -73,22 +135,33 @@ def main():
         env.pop(key, None)
 
     def run(args):
-        return subprocess.check_output(args, env=env, text=True, timeout=10)
+        return subprocess.check_output(args, env=env, text=True, timeout=10,
+                                       **({"stderr": subprocess.PIPE} if captured else {}))
 
     def wait_for(check, label):
+        nonlocal current_wait
+        current_wait = label
         deadline = time.monotonic() + 10
-        while True:
-            result = check()
-            if result:
-                break
-            assert time.monotonic() < deadline, label
-            time.sleep(.1)
+        try:
+            while True:
+                result = check()
+                if result:
+                    break
+                assert time.monotonic() < deadline, label
+                time.sleep(.1)
+        except Exception as error:
+            diagnose(type(error), error, error.__traceback__)
+            raise
         print("PASS " + label, flush=True)
         checks.append(label)
+        current_wait = None
         return result
 
     checks = []
-    with tempfile.TemporaryDirectory(prefix="md-native-tmux-") as td, ExitStack() as cleanups:
+    current_wait = last_input = painted_screen = None
+    launches = []
+    captured = False
+    with tempfile.TemporaryDirectory(prefix="md-native-tmux-") as td, ExitStack() as cleanups, ExitStack() as diagnostics:
         root = Path(td)
         env["NVIM_LOG_FILE"] = str(root / "nvim.log")
         server = str(root / "nvim.sock")
@@ -105,7 +178,10 @@ def main():
                     child.wait(timeout=5)
 
         def launch(args, logfile):
+            record = {"args": args, "started_at": time.time()}
+            launches.append(record)
             child = subprocess.Popen(args, env=env, stdout=logfile, stderr=logfile, start_new_session=True)
+            record["pid"] = child.pid
             cleanups.callback(stop, child)
             return child
 
@@ -132,6 +208,7 @@ require("md-render.image").setup { backend = "snacks" }
         init.write_text('''
 vim.opt.runtimepath:prepend(%s)
 %s
+%s
 vim.opt.swapfile = false
 vim.opt.shadafile = "NONE"
 vim.opt.termguicolors = true
@@ -140,7 +217,13 @@ vim.opt.cursorline = true
 vim.opt.laststatus = 0
 _G.focus_events = {}
 vim.api.nvim_create_autocmd({"FocusLost", "FocusGained"}, {callback=function(ev)
-  table.insert(_G.focus_events, {event=ev.event, time=vim.uv.hrtime()/1e9})
+  local buf=vim.api.nvim_get_current_buf()
+  local preview=package.loaded['md-render.preview']
+  local s=preview and preview._sessions[buf]
+  local ts=s and s.text_size_state
+  table.insert(_G.focus_events, {event=ev.event, time=vim.uv.hrtime()/1e9, buf=buf,
+    last_drawn=ts and ts.last_drawn, tmux_key=ts and ts.tmux_key,
+    owes_invalidate=ts and ts.owes_invalidate})
 end})
 vim.api.nvim_create_autocmd("TextYankPost", {callback=function() vim.hl.on_yank({timeout=500}) end})
 vim.api.nvim_create_autocmd("VimEnter", {once=true, callback=function()
@@ -149,19 +232,26 @@ vim.api.nvim_create_autocmd("VimEnter", {once=true, callback=function()
     vim.cmd "MdRender textsize %s"
     vim.cmd "MdRender toggle"
     vim.cmd "normal! gg0"
+    vim.fn.writefile({}, %s)
   end)
 end})
-''' % (json.dumps(str(options.checkout.resolve())), snacks_setup,
+''' % (json.dumps(str(options.checkout.resolve())), TMUX_REFRESH_TRACE, snacks_setup,
        'vim.api.nvim_set_hl(0,"Normal",{fg=0xd8dee9,bg=0x161c28})' if options.images else "",
-       "auto" if options.images else "native"))
+       "auto" if options.images else "native", json.dumps(str(root / "nvim.ready"))))
 
         def tmux(*args):
             return run(["tmux", "-S", socket, *args])
 
         def kitty(*args):
+            nonlocal last_input
+            if args[0] == "send-text":
+                last_input = {"kind": "kitty", "args": args, "time": time.time()}
             return run(["kitty", "@", "--to", terminal, *args])
 
         def lua(code):
+            nonlocal last_input
+            if "nvim_input(" in code:
+                last_input = {"kind": "nvim", "code": code, "time": time.time()}
             return run(["nvim", "--server", server, "--remote-expr", "luaeval('" + code.replace("'", "''") + "')"])
 
         def state():
@@ -193,27 +283,135 @@ end})
                 assert not scaled(), label + ": delayed output escaped"
                 time.sleep(.1)
 
-        def inside_pane():
+        def pane_geometry():
             fields = tmux("display-message", "-p", "-t", pane,
                           "#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{status}|#{status-position}").strip().split("|")
             left, top, pane_width, pane_height = map(int, fields[:4])
             status_rows = 1 if fields[4] == "on" else 0 if fields[4] == "off" else int(fields[4])
             if fields[5] == "top":
                 top += status_rows
+            return {"left": left, "top": top, "width": pane_width, "height": pane_height}
+
+        def inside_pane():
+            ctx = pane_geometry()
             positions = list(scaled_positions(kitty("get-text", "--ansi", "--add-wrap-markers")))
             return bool(positions) and all(
-                top <= row and row + height <= top + pane_height
-                and left <= column and column + width <= left + pane_width
+                ctx["top"] <= row and row + height <= ctx["top"] + ctx["height"]
+                and ctx["left"] <= column and column + width <= ctx["left"] + ctx["width"]
                 for row, column, height, width in positions
             )
+
+        def screenshot(path):
+            window = str(json.loads(kitty("ls"))[0]["platform_window_id"])
+            run([*capture_command, "-window", window, str(path)])
 
         def capture(name):
             if not output:
                 return
             (output / (name + ".ansi")).write_text(kitty("get-text", "--ansi", "--add-wrap-markers"))
             (output / (name + ".json")).write_text(json.dumps(state(), ensure_ascii=False, indent=2) + "\n")
-            window = str(json.loads(kitty("ls"))[0]["platform_window_id"])
-            run([*capture_command, "-window", window, str(output / (name + ".png"))])
+            screenshot(output / (name + ".png"))
+
+        def failure_state():
+            # Read the renderer's cached context; status()/mux.get() can start
+            # a fresh tmux query and change the state being diagnosed.
+            return json.loads(lua('''(function()
+              local preview=package.loaded['md-render.preview']
+              local text=package.loaded['md-render.text_size']
+              local s=preview and preview._sessions[vim.api.nvim_get_current_buf()]
+              local ts=s and s.text_size_state
+              local windows={}
+              for _,win in ipairs(vim.api.nvim_list_wins()) do
+                table.insert(windows,{win=win,buf=vim.api.nvim_win_get_buf(win),
+                  position=vim.api.nvim_win_get_position(win),config=vim.api.nvim_win_get_config(win),
+                  width=vim.api.nvim_win_get_width(win),height=vim.api.nvim_win_get_height(win),
+                  cursor=vim.api.nvim_win_get_cursor(win)})
+              end
+              return vim.json.encode({backend=s and s.content.heading_backend,
+                fallback=s and s.content.heading_fallback,context=ts and ts.tmux,tmux_key=ts and ts.tmux_key,
+                placements=s and s.content.text_placements,drawn=ts and ts.drawn,erased=ts and ts.erased,
+                last_drawn=ts and ts.last_drawn,last_layout=ts and ts.last_layout,
+                owes_invalidate=ts and ts.owes_invalidate,closed=ts and ts.closed,
+                gesture=ts and ts.gesture,press=ts and ts.press,dragged=ts and ts.dragged,
+                stats=text and text._stats,anchors=s and s.content.heading_anchors,
+                links=s and s.content.link_metadata,buf=vim.api.nvim_get_current_buf(),
+                win=vim.api.nvim_get_current_win(),cursor=vim.api.nvim_win_get_cursor(0),
+                view=vim.fn.winsaveview(),mouse=vim.fn.getmousepos(),mode=vim.api.nvim_get_mode(),
+                focus_events=_G.focus_events,refresh_events=_G.tmux_refresh_events,
+                eventignore=vim.o.eventignore,termsync=vim.o.termsync,
+                columns=vim.o.columns,rows=vim.o.lines,windows=windows,messages=vim.fn.execute('messages')})
+            end)()'''))
+
+        def diagnose(error_type, error, tb):
+            nonlocal captured
+            if not diagnostic_output or captured:
+                return
+            captured = error is not None
+            try:
+                diagnostic_output.mkdir(parents=True, exist_ok=True)
+            except Exception as secondary:
+                print(f"Cannot create diagnostic directory: {secondary}", flush=True)
+                return
+            report = {}
+
+            def keep(name, write):
+                entry = report[name] = {"started_at": time.time()}
+                try:
+                    path = diagnostic_output / name
+                    path.unlink(missing_ok=True)
+                    write(path)
+                except Exception as secondary:
+                    entry["error"] = repr(secondary)
+                    for key in ("stdout", "stderr"):
+                        value = getattr(secondary, key, None)
+                        if value is not None:
+                            entry[key] = value.decode(errors="replace") if isinstance(value, bytes) else value
+                entry["finished_at"] = time.time()
+
+            def write_json(path, value):
+                path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+            if error is not None:
+                keep("failure.json", lambda path: write_json(path, {
+                    "exception": {"type": error_type.__name__, "message": str(error),
+                                  "traceback": "".join(traceback.format_exception(error_type, error, tb))},
+                    "current_wait": current_wait, "checks": checks, "last_input": last_input,
+                    "launches": launches, "options": {key: str(value) if isinstance(value, Path) else value
+                                                       for key, value in vars(options).items()},
+                    "github": {key: env.get(key) for key in
+                               ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "GITHUB_SHA", "GITHUB_JOB")},
+                    "captured_at": time.time(), "atomic": False,
+                }))
+                # Capture pixels and cells before querying Neovim's event loop.
+                keep("failure.png", screenshot)
+                keep("failure.ansi", lambda path: path.write_text(kitty("get-text", "--ansi", "--add-wrap-markers")))
+                keep("failure.cells.json", lambda path: write_json(path, {
+                    "positions": list(scaled_positions((diagnostic_output / "failure.ansi").read_text())),
+                    "runs": OSC66.findall((diagnostic_output / "failure.ansi").read_text()),
+                }))
+                keep("input.ansi", lambda path: path.write_text(painted_screen) if painted_screen is not None else None)
+                keep("failure.pane.txt", lambda path: path.write_text(tmux("capture-pane", "-p", "-e", "-t", pane)))
+                keep("failure.state.json", lambda path: write_json(path, failure_state()))
+                keep("failure.kitty.json", lambda path: path.write_text(kitty("ls")))
+                keep("failure.clients.txt", lambda path: path.write_text(tmux("list-clients", "-F",
+                    "#{client_tty}|#{session_id}|#{window_id}|#{client_width}|#{client_height}|#{client_cell_width}|#{client_cell_height}|#{client_flags}|#{status}|#{status-position}")))
+                keep("failure.panes.txt", lambda path: path.write_text(tmux("list-panes", "-a", "-F",
+                    "#{pane_id}|#{window_id}|#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{pane_active}|#{pane_in_mode}|#{window_width}|#{window_height}|#{allow-passthrough}|#{focus-events}")))
+                for name, command in (("kitty", ["kitty", "--version"]), ("tmux", ["tmux", "-V"]),
+                                      ("nvim", ["nvim", "--version"]),
+                                      ("revision", ["git", "-C", str(options.checkout), "rev-parse", "HEAD"])):
+                    keep(f"{name}-version.txt", lambda path, command=command: path.write_text(run(command)))
+                for name in ("kitty", "nvim", "sshd"):
+                    if name == "sshd" and not options.ssh:
+                        continue
+                    source = (output or root) / (name + ".log") if name != "nvim" else root / "nvim.log"
+                    if source != diagnostic_output / (name + ".log"):
+                        keep(name + ".log", lambda path, source=source: shutil.copyfile(source, path))
+            keep("checks.json", lambda path: write_json(path, checks))
+            keep("diagnostics.json", lambda path: write_json(path, {key: value for key, value in report.items()
+                                                                  if key != "diagnostics.json"}))
+
+        diagnostics.push(diagnose)
 
         run(["tmux", "-S", socket, "-f", str(config), "new-session", "-d", "-s", "headings", "-x", "110", "-y", "56", "sleep 3600"])
         attach = ["tmux", "-S", socket, "attach-session", "-t", "headings"]
@@ -248,7 +446,7 @@ end})
             tmux("split-window", "-h", "-t", "headings:0.0", "sleep 3600")
             nvim = shlex.join(["nvim", "-u", str(init), "-i", "NONE", "--listen", server, str(fixture)])
             pane = tmux("split-window", "-v", "-t", "headings:0.1", "-P", "-F", "#{pane_id}", nvim).strip()
-            wait_for(lambda: Path(server).exists(), "Neovim started")
+            wait_for(lambda: Path(server).exists() and (root / "nvim.ready").exists(), "Neovim started")
             if options.images:
                 import base64
                 import io
@@ -380,11 +578,7 @@ end})
                 capture("unsupported-tmux")
                 print(f"tmux terminal: {len(checks)} checks passed (plain fallback)", flush=True)
                 return
-            try:
-                wait_for(lambda: state().get("drawn") == 6 and six_levels() and inside_pane(), "six distinct scales within bottom-right pane")
-            except AssertionError:
-                print(json.dumps(state(), ensure_ascii=False, indent=2), flush=True)
-                raise
+            wait_for(lambda: state().get("drawn") == 6 and six_levels() and inside_pane(), "six distinct scales within bottom-right pane")
             assert not state()["termsync"], "native headings disable pane-wide synchronized redraws"
             capture("01-split")
             wait_for(six_levels, "startup redraw restores six complete headings")
@@ -595,9 +789,30 @@ end})
 
             open_preview(rich)
             def rich_visible():
-                runs = scaled()
-                return (state().get("backend") == "native" and inside_pane()
-                        and all(any(level_of(meta) == level for meta, _ in runs) for level in range(1, 7)))
+                nonlocal painted_screen
+                geometry = pane_geometry()
+                snapshot = json.loads(lua('''(function()
+                  local preview=package.loaded['md-render.preview']
+                  local s=preview and preview._sessions[vim.api.nvim_get_current_buf()]
+                  local ts=s and s.text_size_state
+                  local source_link_row
+                  for _,link in ipairs(s and s.content.link_metadata or {}) do
+                    if link.url=='#second' then
+                      source_link_row=vim.fn.screenpos(s.win,link.line+1,link.col_start+1).row
+                      break
+                    end
+                  end
+                  return vim.json.encode({backend=s and s.content.heading_backend,
+                    context=ts and ts.tmux,tmux_key=ts and ts.tmux_key,
+                    placements=s and #s.content.text_placements,
+                    drawn=ts and ts.drawn and #ts.drawn,last_drawn=ts and ts.last_drawn,
+                    columns=vim.o.columns,rows=vim.o.lines,source_link_row=source_link_row})
+                end)()'''))
+                screen = kitty("get-text", "--ansi", "--add-wrap-markers")
+                frame = rich_frame(screen, geometry, snapshot)
+                if frame:
+                    painted_screen = screen
+                return frame
             wait_for(rich_visible, "rich Markdown preserves six native levels through tmux")
             screen = kitty("get-text", "--ansi", "--add-wrap-markers")
             assert ":Telescope" in "".join(text for _, text in scaled())
@@ -611,17 +826,15 @@ end})
 
             # Match a target using Kitty's painted cells, independently of the
             # renderer's hit map. Exercise both rows via real Neovim input.
-            def second_link_position():
-                screen = kitty("get-text", "--ansi", "--add-wrap-markers")
-                for match, position in zip(OSC66.finditer(screen), scaled_positions(screen)):
-                    if match[2] == "SECOND":
-                        return position
-
             for row_offset in (0, 1):
-                row, col, _, _ = wait_for(second_link_position, "SECOND link is painted before clicking")
-                ctx = state()["context"]
+                position, ctx = wait_for(rich_visible, "SECOND link is painted before clicking")
+                row, col, height, width = position
                 y, x = row - ctx["top"] + row_offset, col - ctx["left"] + 2
+                last_input = {"kind": "mouse", "time": time.time(), "painted": [row, col, height, width],
+                              "context": dict(ctx), "pane_row": y, "pane_column": x,
+                              "row_offset": row_offset, "phase": "press"}
                 lua(f"vim.api.nvim_input_mouse('left','press','',0,{y},{x})")
+                last_input["phase"] = "release"
                 lua(f"vim.api.nvim_input_mouse('left','release','',0,{y},{x})")
                 wait_for(lambda: lua("(function() local s=require('md-render.preview')._sessions[vim.api.nvim_get_current_buf()]; return vim.json.encode(vim.api.nvim_win_get_cursor(0)[1] == s.content.heading_anchors.second+1) end)()") == "true",
                          f"visible SECOND link activates its own anchor on row {row_offset + 1}")
@@ -655,13 +868,9 @@ end})
 
             assert "Pending mode" not in Path(log.name).read_text(), "synchronized output bypassed tmux's frame state"
             print(f"tmux terminal: {len(checks)} checks passed", flush=True)
-        except Exception:
-            if Path(server).exists() and output:
-                capture("failure")
+        except Exception as error:
+            diagnose(type(error), error, error.__traceback__)
             raise
-        finally:
-            if output:
-                (output / "checks.json").write_text(json.dumps(checks, indent=2) + "\n")
 
 
 if __name__ == "__main__":

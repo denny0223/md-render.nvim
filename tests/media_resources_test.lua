@@ -19,7 +19,8 @@ if arg[1] == "frame-worker" then
     assert(opts.timeout == 30000)
     local first = cmd[#cmd]:gsub("%%04d", "0001")
     assert(uv.fs_copyfile(fixture, first))
-    vim.fn.writefile({ vim.fs.dirname(first) }, ready)
+    assert(vim.fn.writefile({ vim.fs.dirname(first) }, ready .. ".tmp") == 0)
+    assert(uv.fs_rename(ready .. ".tmp", ready))
     assert(
       vim.wait(15000, function()
         return vim.fn.filereadable(release) == 1
@@ -34,7 +35,8 @@ if arg[1] == "frame-worker" then
   end
   local done
   image.extract_frames_async(source, function(frames)
-    vim.fn.writefile(frames or { "failed" }, result)
+    assert(vim.fn.writefile(frames or { "failed" }, result .. ".tmp") == 0)
+    assert(uv.fs_rename(result .. ".tmp", result))
     done = true
   end)
   assert(

@@ -62,6 +62,7 @@ jobs:
       # CJK heading in the fixture. Ubuntu's own kitty package is 0.32, far
       # below the 0.40 the text sizing protocol needs, so take the tarball.
       - name: Install Kitty ${{ matrix.kitty }} and Xvfb
+        timeout-minutes: 15
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

@@ -17,6 +17,37 @@ import tmux_terminal_test as driver
 
 
 class TmuxDiagnosticsTest(unittest.TestCase):
+    def test_rich_frame_rejects_stale_resize_context_and_paint(self):
+        def paint(left, top):
+            lines = [""] * (top + 28)
+            for level, row, text, col in ((1, 2, "H1", 4), (2, 6, "SECOND", 14),
+                                         (3, 10, "H3", 4), (4, 13, "H4", 4),
+                                         (5, 16, "H5", 4), (6, 19, "H6", 4),
+                                         (2, 22, "First", 4), (2, 26, "Second", 4)):
+                _, n, d = LEVEL_SCALE[level]
+                meta = "s=2" + (f":n={n}:d={d}" if n else "")
+                lines[top + row] = " " * (left + col) + f"\x1b]66;{meta};{text}\x1b\\"
+            return "\n".join(lines)
+
+        def snapshot(left, top, width, height):
+            ctx = {"left": left, "top": top, "width": width, "height": height,
+                   "supported": True, "drawable": True, "key": f"pane:{left}:{top}:{width}:{height}"}
+            return {"backend": "native", "context": ctx, "tmux_key": ctx["key"] + ":true",
+                    "columns": width, "rows": height, "placements": 8, "drawn": 8,
+                    "last_drawn": 8, "source_link_row": 7}
+
+        geometry = {"left": 0, "top": 0, "width": 110, "height": 56}
+        old = snapshot(56, 28, 54, 28)
+        current = snapshot(**geometry)
+        stale_screen = paint(56, 28)
+        # The old SECOND at (34, 70) fits inside the newly zoomed pane.
+        self.assertTrue(all(0 <= row and row + height <= 56 and 0 <= col and col + width <= 110
+                            for row, col, height, width in driver.scaled_positions(stale_screen)))
+        self.assertIsNone(driver.rich_frame(stale_screen, geometry, old))
+        self.assertIsNone(driver.rich_frame(stale_screen, geometry, current))
+        self.assertEqual(driver.rich_frame(paint(0, 0), geometry, current),
+                         ((6, 14, 2, 12), current["context"]))
+
     def run_driver(self, output=None, *, plain=False, fault=None, strict=False):
         calls, state_reads = [], 0
         original = RuntimeError("deliberate tmux startup failure")

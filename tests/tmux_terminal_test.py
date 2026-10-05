@@ -36,7 +36,7 @@ def cell_width(text):
 
 
 def scaled_positions(screen):
-    """Read actual Kitty cell positions, including each multicell run's width."""
+    """Estimate Kitty cell positions and widths from serialized OSC66 runs."""
     for row, line in enumerate(screen.splitlines()):
         column = end = 0
         for match in OSC66.finditer(line):
@@ -47,6 +47,28 @@ def scaled_positions(screen):
             yield row, column, height, width
             column += width
             end = match.end()
+
+
+def rich_frame(screen, geometry, snapshot):
+    """Return a painted target and its origin only after resize has settled."""
+    ctx = snapshot.get("context") or {}
+    if (snapshot.get("backend") != "native" or not ctx.get("supported") or not ctx.get("drawable")
+            or any(ctx.get(key) != geometry[key] for key in ("left", "top", "width", "height"))
+            or (snapshot.get("columns"), snapshot.get("rows")) != (geometry["width"], geometry["height"])
+            or not ctx.get("key") or snapshot.get("tmux_key") != ctx["key"] + ":true"
+            or not snapshot.get("placements") or snapshot.get("drawn") != snapshot["placements"]
+            or snapshot.get("last_drawn") != snapshot["placements"]):
+        return None
+    runs = OSC66.findall(screen)
+    positions = list(scaled_positions(screen))
+    if (not all(any(level_of(meta) == level for meta, _ in runs) for level in range(1, 7))
+            or not all(ctx["top"] <= row and row + height <= ctx["top"] + ctx["height"]
+                       and ctx["left"] <= col and col + width <= ctx["left"] + ctx["width"]
+                       for row, col, height, width in positions)):
+        return None
+    for (_, text), position in zip(runs, positions):
+        if text == "SECOND" and position[0] - ctx["top"] + 1 == snapshot.get("source_link_row"):
+            return position, ctx
 
 
 def main():
@@ -163,7 +185,13 @@ vim.opt.cursorline = true
 vim.opt.laststatus = 0
 _G.focus_events = {}
 vim.api.nvim_create_autocmd({"FocusLost", "FocusGained"}, {callback=function(ev)
-  table.insert(_G.focus_events, {event=ev.event, time=vim.uv.hrtime()/1e9})
+  local buf=vim.api.nvim_get_current_buf()
+  local preview=package.loaded['md-render.preview']
+  local s=preview and preview._sessions[buf]
+  local ts=s and s.text_size_state
+  table.insert(_G.focus_events, {event=ev.event, time=vim.uv.hrtime()/1e9, buf=buf,
+    last_drawn=ts and ts.last_drawn, tmux_key=ts and ts.tmux_key,
+    owes_invalidate=ts and ts.owes_invalidate})
 end})
 vim.api.nvim_create_autocmd("TextYankPost", {callback=function() vim.hl.on_yank({timeout=500}) end})
 vim.api.nvim_create_autocmd("VimEnter", {once=true, callback=function()
@@ -222,17 +250,21 @@ end})
                 assert not scaled(), label + ": delayed output escaped"
                 time.sleep(.1)
 
-        def inside_pane():
+        def pane_geometry():
             fields = tmux("display-message", "-p", "-t", pane,
                           "#{pane_left}|#{pane_top}|#{pane_width}|#{pane_height}|#{status}|#{status-position}").strip().split("|")
             left, top, pane_width, pane_height = map(int, fields[:4])
             status_rows = 1 if fields[4] == "on" else 0 if fields[4] == "off" else int(fields[4])
             if fields[5] == "top":
                 top += status_rows
+            return {"left": left, "top": top, "width": pane_width, "height": pane_height}
+
+        def inside_pane():
+            ctx = pane_geometry()
             positions = list(scaled_positions(kitty("get-text", "--ansi", "--add-wrap-markers")))
             return bool(positions) and all(
-                top <= row and row + height <= top + pane_height
-                and left <= column and column + width <= left + pane_width
+                ctx["top"] <= row and row + height <= ctx["top"] + ctx["height"]
+                and ctx["left"] <= column and column + width <= ctx["left"] + ctx["width"]
                 for row, column, height, width in positions
             )
 
@@ -723,9 +755,30 @@ end})
 
             open_preview(rich)
             def rich_visible():
-                runs = scaled()
-                return (state().get("backend") == "native" and inside_pane()
-                        and all(any(level_of(meta) == level for meta, _ in runs) for level in range(1, 7)))
+                nonlocal painted_screen
+                geometry = pane_geometry()
+                snapshot = json.loads(lua('''(function()
+                  local preview=package.loaded['md-render.preview']
+                  local s=preview and preview._sessions[vim.api.nvim_get_current_buf()]
+                  local ts=s and s.text_size_state
+                  local source_link_row
+                  for _,link in ipairs(s and s.content.link_metadata or {}) do
+                    if link.url=='#second' then
+                      source_link_row=vim.fn.screenpos(s.win,link.line+1,link.col_start+1).row
+                      break
+                    end
+                  end
+                  return vim.json.encode({backend=s and s.content.heading_backend,
+                    context=ts and ts.tmux,tmux_key=ts and ts.tmux_key,
+                    placements=s and #s.content.text_placements,
+                    drawn=ts and ts.drawn and #ts.drawn,last_drawn=ts and ts.last_drawn,
+                    columns=vim.o.columns,rows=vim.o.lines,source_link_row=source_link_row})
+                end)()'''))
+                screen = kitty("get-text", "--ansi", "--add-wrap-markers")
+                frame = rich_frame(screen, geometry, snapshot)
+                if frame:
+                    painted_screen = screen
+                return frame
             wait_for(rich_visible, "rich Markdown preserves six native levels through tmux")
             screen = kitty("get-text", "--ansi", "--add-wrap-markers")
             assert ":Telescope" in "".join(text for _, text in scaled())
@@ -739,17 +792,9 @@ end})
 
             # Match a target using Kitty's painted cells, independently of the
             # renderer's hit map. Exercise both rows via real Neovim input.
-            def second_link_position():
-                nonlocal painted_screen
-                screen = kitty("get-text", "--ansi", "--add-wrap-markers")
-                for match, position in zip(OSC66.finditer(screen), scaled_positions(screen)):
-                    if match[2] == "SECOND":
-                        painted_screen = screen
-                        return position
-
             for row_offset in (0, 1):
-                row, col, height, width = wait_for(second_link_position, "SECOND link is painted before clicking")
-                ctx = state()["context"]
+                position, ctx = wait_for(rich_visible, "SECOND link is painted before clicking")
+                row, col, height, width = position
                 y, x = row - ctx["top"] + row_offset, col - ctx["left"] + 2
                 last_input = {"kind": "mouse", "time": time.time(), "painted": [row, col, height, width],
                               "context": dict(ctx), "pane_row": y, "pane_column": x,

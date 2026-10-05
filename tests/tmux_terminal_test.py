@@ -200,11 +200,12 @@ vim.api.nvim_create_autocmd("VimEnter", {once=true, callback=function()
     vim.cmd "MdRender textsize %s"
     vim.cmd "MdRender toggle"
     vim.cmd "normal! gg0"
+    vim.fn.writefile({}, %s)
   end)
 end})
 ''' % (json.dumps(str(options.checkout.resolve())), snacks_setup,
        'vim.api.nvim_set_hl(0,"Normal",{fg=0xd8dee9,bg=0x161c28})' if options.images else "",
-       "auto" if options.images else "native"))
+       "auto" if options.images else "native", json.dumps(str(root / "nvim.ready"))))
 
         def tmux(*args):
             return run(["tmux", "-S", socket, *args])
@@ -412,7 +413,7 @@ end})
             tmux("split-window", "-h", "-t", "headings:0.0", "sleep 3600")
             nvim = shlex.join(["nvim", "-u", str(init), "-i", "NONE", "--listen", server, str(fixture)])
             pane = tmux("split-window", "-v", "-t", "headings:0.1", "-P", "-F", "#{pane_id}", nvim).strip()
-            wait_for(lambda: Path(server).exists(), "Neovim started")
+            wait_for(lambda: Path(server).exists() and (root / "nvim.ready").exists(), "Neovim started")
             if options.images:
                 import base64
                 import io

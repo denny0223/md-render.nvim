@@ -77,6 +77,8 @@ class TmuxDiagnosticsTest(unittest.TestCase):
                 if "split-window" in args and "-P" in args:
                     invocation = shlex.split(args[-1])
                     Path(invocation[invocation.index("--listen") + 1]).touch()
+                    if fault != "missing_ready":
+                        (Path(root) / "nvim.ready").touch()
                     Path(kwargs["env"]["NVIM_LOG_FILE"]).write_text("private Neovim log\n")
                     return "%2\n"
                 if "capture-pane" in args:
@@ -156,6 +158,19 @@ class TmuxDiagnosticsTest(unittest.TestCase):
             for name in ("kitty", "tmux", "nvim", "revision"):
                 self.assertTrue((output / f"{name}-version.txt").exists())
             self.assertTrue((output / "diagnostics.json").exists())
+
+    def test_neovim_socket_does_not_bypass_fixture_readiness(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "not-ready"
+            error, calls, _ = self.run_driver(output, fault="missing_ready")
+            self.assertIsInstance(error, AssertionError)
+            self.assertEqual(str(error), "Neovim started")
+            failure = json.loads((output / "failure.json").read_text())
+            self.assertEqual(failure["current_wait"], "Neovim started")
+            self.assertEqual(failure["checks"], ["Kitty started"])
+            reads = [args for args in calls if "--server" in args]
+            self.assertEqual(len(reads), 1)
+            self.assertIn("package.loaded", reads[0][-1])  # Only the failure collector queries Neovim.
 
     def test_failed_capture_keeps_assertion_and_other_sources(self):
         for fault, strict in (("capture", False), ("missing_capture", False), ("capture", True)):

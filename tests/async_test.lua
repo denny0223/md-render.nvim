@@ -343,19 +343,66 @@ end)
 
 test("system force-kills a process that ignores its TERM deadline", function()
   local system, child, result = vim.system
-  vim.system = function(...)
-    child = system(...)
-    return child
-  end
-  local task = async.run(function()
-    result = async.system({ "sh", "-c", "trap '' TERM; printf ready; exec sleep 10" }, { text = true, timeout = 100 })
+  local ready = vim.fn.tempname()
+  local probe = vim.uv.new_timer()
+  local methods = getmetatable(probe).__index
+  probe:close()
+  local start, timers = methods.start, {}
+  local task, bounded
+  local ok, err = pcall(function()
+    -- Keep the real native TERM and wrapper KILL timers, but start their
+    -- original deadlines only after the child has installed its TERM trap.
+    methods.start = function(timer, delay, repeat_ms, callback)
+      if delay == 100 or delay == 1100 then
+        timers[#timers + 1] = { timer, delay, repeat_ms, callback }
+      else
+        return start(timer, delay, repeat_ms, callback)
+      end
+    end
+    vim.system = function(...)
+      child = system(...)
+      return child
+    end
+    task = async.run(function()
+      result = async.system(
+        { "sh", "-c", "trap '' TERM; printf ready; : > \"$1\"; exec sleep 10", "md-render-ready", ready },
+        { text = true, timeout = 100 }
+      )
+    end)
+    methods.start, vim.system = start, system
+    assert(
+      vim.wait(5000, function()
+        return vim.uv.fs_stat(ready) ~= nil
+      end, 5),
+      "TERM-ignoring fixture did not become ready"
+    )
+    assert(
+      #timers == 2 and (timers[1][2] == 100 or timers[2][2] == 100) and (timers[1][2] == 1100 or timers[2][2] == 1100),
+      "fixture must gate both the wrapper watchdog and native TERM deadline"
+    )
+    for _, timer in ipairs(timers) do
+      if not timer[1]:is_closing() then start(unpack(timer)) end
+    end
+    bounded = vim.wait(2000, function()
+      return result ~= nil
+    end, 5)
+    if not bounded and child then child:kill(9) end -- Clean the failing control up too.
+    task:wait(2000)
   end)
-  local bounded = vim.wait(2000, function()
-    return result ~= nil
-  end, 5)
-  if not bounded and child then child:kill(9) end -- Clean the failing control up too.
-  task:wait(2000)
-  vim.system = system
+  methods.start, vim.system = start, system
+  if child and not result then
+    pcall(child.kill, child, 9)
+    pcall(child.wait, child, 2000)
+  end
+  if task and not result then pcall(task.close, task) end
+  for _, timer in ipairs(timers) do
+    if not timer[1]:is_closing() then
+      timer[1]:stop()
+      timer[1]:close()
+    end
+  end
+  vim.fn.delete(ready)
+  if not ok then error(err, 0) end
   assert_true(bounded, "an ignored SIGTERM must not hold an async waiter indefinitely")
   assert_eq(
     result and { result.code, result.signal, result.stdout },

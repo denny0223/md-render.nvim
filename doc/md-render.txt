@@ -1360,17 +1360,40 @@ image.reset_cache() ~
 
                                                         *image.cache_dir()*
 image.cache_dir() ~
-	Return the plugin's persistent media cache directory. To remove its
-	downloads and generated images, close previews and image tabs, wait
-	for active conversions to finish, then run: >vim
+	Return the persistent media cache directory
+	stdpath("cache")/md-render, containing downloaded images/videos,
+	converted PNGs, diagrams, and animation frames. Neovim instances
+	sharing it reuse files across sessions. There is no automatic
+	expiration, eviction, or total-size quota.
 
-  :lua vim.fn.delete(require("md-render.image").cache_dir(), "rf")
-<	Restart Neovim before reopening a preview to release retained preview
-	state. Files are downloaded or regenerated when needed again.
+	Offline reuse is best-effort and requires cached files and tools; keep
+	your own local attachments for durable offline use. Sensitive media
+	and generated copies remain until cleared; deletion is not secure
+	erasure. Snacks manages a separate cache.
 
-	Transfers, metadata scans and plugin-managed conversions have
-	individual limits. Persistent caches have no total size limit. Process
-	deadlines do not cap native decoders' memory or scratch-disk use.
+	To clear this plugin's cache:
+	1. Record the exact directory from :checkhealth md-render or: >vim
+
+  :lua print(require("md-render.image").cache_dir())
+<	2. Stop ALL Neovim instances sharing that directory and any related
+	   downloads, renderers, or conversion jobs.
+	3. After all have stopped, use a file manager outside Neovim to remove
+	   only the recorded directory. Clear Snacks' own cache if needed.
+
+	Restart Neovim and reopen the document. Recreating cleared media may
+	need the original sources, tools, and network access.
+
+	Built-in curl is configured with 20 MB/10 s for image downloads and
+	100 MiB/30 s for explicit video downloads; its size checks depend on the
+	installed version. Local diagram rendering, conversion, and frame
+	extraction have 30 s deadlines; remote PlantUML uses 20 MB/15 s, and
+	video probes have a 5 s deadline. Converted static PNGs are resized to
+	at most 2000 pixels per dimension. Animations retain at most 300 frames,
+	at most 400x400 pixels with ffmpeg or 800x800 with magick.
+	These settings concern individual plugin-managed jobs or final output;
+	they do not cap native decoders' peak memory or scratch-disk use.
+	PNG images bypass static conversion. Custom downloaders and Snacks'
+	own conversions are outside these per-job limits.
 
 							*image.supports_kitty()*
 image.supports_kitty() ~

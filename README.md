@@ -605,15 +605,19 @@ The server also needs `curl` and controls its own security profile. Rendered dia
 <details>
 <summary><strong>Where is the image cache, and how can I clear it?</strong></summary>
 
-`:checkhealth md-render` shows this plugin's media cache location, also available from `require("md-render.image").cache_dir()`. `image.reset_cache()` resets in-memory capability and probe caches; it does not remove cached files. To remove its cached downloads and generated images, close previews and image tabs, let any active conversions finish, then run:
+The persistent media cache is `stdpath("cache")/md-render`: downloaded images/videos, converted PNGs, diagrams, and animation frames. Neovim instances sharing this directory reuse files across sessions. There is no automatic expiration, eviction, or total-size quota. `image.reset_cache()` leaves cached files intact.
 
-```vim
-:lua vim.fn.delete(require("md-render.image").cache_dir(), "rf")
-```
+Offline reuse is best-effort and requires the cached files and tools; keep your own local attachments for durable offline use. Sensitive media and generated copies remain until cleared; deletion is not secure erasure. Snacks manages a separate cache.
 
-Restart Neovim before reopening a preview so it releases any retained preview state. Files are downloaded or regenerated when needed again.
+To clear this plugin's cache:
 
-Transfers, metadata scans and plugin-managed conversions have individual limits. Persistent caches currently have no total size limit, and process deadlines do not cap native decoders' memory or scratch-disk use.
+1. Record the exact directory from `:checkhealth md-render` or `:lua print(require("md-render.image").cache_dir())`.
+2. Stop **all Neovim instances sharing it** and related downloads, renderers, or conversion jobs.
+3. After everything stops, remove **only that directory** with a file manager outside Neovim. Clear Snacks' cache separately if needed.
+
+Restart Neovim and reopen the document. Recreating cleared media may need the original sources, tools, and network access.
+
+Per-job limits do not bound total cache size or native decoders' peak memory and scratch-disk use. See [the cache reference](doc/md-render.txt) (`:help image.cache_dir()@en`) for limits and scope.
 
 </details>
 

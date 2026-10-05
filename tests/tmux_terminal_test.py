@@ -30,6 +30,37 @@ OSC66 = re.compile(r"\x1b\]66;([^;]*);(.*?)(?:\x1b\\|\x07)", re.S)
 SGR = re.compile(r"\x1b\[[0-9;:]*m")
 OSC8 = re.compile(r"\x1b\]8;.*?(?:\x1b\\|\x07)")
 
+TMUX_REFRESH_TRACE = r'''
+do
+  local original_system = vim.system
+  local socket = (vim.env.TMUX or ''):match('^(.*),%d+,%d+$')
+  _G.tmux_refresh_events = {}
+  vim.system = function(cmd, ...)
+    if type(cmd) ~= 'table' or not socket or #cmd ~= 6
+      or cmd[1] ~= 'tmux' or cmd[2] ~= '-S' or cmd[3] ~= socket
+      or cmd[4] ~= 'refresh-client' or cmd[5] ~= '-t' or type(cmd[6]) ~= 'string' then
+      return original_system(cmd, ...)
+    end
+    local opts, on_exit = ...
+    if type(opts) == 'function' then on_exit, opts = opts, nil end
+    if on_exit ~= nil and type(on_exit) ~= 'function' then return original_system(cmd, ...) end
+    local entry = {started=vim.uv.hrtime()/1e9, socket=socket, client=cmd[6]}
+    table.insert(_G.tmux_refresh_events, entry)
+    local ok, obj = pcall(original_system, cmd, opts, function(result)
+      entry.finished = vim.uv.hrtime()/1e9
+      entry.code, entry.signal, entry.stderr = result.code, result.signal, result.stderr
+      if on_exit then return on_exit(result) end
+    end)
+    if not ok then
+      entry.spawn_error = tostring(obj)
+      error(obj, 0)
+    end
+    entry.pid = obj.pid
+    return obj
+  end
+end
+'''
+
 
 def cell_width(text):
     return sum(0 if unicodedata.combining(ch) else 2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
@@ -177,6 +208,7 @@ require("md-render.image").setup { backend = "snacks" }
         init.write_text('''
 vim.opt.runtimepath:prepend(%s)
 %s
+%s
 vim.opt.swapfile = false
 vim.opt.shadafile = "NONE"
 vim.opt.termguicolors = true
@@ -203,7 +235,7 @@ vim.api.nvim_create_autocmd("VimEnter", {once=true, callback=function()
     vim.fn.writefile({}, %s)
   end)
 end})
-''' % (json.dumps(str(options.checkout.resolve())), snacks_setup,
+''' % (json.dumps(str(options.checkout.resolve())), TMUX_REFRESH_TRACE, snacks_setup,
        'vim.api.nvim_set_hl(0,"Normal",{fg=0xd8dee9,bg=0x161c28})' if options.images else "",
        "auto" if options.images else "native", json.dumps(str(root / "nvim.ready"))))
 
@@ -305,7 +337,8 @@ end})
                 links=s and s.content.link_metadata,buf=vim.api.nvim_get_current_buf(),
                 win=vim.api.nvim_get_current_win(),cursor=vim.api.nvim_win_get_cursor(0),
                 view=vim.fn.winsaveview(),mouse=vim.fn.getmousepos(),mode=vim.api.nvim_get_mode(),
-                focus_events=_G.focus_events,eventignore=vim.o.eventignore,termsync=vim.o.termsync,
+                focus_events=_G.focus_events,refresh_events=_G.tmux_refresh_events,
+                eventignore=vim.o.eventignore,termsync=vim.o.termsync,
                 columns=vim.o.columns,rows=vim.o.lines,windows=windows,messages=vim.fn.execute('messages')})
             end)()'''))
 

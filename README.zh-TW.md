@@ -598,15 +598,19 @@ require("md-render.image").setup {
 <details>
 <summary><strong>圖片快取在哪裡？如何清除？</strong></summary>
 
-`:checkhealth md-render` 會顯示此外掛的媒體快取位置，也可用 `require("md-render.image").cache_dir()` 取得。`image.reset_cache()` 只重設記憶體中的能力與探測快取，不會刪除快取檔案。若要刪除其中的下載檔案與產生的圖片，請先關閉預覽和圖片分頁，等正在進行的轉換完成，再執行：
+持久媒體快取位於 `stdpath("cache")/md-render`，包含下載的圖片／影片、轉檔 PNG、圖表與動畫影格。使用同一目錄的 Neovim 實例會共用檔案，重新啟動後仍會保留。沒有自動到期、淘汰或總容量配額。`image.reset_cache()` 不會刪除快取檔案。
 
-```vim
-:lua vim.fn.delete(require("md-render.image").cache_dir(), "rf")
-```
+快取檔案與工具仍可用時可離線重用，但不保證永久保留；長期離線使用請自行保存本機附件。敏感媒體與產生的副本會保留至清除快取；一般刪除不代表安全抹除。Snacks 另行管理快取。
 
-請先重新啟動 Neovim，再開啟預覽，讓記憶體中保留的預覽狀態一併釋放。之後需要時，檔案會重新下載或產生。
+清除此外掛的快取：
 
-傳輸、中繼資料掃描及外掛管理的轉檔各有工作上限。目前持久快取沒有總容量上限，程序逾時也無法限制原生解碼工具的記憶體或暫存磁碟用量。
+1. 記下 `:checkhealth md-render` 或 `:lua print(require("md-render.image").cache_dir())` 顯示的確切目錄。
+2. 停止**所有共用此目錄的 Neovim 實例**及相關下載、圖表產生或轉檔工作。
+3. 全部停止後，在 Neovim 外用檔案管理員，**只刪除記下的目錄**。若有需要，另外清除 Snacks 的快取。
+
+重新啟動 Neovim 並開啟文件；重新下載或產生媒體可能需要原始來源、工具與網路存取。
+
+個別工作的上限無法限制快取總容量，也無法限制原生解碼工具的記憶體尖峰或暫存磁碟用量。上限與適用範圍請見[快取參考手冊](doc/md-render.twx)（`:help image.cache_dir()@tw`）。
 
 </details>
 

@@ -1,4 +1,4 @@
-"""Exercise the plugin's real curl downloader against a loopback-only HTTP server."""
+"""Exercise real curl downloads and cross-process cache cleanup on loopback only."""
 
 import http.server
 import json
@@ -46,11 +46,14 @@ def main():
             temp = Path(directory)
             base = f"http://127.0.0.1:{server.server_port}"
             (temp / ".curlrc").write_text(f'url = "{base}/curlrc-trap"\n')
+            source, local_image = temp / "source.puml", temp / "local.png"
+            source.write_text("@startuml\nAlice -> Bob\n@enduml")
+            local_image.write_bytes(png)
+            originals = {path: path.read_bytes() for path in (source, local_image)}
             runner = temp / "check.lua"
             runner.write_text(r'''
 local config = vim.json.decode(assert(os.getenv "MD_RENDER_SECURITY_CONFIG"))
 package.path = config.repo .. "/lua/?.lua;" .. config.repo .. "/lua/?/init.lua;" .. package.path
-vim.fn.stdpath = function() return config.temp end
 local real_system, codes = vim.system, {}
 vim.system = function(cmd, opts, callback)
   return real_system(cmd, opts, function(result)
@@ -59,7 +62,13 @@ vim.system = function(cmd, opts, callback)
   end)
 end
 local image = require "md-render.image"
-for _, name in ipairs { "/ordinary.png", "/brace{a,b}.png", "/bracket[1-3].png", "/redirect", "/broken.png", "/partial.png", "/truncated.jpg" } do
+if config.phase ~= "populate" then
+  assert((image.get_cached(config.base .. "/ordinary.png") ~= nil) == (config.phase == "reuse"), "unexpected download cache state")
+end
+local names = config.phase == "populate"
+  and { "/ordinary.png", "/brace{a,b}.png", "/bracket[1-3].png", "/redirect", "/broken.png", "/partial.png", "/truncated.jpg" }
+  or { "/ordinary.png" }
+for _, name in ipairs(names) do
   local done, output = false, nil
   image.download_async(config.base .. name, function(path) done, output = true, path end)
   assert(vim.wait(20000, function() return done end), "download timed out: " .. name)
@@ -76,13 +85,19 @@ local executable = vim.fn.executable
 vim.fn.executable = function(name) return (name == "plantuml" or name == "java") and 0 or executable(name) end
 image.reset_cache()
 image.setup { plantuml_server = config.base .. "/plantuml" }
+local source = table.concat(vim.fn.readfile(config.source), "\n")
+assert((image.get_plantuml_cached(source) ~= nil) == (config.phase == "reuse"), "unexpected diagram cache state")
 local done, output = false, nil
-image.render_plantuml_async("@startuml\nAlice -> Bob\n@enduml", function(path) done, output = true, path end)
+image.render_plantuml_async(source, function(path) done, output = true, path end)
 assert(vim.wait(20000, function() return done end) and output, "remote PlantUML download failed")
 assert(image.image_dimensions(output) == 4)
+vim.fn.writefile({ vim.json.encode {
+  cache_dir = image.cache_dir(),
+  download = image.get_cached(config.base .. "/ordinary.png"),
+  diagram = output,
+} }, config.result)
 ''')
             env = os.environ | {
-                "MD_RENDER_SECURITY_CONFIG": json.dumps({"repo": str(repo), "temp": str(temp), "base": base}),
                 "XDG_CONFIG_HOME": str(temp / "xdg-config"),
                 "XDG_DATA_HOME": str(temp / "xdg-data"),
                 "XDG_CACHE_HOME": str(temp / "xdg-cache"),
@@ -90,17 +105,38 @@ assert(image.image_dimensions(output) == 4)
                 "NVIM_LOG_FILE": str(temp / "nvim.log"),
                 "CURL_HOME": str(temp),
             }
-            result = subprocess.run(
-                ["nvim", "-n", "-i", "NONE", "--headless", "-u", "NONE", "--noplugin", "-l", str(runner)],
-                cwd=repo, env=env, capture_output=True, text=True, timeout=60,
-            )
-            assert result.returncode == 0, result.stdout + result.stderr
+            def run(phase):
+                env["MD_RENDER_SECURITY_CONFIG"] = json.dumps({
+                    "repo": str(repo), "base": base, "source": str(source),
+                    "phase": phase, "result": str(temp / "result.json"),
+                })
+                result = subprocess.run(
+                    ["nvim", "-n", "-i", "NONE", "--headless", "-u", "NONE", "--noplugin", "-l", str(runner)],
+                    cwd=repo, env=env, capture_output=True, text=True, timeout=60,
+                )
+                assert result.returncode == 0, result.stdout + result.stderr
+                assert all(path.read_bytes() == data for path, data in originals.items()), "source/local media changed"
+                return json.loads((temp / "result.json").read_text())
+
+            populated = run("populate")
             assert requests[:7] == [
                 "/ordinary.png", "/brace{a,b}.png", "/bracket[1-3].png", "/redirect", "/broken.png", "/partial.png", "/truncated.jpg",
             ], requests
             assert len(requests) == 8 and requests[7].startswith("/plantuml/png/~h"), requests
-            assert len(list((temp / "md-render/images").iterdir())) == 3, "failed download left cache/staging output"
-            assert len(list((temp / "md-render/plantuml").iterdir())) == 1, "diagram staging output leaked"
+            cache_dir = Path(populated["cache_dir"])
+            assert cache_dir.name == "md-render" and cache_dir.is_relative_to(temp / "xdg-cache"), cache_dir
+            assert len(list((cache_dir / "images").iterdir())) == 3, "failed download left cache/staging output"
+            assert len(list((cache_dir / "plantuml").iterdir())) == 1, "diagram staging output leaked"
+            assert run("reuse") == populated, "fresh process did not reuse the same cache files"
+            assert len(requests) == 8, "cache reuse made new HTTP requests"
+
+            # Every Neovim worker and its awaited producers have exited before removal.
+            shutil.rmtree(cache_dir)
+            assert not cache_dir.exists()
+            assert all(path.read_bytes() == data for path, data in originals.items()), "purge changed source/local media"
+            assert run("rebuild") == populated, "fresh process did not rebuild the same cache entries"
+            assert requests[8:] == ["/ordinary.png", requests[7]], requests
+            print(f"Media cache lifecycle: {cache_dir}; reuse without HTTP, purge after exit, and rebuild passed")
     finally:
         server.shutdown()
         server.server_close()

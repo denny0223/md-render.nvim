@@ -376,7 +376,7 @@ end
 ---@param line_gap? integer blank lines to insert after each wrapped line
 ---@param hard_breaks? MdRender.Markdown.Break[] mandatory paragraph row boundaries
 ---@param source_lines? integer[] original source rows of the paragraph
----@param source_breaks? { offset: integer, src: integer }[] ordered rendered byte offsets of source line starts
+---@param source_runs? { col: integer, source_line: integer }[] physical source owners of rendered bytes
 function ContentBuilder:add_wrapped_markdown(
   rendered_text,
   md_highlights,
@@ -388,7 +388,7 @@ function ContentBuilder:add_wrapped_markdown(
   line_gap,
   hard_breaks,
   source_lines,
-  source_breaks
+  source_runs
 )
   local wrap_text = rendered_text
   local content_offset = 0
@@ -464,8 +464,9 @@ function ContentBuilder:add_wrapped_markdown(
   local source_index, mapped_source = 1, saved_source
   for idx, wline in ipairs(wrapped_lines) do
     local start = line_starts[idx] + content_offset
-    while source_breaks and source_breaks[source_index] and source_breaks[source_index].offset <= start do
-      mapped_source = source_breaks[source_index].src
+    while source_runs and source_runs[source_index] and source_runs[source_index].col <= start do
+      local source_row = source_runs[source_index].source_line
+      mapped_source = saved_source + source_lines[source_row] - source_lines[1]
       source_index = source_index + 1
     end
     local line_prefix = quote_prefix ~= "" and (indent .. quote_prefix) or indent
@@ -872,30 +873,6 @@ function ContentBuilder:add_image_heading(text, highlights, links, indent, max_w
   return true
 end
 
--- ponytail: separately rendered pieces approximate cross-line markup and CJK joins;
--- track positions through inline parsing if exact boundary attribution is required.
----@return { offset: integer, src: integer }[]
-local function locate_source_breaks(text, source_lines, base_source, render)
-  local breaks, offset, first, index = {}, 0, 1, 1
-  for pos in text:gmatch "()\n" do
-    local piece = render(text:sub(first, pos))
-    if
-      piece:sub(-1) == " "
-      and wrap_mod.is_east_asian_wide(wrap_mod.last_char(text:sub(first, pos - 1)))
-      and wrap_mod.is_east_asian_wide(wrap_mod.first_char(text:sub(pos + 1, pos + 4)))
-    then
-      piece = piece:sub(1, -2)
-    end
-    offset = offset + #piece
-    index = index + 1
-    if source_lines[index] then
-      breaks[#breaks + 1] = { offset = offset, src = base_source + source_lines[index] - source_lines[1] }
-    end
-    first = pos + 1
-  end
-  return breaks
-end
-
 --- Add a markdown-rendered line with wrapping support
 ---@param self MdRender.ContentBuilder
 ---@param text string
@@ -920,8 +897,17 @@ function ContentBuilder:add_markdown_line(
   block_context
 )
   local markdown = require "md-render.markdown"
-  local rendered_text, md_highlights, md_links, special_type, list_marker, alert_type, fold_mod, heading_content, hard_breaks =
-    markdown.render(text, repo_base_url, autolinks, ref_links, footnote_map, nil, block_context)
+  local rendered_text, md_highlights, md_links, special_type, list_marker, alert_type, fold_mod, heading_content, hard_breaks, source_runs =
+    markdown.render(
+      text,
+      repo_base_url,
+      autolinks,
+      ref_links,
+      footnote_map,
+      nil,
+      block_context,
+      source_lines and #source_lines > 1
+    )
 
   local quote_prefix = ""
   if special_type == "blockquote" then
@@ -1013,12 +999,6 @@ function ContentBuilder:add_markdown_line(
     self:add_native_heading(rendered_text, md_highlights, md_links, indent, spec, level, max_width)
   elseif not image_added then
     if #hard_breaks > 0 or indent_w + vim.api.nvim_strwidth(rendered_text) > max_width then
-      local source_breaks = not heading_content
-        and source_lines
-        and #source_lines > 1
-        and locate_source_breaks(text, source_lines, self._current_source_line, function(piece)
-          return (markdown.render(piece, repo_base_url, autolinks, ref_links, footnote_map, nil, block_context))
-        end)
       self:add_wrapped_markdown(
         rendered_text,
         md_highlights,
@@ -1030,10 +1010,19 @@ function ContentBuilder:add_markdown_line(
         nil,
         hard_breaks,
         source_lines,
-        source_breaks
+        not heading_content and source_runs or nil
       )
     else
+      local saved_source = self._current_source_line
+      local start = #quote_prefix + #(list_marker or "")
+      if source_runs and not heading_content and start < #rendered_text then
+        for _, run in ipairs(source_runs) do
+          if run.col > start then break end
+          self:set_source_line(saved_source + source_lines[run.source_line] - source_lines[1])
+        end
+      end
       self:add_simple_markdown(rendered_text, md_highlights, md_links, indent)
+      self:set_source_line(saved_source)
     end
   end
 

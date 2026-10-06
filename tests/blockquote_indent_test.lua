@@ -270,7 +270,7 @@ end
 do
   local c = build({ "> [甲乙\\", "丙丁](/dest) *tail*", "> next" }, { max_width = 12, source_line_offset = 20 })
   assert_eq(c.lines, { "│ 甲乙", "│ 丙丁 tail", "│ next" }, "hard breaks and wrapping retain quote ownership")
-  assert_eq(c.source_line_map, { 21, 22, 22 }, "mandatory segments and wrapped rows retain physical source rows")
+  assert_eq(c.source_line_map, { 21, 22, 23 }, "mandatory segments and wrapped rows retain physical source rows")
   local labels = {}
   for _, link in ipairs(c.link_metadata) do
     labels[#labels + 1] = c.lines[link.line + 1]:sub(link.col_start + 1, link.col_end)

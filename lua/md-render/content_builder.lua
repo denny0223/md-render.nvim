@@ -376,6 +376,7 @@ end
 ---@param line_gap? integer blank lines to insert after each wrapped line
 ---@param hard_breaks? MdRender.Markdown.Break[] mandatory paragraph row boundaries
 ---@param source_lines? integer[] original source rows of the paragraph
+---@param source_runs? { col: integer, source_line: integer }[] physical source owners of rendered bytes
 function ContentBuilder:add_wrapped_markdown(
   rendered_text,
   md_highlights,
@@ -386,7 +387,8 @@ function ContentBuilder:add_wrapped_markdown(
   list_marker,
   line_gap,
   hard_breaks,
-  source_lines
+  source_lines,
+  source_runs
 )
   local wrap_text = rendered_text
   local content_offset = 0
@@ -459,11 +461,18 @@ function ContentBuilder:add_wrapped_markdown(
 
   line_gap = line_gap or 0
   local saved_source = self._current_source_line
+  local source_index, mapped_source = 1, saved_source
   for idx, wline in ipairs(wrapped_lines) do
+    local start = line_starts[idx] + content_offset
+    while source_runs and source_runs[source_index] and source_runs[source_index].col <= start do
+      local source_row = source_runs[source_index].source_line
+      mapped_source = saved_source + source_lines[source_row] - source_lines[1]
+      source_index = source_index + 1
+    end
     local line_prefix = quote_prefix ~= "" and (indent .. quote_prefix) or indent
     local lm = idx == 1 and list_prefix or list_continuation
     local line_hls = per_line_hls[idx]
-    self:set_source_line(row_sources[idx])
+    self:set_source_line(math.max(row_sources[idx], mapped_source))
     self:add_line(line_prefix .. lm .. wline, #line_hls > 0 and line_hls or nil)
     for _ = 1, line_gap do
       self:add_line ""
@@ -888,8 +897,17 @@ function ContentBuilder:add_markdown_line(
   block_context
 )
   local markdown = require "md-render.markdown"
-  local rendered_text, md_highlights, md_links, special_type, list_marker, alert_type, fold_mod, heading_content, hard_breaks =
-    markdown.render(text, repo_base_url, autolinks, ref_links, footnote_map, nil, block_context)
+  local rendered_text, md_highlights, md_links, special_type, list_marker, alert_type, fold_mod, heading_content, hard_breaks, source_runs =
+    markdown.render(
+      text,
+      repo_base_url,
+      autolinks,
+      ref_links,
+      footnote_map,
+      nil,
+      block_context,
+      source_lines and #source_lines > 1
+    )
 
   local quote_prefix = ""
   if special_type == "blockquote" then
@@ -991,10 +1009,20 @@ function ContentBuilder:add_markdown_line(
         list_marker,
         nil,
         hard_breaks,
-        source_lines
+        source_lines,
+        not heading_content and source_runs or nil
       )
     else
+      local saved_source = self._current_source_line
+      local start = #quote_prefix + #(list_marker or "")
+      if source_runs and not heading_content and start < #rendered_text then
+        for _, run in ipairs(source_runs) do
+          if run.col > start then break end
+          self:set_source_line(saved_source + source_lines[run.source_line] - source_lines[1])
+        end
+      end
       self:add_simple_markdown(rendered_text, md_highlights, md_links, indent)
+      self:set_source_line(saved_source)
     end
   end
 

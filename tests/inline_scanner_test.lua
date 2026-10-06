@@ -105,4 +105,46 @@ for _, forbidden in ipairs { " ", "\t", "\r", "\n", '"', "'", "=", "<", ">", "`"
   assert(inline.html_end("<x a=" .. forbidden .. ">", 1) == nil, "an invalid/empty unquoted value remains invalid")
 end
 assert(inline.html_end("<x a=\0>", 1) == nil, "NUL remains rejected pending source-input normalization")
+
+-- Attribute coordinates point to the selected value, even if data-* contains
+-- the same spelling earlier. They are byte positions, not Unicode columns.
+local alt_prefix = '<img data-alt="甲乙丙丁"\nalt="'
+local alt_tag = alt_prefix .. '甲乙丙丁" src="/image.png">'
+assert(
+  vim.deep_equal(
+    { inline.html_attribute(alt_tag, "alt") },
+    { "甲乙丙丁", true, #alt_prefix + 1, #alt_prefix + #"甲乙丙丁" }
+  ),
+  "alt origins refer to its actual attribute, not an earlier equal data-alt value"
+)
+local image_prefix = '<img data-src="/actual/image.png"\nsrc="'
+local image_tag = image_prefix .. '/actual/image.png">'
+assert(
+  vim.deep_equal(
+    { inline.html_target(image_tag) },
+    { "/actual/image.png", #image_prefix + 1, #image_prefix + #"/actual/image.png" }
+  ),
+  "image target origins refer to src, not data-src"
+)
+local video_prefix = '<video data-src="/real/movie.mp4">\n<source data-src="/real/movie.mp4"\nsrc="'
+local video_tag = video_prefix .. '/real/movie.mp4"></video>'
+assert(
+  vim.deep_equal(
+    { inline.html_target(video_tag) },
+    { "/real/movie.mp4", #video_prefix + 1, #video_prefix + #"/real/movie.mp4" }
+  ),
+  "nested source target origins are relative to the full video tag"
+)
+assert(
+  vim.deep_equal({ inline.html_attribute('<img alt="" src="x">', "alt") }, { "", true, 11, 10 }),
+  "empty quoted attribute origins contain an empty inclusive range"
+)
+assert(
+  vim.deep_equal({ inline.html_attribute("<img alt=abc src=x>", "alt") }, { "abc", false, 10, 12 }),
+  "unquoted attribute origins retain their actual value range"
+)
+assert(
+  vim.deep_equal({ inline.html_attribute("<video controls>", "controls") }, { true, false }),
+  "boolean attributes have no value coordinates"
+)
 print(string.format("inline_scanner_test: %d fixed cases and shared boundary checks passed", #cases))

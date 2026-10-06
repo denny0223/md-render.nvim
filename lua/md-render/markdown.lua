@@ -28,6 +28,7 @@ local wrap_mod = require "md-render.wrap"
 local fence_mod = require "md-render.fence"
 local inline = require "md-render.inline"
 local character_references = require "md-render.character_references"
+local SourceMap = require "md-render.source_map"
 
 local MAX_URL_DISPLAY_WIDTH = 50
 local delimiter_char
@@ -82,6 +83,14 @@ local ESCAPABLE_CHARS = [[!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~]]
 ---@param hl_count integer number of highlights to adjust (from the beginning)
 ---@param link_count integer number of links to adjust (from the beginning)
 local function adjust_positions(highlights, links, removals, hl_count, link_count)
+  local sources = highlights._source_map
+  if sources then
+    if removals.source_edits then
+      sources:replace(removals.source_edits)
+    else
+      sources:removals(removals)
+    end
+  end
   if #removals == 0 or hl_count + link_count == 0 then return end
   -- Each removal contributes a ramp over its source bytes. Token expansion
   -- contributes a negative jump instead. Prefix sums make each endpoint lookup
@@ -139,6 +148,8 @@ local function restore_spans(text, spans, hl_group, highlights, links)
   highlights, links = highlights or {}, links or {}
   local hl_count, link_count = #highlights, #links
   local by_token, removals, shift = {}, {}, 0
+  local sources = highlights._source_map
+  if sources then removals.source_edits = {} end
   for _, span in ipairs(spans) do
     by_token[span.placeholder] = span
   end
@@ -152,6 +163,13 @@ local function restore_spans(text, spans, hl_group, highlights, links)
     span.col = col
     local count = #token - #span.content
     removals[#removals + 1] = { start = first - 1 + #span.content, count = count }
+    if sources then
+      removals.source_edits[#removals.source_edits + 1] = {
+        first = first - 1,
+        last = first - 1 + #token,
+        value = span.sources,
+      }
+    end
     if hl_group then highlights[#highlights + 1] = { col = col, end_col = col + #span.content, hl = hl_group } end
     shift = shift - count
     return span.content
@@ -161,13 +179,26 @@ local function restore_spans(text, spans, hl_group, highlights, links)
 end
 
 --- Reference identifiers use their source spelling, not decoded display text.
-local function restore_source(text, spans)
+local function restore_source(text, spans, sources)
   if #spans == 0 then return text end
   local originals = {}
   for _, span in ipairs(spans) do
     originals[span.placeholder] = span.raw
   end
-  return (text:gsub(spans[1].placeholder:gsub("%d+", "%%d+"), originals))
+  local pattern = spans[1].placeholder:gsub("%d+", "%%d+")
+  if not sources then return (text:gsub(pattern, originals)) end
+  local edits, by_token = {}, {}
+  for _, span in ipairs(spans) do
+    by_token[span.placeholder] = span
+  end
+  text = text:gsub("()(" .. pattern .. ")", function(first, token)
+    local span = by_token[token]
+    if not span then return token end
+    edits[#edits + 1] = { first = first - 1, last = first - 1 + #token, value = span.raw_sources }
+    return span.raw
+  end)
+  sources:replace(edits)
+  return text
 end
 
 --- Hide owned source bytes while extensions inspect the remaining text.
@@ -175,10 +206,14 @@ local function protect_ranges(text, source, ranges, highlights, links)
   if #ranges == 0 then return text, {} end
   local prefix = inline.token_prefix(source .. text, 0xF100C)
   local spans, parts, removals, pos = {}, {}, {}, 1
+  local sources = highlights._source_map
+  if sources then removals.source_edits = {} end
   for _, range in ipairs(ranges) do
     local raw = text:sub(range.start, range.finish)
     local placeholder = prefix .. (#spans + 1) .. "\u{F100D}"
-    spans[#spans + 1] = { placeholder = placeholder, raw = raw, content = raw, link = range.link }
+    local span = { placeholder = placeholder, raw = raw, content = raw, link = range.link }
+    spans[#spans + 1] = span
+    if sources then sources:protect(removals.source_edits, span, range.start - 1, range.finish) end
     parts[#parts + 1] = text:sub(pos, range.start - 1) .. placeholder
     removals[#removals + 1] = { start = range.start - 1 + #placeholder, count = #raw - #placeholder }
     pos = range.finish + 1
@@ -206,8 +241,9 @@ local function extension_owned(inner, standard_spans, code_spans, autolink_spans
 end
 
 --- Hide escaped punctuation until syntax recognition is finished.
-local function escape_backslashes(text, source, literal_autolinks)
+local function escape_backslashes(text, source, literal_autolinks, sources)
   local escapes, result = {}, {}
+  local edits = sources and {}
   local prefix = inline.token_prefix((source or "") .. text, 0xF1002)
   local i = 1
   while i <= #text do
@@ -218,7 +254,9 @@ local function escape_backslashes(text, source, literal_autolinks)
       i = autolink_end + 1
     elseif text:sub(i, i) == "\\" and next_ch ~= "" and ESCAPABLE_CHARS:find(next_ch, 1, true) then
       local placeholder = prefix .. (#escapes + 1) .. "\u{F1003}"
-      escapes[#escapes + 1] = { placeholder = placeholder, content = next_ch, raw = "\\" .. next_ch }
+      local span = { placeholder = placeholder, content = next_ch, raw = "\\" .. next_ch }
+      escapes[#escapes + 1] = span
+      if sources then sources:protect(edits, span, i - 1, i + 1, sources:slice(i, i + 1)) end
       result[#result + 1] = placeholder
       i = i + 2
     else
@@ -226,13 +264,15 @@ local function escape_backslashes(text, source, literal_autolinks)
       i = i + 1
     end
   end
+  if sources then sources:replace(edits) end
   return table.concat(result), escapes
 end
 
 --- Recognize references in the source, before removing any Markdown syntax.
 --- Keeping their values hidden also prevents decoded punctuation from becoming syntax.
-local function protect_entities(text, source, literal)
+local function protect_entities(text, source, literal, sources)
   local spans, result = {}, {}
+  local edits = sources and {}
   local prefix = inline.token_prefix((source or "") .. text, 0xF1004)
   local i = 1
   while i <= #text do
@@ -247,7 +287,11 @@ local function protect_entities(text, source, literal)
       i = autolink_end + 1
     elseif replacement then
       local placeholder = prefix .. (#spans + 1) .. "\u{F1005}"
-      spans[#spans + 1] = { placeholder = placeholder, content = replacement, raw = reference }
+      local span = { placeholder = placeholder, content = replacement, raw = reference }
+      spans[#spans + 1] = span
+      if sources then
+        sources:protect(edits, span, i - 1, i - 1 + #reference, SourceMap.constant(#replacement, sources:at(i - 1)))
+      end
       result[#result + 1] = placeholder
       i = i + #reference
     else
@@ -255,17 +299,19 @@ local function protect_entities(text, source, literal)
       i = i + 1
     end
   end
+  if sources then sources:replace(edits) end
   return table.concat(result), spans
 end
 
 --- Preserve source breaks through inline parsing without changing whitespace
 --- boundaries. Tabs protect the token from display-space collapse; source
 --- restoration retains reference-label spelling and source-row accounting.
-local function protect_hard_breaks(text, source, ref_links, source_label, bare_url)
+local function protect_hard_breaks(text, source, ref_links, source_label, bare_url, sources)
   local ranges = inline.hard_breaks(text, ref_links, source_label, bare_url)
   if #ranges == 0 then return text, {} end
   local prefix = inline.token_prefix(source .. character_references.decode(source) .. text, 0xF100A)
   local spans, parts, pos, source_line = {}, {}, 1, 1
+  local edits = sources and {}
   for _, range in ipairs(ranges) do
     local _, rows = source_label(text:sub(pos, range.finish)):gsub("\n", "")
     source_line = source_line + rows
@@ -276,10 +322,20 @@ local function protect_hard_breaks(text, source, ref_links, source_label, bare_u
       content = " ",
       source_line = source_line,
     }
+    if sources then
+      sources:protect(
+        edits,
+        spans[#spans],
+        range.start - 1,
+        range.finish,
+        SourceMap.constant(1, sources:at(range.start - 1))
+      )
+    end
     parts[#parts + 1] = text:sub(pos, range.start - 1) .. placeholder
     pos = range.finish + 1
   end
   parts[#parts + 1] = text:sub(pos)
+  if sources then sources:replace(edits) end
   return table.concat(parts), spans
 end
 
@@ -427,6 +483,8 @@ local function process_wikilinks(
 )
   if not text:find("[[", 1, true) or not text:find("]]", 1, true) then return text end
   local pre_hl_count, pre_link_count, removals = #highlights, #links, {}
+  local sources = highlights._source_map
+  if sources then removals.source_edits = {} end
   local processed = ""
   local i = 1
 
@@ -441,20 +499,30 @@ local function process_wikilinks(
         local display, target
 
         local pipe_pos = inner:find("|", 1, true)
+        local display_sources
         if pipe_pos then
           target = inner:sub(1, pipe_pos - 1)
           display = inner:sub(pipe_pos + 1)
+          if sources then display_sources = sources:slice(i + 1 + pipe_pos, close - 1) end
         else
           target = inner
           local heading = inner:match "^#(.+)$"
           if heading then
             display = heading
+            if sources then display_sources = sources:slice(i + 2, close - 1) end
           else
             local page, h = inner:match "^([^#]+)#(.+)$"
             if page and h then
               display = page .. " > " .. h
+              if sources then
+                display_sources = sources:slice(i + 1, close - 1)
+                display_sources:replace {
+                  { first = #page, last = #page + 1, value = SourceMap.constant(3, display_sources:at(#page)) },
+                }
+              end
             else
               display = inner
+              if sources then display_sources = sources:slice(i + 1, close - 1) end
             end
           end
         end
@@ -489,6 +557,10 @@ local function process_wikilinks(
           _decoded = true,
         })
         removals[#removals + 1] = { start = i - 1 + #display, count = close + 2 - i - #display }
+        if sources then
+          removals.source_edits[#removals.source_edits + 1] =
+            { first = i - 1, last = close + 1, value = display_sources }
+        end
         i = close + 2
       else
         processed = processed .. text:sub(i, i)
@@ -525,6 +597,8 @@ local function process_embeds(
 )
   if not text:find("![[", 1, true) or not text:find("]]", 1, true) then return text end
   local pre_hl_count, pre_link_count, removals = #highlights, #links, {}
+  local sources = highlights._source_map
+  if sources then removals.source_edits = {} end
   local processed = ""
   local i = 1
 
@@ -548,6 +622,11 @@ local function process_embeds(
         end
         local icon = semantic and "" or icons_mod.pad_icon(raw_icon) .. " "
         local display = icon .. target
+        if sources then
+          local value = sources:slice(i + 2, i + 2 + #target)
+          value:replace { { first = 0, last = 0, value = SourceMap.constant(#icon, sources:at(i - 1)) } }
+          removals.source_edits[#removals.source_edits + 1] = { first = i - 1, last = close + 1, value = value }
+        end
 
         local start_col = #processed
         processed = processed .. display
@@ -635,6 +714,49 @@ local function map_display_text(text, transform, keep_literals)
   return table.concat(parts)
 end
 
+--- Comments can consume several source rows; surviving text keeps its own origin.
+local function protect_comments(text, source, sources)
+  local spans = {}
+  if not text:find("<!--", 1, true) and not text:find("%%", 1, true) then return text, spans end
+  local prefix = inline.token_prefix(source .. text, 0xF100E)
+  local edits = sources and {}
+  local rendered = map_display_text(text, function(part, start)
+    local original_length = #part
+    local part_sources = sources and sources:slice(start, start + #part)
+    local replacements = part_sources and {}
+    local function stash(pos, raw)
+      local token = prefix .. (#spans + 1) .. "\u{F100F}"
+      local span = { placeholder = token, raw = raw, content = "" }
+      spans[#spans + 1] = span
+      if part_sources then
+        part_sources:protect(
+          replacements,
+          span,
+          pos - 1,
+          pos - 1 + #raw,
+          SourceMap.constant(0, part_sources:at(pos - 1))
+        )
+      end
+      return token
+    end
+    part = part:gsub("()(%%%%.-%%%%)", stash)
+    if part_sources then
+      part_sources:replace(replacements)
+      replacements = {}
+    end
+    -- Restrict matching to the closed prefix; unmatched suffixes stay literal.
+    local last = part:match "^.*()%-%->"
+    if last then part = part:sub(1, last + 2):gsub("()(<!%-%-.-%-%->)", stash) .. part:sub(last + 3) end
+    if part_sources then
+      part_sources:replace(replacements)
+      edits[#edits + 1] = { first = start, last = start + original_length, value = part_sources }
+    end
+    return part
+  end, true)
+  if sources then sources:replace(edits) end
+  return rendered, spans
+end
+
 --- Collapse display spaces while retaining indentation and literal destinations.
 local function collapse_spaces(text, highlights, links, prefix)
   if not text:find("  ", 1, true) then return text end
@@ -655,8 +777,9 @@ local function collapse_spaces(text, highlights, links, prefix)
 end
 
 --- Angle and www autolinks own their source bytes before other inline syntax.
-local function protect_autolinks(text, source, ref_links, source_label)
+local function protect_autolinks(text, source, ref_links, source_label, sources)
   local spans, pieces, pos = {}, {}, 1
+  local edits = sources and {}
   local prefix = inline.token_prefix(source .. text, 0xF1006)
   for _, range in ipairs(inline.autolinks(text, ref_links, source_label)) do
     local token = prefix .. (#spans + 1) .. "\u{F1007}"
@@ -665,10 +788,12 @@ local function protect_autolinks(text, source, ref_links, source_label)
     local url = range.angle and (label:match "^[A-Za-z][A-Za-z0-9.+-]*:" and label or "mailto:" .. label)
       or "http://" .. label
     spans[#spans + 1] = { placeholder = token, content = raw, raw = raw, label = label, url = url }
+    if sources then sources:protect(edits, spans[#spans], range.start - 1, range.finish) end
     pieces[#pieces + 1] = text:sub(pos, range.start - 1) .. token
     pos = range.finish + 1
   end
   pieces[#pieces + 1] = text:sub(pos)
+  if sources then sources:replace(edits) end
   return table.concat(pieces), spans
 end
 
@@ -766,7 +891,7 @@ local function truncate_url(url, max_width, literals)
     local size = span and #span.placeholder or #char
     width = width + vim.api.nvim_strwidth(char)
     if width <= target then cut = pos + size - 1 end
-    if width > max_width then return url:sub(1, cut) .. "…" end
+    if width > max_width then return url:sub(1, cut) .. "…", cut end
     pos = pos + size
   end
   return url
@@ -859,7 +984,7 @@ end
 
 --- Resolve runs before presentation removes link brackets, comments or URLs.
 --- Keep matched markers as source-restorable tokens until link ownership is set.
-local function protect_emphasis(text, source, refs, footnotes, code_spans, autolink_spans, source_label)
+local function protect_emphasis(text, source, refs, footnotes, code_spans, autolink_spans, source_label, sources)
   if not text:find "[*_~]" then return text, {}, {} end
   local pairs = {}
   local failed_html = {}
@@ -1002,18 +1127,29 @@ local function protect_emphasis(text, source, refs, footnotes, code_spans, autol
       local token = prefix .. (#spans + 1) .. "\u{F1009}"
       local span = { placeholder = token, raw = text:sub(start, start + pair.count - 1), content = "" }
       spans[#spans + 1] = span
-      boundaries[#boundaries + 1] = { start = start, count = pair.count, token = token }
+      boundaries[#boundaries + 1] = { start = start, count = pair.count, token = token, span = span }
       pair[field] = span
     end
   end
   table.sort(boundaries, function(a, b)
     return a.start < b.start
   end)
+  local edits = sources and {}
   for _, boundary in ipairs(boundaries) do
+    if sources then
+      sources:protect(
+        edits,
+        boundary.span,
+        boundary.start - 1,
+        boundary.start - 1 + boundary.count,
+        SourceMap.constant(0, sources:at(boundary.start - 1))
+      )
+    end
     parts[#parts + 1] = text:sub(pos, boundary.start - 1) .. boundary.token
     pos = boundary.start + boundary.count
   end
   parts[#parts + 1] = text:sub(pos)
+  if sources then sources:replace(edits) end
   return table.concat(parts), spans, pairs
 end
 
@@ -1063,6 +1199,8 @@ local function process_bare_urls(
   local parts, output_bytes = {}, 0
   local i, owner_index = 1, 1
   local removals = {}
+  local sources = highlights._source_map
+  if sources then removals.source_edits = {} end
 
   while i <= #text do
     -- Owned labels must be excluded before URL trimming scans their suffixes.
@@ -1087,12 +1225,31 @@ local function process_bare_urls(
     end
     local length = token and #token or label and #label
     if label and not overlaps_link(existing_links, i - 1, i - 1 + length) then
-      local display_url = truncate_url(label, max_url_width, literal and {} or literals)
+      local display_url, cut = truncate_url(label, max_url_width, literal and {} or literals)
+      local display_sources
+      if sources then
+        if literal then
+          local first = literal.raw:sub(1, 1) == "<" and 1 or 0
+          display_sources = literal.raw_sources:slice(first, first + #label)
+        else
+          display_sources = sources:slice(i - 1, i - 1 + length)
+        end
+        if cut then
+          display_sources = display_sources:slice(0, cut)
+          display_sources:replace {
+            { first = cut, last = cut, value = SourceMap.constant(#"…", display_sources:at(math.max(0, cut - 1))) },
+          }
+        end
+      end
       if literal then
         literal.content = display_url
+        if sources then literal.sources = display_sources end
       else
         token = prefix .. (#spans + 1) .. "\u{F1007}"
         spans[#spans + 1] = { placeholder = token, content = display_url }
+        if sources then
+          sources:protect(removals.source_edits, spans[#spans], i - 1, i - 1 + length, display_sources)
+        end
         removals[#removals + 1] = { start = i - 1 + #token, count = length - #token }
       end
       local first = output_bytes
@@ -1192,6 +1349,8 @@ end
 ---@return string
 local function apply_blockquote_prefix(text, quote_prefix, highlights, links)
   local offset = #quote_prefix
+  local sources = highlights._source_map
+  if sources then sources:replace { { first = 0, last = 0, value = SourceMap.constant(offset, sources:at(0)) } } end
   text = quote_prefix .. text
   table.insert(highlights, 1, { col = 0, end_col = offset, hl = "FloatBorder" })
   for idx = 2, #highlights do
@@ -1294,11 +1453,33 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows,
   local pre_hl_count = #highlights
   local pre_link_count = #links
   local removals = {}
-  local function remove_tag(start, tag, replacement_bytes)
+  local sources = highlights._source_map
+  if sources then removals.source_edits = {} end
+  local function remove_tag(start, tag, replacement_bytes, replacement_sources, closing)
     local rows = keep_rows and tag:gsub("[^\n]", "") or ""
+    if sources then
+      local value = replacement_sources or SourceMap.constant(replacement_bytes or 0, sources:at(start))
+      -- Closing-tag rows are discarded by the display caller, rather than copied.
+      if #rows > 0 and not closing then
+        local row_sources, edits = sources:slice(start, start + #tag), {}
+        for first, last in tag:gmatch "()[^\n]+()" do
+          edits[#edits + 1] = { first = first - 1, last = last - 1 }
+        end
+        row_sources:replace(edits)
+        value:replace { { first = value.length, last = value.length, value = row_sources } }
+      end
+      removals.source_edits[#removals.source_edits + 1] = { first = start, last = start + #tag, value = value }
+    end
     replacement_bytes = (replacement_bytes or 0) + #rows
     table.insert(removals, { start = start + replacement_bytes, count = #tag - replacement_bytes })
     return rows
+  end
+  local function media_sources(start, label, first, icon)
+    if not sources then return nil end
+    local value = first and sources:slice(start + first - 1, start + first - 1 + #label)
+      or SourceMap.constant(0, sources:at(start))
+    value:replace { { first = 0, last = 0, value = SourceMap.constant(#icon, sources:at(start)) } }
+    return value
   end
   local processed = ""
   local failed_html = {}
@@ -1319,7 +1500,7 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows,
           href = decode_url(href)
           local content = text:sub(i + #a_tag, close_start - 1)
           processed = processed .. remove_tag(i - 1, a_tag)
-          remove_tag(close_start - 1, text:sub(close_start, close_end))
+          remove_tag(close_start - 1, text:sub(close_start, close_end), nil, nil, true)
           local start_col = #processed
           processed = processed .. content
           add_link_highlight(highlights, start_col, start_col + #content, href)
@@ -1333,18 +1514,21 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows,
       if not matched then
         local img_tag = tag_name == "img" and not closing and opening_tag
         if img_tag then
-          local src = inline.html_target(img_tag)
+          local src, src_first = inline.html_target(img_tag)
           if src then
             local display_name = src:match "([^/]+)$" or src
+            local basename_first = src_first + #src - #display_name
             src = decode_url(src)
-            local alt, quoted = inline.html_attribute(img_tag, "alt")
+            local alt, quoted, alt_first = inline.html_attribute(img_tag, "alt")
             if not quoted then alt = nil end
             local icons_mod = require "md-render.icons"
             local raw_img_icon, img_icon_hl = icons_mod.get_image_icon(src)
             local img_icon = semantic and "" or icons_mod.pad_icon(raw_img_icon) .. " "
             local display = semantic and (alt or "") or img_icon .. ((alt and alt ~= "") and alt or display_name)
             if keep_rows then display = display:gsub("[\r\n]", " ") end
-            local tag_rows = remove_tag(i - 1, img_tag, #display)
+            local label = semantic and (alt or "") or ((alt and alt ~= "") and alt or display_name)
+            local first = alt and (semantic or alt ~= "") and alt_first or basename_first
+            local tag_rows = remove_tag(i - 1, img_tag, #display, media_sources(i - 1, label, first, img_icon))
             local start_col = #processed
             processed = processed .. display
             if img_icon_hl and not semantic then
@@ -1367,16 +1551,19 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows,
           and select(2, html_closing("video", i + #opening_tag))
         local video_tag = video_end and text:sub(i, video_end)
         if video_tag then
-          local src = inline.html_target(video_tag)
+          local src, src_first = inline.html_target(video_tag)
           if src then
             local display_name = src:match "([^/]+)$" or src
+            local basename_first = src_first + #src - #display_name
             src = decode_url(src)
             local icons_mod = require "md-render.icons"
             local raw_icon, icon_hl = icons_mod.get_image_icon(src)
             local img_icon = semantic and "" or icons_mod.pad_icon(raw_icon) .. " "
             local display = semantic and "" or img_icon .. display_name
             if keep_rows then display = display:gsub("[\r\n]", " ") end
-            local tag_rows = remove_tag(i - 1, video_tag, #display)
+            local label = semantic and "" or display_name
+            local tag_rows =
+              remove_tag(i - 1, video_tag, #display, media_sources(i - 1, label, basename_first, img_icon))
             local start_col = #processed
             processed = processed .. display
             if icon_hl and not semantic then
@@ -1404,7 +1591,7 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows,
               if close_start then
                 local content = text:sub(i + #open_tag, close_start - 1)
                 processed = processed .. remove_tag(i - 1, open_tag)
-                remove_tag(close_start - 1, text:sub(close_start, close_end))
+                remove_tag(close_start - 1, text:sub(close_start, close_end), nil, nil, true)
                 local start_col = #processed
                 processed = processed .. content
                 if hl then table.insert(highlights, { col = start_col, end_col = start_col + #content, hl = hl }) end
@@ -1492,6 +1679,8 @@ end
 local function process_footnote_refs(text, footnote_map, highlights, links, source_label)
   if not footnote_map or not next(footnote_map) then return text end
   local pre_hl_count, pre_link_count, removals = #highlights, #links, {}
+  local sources = highlights._source_map
+  if sources then removals.source_edits = {} end
   local processed = ""
   local i = 1
   while i <= #text do
@@ -1510,6 +1699,13 @@ local function process_footnote_refs(text, footnote_map, highlights, links, sour
             { col_start = start_col, col_end = start_col + #display, url = "#footnote-def-" .. label, _decoded = true }
           )
           removals[#removals + 1] = { start = i - 1 + #display, count = close + 1 - i - #display }
+          if sources then
+            removals.source_edits[#removals.source_edits + 1] = {
+              first = i - 1,
+              last = close,
+              value = SourceMap.constant(#display, sources:at(i - 1)),
+            }
+          end
           i = close + 1
         else
           processed = processed .. text:sub(i, i)
@@ -1578,6 +1774,7 @@ end
 local function strip_html_tags(text, highlights, semantic)
   if not text:find("<", 1, true) then return text end
   local processed = ""
+  local removals = {}
   local failed_html = {}
   local i = 1
   while i <= #text do
@@ -1589,6 +1786,8 @@ local function strip_html_tags(text, highlights, semantic)
         if not semantic then
           processed = processed .. tag
           table.insert(highlights, { col = start_col, end_col = start_col + #tag, hl = "Comment" })
+        else
+          removals[#removals + 1] = { start = i - 1, count = #tag }
         end
         i = i + #tag
       else
@@ -1600,21 +1799,34 @@ local function strip_html_tags(text, highlights, semantic)
       i = i + 1
     end
   end
+  if highlights._source_map then highlights._source_map:removals(removals) end
   return processed
+end
+
+local function normalize_line_endings(text, sources)
+  if sources and text:find("\r\n", 1, true) then
+    local removals = {}
+    for pos in text:gmatch "()\r\n" do
+      removals[#removals + 1] = { start = pos - 1, count = 1 }
+    end
+    sources:removals(removals)
+  end
+  return (text:gsub("\r\n", "\n"):gsub("\r", "\n"))
 end
 
 --- Apply supported HTML display semantics without activating Markdown syntax.
 --- Physical source breaks survive tag removal, including multiline attributes.
-function Markdown.render_html(text, semantic, literal_ranges)
-  text = text:gsub("\r\n", "\n"):gsub("\r", "\n")
+function Markdown.render_html(text, semantic, literal_ranges, sources)
+  text = normalize_line_endings(text, sources)
   local source = text
   local highlights, links = {}, {}
+  highlights._source_map = sources
   local nested_html
   text, nested_html = protect_html_nesting(text, highlights, links, true, nil, literal_ranges)
   local entities
   -- Hidden literal bytes must also be excluded from the entity token namespace.
-  text, entities = protect_entities(text, source, true)
-  text = inline.hide_html_comments(text)
+  text, entities = protect_entities(text, source, true, sources)
+  text = inline.hide_html_comments(text, sources)
   for _ = 1, inline.MAX_NESTING do
     local previous = text
     text = process_html_tags(text, highlights, links, function(url)
@@ -1631,6 +1843,7 @@ function Markdown.render_html(text, semantic, literal_ranges)
   for _, link in ipairs(links) do
     link._decoded = nil
   end
+  highlights._source_map = nil
   return text, highlights, links
 end
 
@@ -1729,6 +1942,7 @@ end
 ---@param footnote_map? table<string, integer>
 ---@param inline_only? boolean Leave block markers literal in cells, captions and other inline contexts
 ---@param block_context? {heading_level?: integer, list_marker?: boolean, raw_html?: boolean, quote_prefix?: string} accepted document block syntax
+---@param track_sources? boolean retain physical source row origins for joined paragraphs
 ---@return string rendered_text The rendered plain text
 ---@return MdRender.Markdown.Highlight[] highlights
 ---@return MdRender.Markdown.Link[] links
@@ -1738,7 +1952,17 @@ end
 ---@return string? fold_mod Callout fold modifier if applicable
 ---@return string? heading_content Original heading content if applicable
 ---@return MdRender.Markdown.Break[] hard_breaks Mandatory row boundaries in the newline-free text
-Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_map, inline_only, block_context)
+---@return {col: integer, source_line: integer}[]? source_runs physical source owners of rendered bytes
+Markdown.render = function(
+  text,
+  repo_base_url,
+  autolinks,
+  ref_links,
+  footnote_map,
+  inline_only,
+  block_context,
+  track_sources
+)
   local raw_html = block_context and block_context.raw_html
   local semantic = block_context and block_context.semantic
   inline_only = inline_only == true or (raw_html and not block_context.heading_level)
@@ -1746,6 +1970,7 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   local highlights = {}
   local links = {}
   local hard_break_spans = {}
+  local sources
 
   local function finish(special_type, list_marker, alert_type, fold_mod, heading_content)
     rendered_text = restore_spans(rendered_text:gsub("[\r\n]", " "), hard_break_spans, nil, highlights, links)
@@ -1753,7 +1978,17 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     for _, span in ipairs(hard_break_spans) do
       if span.col then breaks[#breaks + 1] = { col = span.col, source_line = span.source_line } end
     end
-    return rendered_text, highlights, links, special_type, list_marker, alert_type, fold_mod, heading_content, breaks
+    highlights._source_map = nil
+    return rendered_text,
+      highlights,
+      links,
+      special_type,
+      list_marker,
+      alert_type,
+      fold_mod,
+      heading_content,
+      breaks,
+      sources and sources.runs
   end
 
   -- Blockquote (> ) - extract prefix
@@ -1828,6 +2063,12 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     end
   end
 
+  -- Track before list/task presentation, which can consume a physical newline.
+  if track_sources then
+    sources = SourceMap.new(rendered_text)
+    highlights._source_map = sources
+  end
+
   -- List items (- * + 1. 1)) - detect marker
   local list_marker
   local list_content
@@ -1840,6 +2081,9 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     if prefix then
       list_content = rendered_text:sub(#prefix + 1)
       list_marker = prefix:gsub("[ \t]*$", " ", 1)
+      if sources then
+        sources:replace { { first = 0, last = #prefix, value = SourceMap.constant(#list_marker, sources:at(0)) } }
+      end
       rendered_text = list_marker .. list_content
     end
   end
@@ -1863,6 +2107,15 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
         checkbox_hl = "DiagnosticOk"
       end
       local indent_part = list_marker:match "^(%s*)" or ""
+      if sources then
+        sources:replace {
+          {
+            first = 0,
+            last = #list_marker + #cb_match,
+            value = SourceMap.constant(#indent_part + #icon, sources:at(0)),
+          },
+        }
+      end
       list_marker = indent_part .. icon
       rendered_text = list_marker .. after_marker:sub(#cb_match + 1)
     end
@@ -1875,6 +2128,11 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
       local bullet_icons = { "•", "◦", "▪" }
       local nesting_level = math.floor(#indent_part / 2)
       local icon = bullet_icons[(nesting_level % #bullet_icons) + 1] .. " "
+      if sources then
+        sources:replace {
+          { first = 0, last = #list_marker, value = SourceMap.constant(#indent_part + #icon, sources:at(0)) },
+        }
+      end
       list_marker = indent_part .. icon
       rendered_text = list_marker .. list_content
     end
@@ -1885,13 +2143,17 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   if raw_html then
     code_spans, invalid_destinations = {}, {}
   else
-    rendered_text, code_spans = inline.protect_code(rendered_text, ref_links)
+    rendered_text, code_spans = inline.protect_code(rendered_text, ref_links, sources)
     rendered_text, invalid_destinations = inline.protect_invalid_destinations(rendered_text, ref_links, function(label)
       return restore_source(label, code_spans)
-    end)
+    end, sources)
   end
-  rendered_text = rendered_text:gsub("\r\n", "\n"):gsub("\r", "\n")
-  if checkbox_hl then rendered_text = list_marker .. rendered_text:sub(#list_marker + 1):gsub("^ +", "") end
+  rendered_text = normalize_line_endings(rendered_text, sources)
+  if checkbox_hl then
+    local spaces = rendered_text:sub(#list_marker + 1):match "^ +" or ""
+    if sources then sources:replace { { first = #list_marker, last = #list_marker + #spaces } } end
+    rendered_text = list_marker .. rendered_text:sub(#list_marker + #spaces + 1)
+  end
 
   -- Fast path: skip all inline processing for plain text lines that contain
   -- no markdown-significant characters.  This dramatically speeds up rendering
@@ -1908,7 +2170,9 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
   local decode_url, source_label
 
   if raw_html then
-    rendered_text, highlights, links = Markdown.render_html(rendered_text, semantic, block_context.literal_html_ranges)
+    rendered_text, highlights, links =
+      Markdown.render_html(rendered_text, semantic, block_context.literal_html_ranges, sources)
+    highlights._source_map = sources
     rendered_text = rendered_text:gsub("\n", " ")
     goto finalize
   end
@@ -1923,11 +2187,12 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
 
   rendered_text, nested_html = protect_html_nesting(rendered_text, highlights, links, false, ref_links)
   for _, span in ipairs(nested_html) do
-    span.content = restore_source(restore_source(span.content, code_spans), invalid_destinations)
+    span.content =
+      restore_source(restore_source(span.content, code_spans, span.sources), invalid_destinations, span.sources)
   end
   rendered_text, autolink_spans = protect_autolinks(rendered_text, text, ref_links, function(label)
     return restore_source(restore_source(label, code_spans), invalid_destinations)
-  end)
+  end, sources)
   rendered_text, emphasis_spans, emphasis_pairs = protect_emphasis(
     rendered_text,
     text,
@@ -1937,7 +2202,8 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     autolink_spans,
     function(label)
       return restore_source(restore_source(restore_source(label, code_spans), invalid_destinations), autolink_spans)
-    end
+    end,
+    sources
   )
   rendered_text, hard_break_spans = protect_hard_breaks(rendered_text, text, ref_links, function(label)
     return restore_source(
@@ -1946,24 +2212,10 @@ Markdown.render = function(text, repo_base_url, autolinks, ref_links, footnote_m
     )
   end, function(pos)
     return bare_autolink(rendered_text, pos, {}, code_spans, autolink_spans, emphasis_spans)
-  end)
-  rendered_text, entity_spans = protect_entities(rendered_text, text)
-  comment_spans = {}
-  if rendered_text:find("<!--", 1, true) or rendered_text:find("%%", 1, true) then
-    local prefix = inline.token_prefix(text .. rendered_text, 0xF100E)
-    local function stash(raw)
-      local token = prefix .. (#comment_spans + 1) .. "\u{F100F}"
-      comment_spans[#comment_spans + 1] = { placeholder = token, raw = raw, content = "" }
-      return token
-    end
-    rendered_text = map_display_text(rendered_text, function(part)
-      part = part:gsub("%%%%.-%%%%", stash)
-      -- Restrict matching to the closed prefix; unmatched suffixes stay literal.
-      local last = part:match "^.*()%-%->"
-      return last and (part:sub(1, last + 2):gsub("<!%-%-.-%-%->", stash)) .. part:sub(last + 3) or part
-    end, true)
-  end
-  rendered_text, backslash_escapes = escape_backslashes(rendered_text, text, true)
+  end, sources)
+  rendered_text, entity_spans = protect_entities(rendered_text, text, nil, sources)
+  rendered_text, comment_spans = protect_comments(rendered_text, text, sources)
+  rendered_text, backslash_escapes = escape_backslashes(rendered_text, text, true, sources)
 
   decode_url = function(url)
     return restore_spans(restore_spans(restore_spans(url, comment_spans), backslash_escapes), entity_spans)

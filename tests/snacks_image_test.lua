@@ -377,5 +377,148 @@ do
   vim.env.MEDIA_DIR, vim.env.MEDIA_ASSET = saved_dir, saved_asset
   print "Snacks literal sources: filename and parent variables, exact bytes, navigation and edited-file cache OK"
 end
+
+-- Inline Snacks errors are silent by default. Keep its real converter and
+-- placements; isolate missing tools and hold only external process completion.
+do
+  local display = require "md-render.display_utils"
+  local Builder = require("md-render.content_builder").ContentBuilder
+  local spawn = require "snacks.util.spawn"
+  local saved_path, notify, spawn_new = vim.env.PATH, vim.notify, spawn.new
+  local ns = vim.api.nvim_create_namespace "snacks_conversion_failure_test"
+  local messages, owners, jobs = {}, {}, {}
+  local bin = cache .. "/empty-bin"
+  vim.fn.mkdir(bin, "p")
+  vim.notify = function(message, level)
+    messages[#messages + 1] = { message = message, level = level }
+  end
+  local function make_content(name)
+    local path = cache .. "/" .. name .. ".jpg"
+    assert(vim.uv.fs_copyfile(root .. "/assets/demo/test.jpg", path))
+    local builder = Builder.new()
+    builder:render_document({ "![local](" .. path .. ")" }, { max_width = 72, text_scale = false })
+    local media = builder:result()
+    assert(#media.image_placements == 1 and media.image_placements[1].path == path, "local image was not reserved")
+    return media
+  end
+  local function apply(media)
+    vim.bo[buf].modifiable = true
+    vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+    display.apply_content_to_buffer(buf, ns, media)
+    vim.bo[buf].modifiable = false
+    return vim.api.nvim_buf_get_changedtick(buf)
+  end
+  local function failure_overlay(media, tick)
+    assert(vim.api.nvim_buf_get_changedtick(buf) == tick, "failure invalidated the picker buffer cache")
+    assert(vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), media.lines), "failure changed buffer text")
+    assert(not vim.bo[buf].modified and not vim.bo[buf].modifiable, "failure changed buffer flags")
+    local p = media.image_placements[1]
+    local row = p.line + math.floor(p.rows / 2)
+    local first, last = media.lines[row + 1]:find("Loading image...", 1, true)
+    assert(first, "fixture did not contain a progress message")
+    local failures = 0
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })) do
+      local text = mark[4].virt_text and mark[4].virt_text[1][1]
+      if text and text:find("Image failed", 1, true) then
+        failures = failures + 1
+        assert(mark[2] == row and mark[3] <= first - 1 and mark[3] + #text >= last, "failure left progress visible")
+      end
+    end
+    assert(failures == 1, "failure must have one overlay per placement")
+  end
+  local ok, err = pcall(function()
+    -- Clear Snacks' executable cache with its real module, then make no
+    -- ImageMagick commands discoverable without touching the host installation.
+    Snacks.image.convert = dofile(snacks_path .. "/lua/snacks/image/convert.lua")
+    vim.env.PATH = bin
+    assert(vim.fn.executable "magick" == 0 and vim.fn.executable "identify" == 0)
+    local media = make_content "missing-magick"
+    local tick = apply(media)
+    local missing = backend.setup(win, media, ns)
+    owners[#owners + 1] = missing
+    wait_for(function()
+      return missing.objects[1] and missing.objects[1].img:failed()
+    end, "missing ImageMagick did not fail")
+    vim.wait(30) -- Drain the converter's scheduled placement error callback.
+    failure_overlay(media, tick)
+    assert(#messages == 1 and messages[1].level == vim.log.levels.WARN, "one useful warning must be delivered")
+    for _, hint in ipairs { "ImageMagick 7", "Neovim's PATH", ":checkhealth md-render", ":checkhealth snacks" } do
+      assert(messages[1].message:find(hint, 1, true), "missing-tool warning lacks " .. hint)
+    end
+    local failed_image = missing.objects[1].img
+    backend.cleanup(missing)
+    tick = apply(media)
+    local cached = backend.setup(win, media, ns)
+    owners[#owners + 1] = cached
+    wait_for(function()
+      return cached.objects[1] ~= nil
+    end, "cached failure did not create a placement")
+    assert(cached.objects[1].img == failed_image and failed_image:failed(), "fixture did not reuse the failed image")
+    failure_overlay(media, tick) -- No later converter callback repairs a cached constructor failure.
+    cached.objects[1]:error()
+    failure_overlay(media, tick)
+    assert(#messages == 1, "reopening or repeated errors duplicated the same warning")
+    backend.cleanup(cached)
+
+    vim.env.PATH = saved_path
+    Snacks.image.convert = dofile(snacks_path .. "/lua/snacks/image/convert.lua")
+    spawn.new = function(opts)
+      local proc = spawn_new(opts)
+      proc.run = function(self)
+        jobs[#jobs + 1] = function()
+          self.opts.on_exit(self, true)
+        end
+      end
+      proc.out = function()
+        return ""
+      end
+      proc.err = function()
+        return "delayed conversion failure"
+      end
+      return proc
+    end
+    for _, retire in ipairs { "rebuild", "cleanup" } do
+      media = make_content("late-" .. retire)
+      apply(media)
+      local delayed = backend.setup(win, media, ns)
+      owners[#owners + 1] = delayed
+      wait_for(function()
+        return delayed.objects[1] and #jobs > 0
+      end, "conversion did not wait at the process boundary")
+      local old = delayed.objects[1]
+      assert(not old.img._convert:done(), "conversion completed before its owner retired")
+      local fresh = { lines = { "Current content" }, highlights = {}, link_metadata = {}, image_placements = {} }
+      tick = apply(fresh)
+      if retire == "rebuild" then
+        backend.update(delayed, fresh)
+      else
+        backend.cleanup(delayed)
+      end
+      assert(old.closed, "old placement was not retired")
+      local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+      table.remove(jobs, 1)()
+      wait_for(function()
+        return old.img._convert:done()
+      end, "retired conversion did not finish")
+      vim.wait(30)
+      old:error() -- A placement error callback captured before teardown must also be harmless.
+      assert(#messages == 1, "retired conversion emitted a warning")
+      assert(vim.api.nvim_buf_get_changedtick(buf) == tick, "retired conversion modified new content")
+      assert(vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), fresh.lines), "old conversion changed text")
+      assert(
+        vim.deep_equal(vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true }), marks),
+        "old error reached new UI"
+      )
+      backend.cleanup(delayed)
+    end
+  end)
+  vim.env.PATH, vim.notify, spawn.new = saved_path, notify, spawn_new
+  Snacks.image.convert = dofile(snacks_path .. "/lua/snacks/image/convert.lua")
+  for _, owned in ipairs(owners) do
+    backend.cleanup(owned)
+  end
+  assert(ok, err)
+  print "Snacks failure diagnostics: missing tools, cached failures, immutable buffers and retired callbacks OK"
+end
 vim.fn.delete(cache, "rf")
 print "Snacks image lifecycle: same-layout rebuild, off-tab completion and cleanup OK"

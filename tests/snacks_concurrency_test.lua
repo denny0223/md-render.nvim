@@ -63,7 +63,13 @@ _G.Snacks = {
       new = function(_, path)
         ui_writes = ui_writes + 1
         return {
-          img = { src = path },
+          img = {
+            src = path,
+            failed = function()
+              return false
+            end,
+          },
+          error = function() end,
           close = function()
             ui_writes = ui_writes + 1
           end,

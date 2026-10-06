@@ -223,14 +223,35 @@ function M.update(state, content)
       local function place(path, frames)
         local source = literal_source(path)
         if not source then
-          vim.api.nvim_buf_set_extmark(state.buf, state.ns, p.line, 0, {
-            virt_text = { { "Image source could not be prepared; check the file path", "ErrorMsg" } },
-            virt_text_pos = "overlay",
-          })
+          require("md-render.display_utils").show_image_error(state.buf, state.ns, p)
+          vim.notify_once("md-render: image source could not be prepared; check the file path", vim.log.levels.WARN)
           return
         end
         local object = Snacks.image.placement.new(state.buf, source, opts)
         state.objects[idx] = object
+        local original_error, reported = object.error, false
+        object.error = function(self)
+          if not current() or self.closed or state.objects[idx] ~= self or reported then return end
+          reported = true
+          original_error(self)
+          require("md-render.display_utils").show_image_error(state.buf, state.ns, p)
+          local reason = self.img._convert and self.img._convert:error() or "image conversion failed"
+          if vim.fn.executable "magick" ~= 1 and vim.fn.executable "identify" ~= 1 then
+            reason = "install ImageMagick 7 (magick) on Neovim's PATH"
+          end
+          reason = vim.fn.strcharpart(tostring(reason):gsub("%c", " "), 0, 240)
+          vim.notify_once(
+            "md-render: Snacks image conversion failed: "
+              .. reason
+              .. "; run :checkhealth md-render and :checkhealth snacks",
+            vim.log.levels.WARN
+          )
+        end
+        -- Cached failures can call error() inside the constructor, before this hook exists.
+        if object.img:failed() then
+          object:error()
+          return
+        end
         if frames and #frames > 1 then
           if image.config().autoplay ~= false then
             M.animate(object.img, frames)

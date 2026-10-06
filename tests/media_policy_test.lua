@@ -219,12 +219,20 @@ vim.system = function(cmd, opts, callback)
   diagram_jobs[#diagram_jobs + 1] = job
   return {
     wait = function()
-      return { code = 7, stdout = png_data }
+      return { code = 7, stdout = png_data, stderr = "Error: Could not find Chrome\n  at ignored stack frame\n" }
     end,
   }
 end
 image.reset_cache()
+local original_notify_once, failure_message = vim.notify_once
+vim.notify_once = function(message)
+  failure_message = message
+end
 assert(image.render_mermaid "graph LR\nA-->B" == nil, "sync Mermaid accepted nonzero exit")
+assert(failure_message:find("mmdc (Mermaid) failed (exit 7)", 1, true), failure_message)
+assert(failure_message:find("Could not find Chrome", 1, true), failure_message)
+assert(failure_message:find(":checkhealth md-render", 1, true), failure_message)
+vim.notify_once = original_notify_once
 assert(image.get_mermaid_cached "graph LR\nA-->B" == nil)
 assert(vim.fn.filereadable(diagram_jobs[1].output) == 0 and vim.fn.filereadable(diagram_jobs[1].input) == 0)
 
@@ -303,6 +311,64 @@ for _, kind in ipairs { "mermaid", "plantuml", "remote plantuml" } do
   if diagram_jobs[2].output then assert(vim.fn.filereadable(diagram_jobs[2].output) == 0, "staging output leaked") end
 end
 image.setup { plantuml_server = "" }
+
+-- Keep renderer failures distinct from missing/invalid output and cache errors.
+do
+  local system, notify, rename = vim.system, vim.notify_once, uv.fs_rename
+  local outcome, output, message
+  vim.notify_once = function(value)
+    message = value
+  end
+  vim.system = function(cmd, _, callback)
+    assert(cmd[1] == "mmdc")
+    for i, arg in ipairs(cmd) do
+      if arg == "-o" then output = cmd[i + 1] end
+    end
+    if outcome == "empty" then
+      vim.fn.writefile({}, output)
+    elseif outcome == "invalid" then
+      vim.fn.writefile({ "not PNG output" }, output)
+    elseif outcome ~= "missing" then
+      assert(uv.fs_copyfile("tests/fixtures/test_4x4.png", output))
+    end
+    local result = {
+      code = outcome == "stderr" and 2 or 0,
+      stderr = outcome == "stderr" and "Error: \27[31m\0\t" .. string.rep("測試", 300) .. "\n" or "",
+    }
+    return {
+      wait = function()
+        if callback then callback(result) end
+        return result
+      end,
+    }
+  end
+  for _, case in ipairs {
+    { "missing", "produced no PNG output" },
+    { "empty", "produced no PNG output" },
+    { "invalid", "produced invalid PNG output" },
+    { "rename", "could not publish mmdc (Mermaid) output to the media cache: EACCES" },
+    { "stderr", "failed (exit 2)" },
+  } do
+    outcome, message = case[1], nil
+    local source = "graph LR\nA-->B: " .. outcome
+    image.reset_cache()
+    if outcome == "rename" then
+      uv.fs_rename = function()
+        return nil, "EACCES: controlled cache permission failure"
+      end
+    end
+    assert(not image.render_mermaid(source))
+    uv.fs_rename = rename
+    assert(message and message:find(case[2], 1, true), message)
+    assert(not message:find("exit 0", 1, true) and not message:find "%c", message)
+    assert(not image.get_mermaid_cached(source) and vim.fn.filereadable(output) == 0)
+    if outcome == "stderr" then
+      local detail = assert(message:match "exit 2%): (.*); run")
+      assert(vim.fn.strchars(detail) == 240 and pcall(vim.str_utfindex, detail, "utf-32"))
+    end
+  end
+  vim.system, vim.notify_once = system, notify
+end
 vim.fn.executable = policy_executable
 image.reset_cache()
 
@@ -334,6 +400,77 @@ assert(
   "frame extraction completes"
 )
 assert(calls == 1 and #frames == 1)
+
+-- Successful process exits still need usable output and a published cache.
+-- Shared callers report one cause; stale work and a peer's success stay quiet.
+do
+  local system, notify, rename = vim.system, vim.notify_once, uv.fs_rename
+  for _, case in ipairs {
+    { "missing", "produced no usable PNG frames" },
+    { "invalid", "produced invalid PNG frames" },
+    { "rename", "could not publish ffmpeg frames to the media cache: EACCES" },
+    { "count", "returned an invalid animation frame count" },
+    { "changed-count" },
+    { "changed" },
+    { "peer" },
+  } do
+    local outcome = case[1]
+    local counting = outcome == "count" or outcome == "changed-count"
+    animation_tool = counting and "magick" or "ffmpeg"
+    image.reset_cache()
+    local source = file("frame-diagnostics-" .. outcome .. ".gif")
+    local output, message, reports, done, result_frames
+    reports, done = 0, 0
+    vim.notify_once = function(value)
+      reports, message = reports + 1, value
+    end
+    vim.system = function(cmd, _, callback)
+      if counting then
+        assert(cmd[2] == "identify", "invalid count should prevent extraction")
+        if outcome == "changed-count" then file("frame-diagnostics-changed-count.gif", "new source version") end
+      else
+        output = cmd[#cmd]:gsub("%%04d", "0001")
+        if outcome == "invalid" then
+          vim.fn.writefile({ "not PNG output" }, output)
+        elseif outcome ~= "missing" then
+          assert(uv.fs_copyfile("tests/fixtures/test_4x4.png", output))
+        end
+        if outcome == "changed" then file("frame-diagnostics-changed.gif", "new source version") end
+      end
+      vim.schedule(function()
+        callback { code = 0, stdout = "" }
+      end)
+      return {}
+    end
+    uv.fs_rename = function(from, to)
+      if outcome == "rename" then return nil, "EACCES: controlled frame cache permission failure" end
+      if outcome == "peer" then
+        assert(rename(from, to)) -- emulate a peer publishing the same complete cache
+        return nil, "EEXIST"
+      end
+      return rename(from, to)
+    end
+    for _ = 1, 2 do
+      image.extract_frames_async(source, function(value)
+        done, result_frames = done + 1, value
+      end)
+    end
+    assert(
+      vim.wait(2000, function()
+        return done == 2
+      end, 5),
+      "frame diagnostics callback lost"
+    )
+    assert((result_frames ~= nil) == (outcome == "peer"), outcome .. " accepted failed/retired frames")
+    assert(reports == (case[2] and 1 or 0), outcome .. " notification count: " .. reports)
+    if case[2] then
+      assert(message:find(case[2], 1, true) and message:find(":checkhealth md-render", 1, true), message)
+      assert(not message:find("exit 0", 1, true), message)
+    end
+    if output then assert(vim.fn.isdirectory(vim.fs.dirname(output)) == 0, "frame staging leaked") end
+  end
+  vim.system, vim.notify_once, uv.fs_rename = system, notify, rename
+end
 
 animation_tool = "magick"
 image.reset_cache()

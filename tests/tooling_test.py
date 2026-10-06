@@ -219,7 +219,7 @@ os.execv({real_mv!r}, [{real_mv!r}, *sys.argv[1:]])
     def test_installed_broken_plantuml_fails_instead_of_skipping(self):
         for source, error in (("raise SystemExit(7)\n", "renderer failed"),
                               (f"import sys\nsys.stdout.buffer.write({png((0, 0, 0))!r})\nsys.exit(7)\n", "renderer failed"),
-                              ("import sys\nsys.stdout.buffer.write(b'\\x89PNG')\n", "not a readable PNG")):
+                              ("import sys\nsys.stdout.buffer.write(b'\\x89PNG')\n", "invalid PNG output")):
             with self.subTest(error=error):
                 self.executable("plantuml", source)
                 result = self.run_lua("tests/plantuml_kitty_test.lua")

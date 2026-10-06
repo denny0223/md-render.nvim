@@ -20,12 +20,16 @@ vim.fn.stdpath = function()
 end
 vim.env.PLANTUML_JAR = temp .. "/plantuml.jar"
 vim.fn.writefile({ "fixture" }, vim.env.PLANTUML_JAR)
-local wrapper, jar = true, false
+local wrapper, jar, curl = true, false, true
 vim.fn.executable = function(name)
-  return (name == "curl" or (name == "plantuml" and wrapper) or (name == "java" and jar)) and 1 or 0
+  return ((name == "curl" and curl) or (name == "plantuml" and wrapper) or (name == "java" and jar)) and 1 or 0
 end
 local png = table.concat(vim.fn.readfile("tests/fixtures/test_4x4.png", "b"), "\n")
-local jobs, probes = {}, 0
+local jobs, probes, notices = {}, 0, {}
+local real_notify_once = vim.notify_once
+vim.notify_once = function(message, level)
+  notices[#notices + 1] = { message = message, level = level }
+end
 local version_result = { code = 0, stdout = "PlantUML version 1.2020.11" }
 vim.system = function(cmd, opts, callback)
   if cmd[1] ~= "curl" then
@@ -137,6 +141,7 @@ local uncached = source .. "\n'fallback"
 image.setup { plantuml_server = "https://server-a.invalid" }
 local available, status = image.has_plantuml()
 assert(available and status:find("server fallback may receive diagram source on local failure", 1, true), status)
+local notices_before = #notices
 local first = start(uncached)
 image.setup { plantuml_server = "https://server-b.invalid" }
 local second = start(uncached)
@@ -145,9 +150,16 @@ finish(5, false)
 assert(jobs[7].cmd[#jobs[7].cmd]:find("https://server-a.invalid/", 1, true) == 1)
 finish(6, false)
 assert(jobs[8].cmd[#jobs[8].cmd]:find("https://server-b.invalid/", 1, true) == 1)
+assert(#notices == notices_before, "local failure was reported before the final fallback outcome")
 finish(7)
 finish(8)
 assert(first.path and second.path and first.path ~= second.path)
+assert(#notices == notices_before + 2)
+for i = notices_before + 1, #notices do
+  assert(notices[i].level == vim.log.levels.INFO)
+  assert(notices[i].message:find("rendered using configured server output", 1, true), notices[i].message)
+  assert(notices[i].message:find("server rendering sends diagram source", 1, true), notices[i].message)
+end
 assert(not image.get_plantuml_cached(uncached), "remote fallback masqueraded as local SANDBOX output")
 wrapper = false
 image.reset_cache()
@@ -161,8 +173,29 @@ assert(jobs[9].cmd[1] == "curl")
 finish(9)
 assert(old_fallback.path)
 
+version_result = { code = 0, stdout = "PlantUML version 1.2020.11" }
+image.reset_cache()
+notices_before = #notices
+local both_failed = start(source .. "\n'both failed")
+finish(10, false)
+assert(#notices == notices_before and not both_failed.done)
+finish(11, false)
+assert(both_failed.done and not both_failed.path and #notices == notices_before + 1)
+assert(notices[#notices].message:find("local and configured server rendering both failed", 1, true))
+assert(notices[#notices].message:find("PlantUML failed (exit 1)", 1, true))
+assert(notices[#notices].message:find("curl (PlantUML server) failed (exit 1)", 1, true))
+image.setup { plantuml_server = "file:///tmp/server" }
+available, status = image.has_plantuml()
+assert(available and status:find("fallback unavailable: an HTTP(S) URL is required", 1, true), status)
+image.setup { plantuml_server = "https://server-b.invalid" }
+curl = false
+available, status = image.has_plantuml()
+assert(available and status:find("fallback unavailable: curl is required", 1, true), status)
+curl = true
+
 -- Exercise the real tool only after the plugin's own version gate accepts it.
 vim.system, vim.fn.executable = real_system, real_executable
+vim.notify_once = real_notify_once
 vim.env.PLANTUML_JAR = real_jar
 image.setup { plantuml_server = "" }
 local marker = "md-render-controlled-local-marker"

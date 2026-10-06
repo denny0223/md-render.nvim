@@ -582,7 +582,7 @@ require("snacks").setup({
 <details>
 <summary><strong>Mermaid ダイアグラムが描画されない</strong></summary>
 
-Mermaid のレンダリングには [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) の `mmdc` とヘッドレスブラウザが必要です。`npm install -g @mermaid-js/mermaid-cli` でインストールできます。見つからなければ既定ではコードブロックのまま表示します。すべての Mermaid 描画は専用の作業ディレクトリを使うため、閲覧中のプロジェクトやその上位ディレクトリの Puppeteer 設定を読み込みません。サポートされる `PUPPETEER_*` 環境設定は引き続き有効です。`mermaid_allow_npx = true` を明示すると、隔離したプロジェクト prefix で指定バージョンの CLI を npm がダウンロード・実行できます。閲覧中のプロジェクトの `.npmrc` とローカルパッケージは使いませんが、ユーザーの npm 設定、レジストリ、依存パッケージは信頼します。この実行時フォールバックは依存関係全体をロックしません。
+Mermaid のレンダリングには [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) の `mmdc` とヘッドレスブラウザが必要です。`npm install -g @mermaid-js/mermaid-cli` でインストールできます。見つからなければ既定ではコードブロックのまま表示します。`mmdc` があっても失敗する場合は :messages を確認し、小さな図で `mmdc -i diagram.mmd -o diagram.png` を実行してブラウザや構文のエラーを調べます。すべての Mermaid 描画は専用の作業ディレクトリを使うため、閲覧中のプロジェクトやその上位ディレクトリの Puppeteer 設定を読み込みません。サポートされる `PUPPETEER_*` 環境設定は引き続き有効です。`mermaid_allow_npx = true` を明示すると、隔離したプロジェクト prefix で指定バージョンの CLI を npm がダウンロード・実行できます。閲覧中のプロジェクトの `.npmrc` とローカルパッケージは使いませんが、ユーザーの npm 設定、レジストリ、依存パッケージは信頼します。この実行時フォールバックは依存関係全体をロックしません。
 
 </details>
 

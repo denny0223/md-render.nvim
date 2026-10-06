@@ -15,8 +15,11 @@ local function write(path, data)
   f:write(data)
   f:close()
 end
-local jobs, fail_spawn = {}, false
-vim.notify = function() end
+local jobs, fail_spawn, messages = {}, false, {}
+vim.notify = function(message)
+  messages[#messages + 1] = message
+end
+vim.notify_once = vim.notify
 vim.system = function(cmd, opts, callback)
   assert(cmd[1] == "curl" and cmd[2] == "-q" and vim.tbl_contains(cmd, "--globoff"))
   assert(cmd[#cmd - 1] == "--")
@@ -142,6 +145,7 @@ wait_for(function()
   return #values == 1
 end)
 assert(not values[1] and vim.fn.filereadable(stage) == 0)
+assert(messages[#messages]:find("custom media downloader reported failure", 1, true))
 image.set_download_fn(function(_, output)
   custom_calls = custom_calls + 1
   stage = output
@@ -174,6 +178,55 @@ wait_for(function()
 end)
 assert(values[1] and values[1]:match "%.mp4$", "video content lost its corrected published extension")
 image.set_download_fn(nil)
+
+-- A successful transfer can still return an empty file, a login page or an
+-- output that cannot be published. Shared readers receive one useful reason.
+for _, video in ipairs { false, true } do
+  for _, outcome in ipairs { "missing", "empty", "invalid", "rename" } do
+    if not video or outcome ~= "invalid" then
+      messages = {}
+      local url = "https://example.invalid/" .. outcome .. "-" .. tostring(video) .. ".png"
+      local download = video and image.download_video_async or image.download_async
+      local before = #jobs
+      values, receive = receiver()
+      download(url, receive)
+      download(url, receive)
+      wait_for(function()
+        return #jobs == before + 1
+      end)
+      local job = jobs[#jobs]
+      local expected
+      if outcome == "missing" then
+        os.remove(job.output)
+        expected = "download produced no file"
+      elseif outcome == "empty" then
+        write(job.output, "")
+        expected = "download produced an empty file"
+      elseif outcome == "invalid" then
+        write(job.output, "<html>Sign in to view this image</html>")
+        expected = "not a supported image or video"
+      else
+        write(job.output, png)
+        expected = "could not publish downloaded media to the cache: EACCES"
+      end
+      local rename = uv.fs_rename
+      if outcome == "rename" then
+        uv.fs_rename = function()
+          return nil, "EACCES: controlled cache permission failure"
+        end
+      end
+      job.callback { code = 0 }
+      wait_for(function()
+        return #values == 2
+      end)
+      uv.fs_rename = rename
+      assert(not values[1] and not values[2] and not image.get_cached(url))
+      assert(vim.fn.filereadable(job.output) == 0 and vim.fn.filereadable(cache_path(url)) == 0)
+      assert(#messages == 1 and messages[1]:find(expected, 1, true), vim.inspect(messages))
+      assert(messages[1]:find(":checkhealth md-render", 1, true))
+    end
+  end
+end
 
 for _, in_memory in ipairs { false, true } do
   local url = "https://example.invalid/stale-reader-" .. tostring(in_memory) .. ".png"

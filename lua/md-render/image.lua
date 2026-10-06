@@ -628,18 +628,61 @@ local function build_mmdc_cmd(cmd_prefix, input_path, output_path)
   return cmd
 end
 
+local function notify_failure(reason, level)
+  reason = vim.fn.strcharpart(reason:gsub("%c", " "), 0, 500)
+  vim.notify_once("md-render: " .. reason .. "; run :checkhealth md-render", level or vim.log.levels.WARN)
+end
+
+--- Keep a short useful tool error instead of its banner.
+---@param tool string
+---@param result vim.SystemCompleted
+---@param purpose string
+---@return string
+local function tool_failure(tool, result, purpose)
+  -- Keep the last couple of non-empty stderr lines. FFmpeg prints its banner
+  -- and build configuration first, and splits the reason across two lines
+  -- ("Unrecognized option 'vsync'." / "Error splitting the argument list: ..."),
+  -- so one line is rarely the whole story. Anchoring a `$` match on the raw
+  -- output silently matches nothing, because stderr ends with a newline.
+  local lines = {}
+  for line in (result.stderr or ""):gmatch "[^\r\n]+" do
+    local trimmed = vim.trim(line)
+    if trimmed ~= "" then table.insert(lines, trimmed) end
+  end
+  local detail = (result.stderr or ""):match "([^\r\n]*[Ee]rror:[^\r\n]*)"
+    or table.concat(vim.list_slice(lines, math.max(1, #lines - 1)), " / ")
+  if detail == "" then detail = result.code == 124 and "timed out" or "no error details" end
+  detail = vim.fn.strcharpart(detail:gsub("%c", " "), 0, 240)
+  return string.format("%s %s (exit %s): %s", tool, purpose, tostring(result.code), detail)
+end
+
 --- Publish only completed diagram output; cache readers must never see a partial file.
-local function render_diagram_file(cache_path, render)
+---@param quiet? boolean defer notification until the caller knows the final outcome
+---@return string? path, string? reason
+local function render_diagram_file(cache_path, render, tool, quiet)
   -- Keep the temporary output on the cache filesystem, with a name unique to this run.
   local tmp_output = cache_path .. "." .. vim.fn.sha256(vim.fn.tempname()):sub(1, 16) .. ".png"
   local ok, result = pcall(render, tmp_output)
-  local installed = ok
-    and result.code == 0
-    and vim.fn.filereadable(tmp_output) == 1
-    and uv.fs_rename(tmp_output, cache_path)
+  local installed, reason
+  if not ok then
+    reason = tool .. " could not complete: " .. tostring(result)
+  elseif result.code ~= 0 then
+    reason = tool_failure(tool, result, "failed")
+  else
+    local stat = uv.fs_stat(tmp_output)
+    if not stat or stat.type ~= "file" or stat.size == 0 then
+      reason = tool .. " produced no PNG output"
+    elseif not png_dimensions(tmp_output) then
+      reason = tool .. " produced invalid PNG output"
+    else
+      local err
+      installed, err = uv.fs_rename(tmp_output, cache_path)
+      if not installed then reason = "could not publish " .. tool .. " output to the media cache: " .. tostring(err) end
+    end
+  end
   os.remove(tmp_output)
-  if not ok then vim.notify("md-render: " .. tostring(result), vim.log.levels.ERROR) end
-  return installed and cache_path or nil
+  if reason and not quiet then notify_failure(reason, not ok and vim.log.levels.ERROR or nil) end
+  return installed and cache_path or nil, reason
 end
 
 --- Built-in downloads have one literal HTTP(S) URL and a whole-process deadline.
@@ -648,7 +691,7 @@ local function curl_download(url, output, seconds, bytes)
     "curl",
     "-q",
     "--globoff",
-    "-sfL",
+    "-fsSL",
     "--proto",
     "=http,https",
     "--proto-redir",
@@ -704,7 +747,7 @@ local function render_mermaid_file(source, cmd_prefix, cache_path, run)
       table.insert(cmd, 2, "--prefix")
     end
     return run(cmd, opts)
-  end)
+  end, "mmdc (Mermaid)")
   vim.fn.delete(tmp_dir, "rf")
   return path
 end
@@ -913,16 +956,27 @@ end
 --- `mmdc`.
 ---@async
 ---@param source string
----@param cache_path string
+---@param server string
+---@param quiet? boolean
 ---@return string? png_path
-local function render_plantuml_remote(source, server)
-  if not M.is_url(server) or vim.fn.executable "curl" ~= 1 then return nil end
+---@return string? reason
+local function render_plantuml_remote(source, server, quiet)
+  local reason
+  if not M.is_url(server) then
+    reason = "configured PlantUML server must use an HTTP(S) URL"
+  elseif vim.fn.executable "curl" ~= 1 then
+    reason = "configured PlantUML server needs curl on Neovim's PATH"
+  end
+  if reason then
+    if not quiet then notify_failure(reason) end
+    return nil, reason
+  end
   local cache_path = plantuml_cache_path(source, server)
   if vim.fn.filereadable(cache_path) == 1 then return cache_path end
   local url = server .. "/png/~h" .. plantuml_encode_hex(source)
   return render_diagram_file(cache_path, function(output)
     return curl_download(url, output, 15, 20000000)
-  end)
+  end, "curl (PlantUML server)", quiet)
 end
 
 --- Render PlantUML source code to a PNG image (asynchronous, cached).
@@ -946,10 +1000,14 @@ function M.render_plantuml_async(source, callback)
   -- Capture the fallback policy too: a settings change must not join a request
   -- whose local failure would send the source to a different server.
   shared_work(cache_path .. "|" .. (server or ""), function()
-    if not cmd_prefix then return render_plantuml_remote(source, server) end
+    if not cmd_prefix then
+      local path = render_plantuml_remote(source, server)
+      return path
+    end
 
     local cmd = vim.list_extend(vim.list_extend({}, cmd_prefix), { "-tpng", "-pipe" })
-    local path = render_diagram_file(cache_path, function(output)
+    local fallback = M.is_url(server) and vim.fn.executable "curl" == 1
+    local path, reason = render_diagram_file(cache_path, function(output)
       local result = async.system(cmd, {
         stdin = source,
         text = false,
@@ -964,8 +1022,19 @@ function M.render_plantuml_async(source, callback)
         end
       end
       return result
-    end)
-    return path or render_plantuml_remote(source, server)
+    end, "PlantUML", fallback)
+    if path or not fallback then return path end
+    local remote, remote_reason = render_plantuml_remote(source, server, true)
+    if remote then
+      notify_failure(
+        "PlantUML rendered using configured server output (server rendering sends diagram source); local failure: "
+          .. reason,
+        vim.log.levels.INFO
+      )
+    else
+      notify_failure("PlantUML local and configured server rendering both failed: " .. reason .. " / " .. remote_reason)
+    end
+    return remote
   end, callback)
 end
 
@@ -1247,20 +1316,23 @@ end
 ---@param cache_path string
 ---@param video boolean skip image header validation for explicit video downloads
 ---@return string? path  nil when the download is not usable
+---@return string? reason
 local function finalize_download(url, output, cache_path, video)
   local stat = uv.fs_stat(output)
-  if not stat or stat.type ~= "file" or stat.size == 0 then return nil end
+  if not stat or stat.type ~= "file" then return nil, "download produced no file" end
+  if stat.size == 0 then return nil, "download produced an empty file" end
   if not video and not M.image_dimensions(output) then
     -- Check if it's a video with wrong extension
     local video_ext = detect_video_ext(output)
-    if not video_ext then return nil end
+    if not video_ext then return nil, "downloaded content is not a supported image or video" end
     cache_path = cache_path:gsub("%.[^./]+$", "." .. video_ext)
   end
-  if uv.fs_rename(output, cache_path) then
+  local installed, err = uv.fs_rename(output, cache_path)
+  if installed then
     _url_cache[url] = cache_path
     return cache_path
   end
-  return nil
+  return nil, "could not publish downloaded media to the cache: " .. tostring(err)
 end
 
 --- Offer the download to the user's `set_download_fn`, if one is registered.
@@ -1290,15 +1362,22 @@ end
 local function download_file(url, cache_path, video)
   local nonce = vim.fn.sha256(vim.fn.tempname()):sub(1, 16)
   local output = cache_path:gsub("(%.[^./]+)$", "." .. nonce .. "%1")
-  local ok, result = pcall(function()
+  local ok, result, reason = pcall(function()
     local taken, arrived = custom_download(url, output)
     if not taken then
-      arrived = curl_download(url, output, video and 30 or 10, video and 104857600 or 20000000).code == 0
+      local transfer = curl_download(url, output, video and 30 or 10, video and 104857600 or 20000000)
+      arrived = transfer.code == 0
+      if not arrived then return nil, tool_failure("curl", transfer, "could not download media") end
     end
     if arrived then return finalize_download(url, output, cache_path, video) end
+    return nil, "custom media downloader reported failure"
   end)
   os.remove(output)
-  if not ok then vim.notify("md-render: " .. tostring(result), vim.log.levels.ERROR) end
+  if not ok then
+    notify_failure("media download failed: " .. tostring(result), vim.log.levels.ERROR)
+  elseif reason then
+    notify_failure(reason)
+  end
   return ok and result or nil
 end
 
@@ -1520,10 +1599,8 @@ local function ensure_png(path, system)
   if not cache_path then return nil, false end
   if vim.fn.filereadable(cache_path) == 1 then return cache_path, false end
   local output = render_diagram_file(cache_path, function(tmp)
-    local result = system(build_convert_cmd(tool, path, tmp), { text = true, timeout = 30000 })
-    if result.code == 0 and not png_dimensions(tmp) then result.code = 1 end
-    return result
-  end)
+    return system(build_convert_cmd(tool, path, tmp), { text = true, timeout = 30000 })
+  end, tool)
   return output, false
 end
 
@@ -1867,32 +1944,6 @@ end
 
 local MAX_ANIM_FRAMES = 300 -- max frames to extract (= 60 seconds at 5 fps)
 
---- Report a frame-extraction failure once per distinct error.
----
---- Both extraction paths otherwise just drop the frames and return nil, which
---- leaves the placeholder reading "Loading video..." with nothing to explain
---- why. A removed FFmpeg option looked exactly like a slow download.
----@param tool string
----@param result vim.SystemCompleted
-local function warn_extract_failed(tool, result)
-  -- Keep the last couple of non-empty stderr lines. FFmpeg prints its banner
-  -- and build configuration first, and splits the reason across two lines
-  -- ("Unrecognized option 'vsync'." / "Error splitting the argument list: ..."),
-  -- so one line is rarely the whole story. Anchoring a `$` match on the raw
-  -- output silently matches nothing, because stderr ends with a newline.
-  local lines = {}
-  for line in (result.stderr or ""):gmatch "[^\r\n]+" do
-    local trimmed = vim.trim(line)
-    if trimmed ~= "" then table.insert(lines, trimmed) end
-  end
-  local detail = table.concat(vim.list_slice(lines, math.max(1, #lines - 1)), " / ")
-  if detail == "" then detail = "exit code " .. tostring(result.code) end
-  vim.notify_once(
-    string.format("md-render: %s could not extract video/animation frames: %s", tool, detail),
-    vim.log.levels.WARN
-  )
-end
-
 --- Build a command to extract frames from an animated GIF.
 ---@param tool string  "ffmpeg" or "magick"
 ---@param path string  GIF file path
@@ -2066,27 +2117,42 @@ function extract_frames(path, cache_dir, tool, system)
     local total = 1
     if tool == "magick" then
       local count = system({ "magick", "identify", "-format", "%n\n", path }, { text = true, timeout = 5000 })
+      if get_frames_cache_dir(path) ~= cache_dir then return nil end
       if count.code ~= 0 then
-        warn_extract_failed(tool, count)
+        notify_failure(tool_failure(tool, count, "could not count animation frames"))
         return nil
       end
       total = tonumber((count.stdout or ""):match "%d+")
-      if not total or total < 1 or total > 2147483647 then return nil end
+      if not total or total < 1 or total > 2147483647 then
+        notify_failure(tool .. " returned an invalid animation frame count")
+        return nil
+      end
     end
     vim.fn.mkdir(staging, "p")
     local result = system(build_frame_extract_cmd(tool, path, staging, total), { text = true, timeout = 30000 })
+    if get_frames_cache_dir(path) ~= cache_dir then return nil end
     if result.code ~= 0 then
-      warn_extract_failed(tool, result)
+      notify_failure(tool_failure(tool, result, "could not extract video/animation frames"))
       return nil
     end
     local produced = get_cached_frames(staging)
-    if not produced or get_frames_cache_dir(path) ~= cache_dir then return nil end
+    if not produced then
+      notify_failure(tool .. " produced no usable PNG frames (expected 1-" .. MAX_ANIM_FRAMES .. ")")
+      return nil
+    end
     for _, frame in ipairs(produced) do
-      if not png_dimensions(frame) then return nil end
+      if not png_dimensions(frame) then
+        notify_failure(tool .. " produced invalid PNG frames")
+        return nil
+      end
     end
     -- A peer may already have published this immutable source version. Never
     -- remove its directory on a collision or when our own process fails.
-    if not uv.fs_rename(staging, cache_dir) and not get_cached_frames(cache_dir) then return nil end
+    local installed, err = uv.fs_rename(staging, cache_dir)
+    if not installed and not get_cached_frames(cache_dir) then
+      notify_failure("could not publish " .. tool .. " frames to the media cache: " .. tostring(err))
+      return nil
+    end
     return get_cached_frames(cache_dir)
   end)
   vim.fn.delete(staging, "rf")

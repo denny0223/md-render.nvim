@@ -572,7 +572,7 @@ require("snacks").setup({
 <details>
 <summary><strong>Mermaid 圖表沒有顯示</strong></summary>
 
-Mermaid 圖表需要 [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) 提供的 `mmdc` 指令及其無頭瀏覽器。可用 `npm install -g @mermaid-js/mermaid-cli` 安裝；找不到時，預設保留為程式碼區塊。每次 Mermaid 繪圖都使用獨立工作目錄，因此不會載入文件所在專案或其上層目錄的 Puppeteer 設定；受支援的 `PUPPETEER_*` 環境設定仍有效。明確設定 `mermaid_allow_npx = true` 後，才允許 npm 以隔離的專案 prefix 下載並執行指定版本的 CLI。這會避開文件所在專案的 `.npmrc` 與本機套件，但仍信任你的 npm 設定、套件來源及相依套件；執行時的替代方式並未鎖定完整相依版本。
+Mermaid 圖表需要 [@mermaid-js/mermaid-cli](https://github.com/mermaid-js/mermaid-cli) 提供的 `mmdc` 指令及其無頭瀏覽器。可用 `npm install -g @mermaid-js/mermaid-cli` 安裝；找不到時，預設保留為程式碼區塊。若找到 `mmdc` 仍失敗，請查看 `:messages`，並用小型圖表執行 `mmdc -i diagram.mmd -o diagram.png`，確認瀏覽器或語法錯誤。每次 Mermaid 繪圖都使用獨立工作目錄，因此不會載入文件所在專案或其上層目錄的 Puppeteer 設定；受支援的 `PUPPETEER_*` 環境設定仍有效。明確設定 `mermaid_allow_npx = true` 後，才允許 npm 以隔離的專案 prefix 下載並執行指定版本的 CLI。這會避開文件所在專案的 `.npmrc` 與本機套件，但仍信任你的 npm 設定、套件來源及相依套件；執行時的替代方式並未鎖定完整相依版本。
 
 </details>
 

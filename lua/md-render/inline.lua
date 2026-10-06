@@ -99,7 +99,7 @@ local function html_end(text, start, attributes, failed)
     local name_end = text:match("^[A-Za-z_:][A-Za-z0-9:._%-]*()", next_pos)
     if not name_end then return end
     local name = attributes and text:sub(next_pos, name_end - 1):lower()
-    local value, quoted = true, false
+    local value, quoted, value_first, value_last = true, false
     pos = skip_space(text, name_end)
     if text:sub(pos, pos) == "=" then
       pos = skip_space(text, pos + 1)
@@ -108,6 +108,7 @@ local function html_end(text, start, attributes, failed)
         local finish = delimiter_end(text, quote, pos + 1, failed)
         if not finish then return end
         value, quoted = text:sub(pos + 1, finish - 1), true
+        value_first, value_last = pos + 1, finish - 1
         pos = finish + 1
       else
         local first = pos
@@ -117,11 +118,14 @@ local function html_end(text, start, attributes, failed)
         end
         if pos == first then return end
         value = text:sub(first, pos - 1)
+        value_first, value_last = first, pos - 1
       end
     else
       pos = name_end
     end
-    if attributes and attributes[name] == nil then attributes[name] = { value = value, quoted = quoted } end
+    if attributes and attributes[name] == nil then
+      attributes[name] = { value = value, quoted = quoted, first = value_first, last = value_last }
+    end
   end
 end
 
@@ -132,11 +136,15 @@ end
 
 --- Read an actual attribute of the first complete opening tag, in source spelling.
 --- Boolean attributes return true; duplicate names keep their first value.
+---@return string|boolean? value
+---@return boolean? quoted
+---@return integer? first 1-based inclusive value start; nil for boolean attributes
+---@return integer? last 1-based inclusive value end; first - 1 for an empty value
 function M.html_attribute(tag, name)
   local attributes = {}
   if not html_end(tag, 1, attributes) then return end
   local attribute = attributes[name:lower()]
-  if attribute then return attribute.value, attribute.quoted end
+  if attribute then return attribute.value, attribute.quoted, attribute.first, attribute.last end
 end
 
 --- Iterate complete HTML tokens, keeping quoted attributes and comments opaque.
@@ -205,31 +213,43 @@ function M.html_closing_index(text)
 end
 
 --- Hide complete comment tokens while preserving tags and physical rows.
-function M.hide_html_comments(text)
+---@param sources? MdRender.SourceMap
+function M.hide_html_comments(text, sources)
   local parts, pos = {}, 1
+  local edits = sources and {}
   for first, last, token in M.html_tags(text) do
     parts[#parts + 1] = text:sub(pos, first - 1)
-    parts[#parts + 1] = token:sub(1, 4) == "<!--" and token:gsub("[^\n]", "") or token
+    local comment = token:sub(1, 4) == "<!--"
+    parts[#parts + 1] = comment and token:gsub("[^\n]", "") or token
+    if comment and sources then
+      for start, finish in token:gmatch "()[^\n]+()" do
+        edits[#edits + 1] = { first = first + start - 2, last = first + finish - 2 }
+      end
+    end
     pos = last + 1
   end
   parts[#parts + 1] = text:sub(pos)
+  if sources then sources:replace(edits) end
   return table.concat(parts)
 end
 
 --- Existing supported HTML semantics use quoted href/src values.
+---@return string? target
+---@return integer? first 1-based inclusive value start in tag
+---@return integer? last 1-based inclusive value end in tag
 function M.html_target(tag)
   local name, closing = M.html_name(tag)
   if closing then return end
   local attribute = name == "a" and "href" or (name == "img" or name == "video") and "src"
   if attribute then
-    local value, quoted = M.html_attribute(tag, attribute)
-    if quoted then return value end
+    local value, quoted, first, last = M.html_attribute(tag, attribute)
+    if quoted then return value, first, last end
     if name == "video" then
-      for _, _, token in M.html_tags(tag) do
+      for start, _, token in M.html_tags(tag) do
         local source_name, source_closing = M.html_name(token)
         if source_name == "source" and not source_closing then
-          value, quoted = M.html_attribute(token, "src")
-          if quoted then return value end
+          value, quoted, first, last = M.html_attribute(token, "src")
+          if quoted then return value, start + first - 1, start + last - 1 end
         end
       end
     end
@@ -684,7 +704,8 @@ end
 
 --- A rejected source destination cannot become valid after comments disappear.
 --- Protect only its opening parenthesis, preserving bracket/reference ownership.
-function M.protect_invalid_destinations(text, ref_links, source_label)
+---@param sources? MdRender.SourceMap
+function M.protect_invalid_destinations(text, ref_links, source_label, sources)
   if not text:find("](", 1, true) then return text, {} end
   local positions = scan(text, ref_links, nil, source_label).invalid_destinations
   if #positions == 0 then return text, {} end
@@ -693,31 +714,51 @@ function M.protect_invalid_destinations(text, ref_links, source_label)
     invalid[pos] = true
   end
   local prefix = M.token_prefix(text .. (source_label and source_label(text) or ""), 0xF1006)
+  local edits = sources and {}
   local protected = text:gsub("()%(", function(pos)
     if not invalid[pos] then return "(" end
     local placeholder = prefix .. (#spans + 1) .. "\u{F1007}"
-    spans[#spans + 1] = { placeholder = placeholder, content = "(", raw = "(" }
+    local span = { placeholder = placeholder, content = "(", raw = "(" }
+    spans[#spans + 1] = span
+    if sources then sources:protect(edits, span, pos - 1, pos) end
     return placeholder
   end)
+  if sources then sources:replace(edits) end
   return protected, spans
 end
 
 --- Protect code before display whitespace, comments, escapes, or entities change.
-function M.protect_code(text, ref_links)
+---@param sources? MdRender.SourceMap
+function M.protect_code(text, ref_links, sources)
   if not text:find("`", 1, true) then return text, {} end
   local spans, parts, pos = {}, {}, 1
+  local edits = sources and {}
   local prefix = M.token_prefix(text, 0xF1000)
   for _, range in ipairs(M.code_spans(text, ref_links)) do
     local content = text:sub(range.start + range.ticks, range.finish - range.ticks)
+    local content_sources = sources and sources:slice(range.start + range.ticks - 1, range.finish - range.ticks)
+    if content_sources then
+      local cr_edits = {}
+      for first in content:gmatch "()\r\n" do
+        cr_edits[#cr_edits + 1] = { first = first - 1, last = first }
+      end
+      content_sources:replace(cr_edits)
+    end
     content = content:gsub("\r\n", "\n"):gsub("[\r\n]", " ")
-    if content:sub(1, 1) == " " and content:sub(-1) == " " and content:find "[^ ]" then content = content:sub(2, -2) end
+    if content:sub(1, 1) == " " and content:sub(-1) == " " and content:find "[^ ]" then
+      if content_sources then content_sources = content_sources:slice(1, #content - 1) end
+      content = content:sub(2, -2)
+    end
     local placeholder = prefix .. (#spans + 1) .. "\u{F1001}"
-    spans[#spans + 1] = { placeholder = placeholder, content = content, raw = text:sub(range.start, range.finish) }
+    local span = { placeholder = placeholder, content = content, raw = text:sub(range.start, range.finish) }
+    spans[#spans + 1] = span
+    if sources then sources:protect(edits, span, range.start - 1, range.finish, content_sources) end
     parts[#parts + 1] = text:sub(pos, range.start - 1)
     parts[#parts + 1] = placeholder
     pos = range.finish + 1
   end
   parts[#parts + 1] = text:sub(pos)
+  if sources then sources:replace(edits) end
   return table.concat(parts), spans
 end
 

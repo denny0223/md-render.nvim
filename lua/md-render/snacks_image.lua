@@ -279,10 +279,7 @@ function M.update(state, content)
             p.path = path
             ready()
           else
-            vim.api.nvim_buf_set_extmark(state.buf, state.ns, p.line, 0, {
-              virt_text = { { "Image conversion failed; edit the source and retry", "ErrorMsg" } },
-              virt_text_pos = "overlay",
-            })
+            require("md-render.display_utils").show_image_error(state.buf, state.ns, p)
           end
         end)
       end)

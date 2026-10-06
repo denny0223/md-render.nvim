@@ -829,5 +829,35 @@ test("cleanup_images stops work that is still running", function()
   assert_eq(still_running, 0, "and none of it survives the teardown")
 end)
 
+test("image failure overlays progress without changing text, layout or buffer flags", function()
+  for _, progress in ipairs {
+    "Loading image...",
+    "Loading video...",
+    "Rendering mermaid diagram...",
+    "Rendering PlantUML diagram...",
+  } do
+    local buf = vim.api.nvim_create_buf(false, false)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "caption", "", "  " .. progress, "", "next block" })
+    vim.bo[buf].modified, vim.bo[buf].modifiable = true, false
+    local ns = vim.api.nvim_create_namespace "md_render_failure_test"
+    local tick = vim.api.nvim_buf_get_changedtick(buf)
+    display_utils.show_image_error(buf, ns, { line = 1, rows = 3, cols = 60 })
+    assert_eq(vim.api.nvim_buf_get_lines(buf, 2, 3, false)[1], "  " .. progress, "underlying text is preserved")
+    assert_eq(vim.api.nvim_buf_get_changedtick(buf), tick, "feedback does not invalidate picker caches")
+    assert_eq(vim.api.nvim_buf_line_count(buf), 5, "row ownership remains unchanged")
+    assert_eq(vim.api.nvim_buf_get_lines(buf, 4, 5, false)[1], "next block", "following content is preserved")
+    assert_eq(vim.bo[buf].modified, true, "modified state is preserved")
+    assert_eq(vim.bo[buf].modifiable, false, "modifiable state is restored")
+    local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+    assert_eq(marks[1][2], 2, "feedback covers the progress row")
+    assert_eq(
+      vim.trim(marks[1][4].virt_text[1][1]),
+      "Image failed; see :messages and :checkhealth md-render",
+      "failure includes recovery commands"
+    )
+    vim.api.nvim_buf_delete(buf, { force = true })
+  end
+end)
+
 print(string.format("display_utils_test: %d passed, %d failed", pass_count, fail_count))
 if fail_count > 0 then os.exit(1) end

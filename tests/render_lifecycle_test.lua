@@ -162,7 +162,7 @@ state = display.update_images(nil, win, content(png), ns, { buf = buf })
 wait_for(function()
   for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })) do
     local text = mark[4].virt_text
-    if text and text[1][1]:find("failed", 1, true) then return true end
+    if text and text[1][2] == "ErrorMsg" then return true end
   end
 end, "failed conversion left Loading feedback")
 assert(not vim.bo[buf].modified, "error feedback marked the buffer modified")

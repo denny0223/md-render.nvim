@@ -96,7 +96,8 @@ Snacks 設定另用 :checkhealth snacks 檢查。這些檢查不代表實際顯�
 請依 |md-render-snacks-image| 的 PNG 與圖片分頁步驟確認。
 若 shell 可執行的工具在此找不到，請檢查 :echo exepath('mmdc')
 （替換工具名稱）及 :echo $PATH。安裝或升級工具後，重新啟動 Neovim
-並重開預覽；工具偵測結果會快取。執行時的錯誤可用 :messages 查看。
+並重開預覽；工具偵測結果會快取。媒體區域顯示 Failed 或 ! 時，
+用 :messages 查看原因。
 
 ==============================================================================
 安裝                                                  *md-render-installation*

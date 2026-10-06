@@ -4,6 +4,53 @@ local async = require "md-render.async"
 
 local M = {}
 
+--- Overlay a failure within the reserved image area without changing buffer text.
+function M.show_image_error(buf, ns, placement)
+  local count = vim.api.nvim_buf_line_count(buf)
+  if placement.line >= count then return end
+  local row = math.min(placement.line + math.floor((placement.rows or 1) / 2), count - 1)
+  local line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1]
+  local first, last = line:find "Loading %w+%.%.%."
+  if not first then
+    first, last = line:find "Rendering %w+ diagram%.%.%."
+  end
+  local columns = placement.cols or 50
+  local width, prefix = columns, ""
+  local col
+  if first and not placement.cell_cols then
+    -- Progress is centered in the original rectangle; byte offsets include UTF-8 prefixes.
+    col = math.max(0, first - 1 - math.max(0, math.floor((width - (last - first + 1)) / 2)))
+    width = math.max(width, vim.fn.strdisplaywidth(line:sub(col + 1, last)))
+    -- Start at column zero so wrapped continuation rows cannot expose a progress prefix.
+    prefix, col = line:sub(1, col), 0
+  else
+    row = placement.line
+    line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1]
+    col = vim.fn.match(line, "\\%" .. ((placement.col or 0) + 1) .. "v")
+    if col < 0 then
+      col = #line
+      prefix = string.rep(" ", math.max(0, (placement.col or 0) - vim.fn.strdisplaywidth(line)))
+    end
+  end
+  width = math.max(1, width)
+  local start = vim.fn.strdisplaywidth(line:sub(1, col) .. prefix)
+  for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+    local info = vim.fn.getwininfo(win)[1]
+    columns = math.min(columns, math.max(1, info.width - info.textoff - start))
+  end
+  local status = "Image failed; see :messages and :checkhealth md-render"
+  if #status > columns then status = "Image failed; :messages" end
+  if #status > columns then status = "Image failed" end
+  if #status > columns then status = "Failed" end
+  if #status > columns then status = "!" end
+  vim.api.nvim_buf_set_extmark(buf, ns, row, col, {
+    virt_text = { { prefix .. status .. string.rep(" ", width - #status), "ErrorMsg" } },
+    virt_text_pos = "overlay",
+    virt_text_repeat_linebreak = first ~= nil and not placement.cell_cols or false,
+    priority = vim.hl.priorities.user,
+  })
+end
+
 --- Mouse coordinates shared by preview clicks and URL hover.
 function M.getmousepos(release)
   local mouse = vim.fn.getmousepos()
@@ -1367,6 +1414,8 @@ function M.setup_images(win, content, ns, opts)
   process_placement = function(placement)
     if not current() or in_flight(placement) then return end
     local revision, owner = state.revision, state.owner
+    -- show() can resize the terminal placement; the buffer still owns the original rectangle.
+    local reserved = vim.tbl_extend("force", {}, placement)
     tasks[placement] = async.run(function()
       permits:with(function()
         -- The window can go, and the placement can scroll away, while this is
@@ -1376,10 +1425,7 @@ function M.setup_images(win, content, ns, opts)
         if current(revision) and (not ok or shown == false) then
           placement._retries = MAX_RETRIES
           if ns and placement.line < vim.api.nvim_buf_line_count(state.buf) then
-            vim.api.nvim_buf_set_extmark(state.buf, ns, placement.line, 0, {
-              virt_text = { { "Image conversion failed; edit the source and retry", "ErrorMsg" } },
-              virt_text_pos = "overlay",
-            })
+            M.show_image_error(state.buf, ns, reserved)
           end
         end
       end)

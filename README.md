@@ -546,7 +546,7 @@ require("snacks").setup({
 
 ## FAQ / Troubleshooting
 
-After loading the plugin, start with `:checkhealth md-render` for the selected image backend, required tools, heading status, and cache location. Follow the feature-specific checks below to verify actual terminal display. If a tool works in your shell but is missing here, compare `:echo exepath('mmdc')` (replace the name) and `:echo $PATH`. After installing or upgrading tools, restart Neovim and reopen the preview; detections are cached.
+After loading the plugin, start with `:checkhealth md-render` for the selected image backend, required tools, heading status, and cache location. Follow the feature-specific checks below to verify actual terminal display. If a tool works in your shell but is missing here, compare `:echo exepath('mmdc')` (replace the name) and `:echo $PATH`. After installing or upgrading tools, restart Neovim and reopen the preview; detections are cached. If a media area shows `Failed` or `!`, inspect `:messages` for the cause.
 
 <details>
 <summary><strong><code>:MdRender</code> is not an editor command</strong></summary>

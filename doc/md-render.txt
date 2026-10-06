@@ -109,7 +109,8 @@ use the PNG and image-tab check in |md-render-snacks-image| for that.
 If a tool works in your shell but is missing here, compare its path with
 :echo exepath('mmdc') (replace the name), and check :echo $PATH. After
 installing/upgrading tools, restart Neovim and reopen the preview;
-detections are cached. Runtime errors appear in :messages.
+detections are cached. If a media area shows Failed or !, inspect :messages
+for the cause.
 
 ==============================================================================
 INSTALLATION						*md-render-installation*

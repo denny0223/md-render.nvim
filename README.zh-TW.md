@@ -539,7 +539,7 @@ require("snacks").setup({
 
 ## 常見問題與疑難排解
 
-載入外掛後，先用 `:checkhealth md-render` 查看選用圖片後端、必要工具、標題狀態與快取位置，再依下方各功能的步驟確認實際終端顯示。若工具在 shell 可用、Neovim 卻找不到，請比較 `:echo exepath('mmdc')`（替換為該工具名稱）與 `:echo $PATH`。安裝或升級工具後，重新啟動 Neovim 並重開預覽；工具偵測結果會快取。
+載入外掛後，先用 `:checkhealth md-render` 查看選用圖片後端、必要工具、標題狀態與快取位置，再依下方各功能的步驟確認實際終端顯示。若工具在 shell 可用、Neovim 卻找不到，請比較 `:echo exepath('mmdc')`（替換為該工具名稱）與 `:echo $PATH`。安裝或升級工具後，重新啟動 Neovim 並重開預覽；工具偵測結果會快取。媒體區域顯示 `Failed` 或 `!` 時，用 `:messages` 查看原因。
 
 <details>
 <summary><strong><code>:MdRender</code> 不是有效的編輯器指令</strong></summary>

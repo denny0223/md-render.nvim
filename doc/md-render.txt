@@ -101,10 +101,15 @@ REQUIREMENTS						*md-render-requirements*
   See |md-render-snacks-image| for its dependencies and configuration.
 
                                                         *md-render-health*
-Run :checkhealth md-render after loading the plugin to check the selected
+After installation, restart Neovim and run :MdRender demo to load the plugin,
+including lazy-loaded setups. Run :checkhealth md-render to check the selected
 image backend, tools, heading status, and cache location. For Snacks, also
 run :checkhealth snacks. These checks do not verify actual terminal display;
 use the PNG and image-tab check in |md-render-snacks-image| for that.
+If a tool works in your shell but is missing here, compare its path with
+:echo exepath('mmdc') (replace the name), and check :echo $PATH. After
+installing/upgrading tools, restart Neovim and reopen the preview;
+detections are cached. Runtime errors appear in :messages.
 
 ==============================================================================
 INSTALLATION						*md-render-installation*
@@ -588,7 +593,8 @@ Use :MdRender textsize image before or during a preview. Requirements:
 - Neovim >= 0.12, Kitty >= 0.28, measured cell dimensions and
   'termguicolors'. Direct connections confirm PNG uploads before masking text.
 - Python 3, PyGObject, Pycairo, Pango/PangoCairo and Cairo introspection data,
-  plus the configured fonts, on the Neovim host.
+  plus the configured fonts, on the Neovim host. Automatic font sizing needs
+  Pango 1.44+ (FontMetrics.get_height).
 - Linux with direct Kitty or a loopback SSH PTY has been tested. Windows
   disables image headings; other OS/client combinations are unverified.
   For tmux requirements and recovery, see |md-render-tmux-image-headings|.

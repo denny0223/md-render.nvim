@@ -259,7 +259,7 @@ function M.resolve_backend()
   if config.backend == "native" then
     local supported, reason = M.supports()
     if supported then return "native" end
-    return "plain", reason or "terminal does not support native OSC 66 headings"
+    return "plain", reason or "native headings require a confirmed Kitty 0.40 or newer"
   end
   local layout = package.loaded["md-render.heading_layout"]
   local reason = layout and layout.failure(config.image.python)

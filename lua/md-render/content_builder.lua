@@ -3447,7 +3447,7 @@ function ContentBuilder:render_document(lines, opts)
     local mermaid_handled = false
     if code_block_lang and code_block_lang:lower() == "mermaid" and code_source_lines and #code_source_lines > 0 then
       local image = require "md-render.image"
-      if image.supports_kitty() and image.has_mmdc() then
+      if image.supports_kitty() and image.has_mmdc(true) then
         local mermaid_source = table.concat(code_source_lines, "\n")
         discard_code_rows()
 
@@ -3520,7 +3520,7 @@ function ContentBuilder:render_document(lines, opts)
       and #code_source_lines > 0
     then
       local image = require "md-render.image"
-      if image.supports_kitty() and image.has_plantuml() then
+      if image.supports_kitty() and image.has_plantuml(true) then
         local plantuml_source = table.concat(code_source_lines, "\n")
         discard_code_rows()
 

@@ -24,7 +24,10 @@ end
 
 function M.open(path)
   if vim.fn.executable "magick" ~= 1 then
-    vim.notify("md-render: image zoom requires ImageMagick (magick)", vim.log.levels.ERROR)
+    vim.notify(
+      "md-render: image zoom requires ImageMagick 7 (magick) on Neovim's PATH; run :checkhealth md-render",
+      vim.log.levels.ERROR
+    )
     return
   end
   local origin_win, origin_buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()

@@ -70,7 +70,7 @@ nvim +"MdRender pager" assets/showcase.md
 
 ## 必要要件
 
-- Neovim >= 0.12（端末への書き出しに `vim.api.nvim_ui_send` を使用）
+- Neovim >= 0.12（`nvim --version` で確認。端末への書き出しに `vim.api.nvim_ui_send` を使用）
 - デフォルトのネイティブバックエンド（`kitty`）での画像・動画のインライン表示には [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/) 対応ターミナルが必要。
   動作確認は [WezTerm](https://wezfurlong.org/wezterm/) / [Kitty](https://sw.kovidgoyal.net/kitty/) / [Ghostty](https://ghostty.org/)（macOS/Linux）で実施。
 - オプションの [Snacks バックエンド](#snacks-画像バックエンド) は Unicode プレースホルダーにも依存します。以下の設定例は Kitty 単体、または Kitty 内の tmux を対象としています。
@@ -78,7 +78,7 @@ nvim +"MdRender pager" assets/showcase.md
 <details>
 <summary><strong>機能ごとの依存関係</strong></summary>
 
-基本的な Markdown レンダリングでは省略できますが、各機能を使う場合は対応する依存関係が必要です。プラグインマネージャーがインストールするのは Neovim プラグインです。コマンドラインツールは別途インストールし、Neovim の `$PATH` から実行できるようにしてください。
+基本的な Markdown レンダリングでは省略できますが、各機能を使う場合は対応する依存関係が必要です。プラグインマネージャーがインストールするのは Neovim プラグインです。コマンドラインツールは Neovim を実行するホスト（SSH ではリモート側）にインストールし、その `$PATH` から実行できるようにしてください。
 
 | 依存 | 用途 | フォールバック |
 |---|---|---|
@@ -105,6 +105,8 @@ nvim +"MdRender pager" assets/showcase.md
 ## インストール
 
 以下の例ではデフォルトのネイティブバックエンド（`kitty`）を使います。Kitty/tmux での画像表示、サイズ調整、ズーム・パンを使う場合は [Snacks 画像バックエンド](#snacks-画像バックエンド) も設定してください。これらの機能は引き継いだ upstream のリリースタグには含まれないため、このフォークのデフォルトブランチを使います。lazy.nvim の例ではそのために `version = false` を指定しています。
+
+インストール後に Neovim を再起動し、`:MdRender demo` でプラグインを読み込み（遅延読み込み設定を含む）、`:checkhealth md-render` を実行します。使う機能に必要なツールだけを入れてください。Snacks を使う場合は `:checkhealth snacks` も実行します。
 
 ### lazy.nvim
 
@@ -391,7 +393,7 @@ require("md-render.text_size").setup {
 }
 ```
 
-画像表示には Neovim 0.12 以降、Kitty 0.28 以降、`termguicolors`、Python 3、PyGObject、Pycairo、Pango/PangoCairo と Cairo の introspection データが必要です。Python、描画ライブラリ、フォントは Neovim を実行するホストにインストールします。native は Kitty 0.40 以降に対応し、画像用の依存関係は不要です。
+画像表示には Neovim 0.12 以降、Kitty 0.28 以降、`termguicolors`、Python 3、PyGObject、Pycairo、Pango/PangoCairo と Cairo の introspection データが必要です。自動フォントサイズには [Pango 1.44 以降](https://docs.gtk.org/Pango/method.FontMetrics.get_height.html)が必要です。Python、描画ライブラリ、フォントは Neovim を実行するホストにインストールします。native は Kitty 0.40 以降に対応し、画像用の依存関係は不要です。
 
 tmux 内では、以下の条件を満たすと `auto` が画像見出しを選びます。満たさない場合は native、通常の文字表示の順に切り替え、確認中は通常の文字表示を保ちます。接続中の Kitty クライアントが 1 つで、セル寸法、RGB、ハイパーリンク対応を確認できる必要があります。プレビューの pane がアクティブで、copy mode ではなく、ウィンドウ全体がクライアントに収まる場合が対象です。停止中のクライアントは再開を待ちます。多重 tmux と複数クライアントには対応しません。tmux に次の設定を追加してください。
 
@@ -547,12 +549,12 @@ require("snacks").setup({
 
 ## FAQ / トラブルシューティング
 
-プラグインの読み込み後、まず `:checkhealth md-render` で画像バックエンド、必要なツール、見出しの状態、キャッシュの場所を確認してください。実際の端末表示は、以下の各機能の手順で確認します。
+プラグインの読み込み後、まず `:checkhealth md-render` で画像バックエンド、必要なツール、見出しの状態、キャッシュの場所を確認してください。実際の端末表示は、以下の各機能の手順で確認します。シェルで使えるツールが見つからない場合は、`:echo exepath('mmdc')`（ツール名を置換）と `:echo $PATH` を確認してください。インストールや更新後は Neovim を再起動してプレビューを開き直します。検出結果はキャッシュされます。
 
 <details>
 <summary><strong><code>:MdRender</code> がエディタのコマンドとして認識されない</strong></summary>
 
-プラグインマネージャーで `denny0223/md-render.nvim` がインストールされ、読み込まれているか確認してください。lazy.nvim では spec に `cmd = "MdRender"` を残し、コマンド入力時にプラグインを読み込ませます。クローンだけではインストールになりません。[インストール手順](#インストール) に従い、Neovim を再起動してください。
+`:version` で Neovim 0.12 以降か、`:messages` で読み込みエラーがないか確認し、プラグインマネージャーで `denny0223/md-render.nvim` がインストール・読み込み済みか調べてください。lazy.nvim では spec に `cmd = "MdRender"` を残し、コマンド入力時にプラグインを読み込ませます。クローンだけではインストールになりません。[インストール手順](#インストール) に従い、Neovim を再起動してください。
 
 </details>
 

@@ -70,14 +70,14 @@ nvim +"MdRender pager" assets/showcase.md
 
 ## 系統需求
 
-- Neovim >= 0.12，使用 `vim.api.nvim_ui_send` 寫入終端機。
+- Neovim >= 0.12，以 `nvim --version` 確認；使用 `vim.api.nvim_ui_send` 寫入終端機。
 - 預設的原生圖片後端（`kitty`）需要支援 [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/) 的終端機，才能在文件中顯示圖片與影片。已在 [WezTerm](https://wezfurlong.org/wezterm/)、[Kitty](https://sw.kovidgoyal.net/kitty/) 與 [Ghostty](https://ghostty.org/) 的 macOS/Linux 環境驗證。
 - 選用的 [Snacks 後端](#選用-snacks-圖片後端)還需要 Unicode 佔位字元支援。本文的設定方式以 Kitty 為對象，包含 Kitty 內執行 tmux 的情況。
 
 <details>
 <summary><strong>各功能需要的套件與工具</strong></summary>
 
-基本的 Markdown 預覽不需要安裝所有項目，但使用特定功能時，對應的套件或工具就是必要條件。外掛管理器只會安裝 Neovim 外掛；指令列工具要另外安裝，並且能從 Neovim 的 `$PATH` 找到。
+基本的 Markdown 預覽不需要安裝所有項目，但使用特定功能時，對應的套件或工具就是必要條件。外掛管理器只會安裝 Neovim 外掛；指令列工具要另外安裝在執行 Neovim 的主機（SSH 時為遠端），並且能從它的 `$PATH` 找到。
 
 | 套件或工具 | 用途 | 替代方式或限制 |
 |---|---|---|
@@ -104,6 +104,8 @@ nvim +"MdRender pager" assets/showcase.md
 ## 安裝
 
 以下基本範例使用預設的原生後端（`kitty`）。若要在 Kitty/tmux 中顯示圖片、自動調整大小，以及縮放和平移，請接著完成 [Snacks 圖片後端設定](#選用-snacks-圖片後端)。請使用這個 fork 的預設分支；沿用自上游的發行標籤不包含這些新增功能，因此 lazy.nvim 範例使用 `version = false`。
+
+安裝後重新啟動 Neovim，先執行 `:MdRender demo` 載入外掛（包含延遲載入的設定），再執行 `:checkhealth md-render`。只需安裝所選功能需要的工具；使用 Snacks 時，另執行 `:checkhealth snacks`。
 
 ### lazy.nvim
 
@@ -365,7 +367,7 @@ autocmd FileType markdown silent! MdRender auto on
 
 #### 試用圖片標題
 
-執行 `:MdRender textsize image`，再用 `:MdRender toggle` 開啟預覽。圖片需要 Neovim >= 0.12、Kitty >= 0.28、`termguicolors`、Python 3、PyGObject、Pycairo 與 Pango/PangoCairo。Python 套件與字型需安裝於 Neovim 所在主機；明確選擇 `image` 後，環境不足時會使用一般文字。
+執行 `:MdRender textsize image`，再用 `:MdRender toggle` 開啟預覽。圖片需要 Neovim >= 0.12、Kitty >= 0.28、`termguicolors`、Python 3、PyGObject、Pycairo 與 Pango/PangoCairo。自動字級需要 [Pango 1.44 以上](https://docs.gtk.org/Pango/method.FontMetrics.get_height.html)。Python 套件與字型需安裝於 Neovim 所在主機；明確選擇 `image` 後，環境不足時會使用一般文字。
 
 若要調整字型或基準大小：
 
@@ -537,12 +539,12 @@ require("snacks").setup({
 
 ## 常見問題與疑難排解
 
-載入外掛後，先用 `:checkhealth md-render` 查看選用圖片後端、必要工具、標題狀態與快取位置，再依下方各功能的步驟確認實際終端顯示。
+載入外掛後，先用 `:checkhealth md-render` 查看選用圖片後端、必要工具、標題狀態與快取位置，再依下方各功能的步驟確認實際終端顯示。若工具在 shell 可用、Neovim 卻找不到，請比較 `:echo exepath('mmdc')`（替換為該工具名稱）與 `:echo $PATH`。安裝或升級工具後，重新啟動 Neovim 並重開預覽；工具偵測結果會快取。
 
 <details>
 <summary><strong><code>:MdRender</code> 不是有效的編輯器指令</strong></summary>
 
-請確認外掛管理器已安裝並載入 `denny0223/md-render.nvim`。使用 lazy.nvim 時，請保留 `cmd = "MdRender"`，讓輸入指令時能自動載入外掛。單純複製儲存庫不等於完成安裝；請依[安裝說明](#安裝)設定，再重新啟動 Neovim。
+先以 `:version` 確認 Neovim 0.12 以上，用 `:messages` 查看載入錯誤，再確認外掛管理器已安裝並載入 `denny0223/md-render.nvim`。使用 lazy.nvim 時，請保留 `cmd = "MdRender"`，讓輸入指令時能自動載入外掛。單純複製儲存庫不等於完成安裝；請依[安裝說明](#安裝)設定，再重新啟動 Neovim。
 
 </details>
 

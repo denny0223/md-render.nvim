@@ -70,7 +70,7 @@ Or, once the plugin is installed, run `:MdRender demo` to see a built-in demo of
 
 ## Requirements
 
-- Neovim >= 0.12 (uses `vim.api.nvim_ui_send` for terminal writes)
+- Neovim >= 0.12 (check `nvim --version`; uses `vim.api.nvim_ui_send` for terminal writes)
 - For inline images and video with the default native backend (`kitty`): a terminal supporting the [Kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/).
   Verified on [WezTerm](https://wezfurlong.org/wezterm/), [Kitty](https://sw.kovidgoyal.net/kitty/), and [Ghostty](https://ghostty.org/) (macOS/Linux).
 - The optional [Snacks backend](#optional-snacks-image-backend) also requires Unicode placeholders. Its documented setup targets Kitty, directly or inside tmux.
@@ -78,7 +78,7 @@ Or, once the plugin is installed, run `:MdRender demo` to see a built-in demo of
 <details>
 <summary><strong>Dependencies by feature</strong></summary>
 
-These dependencies are optional for basic Markdown rendering, but required for the features that use them. Plugin managers install Neovim plugins; install command-line tools separately and make them available on Neovim's `$PATH`.
+These dependencies are optional for basic Markdown rendering, but required for the features that use them. Plugin managers install Neovim plugins; install command-line tools on the host running Neovim (the remote host when using SSH) and make them available on its `$PATH`.
 
 | Dependency | Purpose | Fallback |
 |---|---|---|
@@ -105,6 +105,8 @@ Static conversion in the **native backend** and frame extraction in both backend
 ## Installation
 
 The examples below use the default native backend (`kitty`). For Kitty/tmux images, viewport fitting, and zoom/pan, follow [Optional Snacks image backend](#optional-snacks-image-backend) as well. Use this fork's default branch: its inherited upstream release tags do not include those features, so the lazy.nvim examples use `version = false`.
+
+After installation, restart Neovim, run `:MdRender demo` to load the plugin (including lazy-loaded setups), then `:checkhealth md-render`. Install only the tools needed by your chosen features; for Snacks, also run `:checkhealth snacks`.
 
 ### lazy.nvim
 
@@ -366,7 +368,7 @@ Image and native layouts omit level icons and use a single rule below H1/H2. Ord
 
 #### Try image headings
 
-Run `:MdRender textsize image`, then `:MdRender toggle` to open a preview. Images require Neovim >= 0.12, Kitty >= 0.28, `termguicolors`, Python 3, PyGObject, Pycairo and Pango/PangoCairo. Install the Python packages and fonts on the Neovim host. Explicit `image` mode uses ordinary text when unavailable.
+Run `:MdRender textsize image`, then `:MdRender toggle` to open a preview. Images require Neovim >= 0.12, Kitty >= 0.28, `termguicolors`, Python 3, PyGObject, Pycairo and Pango/PangoCairo. Automatic font sizing requires [Pango 1.44+](https://docs.gtk.org/Pango/method.FontMetrics.get_height.html). Install the Python packages and fonts on the Neovim host. Explicit `image` mode uses ordinary text when unavailable.
 
 To change the font or base size:
 
@@ -544,12 +546,12 @@ require("snacks").setup({
 
 ## FAQ / Troubleshooting
 
-After loading the plugin, start with `:checkhealth md-render` for the selected image backend, required tools, heading status, and cache location. Follow the feature-specific checks below to verify actual terminal display.
+After loading the plugin, start with `:checkhealth md-render` for the selected image backend, required tools, heading status, and cache location. Follow the feature-specific checks below to verify actual terminal display. If a tool works in your shell but is missing here, compare `:echo exepath('mmdc')` (replace the name) and `:echo $PATH`. After installing or upgrading tools, restart Neovim and reopen the preview; detections are cached.
 
 <details>
 <summary><strong><code>:MdRender</code> is not an editor command</strong></summary>
 
-Check that your plugin manager has installed and loaded `denny0223/md-render.nvim`. For lazy.nvim, keep `cmd = "MdRender"` in the spec so typing the command loads the plugin. Cloning the repository alone does not install it; follow [Installation](#installation), then restart Neovim.
+Check `:version` for Neovim 0.12+ and `:messages` for startup errors, then verify that your plugin manager has installed and loaded `denny0223/md-render.nvim`. For lazy.nvim, keep `cmd = "MdRender"` in the spec so typing the command loads the plugin. Cloning the repository alone does not install it; follow [Installation](#installation), then restart Neovim.
 
 </details>
 

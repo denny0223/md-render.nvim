@@ -80,7 +80,15 @@ for _, result in ipairs {
   version_result = result
   image.reset_cache()
   local before = probes
-  assert(not image.has_plantuml() and not image.has_plantuml())
+  local available, reason = image.has_plantuml()
+  assert(not available and not image.has_plantuml())
+  if result and result.code == 0 and result.stdout:find("1.2020", 1, true) then
+    assert(reason:find("too old", 1, true) and reason:find("upgrade to 1.2020.11+", 1, true), reason)
+  elseif result and result.code == 0 then
+    assert(reason:find("version unrecognized", 1, true), reason)
+  else
+    assert(reason:find("version check failed", 1, true) and reason:find("check Java", 1, true), reason)
+  end
   assert(probes == before + 1, "unavailable result must be cached")
   local blocked = start(source)
   assert(blocked.done and not blocked.path and #jobs == 0, "unverified renderer received document source")
@@ -88,6 +96,7 @@ end
 version_result = { code = 0, stderr = "PlantUML version 1.2020.11" }
 image.reset_cache()
 assert(image.has_plantuml(), "version may be on stderr")
+assert(select(2, image.has_plantuml()):find("PlantUML 1.2020.11; local SANDBOX", 1, true))
 local legacy = image.cache_dir() .. "/plantuml/" .. vim.fn.sha256(source):sub(1, 16) .. ".png"
 vim.fn.mkdir(vim.fs.dirname(legacy), "p")
 assert(uv.fs_copyfile("tests/fixtures/test_4x4.png", legacy))
@@ -126,6 +135,8 @@ image.reset_cache()
 assert(image.get_plantuml_cached(source) == local_result.path, "remote output replaced local SANDBOX cache")
 local uncached = source .. "\n'fallback"
 image.setup { plantuml_server = "https://server-a.invalid" }
+local available, status = image.has_plantuml()
+assert(available and status:find("server fallback may receive diagram source on local failure", 1, true), status)
 local first = start(uncached)
 image.setup { plantuml_server = "https://server-b.invalid" }
 local second = start(uncached)

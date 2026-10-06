@@ -1,4 +1,11 @@
 if vim.g.loaded_md_render then return end
+if vim.fn.has "nvim-0.12" ~= 1 then
+  vim.notify_once(
+    "md-render: Neovim 0.12+ required (running " .. tostring(vim.version()) .. "); upgrade Neovim and restart",
+    vim.log.levels.ERROR
+  )
+  return
+end
 vim.g.loaded_md_render = true
 
 vim.keymap.set("n", "<Plug>(md-render-preview)", function()

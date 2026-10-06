@@ -90,9 +90,13 @@ md-render.nvim 是 Neovim 的 Markdown 渲染引擎，能將 Markdown 原始文�
   相依項目與設定請見 |md-render-snacks-image|。
 
                                                           *md-render-health*
-載入外掛後，用 :checkhealth md-render 檢查選用圖片後端、工具、標題狀態與快取
-位置。Snacks 設定另用 :checkhealth snacks 檢查。這些檢查不代表實際終端顯示
-正常；請依 |md-render-snacks-image| 的 PNG 與圖片分頁步驟確認。
+安裝後重新啟動 Neovim，先用 :MdRender demo 載入外掛（包含延遲載入設定），
+再用 :checkhealth md-render 檢查圖片後端、工具、標題狀態與快取位置。
+Snacks 設定另用 :checkhealth snacks 檢查。這些檢查不代表實際顯示正常；
+請依 |md-render-snacks-image| 的 PNG 與圖片分頁步驟確認。
+若 shell 可執行的工具在此找不到，請檢查 :echo exepath('mmdc')
+（替換工具名稱）及 :echo $PATH。安裝或升級工具後，重新啟動 Neovim
+並重開預覽；工具偵測結果會快取。執行時的錯誤可用 :messages 查看。
 
 ==============================================================================
 安裝                                                  *md-render-installation*
@@ -509,6 +513,7 @@ Pager 以外的模式會在原始編輯視窗交給已設定的目錄瀏覽器�
 	修正環境後，執行 :MdRender textsize auto 或 image 重試。切換設定會
 	等待目前的選取、輸入等操作結束，再更新可見預覽。原生後端請見
 	|md-render-text-size|；圖片依賴、設定與相容範圍請見 README.zh-TW.md。
+	自動圖片字級需要 Pango 1.44 以上，可用 :checkhealth md-render 確認。
 
 	純文字布局保留 # 到 ######，六級都在所屬容器內靠左；H1 使用雙線
 	底線，H2 使用單線底線。縮放標題因搜尋、選取或高亮讓出顯示時，保留

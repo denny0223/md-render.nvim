@@ -100,9 +100,15 @@ md-render.nvim は Neovim 用の Markdown レンダリングエンジンです�
   必要な依存関係と設定は |md-render-snacks-image| を参照してください。
 
                                                         *md-render-health*
-読み込み後に :checkhealth md-render で画像バックエンド、ツール、見出しの状態、
-キャッシュの場所を確認できます。Snacks は :checkhealth snacks でも確認します。
-実際の端末表示は |md-render-snacks-image| の PNG・画像タブの手順で確認してください。
+インストール後に Neovim を再起動し、:MdRender demo で読み込みます。
+遅延読み込み設定も対象です。:checkhealth md-render でバックエンド、
+ツール、見出し、キャッシュを確認できます。Snacks は :checkhealth snacks
+も実行します。実際の表示は |md-render-snacks-image| の PNG・画像タブの
+手順で確認してください。
+シェルで使えるツールが見つからない場合は :echo exepath('mmdc')
+（名前を置換）と :echo $PATH を確認します。更新後は Neovim を再起動して
+プレビューを開き直してください。検出結果はキャッシュされます。
+実行時のエラーは :messages に表示されます。
 
 ==============================================================================
 インストール						*md-render-installation*
@@ -600,9 +606,10 @@ H1 と H2 の下に一重線を引きます。通常の文字では # から ###
 <
 画像表示には Neovim 0.12 以降、Kitty 0.28 以降、
 termguicolors、Python 3、PyGObject、Pycairo、Pango/PangoCairo と Cairo の
-introspection データが必要です。ライブラリとフォントは Neovim を実行する
-ホストにインストールします。native は Kitty 0.40 以降に対応し、画像用の
-依存関係は不要です。
+introspection データが必要です。画像の自動フォントサイズには Pango 1.44
+以降が必要です。ライブラリとフォントは Neovim を実行するホストに
+インストールします。native は Kitty 0.40 以降に対応し、画像用の依存関係は
+不要です。
 
 画像は Linux 上の Kitty への直接接続と SSH PTY 接続で検証しています。
 Windows では無効です。他の OS・クライアントは未検証です。

@@ -562,9 +562,21 @@ local function find_mmdc()
 end
 
 --- Check if mermaid rendering is available
+---@param notify? boolean explain the source fallback when rendering a document
 ---@return boolean
-function M.has_mmdc()
-  return find_mmdc() ~= nil
+---@return string? reason
+function M.has_mmdc(notify)
+  if find_mmdc() then return true end
+  local reason = "Mermaid CLI unavailable; install @mermaid-js/mermaid-cli (mmdc) and its browser"
+  if config.mermaid_allow_npx then
+    reason = reason .. "; npx fallback also needs Node.js/npm on Neovim's PATH"
+  else
+    reason = reason .. "; npx fallback is disabled"
+  end
+  if notify then
+    vim.notify_once("md-render: " .. reason .. "; keeping code blocks; run :checkhealth md-render", vim.log.levels.WARN)
+  end
+  return false, reason
 end
 
 --- Detect whether Neovim is using a dark or light background and return
@@ -780,6 +792,7 @@ end
 ---@return string[]? command prefix
 local _plantuml_cmd = nil
 local _plantuml_checked = false
+local _plantuml_status
 
 local function plantuml_env()
   local env = { PLANTUML_SECURITY_PROFILE = "SANDBOX" }
@@ -792,39 +805,76 @@ local function plantuml_env()
 end
 
 local function find_plantuml()
-  if _plantuml_checked then return _plantuml_cmd end
+  if _plantuml_checked then return _plantuml_cmd, _plantuml_status end
   _plantuml_checked = true
+  _plantuml_status =
+    "PlantUML unavailable; install PlantUML 1.2020.11+ or set PLANTUML_JAR to a readable JAR with java on PATH"
   local candidate
   if vim.fn.executable "plantuml" == 1 then
     candidate = { "plantuml" }
   elseif vim.fn.executable "java" == 1 and vim.env.PLANTUML_JAR and vim.fn.filereadable(vim.env.PLANTUML_JAR) == 1 then
     candidate = { "java", "-DPLANTUML_SECURITY_PROFILE=SANDBOX", "-jar", vim.env.PLANTUML_JAR }
   end
-  if not candidate then return nil end
+  if not candidate then return nil, _plantuml_status end
   -- Releases before 1.2020.11 silently ignore the security profile. Probe only
   -- the tool version, never document source, and cache an unavailable result too.
   local ok, result = pcall(function()
     local cmd = vim.list_extend(vim.list_extend({}, candidate), { "-version" })
     return async.start_system(cmd, { text = true, timeout = 1500, env = plantuml_env() }):wait()
   end)
+  _plantuml_status =
+    "PlantUML version check failed; run plantuml -version (or java -jar $PLANTUML_JAR -version) and check Java"
   if ok and result.code == 0 then
     local version = (result.stdout or "") .. "\n" .. (result.stderr or "")
     local major, year, release = version:match "PlantUML version%s+(%d+)%.(%d+)%.(%d+)"
     major, year, release = tonumber(major), tonumber(year), tonumber(release)
     if major and (major > 1 or (major == 1 and (year > 2020 or (year == 2020 and release >= 11)))) then
       _plantuml_cmd = candidate
+      _plantuml_status = string.format("PlantUML %d.%d.%d; local SANDBOX rendering", major, year, release)
+    elseif major then
+      _plantuml_status =
+        string.format("PlantUML %d.%d.%d is too old; upgrade to 1.2020.11+ for SANDBOX rendering", major, year, release)
+    else
+      _plantuml_status = "PlantUML version unrecognized; install PlantUML 1.2020.11+ with a working -version command"
     end
   end
-  return _plantuml_cmd
+  return _plantuml_cmd, _plantuml_status
 end
 
 --- Check if PlantUML rendering is available, locally or via a configured
 --- server. Network availability can't be cheaply probed, so a server plus
 --- curl counts as viable without asking whether it answers.
+---@param notify? boolean explain the source fallback when rendering a document
 ---@return boolean
-function M.has_plantuml()
-  if find_plantuml() ~= nil then return true end
-  return M.config().plantuml_server ~= nil and vim.fn.executable "curl" == 1
+---@return string status
+function M.has_plantuml(notify)
+  local cmd, reason = find_plantuml()
+  if cmd then
+    if config.plantuml_server then
+      if not M.is_url(config.plantuml_server) then
+        reason = reason .. "; configured server fallback unavailable: an HTTP(S) URL is required"
+      elseif vim.fn.executable "curl" ~= 1 then
+        reason = reason .. "; configured server fallback unavailable: curl is required on Neovim's PATH"
+      else
+        reason = reason
+          .. "; configured server fallback may receive diagram source on local failure (connection not checked)"
+      end
+    end
+    return true, reason
+  end
+  if config.plantuml_server then
+    if not M.is_url(config.plantuml_server) then
+      reason = "PlantUML server must use an HTTP(S) URL"
+    elseif vim.fn.executable "curl" ~= 1 then
+      reason = "PlantUML server needs curl on Neovim's PATH"
+    else
+      return true, reason .. "; configured server will receive diagram source (connection not checked)"
+    end
+  end
+  if notify then
+    vim.notify_once("md-render: " .. reason .. "; keeping code blocks; run :checkhealth md-render", vim.log.levels.WARN)
+  end
+  return false, reason
 end
 
 --- Keep local SANDBOX results separate from legacy and remote-server output.
@@ -1041,6 +1091,7 @@ function M.reset_cache()
   _anim_checked = false
   _plantuml_cmd = nil
   _plantuml_checked = false
+  _plantuml_status = nil
   _mmdc_cmd = nil
   _mmdc_checked = false
   _video_dimensions_cache = {}
@@ -1389,6 +1440,12 @@ local function find_anim_tool()
   elseif vim.fn.executable "magick" == 1 then
     _anim_cmd = "magick"
   end
+  if not _anim_cmd then
+    vim.notify_once(
+      "md-render: GIF frames need ffmpeg or magick; video frames need ffmpeg; run :checkhealth md-render",
+      vim.log.levels.WARN
+    )
+  end
   return _anim_cmd
 end
 
@@ -1452,7 +1509,13 @@ end
 local function ensure_png(path, system)
   if M.is_native_format(path) then return path, false end
   local tool = find_convert_tool()
-  if not tool then return nil, false end
+  if not tool then
+    vim.notify_once(
+      "md-render: image conversion needs ffmpeg, magick or macOS sips; run :checkhealth md-render",
+      vim.log.levels.WARN
+    )
+    return nil, false
+  end
   local cache_path = get_converted_cache_path(path)
   if not cache_path then return nil, false end
   if vim.fn.filereadable(cache_path) == 1 then return cache_path, false end

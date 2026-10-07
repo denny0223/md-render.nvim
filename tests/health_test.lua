@@ -189,6 +189,8 @@ do
       return proc
     end
     vim.api.nvim_set_current_dir(project)
+    -- Neovim resolves symlinked temporary directories when changing cwd.
+    project = vim.fn.getcwd()
     for _, configured in ipairs { python, "./venv/bin/python" } do
       expected, started = configured == python and python or project .. "/venv/bin/python", false
       text_size.setup { image = { python = configured } }

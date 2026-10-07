@@ -464,7 +464,7 @@ end})
                           local fg=vim.api.nvim_get_hl(0,{name=name,link=false}).fg
                           if fg then table.insert(colors,fg) end
                         end
-                        table.insert(result.entries,{text=p.text,data=e.data,visible=e.visible,
+                        table.insert(result.entries,{id=e.id,text=p.text,data=e.data,visible=e.visible,
                           rows=p.scale,line=p.line,byte=p.col,columns=e.columns,colors=colors,
                           screen=vim.fn.screenpos(s.win,p.line+1,p.col+1)})
                       end
@@ -548,6 +548,33 @@ end})
 
                 image_frame("image-initial")
                 assert state()["status"].startswith("auto -> image"), state()
+                image_ids = [entry["id"] for entry in image_state()["entries"]]
+                tmux("select-pane", "-t", "headings:0.0")
+                time.sleep(.8)  # Let the connection observer see the inactive heading pane.
+                image_frame("image-unfocused")
+                assert [entry["id"] for entry in image_state()["entries"]] == image_ids, "focus loss must not reupload PNGs"
+                tmux("set-option", "-p", "-t", "headings:0.0", "allow-passthrough", "off")
+                tmux("copy-mode", "-t", "headings:0.0")
+                time.sleep(.8)
+                image_frame("image-other-pane-copy-mode")
+                tmux("send-keys", "-t", "headings:0.0", "-X", "cancel")
+                tmux("select-pane", "-t", pane)
+                time.sleep(.8)
+                image_frame("image-refocused")
+                assert [entry["id"] for entry in image_state()["entries"]] == image_ids, "focus recovery must reuse PNGs"
+                time.sleep(1.1)  # Make the detached linked session newer than the client's session.
+                tmux("new-session", "-d", "-s", "linked", "sleep 3600")
+                tmux("link-window", "-s", "headings:0", "-t", "linked:1")
+                assert tmux("display-message", "-p", "-t", pane, "#{session_id}").strip() != tmux(
+                    "list-clients", "-F", "#{session_id}").strip(), "linked fixture must select a different session"
+                time.sleep(.8)
+                image_frame("image-linked-session")
+                assert [entry["id"] for entry in image_state()["entries"]] == image_ids, "linking must reuse PNGs"
+                tmux("kill-session", "-t", "linked")
+                tmux("copy-mode", "-t", pane)
+                wait_for(lambda: state()["status"].startswith("auto -> native"), "owning pane copy mode suspends image rendering")
+                tmux("send-keys", "-t", pane, "-X", "cancel")
+                image_frame("image-own-copy-mode-recovered")
                 lua("vim.cmd('MdRender toggle')")
                 wait_for(lambda: not state().get("backend") and "\U0010eeee" not in kitty("get-text"),
                          "source toggle removes image placeholders")

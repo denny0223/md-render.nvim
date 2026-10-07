@@ -6,26 +6,31 @@ local state = { pending = true, reason = "checking tmux connection" }
 local pending, timer, closed, process
 local cleanup_pending = false
 local checked_at = 0
-local fields = {
-  "client_pid",
-  "client_created",
-  "client_termname",
-  "client_termtype",
-  "client_flags",
+local pane_fields = {
   "pane_id",
   "pane_in_mode",
   "allow-passthrough",
+  "window_width",
+  "window_height",
+  "input-buffer-size",
+  "window_id",
+}
+local client_fields = {
+  "client_pid",
+  "client_created",
+  "client_termtype",
+  "client_flags",
   "client_cell_width",
   "client_cell_height",
   "client_termfeatures",
-  "window_width",
-  "window_height",
   "client_width",
   "client_height",
   "status",
-  "input-buffer-size",
 }
-local format = "#{" .. table.concat(fields, "}\t#{") .. "}"
+local pane_format = "#{" .. table.concat(pane_fields, "}\t#{") .. "}"
+local client_format = "#{" .. table.concat(client_fields, "}\t#{") .. "}\t#{W:#{window_id}:}"
+local fields = vim.list_extend(vim.deepcopy(pane_fields), client_fields)
+fields[#fields + 1] = "windows"
 
 local function publish(next_state)
   if vim.deep_equal(state, next_state) then return end
@@ -35,14 +40,20 @@ end
 
 local function decode(result)
   if result.code ~= 0 then return { reason = "cannot inspect tmux connection" } end
-  local clients = vim.split(vim.trim(result.stdout or ""), "\n", { trimempty = true })
-  if #clients ~= 1 then return { reason = "image headings require one attached tmux client" } end
-  local values = vim.split(clients[1], "\t", { plain = true })
+  local lines = vim.split(vim.trim(result.stdout or ""), "\n", { trimempty = true })
+  -- One pane snapshot followed by exactly one attached client.
+  if #lines ~= 2 then return { reason = "image headings require one attached tmux client" } end
+  local values = vim.split(lines[1] .. "\t" .. lines[2], "\t", { plain = true })
+  if #values ~= #fields then return { reason = "tmux heading information is unavailable" } end
   local client = {}
   for index, name in ipairs(fields) do
     client[name] = values[index] or ""
   end
-  if client.pane_id ~= vim.env.TMUX_PANE then return { reason = "waiting for the heading pane to become active" } end
+  if client.pane_id ~= vim.env.TMUX_PANE then return { reason = "tmux heading pane information is unavailable" } end
+  -- A linked window can resolve to a different session than the attached client.
+  if not vim.list_contains(vim.split(client.windows, ":", { trimempty = true }), client.window_id) then
+    return { reason = "the heading pane has no attached tmux client" }
+  end
   if client.pane_in_mode ~= "0" then return { reason = "tmux copy mode suspends image rendering" } end
   if client["allow-passthrough"] ~= "all" then
     return { reason = "tmux image headings require allow-passthrough all (on can drop uploads during redraw)" }
@@ -120,7 +131,21 @@ local function check()
   if vim.uv.now() - checked_at > 500 then publish { pending = true, reason = "checking tmux connection" } end
   local ok, job = pcall(
     vim.system,
-    { "tmux", "-S", socket, "list-clients", "-F", format },
+    -- list-clients' pane fields follow focus; inspect our own pane instead.
+    {
+      "tmux",
+      "-S",
+      socket,
+      "display-message",
+      "-p",
+      "-t",
+      vim.env.TMUX_PANE,
+      pane_format,
+      ";",
+      "list-clients",
+      "-F",
+      client_format,
+    },
     { text = true, timeout = 1000 },
     function(result)
       vim.schedule(function()

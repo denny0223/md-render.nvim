@@ -382,7 +382,7 @@ require("md-render.text_size").setup {
 
 搜尋、選取或將游標移入標題時，受影響的文字會顯示出來，維持原布局，不臨時插入標記。內部錨點可按 Enter 或直接點擊；外部連結也支援終端快捷操作（Kitty 為 Ctrl＋Shift＋點擊）。若要用終端選取文字，先執行 `:MdRender textsize off`，或用 `:MdRender toggle` 回到原文。
 
-在 tmux 中，`auto` 通過以下檢查後會選用圖片標題；不符條件時依序嘗試 native、一般文字，檢查期間保留一般文字。需要只有一個連線中的 Kitty 客戶端，且能取得格子像素尺寸、保留 RGB 與超連結；預覽須在目前 pane，且不在 copy mode；客戶端暫停時會等待恢復。tmux 視窗必須完整容納於客戶端；不支援巢狀 tmux 或多客戶端。請在 tmux 設定加入：
+在 tmux 中，`auto` 通過以下檢查後會選用圖片標題；不符條件時依序嘗試 native、一般文字，檢查期間保留一般文字。需要只有一個連線中的 Kitty 客戶端，且能取得格子像素尺寸、保留 RGB 與超連結；預覽所在 pane 須不在 copy mode，切換到其他 pane 時仍保留圖片標題；客戶端暫停時會等待恢復。tmux 視窗必須完整容納於客戶端；不支援巢狀 tmux 或多客戶端。請在 tmux 設定加入：
 
 ```tmux
 set -g allow-passthrough all

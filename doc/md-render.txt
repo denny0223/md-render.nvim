@@ -642,9 +642,10 @@ required. Add these lines to your tmux configuration: >
   set -g allow-passthrough all
   set -as terminal-features ',xterm-kitty:RGB:hyperlinks'
 <
-The preview pane must be active, outside copy mode, and the whole tmux window
-must fit the client viewport. Suspended clients wait until resumed. Nested
-tmux and multiple clients are unsupported.
+The preview pane must be outside copy mode, and the whole tmux window must
+fit the client viewport. Image headings remain visible when another pane is
+focused. Suspended clients wait until resumed. Nested tmux and multiple
+clients are unsupported.
 
 The all setting also permits output from hidden panes; on can drop uploads
 during redraw. The plugin never changes it. Uploads exceeding the tmux input

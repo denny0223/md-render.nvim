@@ -395,7 +395,7 @@ require("md-render.text_size").setup {
 
 画像表示には Neovim 0.12 以降、Kitty 0.28 以降、`termguicolors`、Python 3、PyGObject、Pycairo、Pango/PangoCairo と Cairo の introspection データが必要です。自動フォントサイズには [Pango 1.44 以降](https://docs.gtk.org/Pango/method.FontMetrics.get_height.html)が必要です。Python、描画ライブラリ、フォントは Neovim を実行するホストにインストールします。native は Kitty 0.40 以降に対応し、画像用の依存関係は不要です。
 
-tmux 内では、以下の条件を満たすと `auto` が画像見出しを選びます。満たさない場合は native、通常の文字表示の順に切り替え、確認中は通常の文字表示を保ちます。接続中の Kitty クライアントが 1 つで、セル寸法、RGB、ハイパーリンク対応を確認できる必要があります。プレビューの pane がアクティブで、copy mode ではなく、ウィンドウ全体がクライアントに収まる場合が対象です。停止中のクライアントは再開を待ちます。多重 tmux と複数クライアントには対応しません。tmux に次の設定を追加してください。
+tmux 内では、以下の条件を満たすと `auto` が画像見出しを選びます。満たさない場合は native、通常の文字表示の順に切り替え、確認中は通常の文字表示を保ちます。接続中の Kitty クライアントが 1 つで、セル寸法、RGB、ハイパーリンク対応を確認できる必要があります。プレビューの pane が copy mode ではなく、ウィンドウ全体がクライアントに収まる場合が対象です。別の pane にフォーカスを移しても画像見出しは表示されます。停止中のクライアントは再開を待ちます。多重 tmux と複数クライアントには対応しません。tmux に次の設定を追加してください。
 
 ```tmux
 set -g allow-passthrough all

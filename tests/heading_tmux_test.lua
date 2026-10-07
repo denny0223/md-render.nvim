@@ -14,8 +14,20 @@ vim.fn.executable = function()
 end
 vim.system = function(cmd, opts, callback)
   assert(
-    cmd[1] == "tmux" and cmd[2] == "-S" and cmd[3] == "/private/test" and cmd[4] == "list-clients",
-    "inspect the owning server without changing options or focus"
+    cmd[1] == "tmux"
+      and cmd[2] == "-S"
+      and cmd[3] == "/private/test"
+      and cmd[4] == "display-message"
+      and cmd[5] == "-p"
+      and cmd[6] == "-t"
+      and cmd[7] == "%2"
+      and cmd[8] == "#{pane_id}\t#{pane_in_mode}\t#{allow-passthrough}\t#{window_width}\t#{window_height}" .. "\t#{input-buffer-size}\t#{window_id}"
+      and cmd[9] == ";"
+      and cmd[10] == "list-clients"
+      and cmd[11] == "-F"
+      and cmd[12] == "#{client_pid}\t#{client_created}\t#{client_termtype}\t#{client_flags}\t#{client_cell_width}" .. "\t#{client_cell_height}\t#{client_termfeatures}\t#{client_width}\t#{client_height}\t#{status}" .. "\t#{W:#{window_id}:}"
+      and #cmd == 12,
+    "inspect the owning pane independently of keyboard focus"
   )
   jobs[#jobs + 1] = callback
   return { kill = function() end }
@@ -32,24 +44,28 @@ assert(size.resolve_backend() == "plain" and #output == 0 and #jobs == 1, "auto 
 native_supported = true
 assert(size.resolve_backend() == "plain" and native_checks == 0, "pending inspection must not activate native")
 local client = {
-  "123",
-  "1000",
-  "xterm-kitty",
-  "kitty(0.48.2)",
-  "attached,focused,UTF-8",
   "%2",
   "0",
   "all",
+  "120",
+  "53",
+  "1048576",
+  "@2",
+  "123",
+  "1000",
+  "kitty(0.48.2)",
+  "attached,focused,UTF-8",
   "13",
   "30",
   "RGB,clipboard,hyperlinks",
   "120",
-  "53",
-  "120",
   "55",
   "2",
-  "1048576",
+  "@2:",
 }
+local function snapshot(values)
+  return table.concat(values, "\t", 1, 7) .. "\n" .. table.concat(values, "\t", 8) .. "\n"
+end
 local function settle()
   vim.wait(20, function()
     return false
@@ -58,7 +74,7 @@ end
 local function inspect(values, extra)
   vim.api.nvim_exec_autocmds("FocusGained", {})
   local callback = assert(table.remove(jobs, 1))
-  callback { code = 0, stdout = table.concat(values, "\t") .. "\n" .. (extra or "") }
+  callback { code = 0, stdout = snapshot(values) .. (extra or "") }
   settle()
   return tmux.status()
 end
@@ -80,20 +96,24 @@ local function blocked(index, value, reason)
   native_supported = false
   assert(size.resolve_backend() == "plain", "auto keeps ordinary text when neither backend is supported")
 end
-blocked(6, "%1", "active")
-blocked(7, "1", "copy mode")
-blocked(8, "off", "passthrough")
-blocked(8, "on", "passthrough")
-blocked(4, "tmux 3.7c", "Kitty")
-blocked(4, "kitty(0.27.0)", "Kitty")
-blocked(5, "attached,active-pane", "topology")
-blocked(9, "0", "dimensions")
-blocked(11, "256", "RGB")
-blocked(11, "RGB", "hyperlinks")
-blocked(12, "180", "viewport")
-blocked(13, "54", "viewport")
-blocked(17, "", "buffer limit")
-assert(not inspect(client, table.concat(client, "\t")).key, "multiple clients retain ordinary text")
+blocked(1, "%1", "pane information")
+blocked(2, "1", "copy mode")
+blocked(3, "off", "passthrough")
+blocked(3, "on", "passthrough")
+blocked(10, "tmux 3.7c", "Kitty")
+blocked(10, "kitty(0.27.0)", "Kitty")
+blocked(11, "attached,active-pane", "topology")
+blocked(12, "0", "dimensions")
+blocked(14, "256", "RGB")
+blocked(14, "RGB", "hyperlinks")
+blocked(4, "180", "viewport")
+blocked(5, "54", "viewport")
+blocked(6, "", "buffer limit")
+blocked(18, "@20:", "no attached")
+assert(not inspect(client, table.concat(client, "\t", 8) .. "\n").key, "multiple clients retain ordinary text")
+local linked = vim.deepcopy(client)
+linked[18] = "@20:@2:@3:"
+assert(inspect(linked).key, "a linked window is valid in the attached client's session")
 inspect(client)
 output = {}
 local probe = image.png_status()
@@ -138,6 +158,10 @@ for _, message in ipairs(output) do
   assert(message:find("q=2", 1, true), "every chunk stays quiet even if the first chunk is dropped")
 end
 assert(state.drawn == 1 and state.masked)
+local connection, before_focus = tmux.status().key, #output
+vim.api.nvim_exec_autocmds("FocusLost", {})
+assert(inspect(client).key == connection and #output == before_focus, "focus changes preserve the connection")
+assert(state.drawn == 1 and state.masked, "focus changes preserve image masks")
 assert(#output == 1 and output[1]:find("q=2,m=0", 1, true), "all PNG chunks travel in a single tmux DCS")
 local marks = vim.api.nvim_buf_get_extmarks(0, state.mask_ns, 0, -1, { details = true })
 assert(#marks == 2 and marks[1][4].virt_text[1][1]:find(vim.fn.nr2char(0x10EEEE), 1, true))
@@ -156,7 +180,7 @@ vim.api.nvim_exec_autocmds("User", { pattern = require("md-render.display_utils"
 settle()
 assert(#output == count, "tmux redraw reuses the virtual placement")
 
-blocked(7, "1", "copy mode")
+blocked(2, "1", "copy mode")
 assert(state.drawn == 0 and not state.masked, "connection changes immediately remove masks")
 headings.detach(state)
 local old_id = entry.id
@@ -175,7 +199,7 @@ local upload = image.transmit_png("YWJj", function()
 end)
 vim.schedule = schedule
 local new_client = vim.deepcopy(client)
-new_client[1] = "456"
+new_client[8] = "456"
 inspect(new_client)
 queued()
 assert(not called, "a queued callback from a retired connection cannot complete new work")
@@ -192,7 +216,7 @@ assert(
   "opening a preview starts observing a fresh cached connection"
 )
 vim.b.md_render = nil
-table.remove(jobs, 1) { code = 0, stdout = table.concat(new_client, "\t") }
+table.remove(jobs, 1) { code = 0, stdout = snapshot(new_client) }
 settle()
 vim.wait(300, function()
   return false
@@ -200,7 +224,7 @@ end)
 assert(#jobs == 0, "closing the preview stops connection polling")
 
 local retired = assert(image.transmit_png "YWJj")
-blocked(7, "1", "copy mode")
+blocked(2, "1", "copy mode")
 image.delete_image(retired)
 assert(
   vim.wait(600, function()
@@ -208,7 +232,7 @@ assert(
   end),
   "pending cleanup keeps observing after the last preview closes"
 )
-table.remove(jobs, 1) { code = 0, stdout = table.concat(new_client, "\t") }
+table.remove(jobs, 1) { code = 0, stdout = snapshot(new_client) }
 settle()
 assert(output[#output]:find("d=I,i=" .. retired, 1, true), "returning to the owning client flushes retired PNGs")
 vim.wait(300, function()
@@ -217,7 +241,7 @@ end)
 assert(#jobs == 0, "flushing cleanup releases its observer")
 
 retired = assert(image.transmit_png "YWJj")
-blocked(7, "1", "copy mode")
+blocked(2, "1", "copy mode")
 image.delete_image(retired)
 count = #output
 inspect(client)
@@ -225,7 +249,7 @@ assert(#output == count, "a new client must not receive deletions owned by a dif
 
 retired = assert(image.transmit_png "YWJj")
 local resized = vim.deepcopy(client)
-resized[9] = "14"
+resized[12] = "14"
 local old_connection = tmux.status()
 local resized_connection = inspect(resized)
 assert(resized_connection.key ~= old_connection.key and resized_connection.owner == old_connection.owner)
@@ -290,7 +314,7 @@ assert(inspect(client).key, "inspection can recover from a local spawn failure")
 size.retry_image()
 assert(size.resolve_backend() == "image", "explicit retry recovers without probes")
 local small_buffer = vim.deepcopy(client)
-small_buffer[17] = "10000"
+small_buffer[6] = "10000"
 assert(inspect(small_buffer).limit == 8192, "respect tmux's buffer allocation boundary")
 local before_large = #output
 local large_id, large_error = image.transmit_png(string.rep("YWJj", 2500))

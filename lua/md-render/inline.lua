@@ -325,6 +325,15 @@ function M.link_end(text, start)
   if text:sub(pos, pos) == ")" then return pos end
 end
 
+--- Decode only a validated destination; optional titles are outside its bounds.
+function M.link_destination(text)
+  local first = skip_space(text, 1)
+  local last = M.destination_end(text, first)
+  local destination = last and text:sub(first, last - 1) or ""
+  if destination:sub(1, 1) == "<" then destination = destination:sub(2, -2) end
+  return require("md-render.character_references").decode(destination)
+end
+
 local function index_runs(text, start)
   local runs, pos = {}, start
   while pos <= #text do
@@ -417,7 +426,7 @@ end
 --- Scan one already-parsed paragraph; block boundaries are the caller's job.
 local function scan(text, refs, wanted_link, source_label, bare_url, index_labels)
   local spans, brackets, autolinks, invalid_destinations, hard_breaks = {}, {}, {}, {}, {}
-  local standard_ranges, links = {}, {}
+  local standard_ranges, links, images = {}, {}, {}
   local labels = index_labels and {} or nil
   local link_labels, label_cursor, label_finish = nil, 1, 0
   local wiki_close
@@ -544,6 +553,7 @@ local function scan(text, refs, wanted_link, source_label, bare_url, index_label
         start = pos + (image_marker and 1 or 0),
         source_start = pos + (image_marker and 2 or 1),
         image = image,
+        last_link_start = last_link_start,
       }
       local start = brackets[#brackets].start
       if labels and text:sub(start, start + 1) == "[[" then
@@ -575,12 +585,32 @@ local function scan(text, refs, wanted_link, source_label, bare_url, index_label
       -- Images may contain links in their description; a valid image consumes
       -- that ownership, while literal brackets leave the inner autolink active.
       if bracket.angle_link and not (bracket.image and matched) then note_angle_link() end
+      if matched and bracket.image then last_link_start = bracket.last_link_start end
       if wanted_link == bracket.start then
         return { code_spans = spans, suffix_start = matched and pos + 1 or nil, link_end = finish, reference_url = url }
       end
       if matched then
         links[bracket.start] =
           { start = bracket.start, suffix_start = pos + 1, finish = finish, url = url, image = bracket.image }
+        if bracket.image then
+          local destination = text:sub(pos + 2, finish - 1)
+          images[#images + 1] = {
+            start = bracket.start - 1,
+            finish = finish,
+            label_start = bracket.start + 1,
+            label_end = pos - 1,
+            src = url or M.link_destination(source_label and source_label(destination) or destination),
+          }
+          links[bracket.start].media = images[#images]
+        else
+          local child = links[bracket.start + 2]
+          local image = child and child.media
+          if image and image.finish == pos - 1 then
+            local destination = text:sub(pos + 2, finish - 1)
+            image.href = url or M.link_destination(source_label and source_label(destination) or destination)
+            image.outer_start, image.outer_finish = bracket.start, finish
+          end
+        end
         if labels then labels[#labels + 1] = { start = bracket.start, finish = pos } end
         standard_ranges[#standard_ranges + 1] = {
           start = bracket.start - (bracket.image and 1 or 0),
@@ -601,6 +631,14 @@ local function scan(text, refs, wanted_link, source_label, bare_url, index_label
   for _, bracket in ipairs(brackets) do
     if bracket.angle_link then has_angle_link = true end
   end
+  table.sort(images, function(a, b)
+    return a.start < b.start
+  end)
+  local visible_images = {}
+  for _, image in ipairs(images) do
+    local previous = visible_images[#visible_images]
+    if not previous or image.start > previous.finish then visible_images[#visible_images + 1] = image end
+  end
   return {
     code_spans = spans,
     autolinks = autolinks,
@@ -609,6 +647,7 @@ local function scan(text, refs, wanted_link, source_label, bare_url, index_label
     has_angle_link = has_angle_link,
     standard_ranges = standard_ranges,
     links = links,
+    images = visible_images,
     labels = labels,
   }
 end
@@ -616,6 +655,20 @@ end
 --- Index one immutable paragraph; callers discard it after transforming bytes.
 function M.scan(text, ref_links, source_label)
   return scan(text, ref_links, nil, source_label)
+end
+
+--- Existing block media layouts apply only when images are the sole content.
+function M.image_line(text, ref_links)
+  if not text:find("![", 1, true) then return end
+  local images = M.scan(text, ref_links).images
+  if #images == 0 then return end
+  local pos = 1
+  for _, image in ipairs(images) do
+    local between = text:sub(pos, (image.outer_start or image.start) - 1)
+    if not M.hide_html_comments(between):match "^%s*$" then return end
+    pos = (image.outer_finish or image.finish) + 1
+  end
+  if M.hide_html_comments(text:sub(pos)):match "^%s*$" then return images end
 end
 
 --- Hard breaks belong to text nodes, never code, HTML or valid link suffixes.

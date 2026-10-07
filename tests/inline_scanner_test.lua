@@ -147,4 +147,70 @@ assert(
   vim.deep_equal({ inline.html_attribute("<video controls>", "controls") }, { true, false }),
   "boolean attributes have no value coordinates"
 )
+
+-- Images use the same destination/title and reference boundaries as links.
+local refs = { r = "image.png", caption = "image.png", outer = "/outer?a=1&b=2" }
+for _, case in ipairs {
+  { '![caption](image.png "title")', "image.png" },
+  { "![caption](<image.png> 'title')", "image.png" },
+  { "![caption](image.png (title))", "image.png" },
+  { "![caption](<two spaces.png>)", "two spaces.png" },
+  { "![caption](a\\(b\\).png)", "a(b).png" },
+  { "![caption](a(b(c)).png)", "a(b(c)).png" },
+  { "![caption](a&amp;b&#x28;c&#41;.png)", "a&b(c).png" },
+  { "![caption](a\\&amp;.png)", "a&amp;.png" },
+  { "![caption](a\\\\*.png)", "a\\*.png" },
+  { "![caption](a\\\\&amp;.png)", "a\\&.png" },
+  { "![caption][r]", "image.png" },
+  { "![caption][]", "image.png" },
+  { "![caption]", "image.png" },
+  { "[![caption][r]][outer]", "image.png", "/outer?a=1&b=2" },
+  { '[![caption](image.png)](</outer?a=1&amp;b=2> "title")', "image.png", "/outer?a=1&b=2" },
+  { "![caption ![child](child.png)](image.png)", "image.png" },
+  { "![caption](a<!-->b.png)", "a<!-->b.png" },
+  { "<!-- before -->![caption](image.png)<!-- after -->", "image.png" },
+  { "[![caption [child](/inner)](image.png)](/outer)", "image.png", "/outer" },
+  { "[![caption [child](/inner)][r]][outer]", "image.png", "/outer?a=1&b=2" },
+} do
+  local images = assert(inline.image_line(case[1], refs), case[1])
+  assert(#images == 1 and images[1].src == case[2] and images[1].href == case[3], vim.inspect(images))
+  local image = images[1]
+  assert(case[1]:sub(image.start, image.start + 1) == "![", "image range includes its marker")
+  assert(case[1]:sub(image.label_start - 1, image.label_start - 1) == "[", "description starts after its bracket")
+  assert(case[1]:sub(image.label_end + 1, image.label_end + 1) == "]", "description ends before its bracket")
+end
+for _, literal in ipairs {
+  "![missing](two spaces.png)",
+  "![missing](a<!-- comment -->b.png)",
+  "![missing][undefined]",
+  "![missing]",
+  "\\![missing](image.png)",
+  "`![caption](image.png)`",
+  '<span title="![caption](image.png)">',
+  "<!-- ![caption](image.png) -->",
+} do
+  assert(#inline.scan(literal, refs).images == 0, "literal image bytes stay outside media: " .. literal)
+end
+local occurrences = assert(inline.image_line("![first](same.png) [![second][r]](/second) ![third](same.png)", refs))
+assert(
+  vim.deep_equal(
+    vim.tbl_map(function(entry)
+      return {
+        entry.src,
+        entry.href,
+        ("![first](same.png) [![second][r]](/second) ![third](same.png)"):sub(entry.label_start, entry.label_end),
+      }
+    end, occurrences),
+    { { "same.png", nil, "first" }, { "image.png", "/second", "second" }, { "same.png", nil, "third" } }
+  ),
+  "source occurrences remain distinct and ordered"
+)
+assert(inline.image_line("before ![caption](image.png)", refs) == nil, "inline prose keeps its text layout")
+for _, source in ipairs {
+  "[caption [child](/inner)](/outer)",
+  "[![caption [child](/inner)](two spaces.png)](/outer)",
+} do
+  assert(inline.scan(source).links[1] == nil, "ordinary nested links and failed images keep outer links inactive")
+  assert(inline.image_line(source) == nil, "failed image ownership cannot create block media")
+end
 print(string.format("inline_scanner_test: %d fixed cases and shared boundary checks passed", #cases))

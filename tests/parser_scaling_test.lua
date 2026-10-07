@@ -280,7 +280,8 @@ for _, depth in ipairs { depth_limit - 1, depth_limit, depth_limit + 1, 4000 } d
     return markdown.render(source)
   end)
   local body = depth <= depth_limit and "中" or "*中*"
-  local expected = "!" .. string.rep("![", depth - 2) .. body .. string.rep("](u)", depth - 2)
+  local remaining = math.max(0, depth - depth_limit)
+  local expected = string.rep("![", remaining) .. body .. string.rep("](u)", remaining)
   assert(rendered == expected, "deep image labels retain their literal tail")
 end
 -- Interpreter hooks cannot measure the native string scans inside URL trimming.
@@ -288,7 +289,9 @@ end
 for _, scheme in ipairs { "http", "https" } do
   local destination = scheme .. "://x"
   local nested = string.rep("![", 4000) .. "中" .. string.rep("](" .. destination .. ")", 4000)
-  local expected = "!" .. string.rep("![", 3998) .. "中" .. string.rep("](" .. destination .. ")", 3998)
+  local expected = string.rep("![", 4000 - depth_limit)
+    .. "中"
+    .. string.rep("](" .. destination .. ")", 4000 - depth_limit)
   local trim = inline.trim_autolink
   inline.trim_autolink = function(url)
     assert(url:sub(1, #destination) ~= destination, "owned HTTP URL reached the bare URL trimmer")
@@ -305,7 +308,7 @@ for _, scheme in ipairs { "http", "https" } do
   end
   assert(
     #links == 4
-      and found[destination] == expected:sub(2)
+      and found[destination] == expected
       and found["before.md"] == "先"
       and found["after.md"] == "正常"
       and found["https://later.example"] == "https://later.example",

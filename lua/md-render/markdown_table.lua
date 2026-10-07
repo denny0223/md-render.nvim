@@ -253,6 +253,7 @@ function MarkdownTable.parse(lines, repo_base_url, autolinks, ref_links, raw_htm
     col_widths = col_widths,
     _raw_lines = vim.list_slice(lines, 1, #rows + 2),
     empty_header = empty_header,
+    ref_links = ref_links,
   }
 end
 
@@ -289,14 +290,25 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
   --- Also handles cells with leading HTML comments like <!-- ... -->![alt](url)
   ---@param _cell MdRender.MarkdownTable.ParsedCell
   ---@param raw_text string original cell text before markdown rendering
-  ---@return string? alt, string? url, boolean? is_video
+  ---@return string? alt, string? url, boolean? is_video, string? href
   local function cell_image(_cell, raw_text)
-    local stripped = strip_html_comments(raw_text)
-    local alt, url = stripped:match "^!%[(.-)%]%((.-)%)$"
-    if alt and url then
+    local images = inline.image_line(raw_text, parsed_table.ref_links)
+    local alt
+    if images and #images == 1 then
+      local entry = images[1]
+      alt = require("md-render.markdown").render(
+        raw_text:sub(entry.label_start, entry.label_end),
+        nil,
+        nil,
+        parsed_table.ref_links,
+        nil,
+        true,
+        { semantic = true }
+      )
       local image_mod = require "md-render.image"
-      return alt, url, image_mod.is_video_file(url)
+      return alt, entry.src, image_mod.is_video_file(entry.src), entry.href
     end
+    local stripped = strip_html_comments(raw_text)
     -- Try <img src="..." alt="..."> tag
     local img_end = stripped:lower():match "^<img%s" and inline.html_end(stripped, 1)
     local img_tag = img_end and stripped:sub(img_end + 1):match "^%s*$" and stripped:sub(1, img_end)
@@ -357,8 +369,8 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
           for col = 1, num_cols do
             local raw = raw_rows[row_idx][col]
             if raw then
-              local alt, url, is_video = cell_image(row[col], raw)
-              if alt and url and not image_mod.is_badge_url(url) then
+              local alt, url, is_video, href = cell_image(row[col], raw)
+              if alt and url and url ~= "" and not image_mod.is_badge_url(url) then
                 local resolved, src_url, img_w, img_h
                 if is_video then
                   src_url = image_mod.is_url(url) and url or nil
@@ -391,6 +403,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
                     img_w = img_w,
                     img_h = img_h,
                     video = is_video,
+                    href = href,
                   }
                   col_image_widths[col] = math.max(col_image_widths[col] or 0, display_cols)
                 elseif resolved and is_video then
@@ -401,6 +414,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
                     url = url,
                     resolved = resolved,
                     video = true,
+                    href = href,
                   }
                   col_image_widths[col] = math.max(col_image_widths[col] or 0, initial_max_per_col)
                 elseif src_url then
@@ -411,6 +425,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
                     resolved = nil,
                     src_url = src_url,
                     video = is_video,
+                    href = href,
                   }
                   col_image_widths[col] = math.max(col_image_widths[col] or 0, initial_max_per_col)
                 end
@@ -670,6 +685,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
             display_cols = display_cols,
             display_rows = display_rows,
             video = img.video,
+            href = img.href,
           }
         elseif img.resolved and img.video then
           -- Auto-detected video: resolved path but no dimensions yet
@@ -680,6 +696,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
             display_cols = col_widths[col],
             display_rows = 10,
             video = true,
+            href = img.href,
           }
         elseif img.src_url then
           row_images[col] = {
@@ -690,6 +707,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
             display_cols = col_widths[col],
             display_rows = 10,
             video = img.video,
+            href = img.href,
           }
         end
       end
@@ -713,13 +731,19 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
           local caption = row_images[col].alt:gsub("\r\n", "\n"):gsub("[\r\n]", " ")
           local label = img_icon .. " " .. caption
           local lbl_hls = {
-            { col = #img_icon + 1, end_col = #label, hl = "Comment" },
+            {
+              col = #img_icon + 1,
+              end_col = #label,
+              hl = row_images[col].href and require("md-render.links").highlight(row_images[col].href) or "Comment",
+            },
           }
           if icon_hl then table.insert(lbl_hls, 1, { col = 0, end_col = #img_icon, hl = icon_hl }) end
           label_cells[col] = {
             text = label,
             highlights = lbl_hls,
-            links = {},
+            links = row_images[col].href and {
+              { col_start = #img_icon + 1, col_end = #label, url = row_images[col].href },
+            } or {},
           }
         else
           label_cells[col] = row[col]
@@ -749,7 +773,9 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
       end
 
       -- Record image placements (positions relative to table start)
-      for col, img in pairs(row_images) do
+      for col = 1, num_cols do
+        local img = row_images[col]
+        if not img then goto continue_image_placement end
         -- Calculate the display column offset of this column's content area
         -- (put_image uses display columns, not byte offsets)
         local col_display_offset = vim.api.nvim_strwidth(indent)
@@ -782,6 +808,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
           img_h = cached_img and cached_img.img_h or nil,
           video = img.video,
         })
+        ::continue_image_placement::
       end
 
       -- Add separator after image row (but not after the last row)

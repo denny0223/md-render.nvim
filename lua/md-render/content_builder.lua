@@ -40,7 +40,7 @@
 ---@field cols integer display width in cells
 ---@field cell_col? integer 0-indexed display column of the table cell interior
 ---@field cell_cols? integer table cell width including padding, excluding borders
----@field label_rows? integer number of caption rows before a table image
+---@field label_rows? integer number of caption rows before an image
 ---@field img_w? integer source image width in pixels
 ---@field img_h? integer source image height in pixels
 ---@field animated? boolean true if animated GIF
@@ -612,8 +612,9 @@ end
 ---@param display_name string Alt text or filename
 ---@param max_width integer
 ---@param name_hl string Highlight group for the display name text
+---@param href? string enclosing Markdown link, independent of the image source
 ---@return integer lines_added Number of lines emitted
-function ContentBuilder:_emit_image_header(indent, img_icon, icon_hl, display_name, max_width, name_hl)
+function ContentBuilder:_emit_image_header(indent, img_icon, icon_hl, display_name, max_width, name_hl, href)
   display_name = display_name:gsub("\r\n", "\n"):gsub("[\r\n]", " ")
   local icon_start = #indent
   local icon_end = icon_start + #img_icon
@@ -637,6 +638,18 @@ function ContentBuilder:_emit_image_header(indent, img_icon, icon_hl, display_na
       self:add_line(line, {
         { col = #indent + #cont_pad, end_col = #line, hl = name_hl },
       })
+    end
+    if href then
+      local first = idx == 1 and icon_end + 1 or #indent + cont_width
+      table.insert(self.highlights[#self.highlights].groups, {
+        col = first,
+        end_col = #self.lines[#self.lines],
+        hl = require("md-render.links").highlight(href),
+      })
+      table.insert(
+        self.link_metadata,
+        { line = #self.lines - 1, col_start = first, col_end = #self.lines[#self.lines], url = href }
+      )
     end
   end
   return #wrapped
@@ -4949,20 +4962,28 @@ function ContentBuilder:render_document(lines, opts)
       end
 
       if not handled then
-        -- Detect image lines: ![alt](path), <img src="path">, ![[image]]
+        -- Markdown media reuses the inline scanner's destination/reference ownership.
         local img_path, img_alt
-        if not current_alert_type then
-          -- Markdown image: ![alt](path) (standalone on line)
-          -- Headings containing only an image retain the same media presentation.
-          local image_text = quote_depth == 0 and atx_content or line
-          img_alt, img_path = image_text:match "^%s*!%[([^%]]-)%]%(([^)]-)%)%s*$"
-          -- Linked image: [![alt](img-path)](link-url) (standalone on line)
-          if not img_path then
-            img_alt, img_path = line:match "^%s*%[!%[(.-)%]%((.-)%)%]%(.-%)%s*$"
-          end
+        local image_text = quote_depth == 0 and atx_content or line
+        local img_entries = not current_alert_type and inline.image_line(image_text, ref_links) or {}
+        local image_sources = #img_entries > 0 and require("md-render.source_map").new(image_text)
+        for _, entry in ipairs(img_entries) do
+          entry.path = entry.src
+          entry.alt = markdown.render(
+            image_text:sub(entry.label_start, entry.label_end),
+            nil,
+            nil,
+            ref_links,
+            nil,
+            true,
+            { semantic = true }
+          )
+          entry.source_row = image_sources:at(entry.start - 1)
+        end
+        if #img_entries == 0 and not current_alert_type then
           -- HTML img: <img src="path" alt="alt"> as sole content on line
           -- Also matches inside headings: # <img ...> or ## <img ...>
-          if not img_path then
+          do
             local img_tag = html_image_tag(image_text)
             if img_tag then
               img_path = inline.html_target(img_tag)
@@ -5012,53 +5033,43 @@ function ContentBuilder:render_document(lines, opts)
           end
         end
 
-        -- Collect images: single image or multiple images on one line
-        local img_entries = {}
-        if img_path and img_path ~= "" then
-          table.insert(img_entries, { alt = img_alt, path = img_path })
-        elseif not current_alert_type then
-          -- Multiple images on one line: ![alt](url) ![alt](url) ...
-          -- Also supports linked images: [![alt](img)](url) mixed in
-          local remainder = line:gsub("^%s+", ""):gsub("%s+$", "")
-          if remainder:match "!%[" then
-            local tmp = remainder
-            -- Strip linked images [![alt](img)](url)
-            tmp = tmp:gsub("%[!%[.-%]%(.-%)]%(.-%)", "")
-            -- Strip plain images ![alt](url)
-            tmp = tmp:gsub("!%[.-%]%(.-%)", "")
-            -- If only whitespace remains, the line is composed entirely of images
-            if tmp:match "^%s*$" then
-              for linked_alt, linked_path in remainder:gmatch "%[!%[(.-)%]%((.-)%)%]%(.-%)%s*" do
-                table.insert(img_entries, { alt = linked_alt, path = linked_path })
-              end
-              for plain_alt, plain_path in remainder:gmatch "!%[(.-)%]%((.-)%)" do
-                -- Skip images already captured as part of linked images
-                local is_linked = false
-                for _, entry in ipairs(img_entries) do
-                  if entry.path == plain_path then
-                    is_linked = true
-                    break
-                  end
-                end
-                if not is_linked then table.insert(img_entries, { alt = plain_alt, path = plain_path }) end
-              end
-            end
-          end
-        end
+        if img_path and img_path ~= "" then table.insert(img_entries, { alt = img_alt, path = img_path }) end
 
+        local saved_image_source = self._current_source_line
+        local image_source_rows = paragraph_sources[src_indices[src_idx]]
         for _, img_entry in ipairs(img_entries) do
           local image = require "md-render.image"
+          if img_entry.source_row and image_source_rows then
+            self:set_source_line(saved_image_source + image_source_rows[img_entry.source_row] - image_source_rows[1])
+          end
+          local image_handled = false
 
           -- Skip badge/shield URLs entirely — they are too small to render
           -- as block images and SVG badges cannot be displayed via Kitty protocol.
-          if image.is_url(img_entry.path) and image.is_badge_url(img_entry.path) then goto continue_img end
+          if image.is_url(img_entry.path) and image.is_badge_url(img_entry.path) then
+            if #img_entries > 1 and img_entry.start then
+              local before = #self.lines
+              self:add_markdown_line(
+                image_text:sub(img_entry.outer_start or img_entry.start, img_entry.outer_finish or img_entry.finish),
+                indent,
+                max_width,
+                repo_base_url,
+                autolinks,
+                ref_links,
+                footnote_map
+              )
+              lines_shown = lines_shown + #self.lines - before
+              handled = true
+            end
+            goto continue_img
+          end
 
           local is_video = image.is_video_file(img_entry.path)
 
           local resolved, src_url, display_cols, display_rows, is_animated
           local orig_img_w, orig_img_h
 
-          local graphics = image.supports_kitty()
+          local graphics = img_entry.path ~= "" and image.supports_kitty()
           if graphics and is_video then
             -- Video files: skip image_dimensions validation
             src_url = image.is_url(img_entry.path) and img_entry.path or nil
@@ -5117,7 +5128,7 @@ function ContentBuilder:render_document(lines, opts)
               local raw_icon, icon_hl = icons.get_image_icon(img_entry.path)
               local img_icon = pad_icon(raw_icon)
               local header_lines_added =
-                self:_emit_image_header(indent, img_icon, icon_hl, display_name, max_width, "Comment")
+                self:_emit_image_header(indent, img_icon, icon_hl, display_name, max_width, "Comment", img_entry.href)
               local img_start_line = #self.lines
               -- Center the image horizontally
               local img_col = math.max(0, math.floor((max_width - display_cols) / 2))
@@ -5160,6 +5171,7 @@ function ContentBuilder:render_document(lines, opts)
               table.insert(self.image_placements, {
                 path = resolved,
                 line = img_start_line,
+                label_rows = header_lines_added,
                 col = img_col,
                 rows = display_rows,
                 cols = display_cols,
@@ -5170,20 +5182,22 @@ function ContentBuilder:render_document(lines, opts)
                 video = is_video,
               })
               lines_shown = lines_shown + header_lines_added + display_rows
-              handled = true
+              image_handled = true
             end
           end
 
-          if not handled then
-            -- Fallback: text-only display
+          if not image_handled then
+            -- Fallback belongs to this occurrence, even after another image rendered.
             local raw_icon, icon_hl = icons.get_image_icon(img_entry.path)
             local img_icon = pad_icon(raw_icon)
-            local fb_lines = self:_emit_image_header(indent, img_icon, icon_hl, display_name, max_width, "Underlined")
+            local fb_lines =
+              self:_emit_image_header(indent, img_icon, icon_hl, display_name, max_width, "Underlined", img_entry.href)
             lines_shown = lines_shown + fb_lines
-            handled = true
           end
+          handled = true
           ::continue_img::
         end
+        self:set_source_line(saved_image_source)
 
         -- Skip blank blockquote lines at callout boundaries (after header, before end)
         if not handled and current_alert_type and line:match "^>%s*$" then

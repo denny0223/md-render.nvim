@@ -660,11 +660,7 @@ local function process_embeds(
 end
 
 --- Inline and reference links share the same destination/title syntax.
-local function link_destination(text)
-  local escaped, escapes = escape_backslashes(text)
-  local destination = escaped:match "^%s*<([^>]*)>" or escaped:match "^%s*(%S+)" or ""
-  return character_references.decode(restore_source(destination, escapes))
-end
+local link_destination = inline.link_destination
 
 local link_bounds = inline.link_bounds
 
@@ -792,8 +788,11 @@ local function protect_autolinks(text, source, ref_links, source_label, sources)
     local label = range.angle and raw:sub(2, -2) or raw
     local url = range.angle and (label:match "^[A-Za-z][A-Za-z0-9.+-]*:" and label or "mailto:" .. label)
       or "http://" .. label
-    spans[#spans + 1] = { placeholder = token, content = raw, raw = raw, label = label, url = url }
-    if sources then sources:protect(edits, spans[#spans], range.start - 1, range.finish) end
+    spans[#spans + 1] = { placeholder = token, content = label, raw = raw, label = label, url = url }
+    if sources then
+      local first = range.start - 1 + (range.angle and 1 or 0)
+      sources:protect(edits, spans[#spans], range.start - 1, range.finish, sources:slice(first, first + #label))
+    end
     pieces[#pieces + 1] = text:sub(pos, range.start - 1) .. token
     pos = range.finish + 1
   end
@@ -831,6 +830,44 @@ local function process_links(text, highlights, links, source_label, ref_links)
   local removals = {}
   local processed = ""
   local failed_html = {}
+  local sources = highlights._source_map
+  if sources then removals.source_edits = {} end
+  local function replace(first, last, bytes, value)
+    removals[#removals + 1] = { start = first + (bytes or 0), count = last - first - (bytes or 0) }
+    if sources then
+      removals.source_edits[#removals.source_edits + 1] = { first = first, last = last, value = value }
+    end
+  end
+  local function label(first, last, depth, image_description)
+    local parts, pos = {}, first
+    while pos <= last do
+      local image = text:sub(pos, pos) == "!" and indexed_links[pos + 1]
+      local child = image and image.image and image or indexed_links[pos]
+      local literal_end = text:sub(pos, pos) == "<"
+        and (inline.autolink_end(text, pos) or inline.html_end(text, pos, failed_html))
+      if literal_end then
+        local token = text:sub(pos, literal_end)
+        if image_description and inline.html_name(token) then
+          local token_sources = sources and sources:slice(pos - 1, literal_end)
+          local plain = Markdown.render_html(token, true, nil, token_sources)
+          replace(pos - 1, literal_end, #plain, token_sources)
+          parts[#parts + 1] = plain
+        else
+          parts[#parts + 1] = token
+        end
+        pos = literal_end + 1
+      elseif child and child.finish <= last and depth < inline.MAX_NESTING then
+        replace(pos - 1, child.start)
+        parts[#parts + 1] = label(child.start + 1, child.suffix_start - 2, depth + 1, image_description or child.image)
+        replace(child.suffix_start - 2, child.finish)
+        pos = child.finish + 1
+      else
+        parts[#parts + 1] = text:sub(pos, pos)
+        pos = pos + 1
+      end
+    end
+    return table.concat(parts)
+  end
   local i = 1
   while i <= #text do
     local literal_end = text:sub(i, i) == "<"
@@ -838,28 +875,20 @@ local function process_links(text, highlights, links, source_label, ref_links)
     if literal_end then
       processed = processed .. text:sub(i, literal_end)
       i = literal_end + 1
-    elseif text:sub(i, i) == "[" then
-      local suffix_start, finish, reference_url = link_bounds(text, i, ref_links, source_label, indexed_links)
+    elseif text:sub(i, i) == "[" or (text:sub(i, i) == "!" and indexed_links[i + 1]) then
+      local image = text:sub(i, i) == "!" and indexed_links[i + 1]
+      local start = image and image.image and i + 1 or i
+      local suffix_start, finish, reference_url = link_bounds(text, start, ref_links, source_label, indexed_links)
       if finish then
-        local link_text_raw = text:sub(i + 1, suffix_start - 2)
         local url = reference_url or link_destination(source_label(text:sub(suffix_start + 1, finish - 1)))
-
-        -- The same scanner recognizes inline, full, collapsed and shortcut images.
-        local image = text:sub(i + 1, i + 1) == "!" and indexed_links[i + 2]
-        local alt = image
-          and image.image
-          and image.finish == suffix_start - 2
-          and text:sub(image.start + 1, image.suffix_start - 2)
-        local display_text = alt or link_text_raw
+        replace(i - 1, start)
+        local display_text = label(start + 1, suffix_start - 2, 1, indexed_links[start].image)
 
         local start_col = #processed
         processed = processed .. display_text
         add_link_highlight(highlights, start_col, start_col + #display_text, url)
         table.insert(links, { col_start = start_col, col_end = start_col + #display_text, url = url, _decoded = true })
-        local label_start = alt and image.start or i
-        local label_end = alt and image.suffix_start or suffix_start
-        table.insert(removals, { start = i - 1, count = label_start - i + 1 })
-        table.insert(removals, { start = label_end - 2, count = finish - label_end + 2 })
+        replace(suffix_start - 2, finish)
         i = finish + 1
       else
         processed = processed .. text:sub(i, i)

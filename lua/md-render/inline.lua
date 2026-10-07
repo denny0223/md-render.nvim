@@ -112,7 +112,6 @@ local function html_end(text, start, attributes, failed)
         pos = finish + 1
       else
         local first = pos
-        -- ponytail: retain NUL rejection until insecure source characters are normalized.
         while pos <= #text and not text:sub(pos, pos):find "[%z \t\r\n\"'=<>`]" do
           pos = pos + 1
         end

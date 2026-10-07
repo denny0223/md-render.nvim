@@ -202,6 +202,7 @@ end
 ---@return MdRender.MarkdownTable.ParsedTable|nil
 function MarkdownTable.parse(lines, repo_base_url, autolinks, ref_links, raw_html)
   if #lines < 2 then return nil end
+  lines = vim.tbl_map(require("md-render.character_references").normalize_nul, lines)
 
   local header_cells, alignments = MarkdownTable.parse_header(lines[1], lines[2])
   if not header_cells then return nil end

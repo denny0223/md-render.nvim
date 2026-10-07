@@ -1808,21 +1808,40 @@ local function strip_html_tags(text, highlights, semantic)
   return processed
 end
 
-local function normalize_line_endings(text, sources)
-  if sources and text:find("\r\n", 1, true) then
-    local removals = {}
+-- HTML owners use inclusive 1-based bytes; the shared position adjuster uses
+-- half-open 0-based endpoints. Keep the caller's ranges independent.
+local function adjust_literal_ranges(ranges, removals)
+  if not ranges or #ranges == 0 or not removals or #removals == 0 then return ranges end
+  local endpoints = {}
+  for index, range in ipairs(ranges) do
+    endpoints[index] = { col = range.start - 1, end_col = range.finish }
+  end
+  adjust_positions(endpoints, {}, removals, #endpoints, 0)
+  for index, endpoint in ipairs(endpoints) do
+    endpoints[index] = { start = endpoint.col + 1, finish = endpoint.end_col }
+  end
+  return endpoints
+end
+
+local function normalize_line_endings(text, sources, literal_ranges)
+  local removals
+  if (sources or literal_ranges) and text:find("\r\n", 1, true) then
+    removals = {}
     for pos in text:gmatch "()\r\n" do
       removals[#removals + 1] = { start = pos - 1, count = 1 }
     end
-    sources:removals(removals)
+    if sources then sources:removals(removals) end
   end
-  return (text:gsub("\r\n", "\n"):gsub("\r", "\n"))
+  return (text:gsub("\r\n", "\n"):gsub("\r", "\n")), adjust_literal_ranges(literal_ranges, removals)
 end
 
 --- Apply supported HTML display semantics without activating Markdown syntax.
 --- Physical source breaks survive tag removal, including multiline attributes.
 function Markdown.render_html(text, semantic, literal_ranges, sources)
-  text = normalize_line_endings(text, sources)
+  local removals
+  text, removals = character_references.normalize_nul(text, sources)
+  literal_ranges = adjust_literal_ranges(literal_ranges, removals)
+  text, literal_ranges = normalize_line_endings(text, sources, literal_ranges)
   local source = text
   local highlights, links = {}, {}
   highlights._source_map = sources
@@ -1968,6 +1987,9 @@ Markdown.render = function(
   block_context,
   track_sources
 )
+  local removals
+  text, removals = character_references.normalize_nul(text)
+  local literal_ranges = adjust_literal_ranges(block_context and block_context.literal_html_ranges, removals)
   local raw_html = block_context and block_context.raw_html
   local semantic = block_context and block_context.semantic
   inline_only = inline_only == true or (raw_html and not block_context.heading_level)
@@ -2153,7 +2175,7 @@ Markdown.render = function(
       return restore_source(label, code_spans)
     end, sources)
   end
-  rendered_text = normalize_line_endings(rendered_text, sources)
+  rendered_text, literal_ranges = normalize_line_endings(rendered_text, sources, literal_ranges)
   if checkbox_hl then
     local spaces = rendered_text:sub(#list_marker + 1):match "^ +" or ""
     if sources then sources:replace { { first = #list_marker, last = #list_marker + #spaces } } end
@@ -2175,8 +2197,7 @@ Markdown.render = function(
   local decode_url, source_label
 
   if raw_html then
-    rendered_text, highlights, links =
-      Markdown.render_html(rendered_text, semantic, block_context.literal_html_ranges, sources)
+    rendered_text, highlights, links = Markdown.render_html(rendered_text, semantic, literal_ranges, sources)
     highlights._source_map = sources
     rendered_text = rendered_text:gsub("\n", " ")
     goto finalize

@@ -2820,6 +2820,7 @@ end
 function ContentBuilder:render_document(lines, opts)
   opts = opts or {}
   local markdown = require "md-render.markdown"
+  lines = vim.tbl_map(require("md-render.character_references").normalize_nul, lines)
 
   -- Track each transformed line back to its original buffer line so
   -- source_line_map records real buffer positions, not post-transform

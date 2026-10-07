@@ -271,11 +271,17 @@ Use the `<leader>ms` example from the Markdown source window to open a preview o
 
 ### In-preview keys
 
-Inside a rendered preview (floating, tab, split, in-place toggle, or pager), these buffer-local keys are set automatically:
+Inside a rendered preview (floating, tab, split, in-place toggle, or pager), these buffer-local keys are set automatically in Normal mode. `[[` / `]]` also work in Visual mode:
 
 | Key | Action |
 |---|---|
 | `za` | Toggle the fold / expandable region under the cursor (no-op elsewhere) |
+| `zo` / `zc` | Open / close the containing block; counts include enclosing blocks |
+| `zO` / `zC` / `zA` | Recursively open / close / toggle folds under the cursor |
+| `zR` / `zM` | Open / close all foldable and expandable blocks |
+| `zj` / `zk` | Next fold start / previous fold end; counts work |
+| `[[` / `]]` | Previous / next heading; counts work without wrapping |
+| `gO` | Show headings in a native location list; Enter jumps to the selected heading |
 | `<CR>` | Follow a heading or footnote link within the document, open an image (Snacks backend), or toggle a fold / expandable region |
 | `gf` / `gF` | Follow the exact local link; `gF` also reads a following source line number |
 | `<C-w>f` / `<C-w>F` | Follow the local link in a split; `<C-w>gf` / `<C-w>gF` use a new tab |
@@ -287,7 +293,7 @@ Inside a rendered preview (floating, tab, split, in-place toggle, or pager), the
 | `q` / `<Esc>` / `<C-c>` | Close the window (floating / tab mode only) |
 | `q` | Quit Neovim with unsaved-buffer protection (pager only) |
 
-Use Enter on links such as `#heading` or a footnote reference to jump within the document; percent-encoded fragments work, and `#` goes to the top. Internal jumps enter the native jumplist for `Ctrl-O` / `Ctrl-I`. Visual `gx` keeps Neovim's selected-text behavior.
+Use Enter on links such as `#heading` or a footnote reference to jump within the document; percent-encoded fragments work, and `#` goes to the top. Internal jumps and heading motions enter the native jumplist for `Ctrl-O` / `Ctrl-I`. Visual `gx` keeps Neovim's selected-text behavior.
 
 `Ctrl-]` and its tag aliases record a real native tag stack: return with `Ctrl-T` / `:pop`, and move forward with `:tag`. File targets stay in the operated window. Outside links, file and tag commands retain native lookup and counts. `<C-w><C-f>` and `<C-w><C-]>` are also supported. Native window restrictions still apply to floating previews.
 
@@ -299,7 +305,7 @@ Outside pager mode, directories open in the original source window through the c
 
 Local links support relative paths, POSIX absolute paths, and `file:///` URLs, including encoded filenames, inline/reference links, and optional titles. Markdown targets stay rendered; cross-file fragments select a matching heading or footnote when present. Missing or unreadable files leave the preview unchanged. Windows/UNC paths remain outside this feature's scope.
 
-Search (`/`, `?`, `n`, `N`), marks, Visual selection, yank, scrolling, and native window commands work on the displayed text. `:w`, `:update`, `:x`, and `ZZ` save the source; the preview's `[+]` reflects unsaved source changes. Editing and partial/append/alternate-file writes require switching to source first. After unloading the source, reload it before saving from the preview.
+Search (`/`, `?`, `n`, `N`), marks, Visual selection, yank, scrolling, and native window commands work on the displayed text. `gO` creates a heading snapshot; run it again after adding or removing headings. `:w`, `:update`, `:x`, and `ZZ` save the source; the preview's `[+]` reflects unsaved source changes. Editing and partial/append/alternate-file writes require switching to source first. After unloading the source, reload it before saving from the preview.
 
 Reference links use the first valid definition, match labels with Unicode case folding and normalized whitespace, and resolve in table headers and cells. Valid definitions, including multiline and quoted definitions, are hidden even when unused; malformed definitions remain ordinary Markdown.
 

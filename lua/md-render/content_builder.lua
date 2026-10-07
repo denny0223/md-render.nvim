@@ -25,6 +25,9 @@
 ---@field header_line integer 0-indexed rendered line of the callout header
 ---@field source_line integer 1-indexed source line index
 ---@field collapsed boolean current fold state
+---@field start_source_line integer 1-indexed physical source row, including the body offset
+---@field end_source_line integer 1-indexed inclusive physical source row
+---@field end_line integer last rendered row, excluding inline suffixes and aggregated footnotes
 
 ---@class MdRender.ExpandableRegion
 ---@field start_line integer 0-indexed first rendered line of the region
@@ -64,6 +67,7 @@
 ---@field heading_backend? "image"|"native"|"plain" renderer used to build this content
 ---@field heading_fallback? string document-level reason for ordinary headings
 ---@field heading_lines table<integer, boolean> heading rows with ordered styles (0-indexed)
+---@field heading_starts table<integer, boolean> first rendered row of every heading (0-indexed)
 ---@field heading_positions table<integer, {byte: integer, col: integer, length: integer}> heading byte ranges (1-indexed rows)
 ---@field footnote_anchors table<string, integer> anchor name → 0-indexed line number
 ---@field heading_anchors table<string, integer> heading slug → 0-indexed line number
@@ -102,6 +106,7 @@ function ContentBuilder.new()
     heading_layouts = {},
     heading_highlights = {},
     heading_lines = {},
+    heading_starts = {},
     heading_positions = {},
     footnote_anchors = {},
     heading_anchors = {},
@@ -153,6 +158,7 @@ function ContentBuilder:result()
     heading_highlights = self.heading_highlights,
     heading_backend = self.heading_backend,
     heading_lines = self.heading_lines,
+    heading_starts = self.heading_starts,
     heading_positions = self.heading_positions,
     footnote_anchors = self.footnote_anchors,
     heading_anchors = heading_anchors,
@@ -1041,6 +1047,7 @@ function ContentBuilder:add_markdown_line(
 
   -- Register heading anchor (slug → rendered line)
   if heading_content then
+    self.heading_starts[lines_before_fn] = true
     local heading_source = block_context and block_context.heading_source or heading_content
     local base_slug = markdown.heading_slug(heading_source, ref_links, footnote_map, block_context)
     if base_slug ~= "" then
@@ -3055,6 +3062,7 @@ function ContentBuilder:render_document(lines, opts)
   local truncated = false
   local current_alert_type = nil
   local alert_container, alert_depth
+  local callout_ranges = {}
   local skip_callout_body = false
   local in_callout_code_block = false
   local callout_code_lang = nil
@@ -3068,6 +3076,7 @@ function ContentBuilder:render_document(lines, opts)
   local in_math_block = false
   local skip_next_line = false
   local in_details = false
+  local details_fold
   local details_src_idx = nil
   local details_default_open = false
   local details_summary_rendered = false
@@ -3095,6 +3104,13 @@ function ContentBuilder:render_document(lines, opts)
   local html_table_depth = 0
   local html_table_owner
   local html_table_sources = {}
+
+  local function finish_details_fold(source)
+    if not details_fold then return end
+    details_fold.end_source_line = source + source_line_offset
+    details_fold.end_line = #self.lines - 1
+    details_fold = nil
+  end
 
   local function finish_quote_code()
     if callout_code_lang and callout_code_start < #self.lines then
@@ -3178,11 +3194,14 @@ function ContentBuilder:render_document(lines, opts)
 
     self:add_simple_markdown(det_full, det_hls, det_links, base_indent)
 
-    table.insert(self.callout_folds, {
+    details_fold = {
       header_line = det_lines_before,
       source_line = details_src_idx,
       collapsed = is_collapsed,
-    })
+      start_source_line = details_src_idx + source_line_offset,
+      end_source_line = #source_origins + source_line_offset,
+    }
+    table.insert(self.callout_folds, details_fold)
 
     if is_collapsed then skip_details_body = true end
 
@@ -3651,6 +3670,7 @@ function ContentBuilder:render_document(lines, opts)
     if in_html_table and origin.html ~= html_table_owner then release_html_table() end
     if in_details_summary and origin.html ~= details_summary_owner then finish_details_summary() end
     if origin.html_details_fallback then
+      finish_details_fold(src_indices[src_idx] - 1)
       in_details, skip_details_body, details_summary_rendered = false, false, false
     end
     if in_dl and origin.html ~= dl_owner then
@@ -3701,6 +3721,14 @@ function ContentBuilder:render_document(lines, opts)
       )
     then
       finish_quote_code()
+    end
+    for index = #callout_ranges, 1, -1 do
+      local range = callout_ranges[index]
+      if quote_depth < range.depth or container_indent ~= range.container then
+        range.fold.end_source_line = src_indices[src_idx] - 1 + source_line_offset
+        range.fold.end_line = #self.lines - 1
+        table.remove(callout_ranges, index)
+      end
     end
     -- Quote-local code and folds end when their container ends, even when the
     -- next line is hidden. Qiita note markers are added later in this loop.
@@ -4013,6 +4041,7 @@ function ContentBuilder:render_document(lines, opts)
             )
           end
           if closing_first then
+            finish_details_fold(src_indices[src_idx])
             in_details, skip_details_body, details_summary_rendered = false, false, false
             details_src_idx = nil
             render_details_fragment(
@@ -4066,6 +4095,7 @@ function ContentBuilder:render_document(lines, opts)
             html_literal_slice(inner_literals, #inner - #(body or inner) + 1)
           )
         end
+        finish_details_fold(src_indices[src_idx])
         skip_details_body, details_summary_rendered, details_src_idx = false, false, nil
         render_details_fragment(
           details_tail:sub(close_last + 1),
@@ -4090,6 +4120,7 @@ function ContentBuilder:render_document(lines, opts)
           if details_depth > 0 then
             details_depth = details_depth - 1
           else
+            finish_details_fold(src_indices[src_idx])
             in_details = false
             skip_details_body = false
             details_src_idx = nil
@@ -5245,6 +5276,14 @@ function ContentBuilder:render_document(lines, opts)
           self.text_scale = text_scale
           local lines_after = #self.lines
           if alert_type then
+            for index = #callout_ranges, 1, -1 do
+              local range = callout_ranges[index]
+              if range.depth >= quote_depth then
+                range.fold.end_source_line = src_indices[src_idx] - 1 + source_line_offset
+                range.fold.end_line = lines_before - 1
+                table.remove(callout_ranges, index)
+              end
+            end
             current_alert_type = alert_type
             alert_container, alert_depth = container_indent, quote_depth
             is_heading = true -- suppress blank line after header (like heading)
@@ -5257,11 +5296,15 @@ function ContentBuilder:render_document(lines, opts)
                 is_collapsed = (fold_mod == "-")
               end
               self:add_fold_indicator(lines_before, is_collapsed)
-              table.insert(self.callout_folds, {
+              local fold = {
                 header_line = lines_before,
                 source_line = src_indices[src_idx],
                 collapsed = is_collapsed,
-              })
+                start_source_line = src_indices[src_idx] + source_line_offset,
+                end_source_line = #source_origins + source_line_offset,
+              }
+              table.insert(self.callout_folds, fold)
+              callout_ranges[#callout_ranges + 1] = { fold = fold, depth = quote_depth, container = container_indent }
               if is_collapsed then skip_callout_body = true end
             end
 
@@ -5323,6 +5366,11 @@ function ContentBuilder:render_document(lines, opts)
     if lines_shown >= max_lines then
       self:add_line(base_indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
     end
+  end
+
+  finish_details_fold(#source_origins)
+  for _, range in ipairs(callout_ranges) do
+    range.fold.end_line = #self.lines - 1
   end
 
   -- Render footnote section at end of document

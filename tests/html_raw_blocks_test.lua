@@ -772,11 +772,9 @@ do
     { { 2, "styled" }, { 5, "Markdown body" } },
     "fold display ownership spans distinct raw/Markdown owners"
   )
-  eq(
-    c.callout_folds,
-    { { header_line = 0, source_line = 1, collapsed = false } },
-    "details keeps its supported fold contract"
-  )
+  eq(c.callout_folds, {
+    { header_line = 0, source_line = 1, collapsed = false, start_source_line = 1, end_source_line = 7, end_line = 4 },
+  }, "details keeps its supported fold contract")
 end
 do
   local c = build(summary_boundary)
@@ -787,11 +785,9 @@ do
   )
   eq(c.source_line_map, { 2, 4, 5, 6 }, "released summary and Markdown body retain physical source rows")
   eq(styled(c, "Italic"), { { 5, "after" } }, "details summary cannot suppress Markdown after its owner")
-  eq(
-    c.callout_folds,
-    { { header_line = 0, source_line = 1, collapsed = false } },
-    "summary release preserves the display fold"
-  )
+  eq(c.callout_folds, {
+    { header_line = 0, source_line = 1, collapsed = false, start_source_line = 1, end_source_line = 7, end_line = 3 },
+  }, "summary release preserves the display fold")
   local eof = build { "<details open>", "<summary>", "*raw*" }
   eq(eof.lines, { "▼ *raw*" }, "EOF preserves unfinished summary text")
   eq(eof.source_line_map, { 2 }, "EOF partial summary maps to its opening source row")

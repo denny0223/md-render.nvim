@@ -1696,6 +1696,7 @@ local _temp_image_paths = {} -- image_id → true for temp files that need clean
 -- alone says nothing about whether the terminal accepted the bytes.
 local png_pending, png_probe = {}, nil
 local png_refresh_pending = false
+local png_retry_pending = false
 local png_connections, png_deletes = {}, {}
 local tmux_id_base
 
@@ -1784,6 +1785,7 @@ function M.png_status()
     local connection = require("md-render.heading_tmux").status()
     if connection.pending then return { reason = connection.reason } end
     if not connection.key then return { supported = false, reason = connection.reason } end
+    if png_retry_pending then return { reason = "checking tmux connection" } end
     return png_probe or { supported = true, reason = "tmux quiet transport; uploads are not acknowledged" }
   end
   if vim.env.TERM_PROGRAM == "Apple_Terminal" then
@@ -1813,16 +1815,27 @@ vim.api.nvim_create_autocmd("User", {
   pattern = "MdRenderTmuxChanged",
   callback = function()
     M.reset_png()
+    refresh_headings()
+  end,
+})
+
+vim.api.nvim_create_autocmd("User", {
+  pattern = "MdRenderTmuxChecked",
+  callback = function()
+    if png_retry_pending then
+      png_retry_pending = false
+      M.reset_png()
+      refresh_headings()
+    end
     local tmux = require "md-render.heading_tmux"
-    local connection = tmux.status().owner
-    if connection then
+    local context, checking = tmux.status()
+    if not checking and context.owner then
       for id, owner in pairs(png_deletes) do
-        if owner == connection then png_write(string.format("\27_Ga=d,d=I,i=%d,q=2\27\\", id)) end
+        if owner == context.owner then png_write(string.format("\27_Ga=d,d=I,i=%d,q=2\27\\", id)) end
         png_deletes[id] = nil
       end
       tmux.watch_cleanup(false)
     end
-    refresh_headings()
   end,
 })
 
@@ -1850,9 +1863,16 @@ vim.api.nvim_create_autocmd("VimLeavePre", {
 ---@return string? error
 function M.transmit_png(data, callback, cols, rows)
   if data == "" then return nil end
-  local connection = vim.env.TMUX and require("md-render.heading_tmux").status()
+  local connection, checking
+  if vim.env.TMUX then
+    connection, checking = require("md-render.heading_tmux").status()
+  end
   if connection then
     if not connection.key then return nil end
+    if checking then
+      png_retry_pending = true
+      return nil, "checking tmux connection"
+    end
   else
     if not M.supports_kitty() then return nil end
     -- Resolve before uploading: the identity query can yield to a screen clear.
@@ -2463,7 +2483,8 @@ function M.delete_image(image_id)
     -- A tmux copy-mode snapshot can still display our placeholders. Keep its
     -- PNG alive until the pane is active again, then release retired uploads.
     local tmux = require "md-render.heading_tmux"
-    local connection = tmux.status().owner
+    local context, checking = tmux.status()
+    local connection = not checking and context.owner
     if connection then
       if connection == png_connections[image_id] then
         png_write(string.format("\27_Ga=d,d=I,i=%d,q=2\27\\", image_id))

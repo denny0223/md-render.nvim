@@ -91,12 +91,17 @@ assert(vim.fn.maparg("za", "n") == "", "WinEnter restored a deleted mapping")
 vim.cmd.split()
 local other_render_win = vim.api.nvim_get_current_win()
 vim.wait(50)
-vim.keymap.set("n", "gf", custom, { buffer = session.buf })
-vim.api.nvim_set_current_win(render_win)
-assert(vim.fn.maparg("gf", "n", false, true).callback == custom, "render-window rebind replaced a user gf mapping")
-vim.keymap.del("n", "gf", { buffer = session.buf })
-vim.api.nvim_set_current_win(other_render_win)
-assert(vim.fn.maparg("gf", "n") == "", "render-window rebind restored a deleted gf mapping")
+for _, key in ipairs { "gf", "<C-]>" } do
+  vim.keymap.set("n", key, custom, { buffer = session.buf })
+  vim.api.nvim_set_current_win(render_win)
+  assert(
+    vim.fn.maparg(key, "n", false, true).callback == custom,
+    "render-window rebind replaced a user " .. key .. " mapping"
+  )
+  vim.keymap.del("n", key, { buffer = session.buf })
+  vim.api.nvim_set_current_win(other_render_win)
+  assert(vim.fn.maparg(key, "n") == "", "render-window rebind restored a deleted " .. key .. " mapping")
+end
 vim.api.nvim_win_close(other_render_win, true)
 vim.api.nvim_set_current_win(source_win)
 

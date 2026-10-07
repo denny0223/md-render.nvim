@@ -292,15 +292,23 @@ opens a new preview on the right. See |:MdRender-split| for navigation.
 <Plug>(md-render-demo) ~
 	Show a demo window with all supported Markdown notations.
 
-Inside the preview window, the following keys are available:
+Inside the preview window, the following Normal-mode keys are available.
 
 	`q` / `<Esc>` / `<C-c>`	Close the floating/tab preview window
 	`za`		Toggle the callout fold / expandable region under the
 			cursor (no-op when the cursor is not on one)
 	`<CR>`		Follow a heading/footnote link within the document, open
 			an image (Snacks), or toggle a fold / expandable region
-	`gf`		Follow a local file link; Markdown targets stay rendered
-			(toggle, split, floating, tab, and pager previews)
+	`gf` / `gF`	Follow the exact local link; gF also reads a following
+			source line number. Markdown targets stay rendered
+	`<C-w>f` / `<C-w>F` Follow a local link in a split
+	`<C-w>gf` / `<C-w>gF` Follow a local link in a new tab
+	`<C-]>` / `g]` / `g<C-]>` Follow heading, footnote, or file links
+			through native tag navigation
+	`<C-w>]` / `<C-w>g]` / `<C-w>g<C-]>` Native split-tag navigation
+	`gx`		Jump to an internal anchor, or open the exact external
+			URL / absolute local path with the system handler
+	`<C-LeftMouse>` / `g<LeftMouse>` Follow the clicked link as a tag
 	`<LeftMouse>`	Click links, toggle folds, expand regions
 	`<MouseMove>`	Hover a link to preview its destination in a small
 			float at the bottom; long URLs are shortened. Requires
@@ -310,8 +318,14 @@ Inside the preview window, the following keys are available:
 For a split preview, switch to its window and close it with `:q` or `<C-w>c`.
 
 Enter follows links such as #heading and footnote references within the
-document. Percent-encoded fragments work; # goes to the top. Native gx opens
-external URLs.
+document. Percent-encoded fragments work; # goes to the top. Internal jumps
+enter the native jumplist for Ctrl-O / Ctrl-I. Visual gx
+retains Neovim's selected-text behavior.
+
+Tag navigation records a real native tag stack: Ctrl-T / :pop returns and
+:tag moves forward. File targets stay in the operated window. Outside links,
+file and tag commands retain native lookup and counts. <C-w><C-f> and
+<C-w><C-]> are aliases. Floating previews retain native window restrictions.
 
 Inside a render-mode buffer opened with |:MdRender-toggle|, `q` / `<Esc>` /
 `<C-c>` are NOT bound to close — call |:MdRender-toggle| again to return to
@@ -339,8 +353,9 @@ preview history is not merged into that window.
 Supported destinations are relative paths, POSIX absolute paths, and local
 `file:///` URLs, including encoded filenames, inline/reference links, and
 optional titles. Missing or unreadable targets leave the preview unchanged.
-Fragments on links to another file do not yet select headings. Windows/UNC
-paths remain outside this feature's scope. Pager uses the operated window; see
+Cross-file fragments select matching Markdown headings or footnotes when
+present. Windows/UNC paths remain outside this feature's scope.
+Pager uses the operated window; see
 |:MdRender-pager|.
 
 Search (/, ?, n, N), marks, Visual selection, yank, scrolling, and native

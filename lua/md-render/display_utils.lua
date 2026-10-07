@@ -329,6 +329,10 @@ function M.apply_content_to_buffer(buf, ns, content, opts)
   local was_modified = vim.bo[buf].modified
   content.highlight_ns = ns
   vim.b[buf].md_render_heading_fallback = content.heading_fallback
+  -- Cached native tag commands resolve fragments after the destination reflows.
+  local anchors = vim.tbl_extend("force", {}, content.heading_anchors or {}, content.footnote_anchors or {})
+  anchors[""] = 0
+  vim.b[buf].md_render_anchors = anchors
   -- Replacing unchanged rows would collapse native jump/mark positions into
   -- the replaced range. Let Neovim adjust only the rows that actually changed.
   local old = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
@@ -686,25 +690,13 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
   -- it buffer-locally also suppresses Vim's default "E490: No fold found".
   vim.keymap.set("n", "za", toggle_at_cursor, { buffer = buf, noremap = true, silent = true })
 
-  local function activate_anchor(url, target_win)
-    local anchor = url and url:match "^#(.*)$"
-    if anchor == nil then return false end
-    anchor = vim.uri_decode(anchor)
-    local current = get_content()
-    local target = anchor == "" and 0
-      or (current.footnote_anchors or {})[anchor]
-      or (current.heading_anchors or {})[anchor]
-    if target then vim.api.nvim_win_set_cursor(target_win or vim.api.nvim_get_current_win(), { target + 1, 0 }) end
-    return true
-  end
-
   -- `<CR>` opens an image or toggles a block and is otherwise a no-op: it is
   -- not a close key by default (closing on Enter is unintuitive — use q / <Esc>
   -- / <C-c>). It still falls back to closing when a caller opts <CR> into
   -- close_keys explicitly (cr_is_close).
   vim.keymap.set("n", "<CR>", function()
     local cursor = vim.api.nvim_win_get_cursor(0)
-    if activate_anchor(Links.at(buf, ns, cursor[1] - 1, cursor[2])) then return end
+    if Links.follow_anchor(Links.at(buf, ns, cursor[1] - 1, cursor[2]), get_content()) then return end
     if opts.on_image_open and opts.on_image_open(cursor[1] - 1) then return end
     if toggle_at_cursor() then return end
     if cr_is_close then vim.cmd.close() end
@@ -727,7 +719,7 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
         local url = Links.at(buf, ns, click_line, click_col)
         if url then
           -- Handle internal anchor links by scrolling
-          if activate_anchor(url, win) then return true end
+          if Links.follow_anchor(url, get_content(), win) then return true end
           -- Obsidian links: always open via system handler
           if url:match "^obsidian://" then
             vim.notify("Opening: " .. url, vim.log.levels.INFO)

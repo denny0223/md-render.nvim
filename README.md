@@ -277,12 +277,19 @@ Inside a rendered preview (floating, tab, split, in-place toggle, or pager), the
 |---|---|
 | `za` | Toggle the fold / expandable region under the cursor (no-op elsewhere) |
 | `<CR>` | Follow a heading or footnote link within the document, open an image (Snacks backend), or toggle a fold / expandable region |
-| `gf` | Follow the local file link under the cursor; Markdown targets stay rendered |
+| `gf` / `gF` | Follow the exact local link; `gF` also reads a following source line number |
+| `<C-w>f` / `<C-w>F` | Follow the local link in a split; `<C-w>gf` / `<C-w>gF` use a new tab |
+| `<C-]>` / `g]` / `g<C-]>` | Follow a heading, footnote, or file link through native tag navigation |
+| `<C-w>]` / `<C-w>g]` / `<C-w>g<C-]>` | Follow a link with native split-tag navigation |
+| `gx` | Jump to an internal anchor or open the exact external URL / absolute local path with the system handler |
+| `<C-LeftMouse>` / `g<LeftMouse>` | Follow the clicked link through tag navigation |
 | `<LeftMouse>` | Toggle folds, expand regions, and open links by clicking |
 | `q` / `<Esc>` / `<C-c>` | Close the window (floating / tab mode only) |
 | `q` | Quit Neovim with unsaved-buffer protection (pager only) |
 
-Use Enter on links such as `#heading` or a footnote reference to jump within the document; percent-encoded fragments work, and `#` goes to the top. Native `gx` opens external URLs.
+Use Enter on links such as `#heading` or a footnote reference to jump within the document; percent-encoded fragments work, and `#` goes to the top. Internal jumps enter the native jumplist for `Ctrl-O` / `Ctrl-I`. Visual `gx` keeps Neovim's selected-text behavior.
+
+`Ctrl-]` and its tag aliases record a real native tag stack: return with `Ctrl-T` / `:pop`, and move forward with `:tag`. File targets stay in the operated window. Outside links, file and tag commands retain native lookup and counts. `<C-w><C-f>` and `<C-w><C-]>` are also supported. Native window restrictions still apply to floating previews.
 
 `gf` resolves the link destination relative to its source Markdown file, independently of the working directory. Markdown targets keep the current preview window; other files open for editing in the original source window, closing floating/tab previews. Pager opens other files and directories in the currently operated window. `Ctrl-O` returns to the preceding rendered document with its reading position and folds; after editing another file, that rendered return uses the source window. Outside a link, native `gf` and counts such as `2gf` still work.
 
@@ -290,7 +297,7 @@ Outside pager mode, directories open in the original source window through the c
 
 `Ctrl-O` and `Ctrl-I` remain native Neovim commands. Each window keeps its own jumplist: when a preview hands off to the original source editing window, only the immediately preceding rendered document is guaranteed on return. Earlier preview history is not merged into that window.
 
-Local links support relative paths, POSIX absolute paths, and `file:///` URLs, including encoded filenames, inline/reference links, and optional titles. Missing or unreadable files leave the preview unchanged. Fragments on links to another file do not yet select a heading; Windows/UNC paths remain outside this feature's scope.
+Local links support relative paths, POSIX absolute paths, and `file:///` URLs, including encoded filenames, inline/reference links, and optional titles. Markdown targets stay rendered; cross-file fragments select a matching heading or footnote when present. Missing or unreadable files leave the preview unchanged. Windows/UNC paths remain outside this feature's scope.
 
 Search (`/`, `?`, `n`, `N`), marks, Visual selection, yank, scrolling, and native window commands work on the displayed text. `:w`, `:update`, `:x`, and `ZZ` save the source; the preview's `[+]` reflects unsaved source changes. Editing and partial/append/alternate-file writes require switching to source first. After unloading the source, reload it before saving from the preview.
 

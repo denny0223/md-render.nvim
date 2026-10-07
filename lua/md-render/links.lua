@@ -14,6 +14,33 @@ function M.highlight(url)
     or "MdRenderLink"
 end
 
+--- Move within a rendered document, retaining native jump history.
+function M.jump(win, row, col)
+  win, col = win or vim.api.nvim_get_current_win(), col or 0
+  local cursor = vim.api.nvim_win_get_cursor(win)
+  if cursor[1] == row + 1 and cursor[2] == col then return end
+  vim.api.nvim_win_call(win, function()
+    vim.cmd "normal! m'"
+    vim.api.nvim_win_set_cursor(win, { row + 1, col })
+  end)
+end
+
+--- Resolve a heading or footnote fragment to its rendered row.
+function M.anchor_row(url, content)
+  local anchor = url and url:match "^#(.*)$"
+  if anchor == nil then return nil end
+  anchor = vim.uri_decode(anchor)
+  return anchor == "" and 0 or (content.footnote_anchors or {})[anchor] or (content.heading_anchors or {})[anchor]
+end
+
+--- Consume internal links even when their destination is absent.
+function M.follow_anchor(url, content, win)
+  if not url or not url:match "^#" then return false end
+  local row = M.anchor_row(url, content)
+  if row then M.jump(win, row) end
+  return true
+end
+
 --- Find the link containing a byte position; extmark query bounds are inclusive.
 function M.at(buf, ns, row, col)
   if not vim.api.nvim_buf_is_valid(buf) or row < 0 or col < 0 or row >= vim.api.nvim_buf_line_count(buf) then

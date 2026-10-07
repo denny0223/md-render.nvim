@@ -534,7 +534,8 @@ native、一般文字，檢查期間保留一般文字。需要單一連線中�
   set -g allow-passthrough all
   set -as terminal-features ',xterm-kitty:RGB:hyperlinks'
 <
-預覽須在目前 pane，且不在 copy mode；tmux 視窗必須完整容納於客戶端。
+預覽所在 pane 須不在 copy mode；tmux 視窗必須完整容納於客戶端。
+切換到其他 pane 時仍保留圖片標題。
 客戶端暫停時會等待恢復；不支援巢狀 tmux 或多客戶端。
 
 all 也允許隱藏 pane 的傳輸；on 可能在重繪時丟棄圖片。外掛不會變更此設定。

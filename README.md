@@ -383,7 +383,7 @@ require("md-render.text_size").setup {
 
 Search, selection and cursor movement into a heading reveal the affected text without changing its layout or inserting markers. Internal anchors work with Enter or ordinary clicks; external links also support the terminal shortcut (Ctrl+Shift+click in Kitty). For terminal text selection, use `:MdRender textsize off` or return to source with `:MdRender toggle`.
 
-Inside tmux, `auto` selects image headings when the following checks pass; otherwise it tries native headings, then ordinary text. Pending checks retain ordinary text. This requires one attached Kitty client with measured cell dimensions, RGB and hyperlink support, and an active pane outside copy mode. Suspended clients wait until resumed. The tmux window must fit the client viewport; nested tmux and multiple clients are unsupported. Configure tmux with:
+Inside tmux, `auto` selects image headings when the following checks pass; otherwise it tries native headings, then ordinary text. Pending checks retain ordinary text. This requires one attached Kitty client with measured cell dimensions, RGB and hyperlink support, and a preview pane outside copy mode. Image headings remain visible when another pane is focused. Suspended clients wait until resumed. The tmux window must fit the client viewport; nested tmux and multiple clients are unsupported. Configure tmux with:
 
 ```tmux
 set -g allow-passthrough all

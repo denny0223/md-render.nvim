@@ -658,8 +658,9 @@ tmux の設定に次を追加してください： >
   set -g allow-passthrough all
   set -as terminal-features ',xterm-kitty:RGB:hyperlinks'
 <
-pane がアクティブで、copy mode ではなく、ウィンドウ全体がクライアントに
-収まる場合が対象です。停止中のクライアントは再開を待ちます。
+pane が copy mode ではなく、ウィンドウ全体がクライアントに収まる場合が対象です。
+別の pane にフォーカスを移しても画像見出しは表示されます。
+停止中のクライアントは再開を待ちます。
 多重 tmux と複数クライアントには対応しません。
 
 all は非表示 pane からの送信も許可します。on は再描画中に画像を破棄する

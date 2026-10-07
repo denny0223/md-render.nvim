@@ -396,8 +396,8 @@ local cases = {
   {
     "an image may contain angle text inside an outer link",
     "A [![<irc:label>](image.png)](/outer)",
-    "A <irc:label>",
-    { { "<irc:label>", "/outer" } },
+    "A irc:label",
+    { { "irc:label", "/outer" } },
   },
   {
     "invalid image syntax cannot consume the inner angle link",
@@ -408,8 +408,8 @@ local cases = {
   {
     "inline image descriptions may contain angle text",
     "A ![<irc:label>](image.png)",
-    "A !<irc:label>",
-    { { "<irc:label>", "image.png" } },
+    "A irc:label",
+    { { "irc:label", "image.png" } },
   },
   {
     "an escaped image marker leaves an ordinary link label",
@@ -420,8 +420,8 @@ local cases = {
   {
     "an escaped backslash does not escape the image marker",
     "\\\\![<irc:label>](image.png)",
-    "\\!<irc:label>",
-    { { "<irc:label>", "image.png" } },
+    "\\irc:label",
+    { { "irc:label", "image.png" } },
   },
   {
     "an unclosed bracket leaves the inner angle link active",

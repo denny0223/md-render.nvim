@@ -132,6 +132,7 @@ end
 ---@return MdRender.Content
 MdPreview.build_content = function(lines, opts)
   opts = opts or {}
+  lines = vim.tbl_map(require("md-render.character_references").normalize_nul, lines)
   local max_width = opts.max_width or DEFAULT_MAX_WIDTH
   local expand_state = opts.expand_state or {}
 

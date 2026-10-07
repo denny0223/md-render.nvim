@@ -34,6 +34,19 @@ local cases = {
     url = "https://example.com/乙",
   },
   {
+    name = "HTML comment removal retains the row after a short token in a link label",
+    source = "[甲<!-- hidden\n-->乙<!-->丙](/target) tail",
+    text = "甲乙丙 tail",
+    boundary = 3,
+    url = "/target",
+  },
+  {
+    name = "HTML comment removal retains the row after a short token in emphasis",
+    source = "**甲<!-- hidden\n-->乙<!--->丙** tail",
+    text = "甲乙丙 tail",
+    boundary = 3,
+  },
+  {
     name = "URL truncation keeps a visible suffix from the second source row",
     source = url_prefix .. "%%\nhidden%%乙丙丁戊 尾",
     text = url_prefix .. "乙丙… 尾",
@@ -70,6 +83,34 @@ local cases = {
     source = "甲&#10;乙\n丙",
     text = "甲 乙丙",
     boundary = 7,
+  },
+  {
+    name = "image alt strips nested targets while preserving the following physical row",
+    source = "![甲 [乙](/inner)\n丙 ![丁](child.png)](image.png) 戊 [尾](/after)",
+    text = "甲 乙丙 丁戊尾",
+    boundary = 7,
+    url = "image.png",
+  },
+  {
+    name = "an enclosing link keeps image alt bytes from both physical rows",
+    source = "[![甲\n乙](image.png)](/outer) [尾](/after)",
+    text = "甲乙 尾",
+    boundary = 3,
+    url = "/outer",
+  },
+  {
+    name = "angle autolink descriptions remove their markers without moving the next source row",
+    source = "![甲 <https://example.com>\n乙](image.png) x",
+    text = "甲 https://example.com 乙 x",
+    boundary = 24,
+    url = "image.png",
+  },
+  {
+    name = "HTML image descriptions retain the inner label's physical source owner",
+    source = '![甲 <a href="/inner"\n>乙</a>](image.png) x',
+    text = "甲 乙 x",
+    boundary = 4,
+    url = "image.png",
   },
 }
 

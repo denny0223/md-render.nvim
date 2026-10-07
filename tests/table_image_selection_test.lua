@@ -282,4 +282,67 @@ for _, graphics in ipairs { false, true } do
     end
   end
 end
+
+-- Linked image captions retain the existing anchor-before-image Enter order.
+for _, width in ipairs { 20, 100 } do
+  image._set_kitty_supported(true)
+  local long_caption = "Standalone 長圖片標題 alpha beta gamma delta epsilon END"
+  local source_lines = {
+    "# Target",
+    "",
+    "[![" .. long_caption .. "](<" .. paths[1] .. '> "title")](https://example.invalid/outer)',
+    "",
+    "[![Anchor](<" .. paths[1] .. '> "title")](#target)',
+    "",
+    "| Image column |",
+    "| --- |",
+    "| [![Table reference][img]][outer] |",
+    "",
+    "[img]: <" .. paths[1] .. '> "title"',
+    "[outer]: #target",
+  }
+  local source_buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, source_lines)
+  vim.bo[source_buf].filetype = "markdown"
+  vim.api.nvim_set_current_buf(source_buf)
+  local tick = vim.api.nvim_buf_get_changedtick(source_buf)
+  preview.show_tab { max_width = width, text_scale = false }
+  session = assert(preview._sessions[vim.api.nvim_get_current_buf()])
+  assert(#session.content.image_placements == 3, "direct document and reference table images share media loading")
+  session.image_state = { snacks = true, objects = {} }
+  for index in ipairs(session.content.image_placements) do
+    session.image_state.objects[index] = {
+      ready = function()
+        return true
+      end,
+    }
+  end
+  local found = 0
+  for _, link in ipairs(session.content.link_metadata) do
+    if link.url == "#target" then
+      found = found + 1
+      assert(require("md-render.links").at(session.buf, session.ns, link.line, link.col_start) == link.url)
+      enter(link.line + 1, link.col_start, nil)
+      assert(
+        vim.api.nvim_win_get_cursor(session.win)[1] == session.content.heading_anchors.target + 1,
+        "Enter follows the internal anchor before opening an image tab"
+      )
+    elseif link.url == "https://example.invalid/outer" then
+      assert(require("md-render.links").at(session.buf, session.ns, link.line, link.col_start) == link.url)
+      enter(link.line + 1, link.col_start, paths[1])
+    end
+  end
+  assert(found >= 2, "both image captions expose their enclosing href")
+  local linked_placement = session.content.image_placements[1]
+  if width == 20 then assert(linked_placement.label_rows > 1, "standalone caption must really wrap") end
+  for row = linked_placement.line - linked_placement.label_rows + 1, linked_placement.line do
+    enter(row, 0, paths[1])
+  end
+  enter(linked_placement.line + 1, 0, paths[1])
+  assert(vim.api.nvim_buf_get_changedtick(source_buf) == tick, "caption navigation preserves source changedtick")
+  assert(vim.deep_equal(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), source_lines))
+  session.image_state = nil
+  vim.api.nvim_buf_delete(session.buf, { force = true })
+  vim.api.nvim_buf_delete(source_buf, { force = true })
+end
 print "Table image selection: cell ownership, long CJK captions, image edges, readiness and standalone navigation OK"

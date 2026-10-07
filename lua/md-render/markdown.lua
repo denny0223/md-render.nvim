@@ -660,11 +660,7 @@ local function process_embeds(
 end
 
 --- Inline and reference links share the same destination/title syntax.
-local function link_destination(text)
-  local escaped, escapes = escape_backslashes(text)
-  local destination = escaped:match "^%s*<([^>]*)>" or escaped:match "^%s*(%S+)" or ""
-  return character_references.decode(restore_source(destination, escapes))
-end
+local link_destination = inline.link_destination
 
 local link_bounds = inline.link_bounds
 
@@ -672,14 +668,12 @@ local link_bounds = inline.link_bounds
 local function map_display_text(text, transform, keep_literals)
   if not text:find("](", 1, true) and not (keep_literals and text:find "[<\\]") then return transform(text, 0) end
   local parts, start, i = {}, 1, 1
-  local failed_html, last_comment = {}, text:match "^.*()%-%->" or 0
+  local failed_html = {}
   local indexed_links = inline.scan(text).links
   while i <= #text do
     local c = text:sub(i, i)
     local _, comment_end
-    if i + 4 <= last_comment and text:sub(i, i + 3) == "<!--" then
-      _, comment_end = text:find("-->", i + 4, true)
-    end
+    if text:sub(i, i + 3) == "<!--" then comment_end = inline.html_end(text, i, failed_html) end
     if not comment_end then
       _, comment_end = text:find("^%%%%.-%%%%", i)
     end
@@ -744,9 +738,16 @@ local function protect_comments(text, source, sources)
       part_sources:replace(replacements)
       replacements = {}
     end
-    -- Restrict matching to the closed prefix; unmatched suffixes stay literal.
-    local last = part:match "^.*()%-%->"
-    if last then part = part:sub(1, last + 2):gsub("()(<!%-%-.-%-%->)", stash) .. part:sub(last + 3) end
+    local pieces, pos = {}, 1
+    for first, last, token in inline.html_tags(part) do
+      if token:sub(1, 4) == "<!--" then
+        pieces[#pieces + 1] = part:sub(pos, first - 1)
+        pieces[#pieces + 1] = stash(first, token)
+        pos = last + 1
+      end
+    end
+    pieces[#pieces + 1] = part:sub(pos)
+    part = table.concat(pieces)
     if part_sources then
       part_sources:replace(replacements)
       edits[#edits + 1] = { first = start, last = start + original_length, value = part_sources }
@@ -787,8 +788,11 @@ local function protect_autolinks(text, source, ref_links, source_label, sources)
     local label = range.angle and raw:sub(2, -2) or raw
     local url = range.angle and (label:match "^[A-Za-z][A-Za-z0-9.+-]*:" and label or "mailto:" .. label)
       or "http://" .. label
-    spans[#spans + 1] = { placeholder = token, content = raw, raw = raw, label = label, url = url }
-    if sources then sources:protect(edits, spans[#spans], range.start - 1, range.finish) end
+    spans[#spans + 1] = { placeholder = token, content = label, raw = raw, label = label, url = url }
+    if sources then
+      local first = range.start - 1 + (range.angle and 1 or 0)
+      sources:protect(edits, spans[#spans], range.start - 1, range.finish, sources:slice(first, first + #label))
+    end
     pieces[#pieces + 1] = text:sub(pos, range.start - 1) .. token
     pos = range.finish + 1
   end
@@ -826,6 +830,44 @@ local function process_links(text, highlights, links, source_label, ref_links)
   local removals = {}
   local processed = ""
   local failed_html = {}
+  local sources = highlights._source_map
+  if sources then removals.source_edits = {} end
+  local function replace(first, last, bytes, value)
+    removals[#removals + 1] = { start = first + (bytes or 0), count = last - first - (bytes or 0) }
+    if sources then
+      removals.source_edits[#removals.source_edits + 1] = { first = first, last = last, value = value }
+    end
+  end
+  local function label(first, last, depth, image_description)
+    local parts, pos = {}, first
+    while pos <= last do
+      local image = text:sub(pos, pos) == "!" and indexed_links[pos + 1]
+      local child = image and image.image and image or indexed_links[pos]
+      local literal_end = text:sub(pos, pos) == "<"
+        and (inline.autolink_end(text, pos) or inline.html_end(text, pos, failed_html))
+      if literal_end then
+        local token = text:sub(pos, literal_end)
+        if image_description and inline.html_name(token) then
+          local token_sources = sources and sources:slice(pos - 1, literal_end)
+          local plain = Markdown.render_html(token, true, nil, token_sources)
+          replace(pos - 1, literal_end, #plain, token_sources)
+          parts[#parts + 1] = plain
+        else
+          parts[#parts + 1] = token
+        end
+        pos = literal_end + 1
+      elseif child and child.finish <= last and depth < inline.MAX_NESTING then
+        replace(pos - 1, child.start)
+        parts[#parts + 1] = label(child.start + 1, child.suffix_start - 2, depth + 1, image_description or child.image)
+        replace(child.suffix_start - 2, child.finish)
+        pos = child.finish + 1
+      else
+        parts[#parts + 1] = text:sub(pos, pos)
+        pos = pos + 1
+      end
+    end
+    return table.concat(parts)
+  end
   local i = 1
   while i <= #text do
     local literal_end = text:sub(i, i) == "<"
@@ -833,28 +875,20 @@ local function process_links(text, highlights, links, source_label, ref_links)
     if literal_end then
       processed = processed .. text:sub(i, literal_end)
       i = literal_end + 1
-    elseif text:sub(i, i) == "[" then
-      local suffix_start, finish, reference_url = link_bounds(text, i, ref_links, source_label, indexed_links)
+    elseif text:sub(i, i) == "[" or (text:sub(i, i) == "!" and indexed_links[i + 1]) then
+      local image = text:sub(i, i) == "!" and indexed_links[i + 1]
+      local start = image and image.image and i + 1 or i
+      local suffix_start, finish, reference_url = link_bounds(text, start, ref_links, source_label, indexed_links)
       if finish then
-        local link_text_raw = text:sub(i + 1, suffix_start - 2)
         local url = reference_url or link_destination(source_label(text:sub(suffix_start + 1, finish - 1)))
-
-        -- The same scanner recognizes inline, full, collapsed and shortcut images.
-        local image = text:sub(i + 1, i + 1) == "!" and indexed_links[i + 2]
-        local alt = image
-          and image.image
-          and image.finish == suffix_start - 2
-          and text:sub(image.start + 1, image.suffix_start - 2)
-        local display_text = alt or link_text_raw
+        replace(i - 1, start)
+        local display_text = label(start + 1, suffix_start - 2, 1, indexed_links[start].image)
 
         local start_col = #processed
         processed = processed .. display_text
         add_link_highlight(highlights, start_col, start_col + #display_text, url)
         table.insert(links, { col_start = start_col, col_end = start_col + #display_text, url = url, _decoded = true })
-        local label_start = alt and image.start or i
-        local label_end = alt and image.suffix_start or suffix_start
-        table.insert(removals, { start = i - 1, count = label_start - i + 1 })
-        table.insert(removals, { start = label_end - 2, count = finish - label_end + 2 })
+        replace(suffix_start - 2, finish)
         i = finish + 1
       else
         processed = processed .. text:sub(i, i)
@@ -1803,21 +1837,40 @@ local function strip_html_tags(text, highlights, semantic)
   return processed
 end
 
-local function normalize_line_endings(text, sources)
-  if sources and text:find("\r\n", 1, true) then
-    local removals = {}
+-- HTML owners use inclusive 1-based bytes; the shared position adjuster uses
+-- half-open 0-based endpoints. Keep the caller's ranges independent.
+local function adjust_literal_ranges(ranges, removals)
+  if not ranges or #ranges == 0 or not removals or #removals == 0 then return ranges end
+  local endpoints = {}
+  for index, range in ipairs(ranges) do
+    endpoints[index] = { col = range.start - 1, end_col = range.finish }
+  end
+  adjust_positions(endpoints, {}, removals, #endpoints, 0)
+  for index, endpoint in ipairs(endpoints) do
+    endpoints[index] = { start = endpoint.col + 1, finish = endpoint.end_col }
+  end
+  return endpoints
+end
+
+local function normalize_line_endings(text, sources, literal_ranges)
+  local removals
+  if (sources or literal_ranges) and text:find("\r\n", 1, true) then
+    removals = {}
     for pos in text:gmatch "()\r\n" do
       removals[#removals + 1] = { start = pos - 1, count = 1 }
     end
-    sources:removals(removals)
+    if sources then sources:removals(removals) end
   end
-  return (text:gsub("\r\n", "\n"):gsub("\r", "\n"))
+  return (text:gsub("\r\n", "\n"):gsub("\r", "\n")), adjust_literal_ranges(literal_ranges, removals)
 end
 
 --- Apply supported HTML display semantics without activating Markdown syntax.
 --- Physical source breaks survive tag removal, including multiline attributes.
 function Markdown.render_html(text, semantic, literal_ranges, sources)
-  text = normalize_line_endings(text, sources)
+  local removals
+  text, removals = character_references.normalize_nul(text, sources)
+  literal_ranges = adjust_literal_ranges(literal_ranges, removals)
+  text, literal_ranges = normalize_line_endings(text, sources, literal_ranges)
   local source = text
   local highlights, links = {}, {}
   highlights._source_map = sources
@@ -1963,6 +2016,9 @@ Markdown.render = function(
   block_context,
   track_sources
 )
+  local removals
+  text, removals = character_references.normalize_nul(text)
+  local literal_ranges = adjust_literal_ranges(block_context and block_context.literal_html_ranges, removals)
   local raw_html = block_context and block_context.raw_html
   local semantic = block_context and block_context.semantic
   inline_only = inline_only == true or (raw_html and not block_context.heading_level)
@@ -2148,7 +2204,7 @@ Markdown.render = function(
       return restore_source(label, code_spans)
     end, sources)
   end
-  rendered_text = normalize_line_endings(rendered_text, sources)
+  rendered_text, literal_ranges = normalize_line_endings(rendered_text, sources, literal_ranges)
   if checkbox_hl then
     local spaces = rendered_text:sub(#list_marker + 1):match "^ +" or ""
     if sources then sources:replace { { first = #list_marker, last = #list_marker + #spaces } } end
@@ -2170,8 +2226,7 @@ Markdown.render = function(
   local decode_url, source_label
 
   if raw_html then
-    rendered_text, highlights, links =
-      Markdown.render_html(rendered_text, semantic, block_context.literal_html_ranges, sources)
+    rendered_text, highlights, links = Markdown.render_html(rendered_text, semantic, literal_ranges, sources)
     highlights._source_map = sources
     rendered_text = rendered_text:gsub("\n", " ")
     goto finalize

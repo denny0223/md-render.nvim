@@ -571,6 +571,244 @@ test("outer links display reference-image alt text for every reference form", fu
     "preexisting footnote ranges follow nested image removal"
   )
 end)
+
+test("image descriptions flatten nested links and images without leaking their targets", function()
+  local refs = { image = "image.png", outer = "/outer" }
+  for _, source in ipairs {
+    '![caption **bold** [label](/inner) ![child](child.png)](image.png "title")',
+    "![caption **bold** [label](/inner) ![child](child.png)][image]",
+  } do
+    local text, _, links = markdown.render("前 " .. source .. " 後 [end](/end)", nil, nil, refs)
+    eq(text, "前 caption bold label child 後 end", "plain image alt in prose")
+    eq(#links, 2, "description destinations do not become competing links")
+    eq({ links[1].url, links[2].url }, { "image.png", "/end" }, "source and following link stay distinct")
+    eq(text:sub(links[1].col_start + 1, links[1].col_end), "caption bold label child", "complete image fallback range")
+  end
+  local text, _, links = markdown.render("前 [text ![child][image] tail][outer] 後", nil, nil, refs)
+  eq(text, "前 text child tail 後", "image labels inside ordinary links retain adjacent prose")
+  eq(#links, 1, "one enclosing target")
+  eq(links[1].url, "/outer", "outer reference destination")
+  for _, case in ipairs {
+    { "<https://example.com>", "https://example.com" },
+    { '<a href="/inner">label</a>', "label" },
+    { "<span>label</span>", "label" },
+  } do
+    for _, outer in ipairs { false, true } do
+      local image = "![" .. case[1] .. "](image.png)"
+      local alt_text, _, alt_links =
+        markdown.render("before " .. (outer and "[" .. image .. "](/outer)" or image) .. " after")
+      eq(alt_text, "before " .. case[2] .. " after", "supported HTML and autolink content yields plain image alt")
+      eq(#alt_links, 1, "image-description HTML cannot create a competing link")
+      eq(alt_links[1].url, outer and "/outer" or "image.png", "image or outer destination retains ownership")
+      eq(alt_text:sub(alt_links[1].col_start + 1, alt_links[1].col_end), case[2], "plain alt has exact byte bounds")
+    end
+  end
+end)
+
+test("links and images decode escaped destinations once, including reference forms", function()
+  for _, case in ipairs {
+    { "a\\&amp;.png", "a&amp;.png" },
+    { "a\\\\*.png", "a\\*.png" },
+    { "a\\\\&amp;.png", "a\\&.png" },
+  } do
+    local refs = markdown.parse_reference_links { "[r]: " .. case[1] }
+    eq(refs.r, case[2], "reference destination decodes once")
+    local text, _, links =
+      markdown.render("[text](" .. case[1] .. ") ![caption](" .. case[1] .. ") ![reference][r]", nil, nil, refs)
+    eq(text, "text caption reference", "escaped destination never enters display text")
+    eq(
+      vim.tbl_map(function(link)
+        return link.url
+      end, links),
+      { case[2], case[2], case[2] },
+      "ordinary links, direct images and reference images agree"
+    )
+  end
+end)
+
+-- Record the actual local media resolver arguments; the existing PNG needs no
+-- downloads, converters, terminal display or external image backend.
+do
+  local image = require "md-render.image"
+  local kitty, resolve, cell_size = image.supports_kitty, image.resolve_local, image._test_cell_size
+  local paths, graphics, available
+  image.supports_kitty = function()
+    return graphics
+  end
+  image._test_cell_size = { cell_w = 1, cell_h = 1 }
+  local fixture = vim.fn.getcwd() .. "/tests/fixtures/test_4x4.png"
+  image.resolve_local = function(path)
+    paths[#paths + 1] = path
+    local resolved = available == true or (type(available) == "function" and available(#paths))
+    return resolved and fixture or nil
+  end
+  local image_definitions = {
+    '[r]: image.png "reference title"',
+    "[caption]: image.png (title)",
+    '[outer]: </outer?a=1&amp;b=2> "title"',
+    '[escaped]: a\\&amp;.png "title"',
+  }
+  test("document and image-only table cells share Markdown destinations and reference media", function()
+    for _, case in ipairs {
+      { '![caption](image.png "title")', "image.png", "caption" },
+      { "![caption](<image.png> 'title')", "image.png", "caption" },
+      { "![caption](<two spaces.png>)", "two spaces.png", "caption" },
+      { "![caption](a\\(b\\).png)", "a(b).png", "caption" },
+      { "![caption](a(b(c)).png)", "a(b(c)).png", "caption" },
+      { "![caption](a&amp;b&#x28;c&#41;.png)", "a&b(c).png", "caption" },
+      { "![caption](a\\&amp;.png)", "a&amp;.png", "caption" },
+      { "![caption](a\\\\*.png)", "a\\*.png", "caption" },
+      { "![caption](a\\\\&amp;.png)", "a\\&.png", "caption" },
+      { "![caption][escaped]", "a&amp;.png", "caption" },
+      { "![caption](a<!-->b.png)", "a<!-->b.png", "caption" },
+      { "<!-- leading -->![caption](image.png)<!-- trailing -->", "image.png", "caption", table_only = true },
+      { "![caption][r]", "image.png", "caption" },
+      { "![caption][]", "image.png", "caption" },
+      { "![caption]", "image.png", "caption" },
+      { "![caption **bold** [label](/inner) ![child](child.png)](image.png)", "image.png", "caption bold label child" },
+      { '![<a href="/inner">caption</a>](image.png)', "image.png", "caption" },
+      { "![<span>caption</span>](image.png)", "image.png", "caption" },
+      { "![<https://example.com>](image.png)", "image.png", "https://example.com" },
+      { '[![<a href="/inner">caption</a>](image.png)](/outer)', "image.png", "caption", "/outer" },
+      { '[![caption][r]](</outer?a=1&amp;b=2> "title")', "image.png", "caption", "/outer?a=1&b=2" },
+      { "[![caption][r]][outer]", "image.png", "caption", "/outer?a=1&b=2" },
+      { "[![caption [child](/inner)](image.png)](/outer)", "image.png", "caption child", "/outer" },
+      { "[![caption [child](/inner)][r]][outer]", "image.png", "caption child", "/outer?a=1&b=2" },
+    } do
+      -- A document line beginning with an HTML comment belongs to an HTML block.
+      for _, table_cell in ipairs(case.table_only and { true } or { false, true }) do
+        local source = table_cell and { "| Image |", "| --- |", "| " .. case[1] .. " |" } or { case[1] }
+        vim.list_extend(source, { "", "[AFTER](/after)", "" })
+        vim.list_extend(source, image_definitions)
+        local source_buf = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, source)
+        local tick = vim.api.nvim_buf_get_changedtick(source_buf)
+        for _, width in ipairs { 18, 100 } do
+          for _, mode in ipairs { { false, false }, { true, false }, { true, true } } do
+            graphics, available, paths = mode[1], mode[2], {}
+            local content = build(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), { max_width = width })
+            eq(paths, graphics and { case[2] } or {}, "exact decoded resolver destination")
+            eq(#content.image_placements, graphics and available and 1 or 0, "reference image shares media capability")
+            if #content.image_placements > 0 then
+              eq(content.image_placements[1].path, fixture, "actual resolved media path")
+            end
+            local display_text = table.concat(content.lines):gsub("[│%s]", "")
+            assert(display_text:find(case[3]:gsub("%s", ""), 1, true), "full caption survives wrapping and fallback")
+            assert(
+              not display_text:find("![", 1, true),
+              "recognized image markers never leak into the label: "
+                .. vim.inspect { case[1], table_cell, graphics, available, content.lines }
+            )
+            local enclosing = {}
+            for _, link in ipairs(link_texts(content)) do
+              if link[2] == case[4] then
+                enclosing[#enclosing + 1] = link[1]
+                eq(link[3], table_cell and 3 or 1, "enclosing href keeps image source row")
+              elseif link[2] == "/after" then
+                eq(link[3], table_cell and 5 or 3, "following link keeps its physical source row")
+              else
+                assert(not case[4], "image source or description cannot replace its enclosing link")
+                eq(link[2], case[2], "image-description targets never leak into fallback metadata")
+              end
+            end
+            if case[4] then
+              eq(
+                table.concat(enclosing):gsub("%s", ""),
+                case[3]:gsub("%s", ""),
+                "enclosing target covers every wrapped caption byte"
+              )
+            end
+            eq(vim.api.nvim_buf_get_changedtick(source_buf), tick, "rendering preserves source changedtick")
+            eq(vim.api.nvim_buf_get_lines(source_buf, 0, -1, false), source, "rendering preserves source buffer")
+          end
+        end
+        vim.api.nvim_buf_delete(source_buf, { force = true })
+      end
+    end
+  end)
+  test("each source image retains its caption and href in order, including failed media", function()
+    local source = {
+      "![first](same.png) [![第二長 caption words END](same.png)](/second) [![third](same.png)][outer]",
+      "",
+      image_definitions[3],
+    }
+    for _, width in ipairs { 18, 100 } do
+      for _, mode in ipairs {
+        { false, false, 0 },
+        { true, false, 0 },
+        { true, true, 3 },
+        {
+          true,
+          function(index)
+            return index == 2
+          end,
+          1,
+        },
+      } do
+        graphics, available, paths = mode[1], mode[2], {}
+        local content = build(source, { max_width = width })
+        eq(
+          paths,
+          graphics and { "same.png", "same.png", "same.png" } or {},
+          "duplicate paths remain three resolver occurrences"
+        )
+        eq(#content.image_placements, mode[3], "each occurrence retains its own resolution result")
+        local rendered = table.concat(content.lines):gsub("%s", "")
+        local first = assert(rendered:find("first", 1, true))
+        local second = assert(rendered:find("第二長captionwordsEND", 1, true))
+        local third = assert(rendered:find("third", 1, true))
+        assert(first < second and second < third, "every caption remains in source order")
+        local labels = { ["/second"] = {}, ["/outer?a=1&b=2"] = {} }
+        for _, link in ipairs(link_texts(content)) do
+          labels[link[2]][#labels[link[2]] + 1] = link[1]
+        end
+        eq(
+          table.concat(labels["/second"]):gsub("%s", ""),
+          "第二長captionwordsEND",
+          "second occurrence keeps its own href"
+        )
+        eq(table.concat(labels["/outer?a=1&b=2"]), "third", "third occurrence keeps its own href")
+      end
+    end
+    graphics, available, paths = true, true, {}
+    local separate_rows =
+      build { "![first](same.png)", "[![second](same.png)](/second)", "![third](same.png)", "", "[AFTER](/after)" }
+    for _, placement in ipairs(separate_rows.image_placements) do
+      local caption = separate_rows.lines[placement.line]
+      local owner = caption:find("first", 1, true) and 1 or caption:find("second", 1, true) and 2 or 3
+      eq(
+        separate_rows.source_line_map[placement.line],
+        owner,
+        "joined media occurrences keep separate physical source rows"
+      )
+    end
+    for _, link in ipairs(link_texts(separate_rows)) do
+      eq(link[3], link[2] == "/second" and 2 or 5, "links across image boundaries retain their source rows")
+    end
+    graphics, available, paths = true, true, {}
+    local special = build { "![first](same.png) [![badge](https://img.shields.io/badge/foo-bar)](/badge) ![empty]()" }
+    eq(paths, { "same.png" }, "badge and empty destination keep their text fallback without resource loading")
+    eq(#special.image_placements, 1, "only the ordinary image uses a media placement")
+    assert(
+      table.concat(special.lines):find("badge", 1, true) and table.concat(special.lines):find("empty", 1, true),
+      "all special image occurrences retain their captions"
+    )
+    eq(link_texts(special), { { "badge", "/badge", 1 } }, "badge keeps its enclosing target in text fallback")
+    graphics, available, paths = true, true, {}
+    for _, literal in ipairs {
+      "![undefined][missing]",
+      "![caption](two spaces.png)",
+      "![caption](a<!-- comment -->b.png)",
+    } do
+      for _, table_cell in ipairs { false, true } do
+        local invalid_source = table_cell and { "| Image |", "| --- |", "| " .. literal .. " |" } or { literal }
+        eq(build(invalid_source).image_placements, {}, "invalid or undefined image stays literal")
+        eq(paths, {}, "invalid media destination never reaches a resolver")
+      end
+    end
+  end)
+  image.supports_kitty, image.resolve_local, image._test_cell_size = kitty, resolve, cell_size
+end
 test("table headers and wrapped rows receive references with exact byte ranges", function()
   local source =
     { "[r]: /url", "", "| [標題][r] | other |", "| --- | --- |", "| [長標籤 alpha beta gamma][r] | tail |" }
@@ -617,13 +855,13 @@ test("standard link ownership wins over overlapping wiki syntax", function()
     { "中 [[*標籤*](/unicode)] 後", "中 [標籤] 後", "標籤", "/unicode", "標籤" },
     { "中 [[標籤]] 後", "中 [標籤] 後", "標籤", "/unicode" },
     { "![[photo.png]]", "![photo.png]", "photo.png", "/standard" },
-    { "[![*foo* bar](/image)]", "[!foo bar]", "foo bar", "/image", "foo" },
-    { "[![*foo* bar][r]]", "[!foo bar]", "foo bar", "/full", "foo" },
-    { "[![*foo* bar][]]", "[!foo bar]", "foo bar", "/url", "foo" },
-    { "[![*foo* bar]]", "[!foo bar]", "foo bar", "/url", "foo" },
+    { "[![*foo* bar](/image)]", "[foo bar]", "foo bar", "/image", "foo" },
+    { "[![*foo* bar][r]]", "[foo bar]", "foo bar", "/full", "foo" },
+    { "[![*foo* bar][]]", "[foo bar]", "foo bar", "/url", "foo" },
+    { "[![*foo* bar]]", "[foo bar]", "foo bar", "/url", "foo" },
     { "[[note]](/outer)", "[note]", "[note]", "/outer" },
     { "[before [[note]] after][r]", "before [[note]] after", "before [[note]] after", "/full" },
-    { "a ![[note]](/image)", "a ![note]", "[note]", "/image" },
+    { "a ![[note]](/image)", "a [note]", "[note]", "/image" },
     { "[x](<[[note]]>)", "x", "x", "[[note]]" },
     { '[x](/file "[[note]] $x$ [^n]")', "x", "x", "/file" },
     { "[x[^n]](/file)", "x[^n]", "x[^n]", "/file" },

@@ -401,7 +401,7 @@ end)
 test("tasks, media, thematic precedence and fold exits keep their behavior", function()
   local source = { "- > [!NOTE]- Fold", "  > [內](/inside)", "- [ ] [任務](/task)", "- ![圖](/missing.png)" }
   local c = build(source)
-  eq(c.lines, { "• ", "  │ 󰋽  Fold 󰅂 ", "󰄱  任務", "• !圖" }, "ordinary task and media fallback")
+  eq(c.lines, { "• ", "  │ 󰋽  Fold 󰅂 ", "󰄱  任務", "• 圖" }, "ordinary task and media fallback")
   eq(
     c.callout_folds,
     { { header_line = 1, source_line = 1, collapsed = true } },
@@ -510,7 +510,7 @@ test("public narrow preview rebuild, activation and folding retain accepted owne
         "  • ",
         "    │ 󰋽  Fold 󰅂 ",
         "  󰄱  任務",
-        "  • !圖",
+        "  • 圖",
         "  ",
         "  跳",
       })

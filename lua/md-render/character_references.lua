@@ -1,5 +1,24 @@
 local M = {}
 
+--- CommonMark replaces raw NUL on a rendering copy, before parsing any syntax.
+---@param text string
+---@param sources? MdRender.SourceMap
+---@return string
+---@return MdRender.Markdown.Removal[]? removals byte deltas in original coordinates
+function M.normalize_nul(text, sources)
+  if not text:find("\0", 1, true) then return text end
+  local SourceMap = sources and require "md-render.source_map"
+  local edits, removals = {}, {}
+  for pos in text:gmatch "()%z" do
+    removals[#removals + 1] = { start = pos + 2, count = -2 }
+    if sources then
+      edits[#edits + 1] = { first = pos - 1, last = pos, value = SourceMap.constant(#"�", sources:at(pos - 1)) }
+    end
+  end
+  if sources then sources:replace(edits) end
+  return (text:gsub("%z", "�")), removals
+end
+
 --- Match one complete CommonMark character reference at a 1-indexed byte offset.
 --- Unknown names and invalid numeric syntax are ordinary source text.
 ---@param text string

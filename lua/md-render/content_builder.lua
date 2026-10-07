@@ -1163,14 +1163,7 @@ function ContentBuilder:apply_alert_styling(lines_before, lines_after, alert_typ
   end
 end
 
---- Pad a Nerd Font icon glyph so it always occupies 2 display cells.
---- When setcellwidths makes the glyph width 1, an extra space is appended.
----@param icon string single icon character
----@return string
-local function pad_icon(icon)
-  if vim.api.nvim_strwidth(icon) == 1 then return icon .. " " end
-  return icon
-end
+local pad_icon = icons.pad_icon
 
 local get_file_icon = icons.get_file_icon
 
@@ -1179,7 +1172,7 @@ local get_file_icon = icons.get_file_icon
 ---@param line_idx integer 0-indexed rendered line
 ---@param is_collapsed boolean
 function ContentBuilder:add_fold_indicator(line_idx, is_collapsed)
-  local indicator = is_collapsed and (" " .. pad_icon "󰅂") or (" " .. pad_icon "󰅀")
+  local indicator = " " .. pad_icon(icons.get_fold_icon(is_collapsed))
   local line = self.lines[line_idx + 1]
   if not line then return end
 
@@ -4748,7 +4741,7 @@ function ContentBuilder:render_document(lines, opts)
         local qm = qiita_map[note_type] or qiita_map.info
         qiita_note_type = qm.style
 
-        local icon = pad_icon(qm.icon)
+        local icon = pad_icon(icons.get_callout_icon(qm.style, qm.icon))
         local header_text = indent .. "│ " .. icon .. " " .. qm.label
         self:add_line(header_text, {
           { col = #indent, end_col = #indent + #"│ ", hl = "FloatBorder" },
@@ -4994,7 +4987,7 @@ function ContentBuilder:render_document(lines, opts)
 
       if not handled then
         -- Markdown media reuses the inline scanner's destination/reference ownership.
-        local img_path, img_alt
+        local img_path, img_alt, img_video
         local image_text = quote_depth == 0 and atx_content or line
         local img_entries = not current_alert_type and inline.image_line(image_text, ref_links) or {}
         local image_sources = #img_entries > 0 and require("md-render.source_map").new(image_text)
@@ -5029,7 +5022,10 @@ function ContentBuilder:render_document(lines, opts)
             local video_tag = video_rest and video_rest:match "^%s*$" and video_open .. video_body .. "</video>"
             if video_tag then
               img_path = inline.html_target(video_tag)
-              if img_path then img_alt = img_path:match "([^/]+)$" or img_path end
+              if img_path then
+                img_alt = img_path:match "([^/]+)$" or img_path
+                img_video = true
+              end
             end
           end
           -- CommonMark autolink to GitHub user-attachments CDN: <https://github.com/user-attachments/assets/...>
@@ -5064,7 +5060,9 @@ function ContentBuilder:render_document(lines, opts)
           end
         end
 
-        if img_path and img_path ~= "" then table.insert(img_entries, { alt = img_alt, path = img_path }) end
+        if img_path and img_path ~= "" then
+          table.insert(img_entries, { alt = img_alt, path = img_path, video = img_video })
+        end
 
         local saved_image_source = self._current_source_line
         local image_source_rows = paragraph_sources[src_indices[src_idx]]
@@ -5095,7 +5093,7 @@ function ContentBuilder:render_document(lines, opts)
             goto continue_img
           end
 
-          local is_video = image.is_video_file(img_entry.path)
+          local is_video = img_entry.video or image.is_video_file(img_entry.path)
 
           local resolved, src_url, display_cols, display_rows, is_animated
           local orig_img_w, orig_img_h
@@ -5156,7 +5154,7 @@ function ContentBuilder:render_document(lines, opts)
             or (img_entry.path:match "([^/]+)$" or img_entry.path)
           if graphics then
             if display_cols and display_rows then
-              local raw_icon, icon_hl = icons.get_image_icon(img_entry.path)
+              local raw_icon, icon_hl = icons.get_image_icon(img_entry.path, is_video and "video" or "image")
               local img_icon = pad_icon(raw_icon)
               local header_lines_added =
                 self:_emit_image_header(indent, img_icon, icon_hl, display_name, max_width, "Comment", img_entry.href)
@@ -5219,7 +5217,7 @@ function ContentBuilder:render_document(lines, opts)
 
           if not image_handled then
             -- Fallback belongs to this occurrence, even after another image rendered.
-            local raw_icon, icon_hl = icons.get_image_icon(img_entry.path)
+            local raw_icon, icon_hl = icons.get_image_icon(img_entry.path, is_video and "video" or "image")
             local img_icon = pad_icon(raw_icon)
             local fb_lines =
               self:_emit_image_header(indent, img_icon, icon_hl, display_name, max_width, "Underlined", img_entry.href)

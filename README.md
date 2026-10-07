@@ -152,6 +152,16 @@ add({
 })
 ```
 
+### Icon fonts and Unicode fallback
+
+The default `nerd` style preserves Nerd Font icons. To use standard Unicode icons, configure this before opening previews:
+
+```lua
+require("md-render.icons").setup { style = "unicode" }
+```
+
+Unicode icons may still appear in color. For monochrome Noto Emoji setup and font troubleshooting, see `:help md-render-icons` ([reference](doc/md-render.txt)). Use `style = "nerd"` to restore the default; close and reopen previews after changes.
+
 ### Playback and Mermaid fallback
 
 GIF/video autoplay is enabled by default; Mermaid's `npx` fallback is disabled. These are the defaults, configured before opening a preview:

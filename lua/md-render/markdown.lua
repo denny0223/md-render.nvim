@@ -29,6 +29,7 @@ local fence_mod = require "md-render.fence"
 local inline = require "md-render.inline"
 local character_references = require "md-render.character_references"
 local SourceMap = require "md-render.source_map"
+local icons = require "md-render.icons"
 
 local MAX_URL_DISPLAY_WIDTH = 50
 local delimiter_char
@@ -339,14 +340,7 @@ local function protect_hard_breaks(text, source, ref_links, source_label, bare_u
   return table.concat(parts), spans
 end
 
---- Pad a Nerd Font icon glyph so it always occupies 2 display cells.
---- When setcellwidths makes the glyph width 1, an extra space is appended.
----@param icon string single icon character
----@return string
-local function pad_icon(icon)
-  if vim.api.nvim_strwidth(icon) == 1 then return icon .. " " end
-  return icon
-end
+local pad_icon = icons.pad_icon
 
 --- Heading level icons (nf-md-format_header_1 .. _6)
 local HEADING_ICONS = { "󰉫", "󰉬", "󰉭", "󰉮", "󰉯", "󰉰" }
@@ -1591,7 +1585,7 @@ local function process_html_tags(text, highlights, links, decode_url, keep_rows,
             local basename_first = src_first + #src - #display_name
             src = decode_url(src)
             local icons_mod = require "md-render.icons"
-            local raw_icon, icon_hl = icons_mod.get_image_icon(src)
+            local raw_icon, icon_hl = icons_mod.get_image_icon(src, "video")
             local img_icon = semantic and "" or icons_mod.pad_icon(raw_icon) .. " "
             local display = semantic and "" or img_icon .. display_name
             if keep_rows then display = display:gsub("[\r\n]", " ") end
@@ -2108,7 +2102,7 @@ Markdown.render = function(
         -- Capitalize: first letter upper, rest lower
         label = alert_key:sub(1, 1) .. alert_key:sub(2):lower()
       end
-      local padded_icon = pad_icon(icon)
+      local padded_icon = pad_icon(icons.get_callout_icon(alert and style_key or "QUOTE", icon))
       if custom_title then
         rendered_text = padded_icon .. " " .. custom_title
       else
@@ -2151,15 +2145,12 @@ Markdown.render = function(
     -- Preserve empty tasks; following text needs separating whitespace.
     local cb_match, cb_char = after_marker:match "^(%[([xX %-])%]%f[%s%z]%s?)"
     if cb_match then
-      local icon
+      local icon = pad_icon(icons.get_checkbox_icon(cb_char)) .. " "
       if cb_char == " " then
-        icon = pad_icon "󰄱" .. " "
         checkbox_hl = "Comment"
       elseif cb_char == "-" then
-        icon = pad_icon "󰡖" .. " "
         checkbox_hl = "DiagnosticWarn"
       else
-        icon = pad_icon "󰄲" .. " "
         checkbox_hl = "DiagnosticOk"
       end
       local indent_part = list_marker:match "^(%s*)" or ""

@@ -151,6 +151,16 @@ add({
 })
 ```
 
+### 圖示字型與 Unicode 替代方式
+
+預設 `nerd` 模式保留 Nerd Font 圖示。要改用標準 Unicode 圖示，請在開啟預覽前設定：
+
+```lua
+require("md-render.icons").setup { style = "unicode" }
+```
+
+Unicode 圖示仍可能顯示彩色。單色 Noto Emoji 設定與字型排查請見 `:help md-render-icons`（[參考手冊](doc/md-render.twx)）。設為 `style = "nerd"` 可恢復預設；變更後請關閉並重開預覽。
+
 ### 自動播放與 Mermaid 替代方式
 
 GIF／影片預設自動播放；Mermaid 的 `npx` 替代方式預設關閉。以下是預設值，請在開啟預覽前設定：

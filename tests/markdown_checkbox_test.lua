@@ -33,6 +33,33 @@ local function render(input)
   return text, highlights, list_marker
 end
 
+test("checkbox states follow the selected style with stable display width", function()
+  local icons = require "md-render.icons"
+  local original_style = icons.config().style
+  local original_ambiwidth = vim.o.ambiwidth
+  for _, style in ipairs { "nerd", "unicode" } do
+    icons.setup { style = style }
+    for _, ambiwidth in ipairs { "single", "double" } do
+      vim.o.ambiwidth = ambiwidth
+      for _, case in ipairs {
+        { " ", "󰄱", "⬜", "Comment" },
+        { "x", "󰄲", "✅", "DiagnosticOk" },
+        { "X", "󰄲", "✅", "DiagnosticOk" },
+        { "-", "󰡖", "➖", "DiagnosticWarn" },
+      } do
+        local text, highlights, marker = render("- [" .. case[1] .. "] task")
+        assert_eq(vim.fn.strcharpart(marker, 0, 1), case[style == "nerd" and 2 or 3], "checkbox follows the style")
+        assert_eq(vim.api.nvim_strwidth(marker), 3, "checkbox marker keeps three display cells")
+        assert_eq(highlights[1].hl, case[4], "checkbox retains its state highlight")
+        assert_eq(highlights[1].end_col, #marker, "checkbox highlight does not consume content")
+        assert_eq(text, marker .. "task", "checkbox padding separates the content")
+      end
+    end
+  end
+  icons.setup { style = original_style }
+  vim.o.ambiwidth = original_ambiwidth
+end)
+
 -- Unchecked checkbox
 test("unchecked checkbox text", function()
   local text, highlights, list_marker = render "- [ ] todo item"

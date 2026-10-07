@@ -726,7 +726,8 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
       for col = 1, num_cols do
         if row_images[col] then
           local icons_mod = require "md-render.icons"
-          local raw_icon, icon_hl = icons_mod.get_image_icon(row_images[col].url or "")
+          local raw_icon, icon_hl =
+            icons_mod.get_image_icon(row_images[col].url or "", row_images[col].video and "video" or "image")
           local img_icon = icons_mod.pad_icon(raw_icon)
           local caption = row_images[col].alt:gsub("\r\n", "\n"):gsub("[\r\n]", " ")
           local label = img_icon .. " " .. caption

@@ -672,14 +672,12 @@ local link_bounds = inline.link_bounds
 local function map_display_text(text, transform, keep_literals)
   if not text:find("](", 1, true) and not (keep_literals and text:find "[<\\]") then return transform(text, 0) end
   local parts, start, i = {}, 1, 1
-  local failed_html, last_comment = {}, text:match "^.*()%-%->" or 0
+  local failed_html = {}
   local indexed_links = inline.scan(text).links
   while i <= #text do
     local c = text:sub(i, i)
     local _, comment_end
-    if i + 4 <= last_comment and text:sub(i, i + 3) == "<!--" then
-      _, comment_end = text:find("-->", i + 4, true)
-    end
+    if text:sub(i, i + 3) == "<!--" then comment_end = inline.html_end(text, i, failed_html) end
     if not comment_end then
       _, comment_end = text:find("^%%%%.-%%%%", i)
     end
@@ -744,9 +742,16 @@ local function protect_comments(text, source, sources)
       part_sources:replace(replacements)
       replacements = {}
     end
-    -- Restrict matching to the closed prefix; unmatched suffixes stay literal.
-    local last = part:match "^.*()%-%->"
-    if last then part = part:sub(1, last + 2):gsub("()(<!%-%-.-%-%->)", stash) .. part:sub(last + 3) end
+    local pieces, pos = {}, 1
+    for first, last, token in inline.html_tags(part) do
+      if token:sub(1, 4) == "<!--" then
+        pieces[#pieces + 1] = part:sub(pos, first - 1)
+        pieces[#pieces + 1] = stash(first, token)
+        pos = last + 1
+      end
+    end
+    pieces[#pieces + 1] = part:sub(pos)
+    part = table.concat(pieces)
     if part_sources then
       part_sources:replace(replacements)
       edits[#edits + 1] = { first = start, last = start + original_length, value = part_sources }

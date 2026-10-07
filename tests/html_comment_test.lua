@@ -8,6 +8,7 @@ require("md-render.image").supports_kitty = function()
 end
 local ContentBuilder = require("md-render.content_builder").ContentBuilder
 local display = require "md-render.display_utils"
+local Links = require "md-render.links"
 local pass_count, fail_count = 0, 0
 
 local function assert_eq(actual, expected, msg)
@@ -28,8 +29,13 @@ local function build(lines, opts)
   local c = b:result()
   assert_eq(lines, original, "building a preview preserves its source input")
   local buf = vim.api.nvim_create_buf(false, true)
-  display.apply_content_to_buffer(buf, vim.api.nvim_create_namespace "html_comment_test", c)
+  local ns = vim.api.nvim_create_namespace "html_comment_test"
+  display.apply_content_to_buffer(buf, ns, c)
   assert_eq(vim.api.nvim_buf_get_lines(buf, 0, -1, false), #c.lines > 0 and c.lines or { "" }, "buffer matches content")
+  for _, link in ipairs(c.link_metadata) do
+    assert_eq(Links.at(buf, ns, link.line, link.col_start), link.url, "first label byte retains its target")
+    assert_eq(Links.at(buf, ns, link.line, link.col_end - 1), link.url, "last label byte retains its target")
+  end
   vim.api.nvim_buf_delete(buf, { force = true })
   return c
 end
@@ -45,6 +51,106 @@ local function styled_text(content, group)
     end
   end
   return result
+end
+
+-- CommonMark 0.31.2 example 626: a short token ends before any later literal -->.
+for _, token in ipairs { "<!-->", "<!--->" } do
+  local c = build { "foo " .. token .. " foo -->" }
+  assert_eq(c.lines, { "foo foo -->" }, "text after a short comment remains visible")
+  c = build { "p " .. token .. " suffix" }
+  assert_eq(c.lines, { "p suffix" }, "a short comment needs no following closer")
+  c = build { "p " .. token .. " [中文](/next) -->" }
+  assert_eq(c.lines, { "p 中文 -->" }, "a following link lies outside the short token")
+  assert_eq(c.link_metadata, {
+    { line = 0, col_start = 2, col_end = 8, url = "/next" },
+  }, "following UTF-8 link retains exact byte bounds")
+  c = build { "前**甲" .. token .. "乙** [丙" .. token .. "丁](/right)尾" }
+  assert_eq(c.lines, { "前甲乙 丙丁尾" }, "short comments also disappear inside emphasis and link labels")
+  assert_eq(styled_text(c, "Bold"), { { 1, "甲乙" } }, "neighboring emphasis covers the surviving label")
+  assert_eq(c.link_metadata, {
+    { line = 0, col_start = 10, col_end = 16, url = "/right" },
+  }, "comment removal preserves UTF-8 label byte bounds")
+
+  c = build { "p \\" .. token .. " `" .. token .. '` <a href="/keep/' .. token .. '">鏈</a>尾' }
+  assert_eq(c.lines, { "p " .. token .. " " .. token .. " 鏈尾" }, "escapes, code and attributes keep comment bytes")
+  assert_eq(styled_text(c, "MdRenderInlineCode"), { { 1, token } }, "a short comment remains literal code")
+  assert_eq(c.link_metadata[1].url, "/keep/" .. token, "an HTML attribute retains the complete destination")
+  c = build { "p [鏈](/keep/" .. token .. ') [題](/url "' .. token .. '")' }
+  assert_eq(c.lines, { "p 鏈 題" }, "valid link destinations and titles remain opaque")
+  assert_eq(c.link_metadata[1].url, "/keep/" .. token, "a Markdown destination keeps its literal comment token")
+  assert_eq(c.link_metadata[2].url, "/url", "a comment-looking title cannot change its destination")
+
+  c = build { token .. "*raw* -->", "*next*" }
+  assert_eq(c.lines, { "*raw* -->", "next" }, "a short block ends on its opening line with a literal suffix")
+  assert_eq(c.source_line_map, { 1, 2 }, "short block suffix and following paragraph keep their physical rows")
+  assert_eq(styled_text(c, "Italic"), { { 2, "next" } }, "only the line after a short block parses Markdown")
+  c = build { token .. "[ref]: /hidden", token .. "[^a]: hidden", "[ref] text[^a]" }
+  assert_eq(
+    c.lines,
+    { "[ref]: /hidden", "[^a]: hidden", "[ref] text[^a]" },
+    "short closing suffixes cannot define links or footnotes"
+  )
+  assert_eq(c.link_metadata, {}, "short comment suffixes never publish hidden definitions")
+  c = build { token, "[ref]: /visible", "[ref]" }
+  assert_eq(c.lines, { "ref" }, "definitions on the line after a short block remain available")
+  assert_eq(c.link_metadata[1].url, "/visible", "a short block cannot swallow a following reference definition")
+  c = build { "```html", token .. "*literal*", "```", "*next*" }
+  assert_eq(c.lines, { token .. "*literal*", "next" }, "fenced short comments retain literal syntax")
+  c = build { "$$", token, "$$", "*next*" }
+  assert_eq(c.lines, { token, "next" }, "display math remains isolated from short comments")
+end
+
+do
+  local c = build { "p <!-- ordinary --> suffix" }
+  assert_eq(c.lines, { "p suffix" }, "ordinary closed inline comments remain hidden")
+  c = build { "p <!-- unclosed suffix" }
+  assert_eq(c.lines, { "p <!-- unclosed suffix" }, "an unclosed inline comment remains literal")
+end
+
+-- A removed multiline comment must not move wrapped UTF-8 bytes to its opening row.
+do
+  local preview = require "md-render.preview"
+  local source = { "[甲<!-- hidden", "-->乙<!-->丙<!--->丁戊己庚辛](/target)" }
+  local source_buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[source_buf].filetype = "markdown"
+  vim.api.nvim_buf_set_lines(source_buf, 0, -1, false, source)
+  vim.api.nvim_set_current_buf(source_buf)
+  local tick = vim.api.nvim_buf_get_changedtick(source_buf)
+  preview.show_tab { text_scale = false, max_width = 10 }
+  local session = assert(preview._sessions[vim.api.nvim_get_current_buf()])
+  for step = 1, 2 do
+    assert_eq(
+      session.content.lines,
+      { "  甲乙丙丁", "  戊己庚辛" },
+      "public preview wraps only surviving comment-adjacent bytes"
+    )
+    assert_eq(session.content.source_line_map, { 1, 2 }, "wrapped comment suffix keeps its physical source owner")
+    assert_eq(session.content.link_metadata, {
+      { line = 0, col_start = 2, col_end = 14, url = "/target" },
+      { line = 1, col_start = 2, col_end = 14, url = "/target" },
+    }, "wrapped link labels retain exact UTF-8 byte endpoints")
+    assert_eq(
+      vim.api.nvim_buf_get_lines(session.buf, 0, -1, false),
+      session.content.lines,
+      "public buffer matches rendered content"
+    )
+    for row = 0, 1 do
+      assert_eq(Links.at(session.buf, session.ns, row, 2), "/target", "wrapped label's first byte is clickable")
+      assert_eq(Links.at(session.buf, session.ns, row, 13), "/target", "wrapped label's last byte is clickable")
+      assert_eq(Links.at(session.buf, session.ns, row, 1), nil, "indent stays outside the link")
+      assert_eq(Links.at(session.buf, session.ns, row, 14), nil, "the byte after a link stays outside it")
+    end
+    if step == 1 then session:rebuild() end
+  end
+  vim.api.nvim_set_current_buf(source_buf)
+  assert_eq(
+    vim.api.nvim_buf_get_lines(source_buf, 0, -1, false),
+    source,
+    "public preview preserves source buffer bytes"
+  )
+  assert_eq(vim.api.nvim_buf_get_changedtick(source_buf), tick, "public preview preserves source changedtick")
+  vim.api.nvim_buf_delete(session.buf, { force = true })
+  vim.api.nvim_buf_delete(source_buf, { force = true })
 end
 
 -- CommonMark 0.31.2 example 177, with the same expectation for a later closer.

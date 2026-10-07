@@ -34,6 +34,19 @@ local cases = {
     url = "https://example.com/乙",
   },
   {
+    name = "HTML comment removal retains the row after a short token in a link label",
+    source = "[甲<!-- hidden\n-->乙<!-->丙](/target) tail",
+    text = "甲乙丙 tail",
+    boundary = 3,
+    url = "/target",
+  },
+  {
+    name = "HTML comment removal retains the row after a short token in emphasis",
+    source = "**甲<!-- hidden\n-->乙<!--->丙** tail",
+    text = "甲乙丙 tail",
+    boundary = 3,
+  },
+  {
     name = "URL truncation keeps a visible suffix from the second source row",
     source = url_prefix .. "%%\nhidden%%乙丙丁戊 尾",
     text = url_prefix .. "乙丙… 尾",

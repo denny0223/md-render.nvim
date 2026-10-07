@@ -137,13 +137,13 @@ for _, render in ipairs { markdown.render, markdown.render_html } do
   )
 end
 for _, case in ipairs {
-  { "前<!-->尾", "前<!-->尾", "前尾" },
-  { "前<!--->尾", "前<!--->尾", "前尾" },
-  { "前<!-->隱藏--><!--正常-->尾", "前尾", "前隱藏-->尾" },
-  { "前<!--->隱藏--><!--正常-->尾", "前尾", "前隱藏-->尾" },
+  { "前<!-->尾", "前尾" },
+  { "前<!--->尾", "前尾" },
+  { "前<!-->隱藏--><!--正常-->尾", "前隱藏-->尾" },
+  { "前<!--->隱藏--><!--正常-->尾", "前隱藏-->尾" },
 } do
-  assert(markdown.render(case[1]) == case[2], "normal comments retain short-form semantics")
-  assert(markdown.render_html(case[1]) == case[3], "raw comments retain short-form semantics")
+  assert(markdown.render(case[1]) == case[2], "normal comments retain complete short-token boundaries")
+  assert(markdown.render_html(case[1]) == case[2], "raw comments retain complete short-token boundaries")
 end
 
 local brackets = string.rep("[", 4000)

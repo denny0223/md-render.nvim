@@ -4994,7 +4994,7 @@ function ContentBuilder:render_document(lines, opts)
 
       if not handled then
         -- Markdown media reuses the inline scanner's destination/reference ownership.
-        local img_path, img_alt
+        local img_path, img_alt, img_video
         local image_text = quote_depth == 0 and atx_content or line
         local img_entries = not current_alert_type and inline.image_line(image_text, ref_links) or {}
         local image_sources = #img_entries > 0 and require("md-render.source_map").new(image_text)
@@ -5029,7 +5029,10 @@ function ContentBuilder:render_document(lines, opts)
             local video_tag = video_rest and video_rest:match "^%s*$" and video_open .. video_body .. "</video>"
             if video_tag then
               img_path = inline.html_target(video_tag)
-              if img_path then img_alt = img_path:match "([^/]+)$" or img_path end
+              if img_path then
+                img_alt = img_path:match "([^/]+)$" or img_path
+                img_video = true
+              end
             end
           end
           -- CommonMark autolink to GitHub user-attachments CDN: <https://github.com/user-attachments/assets/...>
@@ -5064,7 +5067,9 @@ function ContentBuilder:render_document(lines, opts)
           end
         end
 
-        if img_path and img_path ~= "" then table.insert(img_entries, { alt = img_alt, path = img_path }) end
+        if img_path and img_path ~= "" then
+          table.insert(img_entries, { alt = img_alt, path = img_path, video = img_video })
+        end
 
         local saved_image_source = self._current_source_line
         local image_source_rows = paragraph_sources[src_indices[src_idx]]
@@ -5095,7 +5100,7 @@ function ContentBuilder:render_document(lines, opts)
             goto continue_img
           end
 
-          local is_video = image.is_video_file(img_entry.path)
+          local is_video = img_entry.video or image.is_video_file(img_entry.path)
 
           local resolved, src_url, display_cols, display_rows, is_animated
           local orig_img_w, orig_img_h

@@ -1333,4 +1333,41 @@ do
     )
   end
 end
+-- Explicit HTML video identity does not depend on a filename extension. Exercise
+-- routing without downloads/codecs, while keeping ordinary image routing intact.
+do
+  local image = require "md-render.image"
+  local supports, cached, resolve = image.supports_kitty, image.get_video_cached, image.resolve
+  local video_requests, image_requests = {}, {}
+  image.supports_kitty = function()
+    return true
+  end
+  image.get_video_cached = function(url)
+    video_requests[#video_requests + 1] = url
+    return nil
+  end
+  image.resolve = function(path)
+    image_requests[#image_requests + 1] = path
+    return nil
+  end
+  for _, case in ipairs {
+    { '<video src="https://example.invalid/stream"></video>', "https://example.invalid/stream" },
+    { '<video><source src="https://example.invalid/stream"></video>', "https://example.invalid/stream" },
+    { '<video src="https://example.invalid/misleading.png"></video>', "https://example.invalid/misleading.png" },
+    { '<video src="https://example.invalid/normal.mp4"></video>', "https://example.invalid/normal.mp4" },
+  } do
+    local c = build { case[1] }
+    eq(c.image_placements[1].video, true, "explicit video tags retain occurrence identity")
+    eq(c.image_placements[1].animated, true, "explicit video uses animated media placement")
+    eq(video_requests[#video_requests], case[2], "explicit video uses the video cache")
+    eq(#image_requests, 0, "explicit video never enters image resolution")
+    eq(table.concat(c.lines, "\n"):find("Loading video...", 1, true) ~= nil, true, "video placeholder reports its role")
+  end
+  local c = build { '<img src="https://example.invalid/image" alt="Image control">' }
+  eq(c.image_placements[1].video, false, "extensionless image remains an image")
+  eq(image_requests, { "https://example.invalid/image" }, "image control retains image resolution")
+  eq(#video_requests, 4, "image control does not enter the video cache")
+  image.supports_kitty, image.get_video_cached, image.resolve = supports, cached, resolve
+end
+
 print("html_raw_blocks_test: " .. checks .. " passed")

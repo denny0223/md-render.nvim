@@ -506,11 +506,14 @@ end
 --- Rebuild render content from the current source_lines and apply it.
 --- Preserves the view (topline/cursor) of every window currently displaying
 --- the render buffer, since changing lines can otherwise reset topline.
-function Session:rebuild()
-  if defer_rebuild(self.buf, function()
-    self:rebuild()
-    self:refresh_images()
-  end, self.text_size_state) then
+function Session:rebuild(force)
+  if
+    not force
+    and defer_rebuild(self.buf, function()
+      self:rebuild()
+      self:refresh_images()
+    end, self.text_size_state)
+  then
     self.dirty = true
     return
   end
@@ -2312,6 +2315,161 @@ local function navigation_context(win, session)
   return context
 end
 
+local active_link_tag
+local link_tag_prefix = "md-render:"
+
+local function enable_render_tags(session)
+  if session._tag_readcmd then return end
+  if vim.api.nvim_buf_get_name(session.buf) == "" then
+    without_events(function()
+      vim.api.nvim_buf_set_name(session.buf, "md-render://render/" .. session.buf)
+      vim.bo[session.buf].filetype = "md-render"
+    end)
+  end
+  -- The native tag reader accepts loaded virtual filenames when BufReadCmd
+  -- owns that literal filename. It does not invoke this handler on a jump.
+  session._tag_readcmd = vim.api.nvim_create_autocmd("BufReadCmd", {
+    group = vim.api.nvim_create_augroup(toggle_buf_augroup(session.buf), { clear = false }),
+    pattern = vim.fn.escape(vim.api.nvim_buf_get_name(session.buf), "[]*?\\{},"),
+    -- :edit! clears the buffer before BufReadCmd. Restore the render before
+    -- throwing a native exception, which also aborts interactive Ex commands.
+    command = [[call luaeval("require('md-render.preview')._sessions[_A]:rebuild(true)", str2nr(expand('<abuf>'))) | throw "md-render: reload the source buffer instead of the rendered buffer"]],
+  })
+end
+
+-- Prepare the exact href before creating a window or touching native history.
+function Session:link_target(url)
+  local links = require "md-render.links"
+  if url:match "^#" then
+    local row = links.anchor_row(url, self.content)
+    if row == nil then error("anchor not found: " .. url) end
+    return { source = self.source_bufnr, session = self, row = row, url = url }
+  end
+  local path = links.file_path(url, self:source_directory())
+  if not path then return nil end
+  return self:file_target(path, url)
+end
+
+-- Concrete paths have already been decoded; do not interpret their # or %.
+function Session:file_target(path, url)
+  local links = require "md-render.links"
+  local stat = vim.uv.fs_stat(path)
+  if
+    not stat
+    or (stat.type ~= "file" and stat.type ~= "directory")
+    or not vim.uv.fs_access(path, stat.type == "directory" and "RX" or "R")
+  then
+    error("not a readable file or directory: " .. path)
+  end
+  local source = vim.fn.bufadd(path)
+  local target = {
+    source = source,
+    path = path,
+    url = url or path,
+    anchor = url and url:match "#.*$",
+    directory = stat.type == "directory",
+  }
+  if not target.directory then
+    vim.fn.bufload(source)
+    if not vim.api.nvim_buf_is_loaded(source) then error "could not read file" end
+    if check_markdown_buffer(source) then
+      local opts = vim.tbl_extend("force", {}, self.opts)
+      opts.buf_dir = nil
+      opts.max_width = self._explicit_max_width and self.opts.max_width or nil
+      local session = get_or_create_session(source, opts, self.cache)
+      session.pager, session.views = self.pager, session.views or {}
+      enable_render_tags(session)
+      target.session = session
+      if target.anchor then target.row = links.anchor_row(target.anchor, session.content) end
+    end
+  end
+  return target
+end
+
+function MdPreview._link_tagfunc(pattern, flags, info)
+  local session = MdPreview._sessions[vim.api.nvim_get_current_buf()]
+  local request = active_link_tag
+  if
+    not request
+    and session
+    and type(info.user_data) == "string"
+    and info.user_data:sub(1, #link_tag_prefix) == link_tag_prefix
+  then
+    local ok, url = pcall(vim.json.decode, info.user_data:sub(#link_tag_prefix + 1))
+    if ok and type(url) == "string" then
+      local prepared, target = pcall(session.link_target, session, url)
+      if prepared and target then request = { target = target } end
+    end
+  end
+  -- Native selectors may re-query the tag after their async picker returns.
+  if not request and session and pattern:sub(1, #link_tag_prefix) == link_tag_prefix then
+    local url = vim.uri_decode(pattern:sub(#link_tag_prefix + 1))
+    local prepared, target = pcall(session.link_target, session, url)
+    if prepared and target then request = { target = target } end
+  end
+  if not request then
+    local original = session and session._navigation_tagfunc
+    if not original or original == "" then return vim.NIL end
+    if original:match "^v:lua%." then
+      return vim.api.nvim_eval(
+        original .. "(" .. vim.fn.string(pattern) .. "," .. vim.fn.string(flags) .. "," .. vim.fn.string(info) .. ")"
+      )
+    end
+    return vim.fn[original](pattern, flags, info)
+  end
+  local target = request.target
+  local destination = target.session and target.session.buf or target.source
+  local filename = vim.api.nvim_buf_get_name(destination):gsub("\\", "\\\\")
+  local command = tostring((target.row or 0) + 1)
+  local anchor = target.session and target.row ~= nil and target.url:match "#(.*)$"
+  if anchor then
+    -- Binding can reflow a cached render. Native tag commands resolve the
+    -- current anchor after entry, including cached :tfirst/:trewind matches.
+    -- Keep the native tag-field marker |;" out of quoted anchor keys.
+    local key = vim.fn.string(vim.uri_decode(anchor)):gsub('"', "' . nr2char(34) . '")
+    command = "call cursor(get(b:md_render_anchors," .. key .. ",0)+1,1)|"
+  end
+  return {
+    {
+      name = target.url,
+      filename = filename,
+      cmd = command,
+      user_data = link_tag_prefix .. vim.json.encode(target.url),
+    },
+  }
+end
+
+local function file_line_number()
+  local line, col = vim.api.nvim_get_current_line(), vim.api.nvim_win_get_cursor(0)[2]
+  local start = 0
+  while true do
+    local token = vim.fn.matchstrpos(line, [[\f\+]], start)
+    if token[2] < 0 then return nil end
+    if token[3] > col then
+      local tail = line:sub(token[3] + 1)
+      local match = vim.fn.matchlist(tail, [[^\s*\%(line\s\+\|\%(\f\|\d\)\@!.\s*\)\?\(\d\+\)]])
+      return tonumber(match[2])
+    end
+    start = token[3]
+  end
+end
+
+local function native_link_key(key, count)
+  vim.api.nvim_feedkeys((count > 0 and tostring(count) or "") .. vim.keycode(key), "in", false)
+end
+
+local link_tag_commands = {
+  ["<C-]>"] = "tag",
+  ["g]"] = "tselect",
+  ["g<C-]>"] = "tjump",
+  ["<C-w>]"] = "stag",
+  ["<C-w><C-]>"] = "stag",
+  ["<C-w>g]"] = "stselect",
+  ["<C-w>g<C-]>"] = "stjump",
+  ["<C-LeftMouse>"] = "tag",
+  ["g<LeftMouse>"] = "tag",
+}
+
 function Session:install_navigation(source_win, close_handle, source_wo)
   local win = self.win
   self.views = self.views or {}
@@ -2325,61 +2483,185 @@ function Session:install_navigation(source_win, close_handle, source_wo)
     session = self,
   }
   -- The callback follows the current window; rebinding must preserve user maps.
-  if self._gf_installed then return end
-  vim.keymap.set("n", "gf", function()
+  if self._navigation_installed then return end
+  enable_render_tags(self)
+  self._navigation_tagfunc = vim.bo[self.buf].tagfunc
+  if self._navigation_tagfunc == "" then self._navigation_tagfunc = vim.bo[self.source_bufnr].tagfunc end
+  vim.bo[self.buf].tagfunc = "v:lua.require'md-render.preview'._link_tagfunc"
+  local function follow_link(key, tag, split, tab, line_number, mouse)
+    local count = vim.v.count
+    local reader = self
+    if mouse then
+      local pos = display_utils.getmousepos()
+      if pos.winid == 0 or pos.line == 0 or pos.column == 0 then
+        native_link_key(key, count)
+        return
+      end
+      vim.api.nvim_set_current_win(pos.winid)
+      vim.api.nvim_win_set_cursor(0, { pos.line, pos.column - 1 })
+      reader = MdPreview._sessions[vim.api.nvim_get_current_buf()]
+      if not reader then
+        native_link_key(key, count)
+        return
+      end
+    end
+    local cursor = vim.api.nvim_win_get_cursor(0)
+    local links = require "md-render.links"
+    local url = links.at(reader.buf, reader.ns, cursor[1] - 1, cursor[2])
+    if not url then
+      native_link_key(key, count)
+      return
+    end
+    if key == "g<LeftMouse>" then vim.w.md_render_tag_mouse_release = true end
+    local ok, err = pcall(function()
+      local target = reader:link_target(url)
+      if not target then
+        if tag then
+          vim.ui.open(url)
+        else
+          vim.notify("md-render: not a local file link: " .. url, vim.log.levels.WARN)
+        end
+        return
+      end
+      local origin_win = vim.api.nvim_get_current_win()
+      if tag then
+        local stack = vim.fn.gettagstack(origin_win)
+        local tagfunc = vim.bo[reader.buf].tagfunc
+        vim.bo[reader.buf].tagfunc = "v:lua.require'md-render.preview'._link_tagfunc"
+        local request = { target = target }
+        local previous_active = active_link_tag
+        active_link_tag = request
+        local success, message = pcall(function()
+          -- Labels can have no keyword at all. Ex commands also retain queued
+          -- input for g]'s selector, which nested :normal would discard.
+          local command = {
+            cmd = link_tag_commands[key],
+            args = { link_tag_prefix .. vim.uri_encode(url, "rfc3986") },
+          }
+          if command.cmd == "tag" and count > 0 then command.range = { count } end
+          vim.cmd(command)
+          if split and count > 0 and vim.api.nvim_get_current_win() ~= origin_win then
+            vim.api.nvim_win_set_height(0, count)
+          end
+        end)
+        local destination = target.session and target.session.buf or target.source
+        local selector = key == "g]" or key == "<C-w>g]"
+        local current_stack = vim.fn.gettagstack(origin_win)
+        -- tselect writes at the old index before prompting. Only a completed
+        -- selection adds user_data there; cancellation can stay in this buffer.
+        local current_tag = current_stack.items[math.min(stack.curidx, current_stack.length)]
+        local completed = request.completed
+          or (
+            vim.api.nvim_get_current_buf() == destination
+            and (
+              not selector
+              or not vim.o.tagstack
+              or current_tag and current_tag.user_data == link_tag_prefix .. vim.json.encode(target.url)
+            )
+          )
+        active_link_tag = previous_active
+        if vim.api.nvim_buf_is_valid(reader.buf) then vim.bo[reader.buf].tagfunc = tagfunc end
+        if not success or not completed then
+          vim.fn.settagstack(origin_win, { items = stack.items }, "r")
+          vim.fn.settagstack(origin_win, { curidx = stack.curidx })
+        end
+        if not success then error(message) end
+        return
+      end
+      local row = target.row
+      local source_line
+      if line_number and row == nil then source_line = file_line_number() end
+      if split then
+        vim.cmd.split()
+      elseif tab then
+        vim.cmd "tab split"
+      end
+      if url:match "^#" then
+        links.follow_anchor(url, reader.content)
+      else
+        reader:follow_file(
+          target.path,
+          { target = target, row = row, source_line = source_line, same_window = split or tab }
+        )
+      end
+    end)
+    if not ok then vim.notify("md-render: cannot follow " .. url .. ": " .. tostring(err), vim.log.levels.WARN) end
+  end
+  for _, entry in ipairs {
+    { "gf" },
+    { "gF", false, false, false, true },
+    { "<C-w>f", false, true },
+    { "<C-w><C-f>", false, true },
+    { "<C-w>F", false, true, false, true },
+    { "<C-w>gf", false, false, true },
+    { "<C-w>gF", false, false, true, true },
+    { "<C-]>", true },
+    { "g]", true },
+    { "g<C-]>", true },
+    { "<C-w>]", true, true },
+    { "<C-w><C-]>", true, true },
+    { "<C-w>g]", true, true },
+    { "<C-w>g<C-]>", true, true },
+    { "<C-LeftMouse>", true, false, false, false, true },
+    { "g<LeftMouse>", true, false, false, false, true },
+  } do
+    local key = entry[1]
+    vim.keymap.set("n", key, function()
+      follow_link(unpack(entry))
+    end, { buffer = self.buf, desc = "Follow rendered link" })
+  end
+  local original_gx = vim.api.nvim_buf_call(self.buf, function()
+    return vim.fn.maparg("gx", "n", false, true)
+  end)
+  vim.keymap.set("n", "gx", function()
     local cursor = vim.api.nvim_win_get_cursor(0)
     local links = require "md-render.links"
     local url = links.at(self.buf, self.ns, cursor[1] - 1, cursor[2])
     if not url then
-      vim.cmd.normal { tostring(vim.v.count1) .. "gf", bang = true }
+      local rhs
+      if original_gx.callback then
+        local result = original_gx.callback()
+        if original_gx.expr == 1 then rhs = result end
+      elseif original_gx.rhs and original_gx.rhs ~= "" then
+        rhs = original_gx.expr == 1 and vim.api.nvim_eval(original_gx.rhs) or original_gx.rhs
+      else
+        native_link_key("gx", vim.v.count)
+      end
+      if type(rhs) == "string" and rhs ~= "" then
+        local count = vim.v.count > 0 and tostring(vim.v.count) or ""
+        vim.api.nvim_feedkeys(count .. vim.keycode(rhs), original_gx.noremap == 1 and "n" or "m", false)
+      end
       return
     end
-    local path = links.file_path(url, self:source_directory())
-    if not path then
-      vim.notify("md-render: not a local file link: " .. url, vim.log.levels.WARN)
-      return
-    end
-    local stat = vim.uv.fs_stat(path)
-    if
-      not stat
-      or (stat.type ~= "file" and stat.type ~= "directory")
-      or not vim.uv.fs_access(path, stat.type == "directory" and "RX" or "R")
-    then
-      vim.notify("md-render: not a readable file or directory: " .. path, vim.log.levels.WARN)
-      return
-    end
-    local ok, err = pcall(self.follow_file, self, path)
-    if not ok then vim.notify("md-render: cannot open " .. path .. ": " .. tostring(err), vim.log.levels.WARN) end
-  end, { buffer = self.buf, desc = "Follow rendered file link" })
-  self._gf_installed = true
+    if links.follow_anchor(url, self.content) then return end
+    vim.ui.open(links.file_path(url, self:source_directory()) or url)
+  end, { buffer = self.buf, desc = "Open rendered link with system handler" })
+  self._navigation_installed = true
 end
 
-function Session:follow_file(path)
+function Session:follow_file(path, opts)
+  opts = opts or {}
   local win = vim.api.nvim_get_current_win()
   -- Adopt render windows exposed without the usual enter events.
   if not navigation_windows[win] then enter_navigation() end
   local context = navigation_windows[win]
   local view = vim.fn.winsaveview()
-  local target = vim.fn.bufadd(path)
+  local destination = opts.target or self:file_target(path)
+  local target = destination.source
   -- Enter directories only in the destination window, where the user's
   -- directory browser can handle BufEnter/BufReadCmd normally.
-  if vim.fn.isdirectory(path) == 0 then
-    vim.fn.bufload(target)
-    if not vim.api.nvim_buf_is_loaded(target) then error "could not read file" end
-    if check_markdown_buffer(target) then
-      local opts = vim.tbl_extend("force", {}, self.opts)
-      opts.buf_dir = nil
-      opts.max_width = self._explicit_max_width and self.opts.max_width or nil
-      local next_session = get_or_create_session(target, opts, self.cache)
-      next_session.pager = self.pager
-      -- Mark the target Session for navigation so BufEnter can adopt it.
-      next_session.views = next_session.views or {}
-      vim.cmd.buffer(next_session.buf)
-      return
+  if destination.session then
+    vim.cmd.buffer(destination.session.buf)
+    local row = opts.row
+    if destination.anchor then
+      row = require("md-render.links").anchor_row(destination.anchor, destination.session.content)
     end
+    if row == nil and opts.source_line then row = destination.session:source_to_rendered(opts.source_line) - 1 end
+    if row then vim.api.nvim_win_set_cursor(0, { math.min(row + 1, vim.api.nvim_buf_line_count(0)), 0 }) end
+    return
   end
 
-  local source_win = self.pager and win or context.source_win
+  local source_win = (opts.same_window or self.pager) and win or context.source_win
   if not vim.api.nvim_win_is_valid(source_win) then error "source editing window was closed" end
   if source_win ~= win then
     -- A jumplist belongs to a window. Seed the source window with the current
@@ -2411,9 +2693,20 @@ function Session:follow_file(path)
     vim.api.nvim_set_current_win(source_win)
   end
   vim.cmd.buffer(target)
+  local row = opts.row or (opts.source_line and opts.source_line - 1)
+  if row then vim.api.nvim_win_set_cursor(0, { math.min(row + 1, vim.api.nvim_buf_line_count(0)), 0 }) end
 end
 
 local navigation_group = vim.api.nvim_create_augroup("md_render_navigation", { clear = true })
+vim.api.nvim_create_autocmd("BufEnter", {
+  group = navigation_group,
+  callback = function(ev)
+    local request = active_link_tag
+    if request and ev.buf == (request.target.session and request.target.session.buf or request.target.source) then
+      request.completed = true
+    end
+  end,
+})
 vim.api.nvim_create_autocmd("TabLeave", {
   group = navigation_group,
   callback = function()
@@ -2425,7 +2718,20 @@ vim.api.nvim_create_autocmd("TabLeave", {
     end
   end,
 })
-vim.on_key(function()
+vim.on_key(function(key, typed)
+  local event = typed ~= "" and typed or key
+  if event == vim.keycode "<LeftRelease>" or event == vim.keycode "<C-LeftRelease>" then
+    local mouse = vim.fn.getmousepos()
+    if
+      mouse.winid > 0
+      and vim.api.nvim_win_is_valid(mouse.winid)
+      and vim.w[mouse.winid].md_render_tag_mouse_release
+    then
+      vim.w[mouse.winid].md_render_tag_mouse_release = nil
+      display_utils.getmousepos(true)
+      return ""
+    end
+  end
   -- Finish a native return before the next key, including scroll commands in
   -- a macro. Scheduling alone would restore over that subsequent command.
   local win = vim.api.nvim_get_current_win()
@@ -2545,6 +2851,10 @@ vim.api.nvim_create_autocmd("WinClosed", {
         local tab = vim.fn.win_id2tabwin(remaining)[1]
         for _, jump in ipairs(vim.fn.getjumplist(remaining, tab)[1]) do
           referenced[jump.bufnr] = true
+        end
+        for _, tag in ipairs(vim.fn.gettagstack(remaining).items) do
+          referenced[tag.bufnr] = true
+          referenced[tag.from[1]] = true
         end
       end
       local caches = {}

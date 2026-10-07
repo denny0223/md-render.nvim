@@ -32,7 +32,7 @@ local function feed(keys)
   vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(keys, true, false, true), "x", false)
   vim.wait(30)
 end
-local function follow(url, at_top)
+local function follow(url, at_top, key)
   local buf = vim.api.nvim_get_current_buf()
   local session = assert(preview._sessions[buf], "expected rendered Session")
   for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, session.ns, 0, -1, { details = true })) do
@@ -40,7 +40,7 @@ local function follow(url, at_top)
       vim.api.nvim_win_set_cursor(0, { mark[2] + 1, mark[3] })
       if at_top then vim.fn.winrestview { lnum = mark[2] + 1, col = mark[3], topline = mark[2] } end
       local view = vim.fn.winsaveview()
-      feed "gf"
+      feed(key or "gf")
       return view
     end
   end
@@ -169,6 +169,35 @@ for _, mode in ipairs { "toggle", "split", "float", "tab", "pager" } do
     eq(session.win, render_win, "retained split regains image attachment")
     eq(session.image_state ~= nil, true, "retained split still renders images")
   end
+end
+
+-- Help-style link activation retains rendering and native return history.
+for _, mode in ipairs { "toggle", "split", "float", "tab", "pager" } do
+  local dir, _, _, render_win, render =
+    open(mode, { "[target](target%20file.md)", "", "[edit](notes.txt)", "", "[missing](missing.md)" })
+  vim.fn.writefile({ "# Target" }, dir .. "/target file.md")
+  vim.fn.writefile({ "notes" }, dir .. "/notes.txt")
+  local view = follow("target%20file.md", true, "<C-]>")
+  local target = preview._sessions[vim.api.nvim_get_current_buf()]
+  eq(
+    target and vim.api.nvim_buf_get_name(target.source_bufnr),
+    dir .. "/target file.md",
+    mode .. " Ctrl-] follows href"
+  )
+  eq(vim.api.nvim_get_current_win(), render_win, mode .. " Ctrl-] keeps preview window")
+  feed "<C-o>"
+  eq(vim.api.nvim_get_current_buf(), render, mode .. " Ctrl-] retains rendered return")
+  eq(vim.fn.winsaveview(), view, mode .. " Ctrl-] retains reading position")
+  local before = #warnings
+  follow("missing.md", false, "<C-]>")
+  eq(vim.api.nvim_get_current_buf(), render, mode .. " Ctrl-] missing target leaves preview intact")
+  eq(#warnings, before + 1, mode .. " Ctrl-] missing target reports failure")
+  follow("notes.txt", false, "<C-]>")
+  eq(vim.api.nvim_buf_get_name(0), dir .. "/notes.txt", mode .. " Ctrl-] opens ordinary files")
+  eq(vim.api.nvim_get_current_win(), render_win, mode .. " Ctrl-] uses operated window")
+  eq(vim.fn.maparg("<C-]>", "n"), "", mode .. " editor keeps native Ctrl-]")
+  feed "<C-t>"
+  eq(vim.api.nvim_get_current_buf(), render, mode .. " Ctrl-] returns from editor")
 end
 
 -- Repeated visits must not replace an older native jump's cursor or viewport.
@@ -447,6 +476,24 @@ for count = 1, 2 do
   eq(vim.api.nvim_buf_get_name(0), native_dir .. "/" .. count .. "/needle.txt", "native counted gf")
   feed "<C-o>"
   eq(vim.api.nvim_get_current_buf(), native_render, "native gf can return to render")
+end
+
+-- Outside links, Ctrl-] retains native tag lookup, including counts.
+for count = 1, 2 do
+  local native_dir, _, _, _, native_render = open("toggle", { "needle" })
+  local tags = {}
+  for i = 1, 2 do
+    local filename = "target-" .. i .. ".txt"
+    vim.fn.writefile({ tostring(i) }, native_dir .. "/" .. filename)
+    tags[#tags + 1] = "needle\t" .. filename .. "\t1"
+  end
+  vim.fn.writefile(tags, native_dir .. "/tags")
+  vim.bo[native_render].tags = native_dir .. "/tags"
+  vim.cmd "normal! gg0w"
+  feed((count == 1 and "" or tostring(count)) .. "<C-]>")
+  eq(vim.api.nvim_buf_get_name(0), native_dir .. "/target-" .. count .. ".txt", "native counted Ctrl-]")
+  feed "<C-o>"
+  eq(vim.api.nvim_get_current_buf(), native_render, "native Ctrl-] can return to render")
 end
 
 -- Failed abandonment must leave both source contents and preview intact.
@@ -854,6 +901,9 @@ do
   feed "<C-o>"
   eq(vim.api.nvim_get_current_buf(), render, "hidden permits pager return without discarding edits")
   eq(ui(), pager_ui, "return restores pager chrome")
+  -- Reject quitting this pager before :qa can focus an older unsaved buffer.
+  vim.api.nvim_buf_set_lines(source, -1, -1, false, { "UNSAVED PAGER SOURCE" })
+  vim.wait(100)
   local images = session.image_state
   local quit_ok = pcall(vim.fn.maparg("q", "n", false, true).callback)
   eq(quit_ok, false, "pager q respects unsaved-buffer protection")

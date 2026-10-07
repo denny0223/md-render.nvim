@@ -404,7 +404,7 @@ test("tasks, media, thematic precedence and fold exits keep their behavior", fun
   eq(c.lines, { "• ", "  │ 󰋽  Fold 󰅂 ", "󰄱  任務", "• 圖" }, "ordinary task and media fallback")
   eq(
     c.callout_folds,
-    { { header_line = 1, source_line = 1, collapsed = true } },
+    { { header_line = 1, source_line = 1, collapsed = true, start_source_line = 1, end_source_line = 2, end_line = 1 } },
     "fold is owned by physical marker row"
   )
   eq(targets(c), { { 3, "任務", "/task" }, { 4, "圖", "/missing.png" } }, "collapsed body has no active target")

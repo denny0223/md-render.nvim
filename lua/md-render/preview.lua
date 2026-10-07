@@ -267,6 +267,67 @@ MdPreview.build_content = function(lines, opts)
   return b:result()
 end
 
+-- Global fold commands also apply to blocks currently hidden by a parent.
+-- Scoped recursive commands enumerate the parser's fully expanded metadata.
+local function set_block_states(lines, opts, folds, regions, open, scope)
+  local fold_defaults = {
+    __index = function()
+      return not open
+    end,
+  }
+  local region_defaults = {
+    __index = function()
+      return open
+    end,
+  }
+  if not scope then
+    for key in pairs(folds) do
+      folds[key] = nil
+    end
+    for key in pairs(regions) do
+      regions[key] = nil
+    end
+    setmetatable(folds, fold_defaults)
+    setmetatable(regions, region_defaults)
+    return
+  end
+  local full = MdPreview.build_content(
+    lines,
+    vim.tbl_extend("force", opts, {
+      fold_state = setmetatable({}, {
+        __index = function()
+          return false
+        end,
+      }),
+      expand_state = setmetatable({}, {
+        __index = function()
+          return true
+        end,
+      }),
+      text_scale = false,
+    })
+  )
+  -- Collapsed parsing can skip the next header; only the expanded parser knows
+  -- the complete subtree. Rendered bounds also exclude appended footnote rows.
+  local first_row, last_row
+  for _, fold in ipairs(full.callout_folds or {}) do
+    if fold.start_source_line == scope.source_line then
+      first_row, last_row = fold.header_line, fold.end_line
+      break
+    end
+  end
+  local function contains(source_line, row)
+    if first_row and last_row then return row >= first_row and row <= last_row end
+    return source_line and source_line >= scope.source_line and source_line <= scope.end_source_line
+  end
+  for _, fold in ipairs(full.callout_folds or {}) do
+    if contains(fold.start_source_line, fold.header_line) then folds[fold.source_line] = not open end
+  end
+  for _, region in ipairs(full.expandable_regions or {}) do
+    if contains(full.source_line_map[region.start_line + 1], region.start_line) then regions[region.block_id] = open end
+  end
+end
+
 -- =====================================================================
 -- Session: encapsulates a render buffer's content, state, and lifecycle.
 -- Toggle/split share one Session per source; each float/tab presentation
@@ -808,6 +869,11 @@ function Session:install_float_keymaps(close_handle, keymap_opts)
     end,
     on_expand_toggle = function(block_id, expanded)
       self.expand_state[block_id] = expanded
+      self:rebuild()
+      self:refresh_images()
+    end,
+    on_blocks_set = function(open, scope)
+      set_block_states(self.source_lines, self.opts, self.fold_state, self.expand_state, open, scope)
       self:rebuild()
       self:refresh_images()
     end,
@@ -3563,6 +3629,10 @@ MdPreview.show_demo = function()
     end,
     on_expand_toggle = function(block_id, expanded)
       expand_state[block_id] = expanded
+      rebuild()
+    end,
+    on_blocks_set = function(open, scope)
+      set_block_states(demo_lines, opts, fold_state, expand_state, open, scope)
       rebuild()
     end,
   })

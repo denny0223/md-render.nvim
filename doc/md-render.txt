@@ -293,10 +293,18 @@ opens a new preview on the right. See |:MdRender-split| for navigation.
 	Show a demo window with all supported Markdown notations.
 
 Inside the preview window, the following Normal-mode keys are available.
+[[ / ]] also work in Visual mode:
 
 	`q` / `<Esc>` / `<C-c>`	Close the floating/tab preview window
 	`za`		Toggle the callout fold / expandable region under the
 			cursor (no-op when the cursor is not on one)
+	`zo` / `zc`	Open / close the containing block; counts also operate
+			on enclosing blocks
+	`zO` / `zC` / `zA` Recursively open / close / toggle folds under the cursor
+	`zR` / `zM`	Open / close all foldable and expandable blocks
+	`zj` / `zk`	Next fold start / previous fold end; counts work
+	`[[` / `]]`	Previous / next heading; counts work without wrapping
+	`gO`		Show a native heading location list; Enter jumps
 	`<CR>`		Follow a heading/footnote link within the document, open
 			an image (Snacks), or toggle a fold / expandable region
 	`gf` / `gF`	Follow the exact local link; gF also reads a following
@@ -319,7 +327,7 @@ For a split preview, switch to its window and close it with `:q` or `<C-w>c`.
 
 Enter follows links such as #heading and footnote references within the
 document. Percent-encoded fragments work; # goes to the top. Internal jumps
-enter the native jumplist for Ctrl-O / Ctrl-I. Visual gx
+and heading motions enter the native jumplist for Ctrl-O / Ctrl-I. Visual gx
 retains Neovim's selected-text behavior.
 
 Tag navigation records a real native tag stack: Ctrl-T / :pop returns and
@@ -359,8 +367,9 @@ Pager uses the operated window; see
 |:MdRender-pager|.
 
 Search (/, ?, n, N), marks, Visual selection, yank, scrolling, and native
-window commands operate on displayed text. :w, :update, :x, and ZZ save the
-source; the preview's [+] reflects unsaved source changes. Editing and
+window commands operate on displayed text. gO creates a heading snapshot;
+run it again after adding or removing headings. :w, :update, :x, and ZZ save
+the source; the preview's [+] reflects unsaved source changes. Editing and
 partial/append/alternate-file writes require switching to source first.
 
 ==============================================================================

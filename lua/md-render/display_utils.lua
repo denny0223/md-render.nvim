@@ -600,7 +600,7 @@ end
 ---@param win integer
 ---@param content MdRender.Content
 ---@param close_handle MdRender.FloatWin|MdRender.TabWin|nil
----@param opts? { close_line_idx?: integer, close_keys?: string[], on_fold_toggle?: fun(source_line: integer, collapsed: boolean), on_expand_toggle?: fun(block_id: integer, expanded: boolean), on_image_open?: fun(row: integer): boolean, get_content?: fun(): MdRender.Content }
+---@param opts? { close_line_idx?: integer, close_keys?: string[], on_fold_toggle?: fun(source_line: integer, collapsed: boolean), on_expand_toggle?: fun(block_id: integer, expanded: boolean), on_blocks_set?: fun(open: boolean, scope?: {source_line: integer, end_source_line: integer}), on_image_open?: fun(row: integer): boolean, get_content?: fun(): MdRender.Content }
 ---@return fun(win: integer, close_handle?: table, opts?: table) rebind Update context without replacing user mappings.
 function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
   opts = opts or {}
@@ -686,9 +686,163 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
     return false
   end
 
-  -- `za` toggles the block under the cursor (no-op when not on one). Overriding
-  -- it buffer-locally also suppresses Vim's default "E490: No fold found".
-  vim.keymap.set("n", "za", toggle_at_cursor, { buffer = buf, noremap = true, silent = true })
+  local existing_maps = { n = {}, x = {} }
+  for mode, maps in pairs(existing_maps) do
+    for _, map in ipairs(vim.api.nvim_buf_get_keymap(buf, mode)) do
+      maps[vim.keycode(map.lhs)] = true
+    end
+  end
+  local function map_default(key, callback, desc, mode)
+    mode = mode or "n"
+    if not existing_maps[mode][vim.keycode(key)] then
+      vim.keymap.set(mode, key, callback, { buffer = buf, silent = true, desc = desc })
+    end
+  end
+
+  local function folds_at(line)
+    local current = get_content()
+    local folds = {}
+    for _, candidate in ipairs(current.callout_folds or {}) do
+      local inside = line >= candidate.header_line and line <= (candidate.end_line or candidate.header_line)
+      if opts.on_fold_toggle and (candidate.header_line == line or inside) then folds[#folds + 1] = candidate end
+    end
+    table.sort(folds, function(a, b)
+      return a.header_line > b.header_line
+    end)
+    return folds
+  end
+
+  local function restore_fold_cursor(folds)
+    for _, current in ipairs(get_content().callout_folds or {}) do
+      if current.collapsed then
+        for _, previous in ipairs(folds) do
+          if current.source_line == previous.source_line then
+            vim.api.nvim_win_set_cursor(0, { current.header_line + 1, 0 })
+            return
+          end
+        end
+      end
+    end
+  end
+
+  local function set_block(open, recursive)
+    local line = vim.api.nvim_win_get_cursor(0)[1] - 1
+    local folds = folds_at(line)
+    local fold = folds[1]
+    local region = region_at(line)
+    local selected_region = region and (not fold or line ~= fold.header_line)
+    local count = recursive and math.huge or vim.v.count1
+    if open == nil then
+      if selected_region then
+        open = not region.expanded
+      elseif fold then
+        open = fold.collapsed
+      else
+        return
+      end
+    end
+    if selected_region then
+      if region.expanded ~= open then
+        opts.on_expand_toggle(region.block_id, open)
+        count = count - 1
+      end
+      if recursive and open then return end
+    elseif recursive and open then
+      if fold and fold.collapsed then
+        if opts.on_blocks_set and fold.start_source_line then
+          opts.on_blocks_set(true, { source_line = fold.start_source_line, end_source_line = fold.end_source_line })
+        else
+          opts.on_fold_toggle(fold.source_line, false)
+        end
+      end
+      return
+    end
+    for _, current in ipairs(folds) do
+      if count == 0 then break end
+      if current.collapsed == open then
+        opts.on_fold_toggle(current.source_line, not open)
+        count = count - 1
+      end
+    end
+    if not open then restore_fold_cursor(folds) end
+  end
+
+  for key, action in pairs {
+    za = { nil, false },
+    zo = { true, false },
+    zc = { false, false },
+    zO = { true, true },
+    zC = { false, true },
+    zA = { nil, true },
+  } do
+    map_default(key, function()
+      set_block(action[1], action[2])
+    end, "Set Markdown block folding")
+  end
+  for key, open in pairs { zR = true, zM = false } do
+    map_default(key, function()
+      if opts.on_blocks_set then
+        local folds = folds_at(vim.api.nvim_win_get_cursor(0)[1] - 1)
+        opts.on_blocks_set(open)
+        if not open then restore_fold_cursor(folds) end
+      end
+    end, "Set all Markdown block folding")
+  end
+
+  local function heading_rows()
+    local rows = vim.tbl_keys(get_content().heading_starts or {})
+    table.sort(rows)
+    return rows
+  end
+  local function fold_rows(ends)
+    local seen = {}
+    for _, fold in ipairs(get_content().callout_folds or {}) do
+      seen[ends and not fold.collapsed and fold.end_line or fold.header_line] = true
+    end
+    local rows = vim.tbl_keys(seen)
+    table.sort(rows)
+    return rows
+  end
+  local function jump_rows(rows, forward)
+    local line, targets = vim.api.nvim_win_get_cursor(0)[1] - 1, {}
+    for _, row in ipairs(rows) do
+      if (forward and row > line) or (not forward and row < line) then targets[#targets + 1] = row end
+    end
+    local index = math.min(vim.v.count1, #targets)
+    local row = forward and targets[index] or targets[#targets - index + 1]
+    if row then Links.jump(vim.api.nvim_get_current_win(), row, 0) end
+  end
+  for key, motion in pairs {
+    ["[["] = { false, heading_rows },
+    ["]]"] = { true, heading_rows },
+    zj = {
+      true,
+      function()
+        return fold_rows(false)
+      end,
+    },
+    zk = {
+      false,
+      function()
+        return fold_rows(true)
+      end,
+    },
+  } do
+    local callback = function()
+      jump_rows(motion[2](), motion[1])
+    end
+    map_default(key, callback, "Go to Markdown heading or fold")
+    if key == "[[" or key == "]]" then map_default(key, callback, "Go to Markdown heading", "x") end
+  end
+  map_default("gO", function()
+    local current, items = get_content(), {}
+    for _, row in ipairs(heading_rows()) do
+      items[#items + 1] = { bufnr = buf, lnum = row + 1, text = vim.trim(current.lines[row + 1] or "") }
+    end
+    if #items == 0 then return end
+    vim.fn.setloclist(0, {}, " ", { title = "Markdown headings", items = items })
+    vim.cmd.lopen()
+  end, "Show Markdown heading outline")
 
   -- `<CR>` opens an image or toggles a block and is otherwise a no-op: it is
   -- not a close key by default (closing on Enter is unintuitive — use q / <Esc>

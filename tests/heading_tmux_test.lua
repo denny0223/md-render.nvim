@@ -13,6 +13,7 @@ vim.fn.executable = function()
   return 1
 end
 vim.system = function(cmd, opts, callback)
+  assert(opts.text and opts.timeout == 1000, "connection inspection has a bounded timeout")
   assert(
     cmd[1] == "tmux"
       and cmd[2] == "-S"
@@ -162,6 +163,20 @@ local connection, before_focus = tmux.status().key, #output
 vim.api.nvim_exec_autocmds("FocusLost", {})
 assert(inspect(client).key == connection and #output == before_focus, "focus changes preserve the connection")
 assert(state.drawn == 1 and state.masked, "focus changes preserve image masks")
+local function late_check()
+  local clock = vim.uv.now
+  vim.uv.now = function()
+    return clock() + 600
+  end
+  vim.api.nvim_exec_autocmds("FocusGained", {})
+  vim.uv.now = clock
+end
+late_check()
+assert(
+  tmux.status().key == connection and state.drawn == 1 and state.masked and #output == before_focus,
+  "a delayed connection check must preserve verified PNGs while awaiting its result"
+)
+assert(inspect(client).key == connection and #output == before_focus, "an unchanged client must not invalidate PNGs")
 assert(#output == 1 and output[1]:find("q=2,m=0", 1, true), "all PNG chunks travel in a single tmux DCS")
 local marks = vim.api.nvim_buf_get_extmarks(0, state.mask_ns, 0, -1, { details = true })
 assert(#marks == 2 and marks[1][4].virt_text[1][1]:find(vim.fn.nr2char(0x10EEEE), 1, true))
@@ -180,12 +195,50 @@ vim.api.nvim_exec_autocmds("User", { pattern = require("md-render.display_utils"
 settle()
 assert(#output == count, "tmux redraw reuses the virtual placement")
 
-blocked(2, "1", "copy mode")
-assert(state.drawn == 0 and not state.masked, "connection changes immediately remove masks")
+local saved_preview, rebuilds = package.loaded["md-render.preview"], 0
+package.loaded["md-render.preview"] = {
+  rebuild_visible = function()
+    rebuilds = rebuilds + 1
+  end,
+}
+late_check()
+local waiting_id, waiting_reason = image.transmit_png "YWJj"
+assert(not waiting_id and waiting_reason == "checking tmux connection" and #output == count)
+image.fail_png(waiting_reason)
+assert(size.resolve_backend() == "plain" and state.drawn == 1, "new uploads wait without withdrawing existing PNGs")
+settle()
+local before_retry = rebuilds
+inspect(client)
+assert(size.resolve_backend() == "image" and #output == count, "an unchanged result retries waiting image work")
+assert(rebuilds == before_retry + 1, "confirmation rebuilds the preview after a deferred upload")
+inspect(client)
+assert(rebuilds == before_retry + 1, "an unchanged inspection without waiting work never rebuilds the preview")
+package.loaded["md-render.preview"] = saved_preview
+
+late_check()
+table.remove(jobs, 1) { code = 124, stdout = "" }
+settle()
+assert(not tmux.status().key and state.drawn == 0 and not state.masked, "a timed-out warm check withdraws masks")
+assert(size.resolve_backend() == "plain", "inspection failure retains ordinary text")
+assert(inspect(client).key and state.drawn == 1, "inspection recovers after a timeout")
+
+local retired_same = assert(image.transmit_png "YWJj")
+count = #output
+late_check()
+image.delete_image(retired_same)
+assert(#output == count, "retirement waits for the in-flight inspection")
+inspect(client)
+assert(#output == count + 1 and output[#output]:find("d=I,i=" .. retired_same, 1, true))
+inspect(client)
+assert(#output == count + 1, "an unchanged confirmation releases a retired PNG exactly once")
+
+late_check()
 headings.detach(state)
 local old_id = entry.id
 count = #output
-assert(not output[#output]:find("d=I", 1, true), "copy-mode snapshots keep their uploaded PNG until return")
+blocked(2, "1", "copy mode")
+assert(state.drawn == 0 and not state.masked, "connection changes immediately remove masks")
+assert(#output == count, "copy-mode snapshots keep their retired PNG until return")
 inspect(client)
 assert(#output > count and output[#output]:find("d=I,i=" .. old_id, 1, true))
 
@@ -245,7 +298,7 @@ assert(#jobs == 0, "flushing cleanup releases its observer")
 
 assert(inspect(new_client).key, "complete the owning-client inspection after the cleanup idle period")
 retired = assert(image.transmit_png "YWJj")
-blocked(2, "1", "copy mode")
+late_check()
 image.delete_image(retired)
 count = #output
 inspect(client)

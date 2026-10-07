@@ -1,6 +1,7 @@
 --- Connection checks for image headings. Never changes tmux options or focus.
 local M = {}
 M.EVENT = "MdRenderTmuxChanged"
+M.CHECKED_EVENT = "MdRenderTmuxChecked"
 
 local state = { pending = true, reason = "checking tmux connection" }
 local pending, timer, closed, process
@@ -120,15 +121,27 @@ local function observe()
   end, 250)
 end
 
+local function complete(next_state)
+  pending, process = false, nil
+  if closed then return end
+  checked_at = vim.uv.now()
+  publish(next_state)
+  vim.api.nvim_exec_autocmds("User", { pattern = M.CHECKED_EVENT, modeline = false })
+  observe()
+end
+
 local function check()
   if pending or closed then return end
   local socket = (vim.env.TMUX or ""):match "^(.*),%d+,%d+$"
   if not socket or not vim.env.TMUX_PANE or not vim.env.TMUX_PANE:match "^%%%d+$" or vim.fn.executable "tmux" == 0 then
-    publish { reason = "tmux pane information is unavailable" }
+    complete { reason = "tmux pane information is unavailable" }
     return
   end
   pending = true
-  if vim.uv.now() - checked_at > 500 then publish { pending = true, reason = "checking tmux connection" } end
+  -- A late recheck is not a connection change; keep verified PNGs until its result.
+  if not state.key and vim.uv.now() - checked_at > 500 then
+    publish { pending = true, reason = "checking tmux connection" }
+  end
   local ok, job = pcall(
     vim.system,
     -- list-clients' pane fields follow focus; inspect our own pane instead.
@@ -149,28 +162,22 @@ local function check()
     { text = true, timeout = 1000 },
     function(result)
       vim.schedule(function()
-        pending, process = false, nil
-        if closed then return end
-        checked_at = vim.uv.now()
-        publish(decode(result))
-        observe()
+        complete(decode(result))
       end)
     end
   )
   if ok then
     process = job
   else
-    pending = false
-    checked_at = vim.uv.now()
-    publish { reason = "cannot inspect tmux connection: " .. tostring(job) }
-    observe()
+    complete { reason = "cannot inspect tmux connection: " .. tostring(job) }
   end
 end
 
+--- Cached paint context and whether an inspection is in flight.
 function M.status()
   if not timer and vim.uv.now() - checked_at >= 250 then check() end
   observe()
-  return state
+  return state, pending
 end
 
 --- Retired PNGs may outlive a preview while tmux displays its copy-mode snapshot.

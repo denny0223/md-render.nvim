@@ -152,6 +152,16 @@ add({
 })
 ```
 
+### アイコンフォントと Unicode フォールバック
+
+既定の `nerd` スタイルは Nerd Font アイコンを維持します。標準 Unicode アイコンを使うには、プレビューを開く前に設定します：
+
+```lua
+require("md-render.icons").setup { style = "unicode" }
+```
+
+Unicode アイコンはカラー表示になる場合があります。単色 Noto Emoji の設定とフォントの確認は `:help md-render-icons`（[リファレンス](doc/md-render.jax)）を参照してください。`style = "nerd"` で既定に戻せます。変更後はプレビューを閉じて開き直してください。
+
 ### 自動再生と Mermaid のフォールバック
 
 GIF／動画は既定で自動再生され、Mermaid の `npx` フォールバックは無効です。以下は既定値です。プレビューを開く前に設定してください：

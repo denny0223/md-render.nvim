@@ -12,6 +12,7 @@ English: `:help md-render-contents@en`
 簡介                                                  |md-render-introduction|
 系統需求                                              |md-render-requirements|
 環境檢查                                                  |md-render-health|
+圖示字型與替代方式                                          |md-render-icons|
 安裝                                                  |md-render-installation|
   Snacks 圖片後端                                     |md-render-snacks-image|
 按鍵設定                                                  |md-render-mappings|
@@ -98,6 +99,42 @@ Snacks 設定另用 :checkhealth snacks 檢查。這些檢查不代表實際顯�
 （替換工具名稱）及 :echo $PATH。安裝或升級工具後，重新啟動 Neovim
 並重開預覽；工具偵測結果會快取。媒體區域顯示 Failed 或 ! 時，
 用 :messages 查看原因。
+
+                                                          *md-render-icons*
+圖示字型與替代方式
+
+預設 "nerd" 使用 Nerd Font 圖示，字型由終端機提供；圖示外掛不會安裝字型。
+要選用標準 Unicode 圖示： >lua
+
+  require("md-render.icons").setup { style = "unicode" }
+<
+style = "nerd" 可恢復預設；變更後請關閉並重開預覽。
+Unicode 配合 Neovim 預設的 'emoji' 設定；若已停用，請先 :set emoji。
+Checkbox 三態為 ⬜／✅／➖；➖ 表示部分完成，沒有方框。
+
+檔案與媒體圖示依序採用 nvim-web-devicons、mini.icons、內建圖示。
+Unicode 略過第三方私用碼位圖示；其他自訂圖示仍有優先權並保留醒目提示群組。
+
+Kitty 單色 Unicode 設定：在終端機所在主機安裝 Noto Emoji，
+而非 Noto Color Emoji；透過 SSH 使用時也一樣。字型來源：
+https://github.com/googlefonts/noto-emoji#monochrome-font
+在 kitty.conf 加入： >
+
+  symbol_map U+2139,U+25B6,U+2697,U+26A0,U+26D4,U+2705,U+274C Noto Emoji
+  symbol_map U+2753,U+2757,U+2796,U+2B1C,U+1F3AC,U+1F41B Noto Emoji
+  symbol_map U+1F4A1,U+1F4AC,U+1F4C4,U+1F4CB,U+1F4DD,U+1F53D,U+1F5BC Noto Emoji
+<
+重新啟動 Kitty 並重開預覽。字型對應也會影響作者正文中的相同字元。
+其他終端需使用各自的符號字型設定；只選用 Unicode 仍可能顯示彩色 emoji。
+
+若圖示不正確，先執行 :checkhealth md-render。檔案與媒體圖示可查看來源： >vim
+
+  :lua vim.print(require('md-render.icons').inspect('example.png', 'image'))
+<
+kind 為 "file"（預設）、"image" 或 "video"。inspect 使用正常的解析流程，
+可能載入選用外掛。Neovim 只能提供碼位與欄寬，無法確認終端實際畫出的字形。
+若碼位正確，請檢查終端字型；Kitty 可用 kitty --debug-font-fallback 查看來源。
+https://sw.kovidgoyal.net/kitty/conf/#opt-kitty.symbol_map
 
 ==============================================================================
 安裝                                                  *md-render-installation*

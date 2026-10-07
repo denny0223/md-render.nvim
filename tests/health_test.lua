@@ -25,6 +25,13 @@ assert(not vim.g.loaded_md_render and not vim.api.nvim_get_commands({}).MdRender
 assert(startup:find("running 0.11.5", 1, true) and startup:find("upgrade Neovim", 1, true), startup)
 assert(messages[2]:find("Neovim 0.12+ required", 1, true), table.concat(messages, "\n"))
 vim.fn.has, vim.version, vim.notify_once = original_has, original_version, original_notify
+local provider_loads = 0
+for _, name in ipairs { "nvim-web-devicons", "mini.icons" } do
+  package.preload[name] = function()
+    provider_loads = provider_loads + 1
+    error "health must not load or configure optional icon providers"
+  end
+end
 messages = {}
 vim.fn.executable = function()
   return 0
@@ -49,7 +56,31 @@ assert(report:find("Mermaid npx fallback: false", 1, true), report)
 assert(report:find("install ImageMagick 7", 1, true), report)
 assert(report:find("install PlantUML 1.2020.11+", 1, true), report)
 assert(report:find("restart Neovim and reopen", 1, true), report)
+assert(report:find("Icon style: nerd", 1, true), report)
+assert(
+  report:find("Icon fonts are configured in the terminal", 1, true) and report:find("md-render-icons", 1, true),
+  report
+)
+assert(provider_loads == 0, "health icon guidance must not require optional providers")
 assert(not report:find("error:", 1, true), report)
+local icons = require "md-render.icons"
+local original_emoji = vim.o.emoji
+for _, style in ipairs { "nerd", "unicode" } do
+  icons.setup { style = style }
+  for _, emoji in ipairs { true, false } do
+    vim.o.emoji = emoji
+    messages = {}
+    require("md-render.health").check()
+    report = table.concat(messages, "\n")
+    assert(report:find("Icon style: " .. style, 1, true), report)
+    local warned = report:find("warn: Unicode icons expect 'emoji'; use :set emoji and reopen previews", 1, true) ~= nil
+    assert(warned == (style == "unicode" and not emoji), report)
+    assert(vim.o.emoji == emoji, "health must not change the user's emoji setting")
+    assert(provider_loads == 0, "icon health must remain passive")
+  end
+end
+vim.o.emoji = original_emoji
+icons.setup { style = "nerd" }
 messages = {}
 vim.fn.executable = function(name)
   return name == "npx" and 1 or 0

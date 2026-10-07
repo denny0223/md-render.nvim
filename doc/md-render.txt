@@ -12,6 +12,7 @@ CONTENTS						    *md-render-contents*
 Introduction						|md-render-introduction|
 Requirements						|md-render-requirements|
 Diagnostics                                                 |md-render-health|
+Icon fonts and fallback                                     |md-render-icons|
 Installation						|md-render-installation|
   Snacks image backend				      |md-render-snacks-image|
 Mappings						    |md-render-mappings|
@@ -111,6 +112,45 @@ If a tool works in your shell but is missing here, compare its path with
 installing/upgrading tools, restart Neovim and reopen the preview;
 detections are cached. If a media area shows Failed or !, inspect :messages
 for the cause.
+
+                                                        *md-render-icons*
+ICON FONTS AND FALLBACK
+
+The default "nerd" style uses Nerd Font icons supplied by the terminal's fonts;
+icon plugins do not install fonts. To select standard Unicode icons: >lua
+
+  require("md-render.icons").setup { style = "unicode" }
+<
+Use style = "nerd" to restore the default. Close and reopen previews after changes.
+Unicode uses Neovim's default 'emoji' setting; if disabled, use :set emoji.
+Task states use ⬜ / ✅ / ➖; ➖ means partial completion and has no box.
+
+File/media icons prefer nvim-web-devicons, then mini.icons, then built-ins.
+Unicode skips private-use provider glyphs; other custom icons keep priority
+and their highlight groups.
+
+For monochrome Unicode icons in Kitty, install Noto Emoji (not Noto Color Emoji)
+on the terminal host, including when Neovim runs over SSH:
+https://github.com/googlefonts/noto-emoji#monochrome-font
+Then add to kitty.conf: >
+
+  symbol_map U+2139,U+25B6,U+2697,U+26A0,U+26D4,U+2705,U+274C Noto Emoji
+  symbol_map U+2753,U+2757,U+2796,U+2B1C,U+1F3AC,U+1F41B Noto Emoji
+  symbol_map U+1F4A1,U+1F4AC,U+1F4C4,U+1F4CB,U+1F4DD,U+1F53D,U+1F5BC Noto Emoji
+<
+Restart Kitty and reopen previews. This mapping also affects matching characters
+in authored text. Other terminals need their own symbol-font configuration;
+selecting Unicode alone can still produce colored emoji.
+
+If icons look wrong, run :checkhealth md-render. To inspect a file/media icon: >vim
+
+  :lua vim.print(require('md-render.icons').inspect('example.png', 'image'))
+<
+The kind is "file" (default), "image" or "video". Inspection uses normal provider
+resolution and may load optional plugins. Neovim reports codepoints and cell
+widths, not the actual terminal glyph. If the codepoints are correct, check the
+terminal font selection; Kitty can show it with kitty --debug-font-fallback.
+https://sw.kovidgoyal.net/kitty/conf/#opt-kitty.symbol_map
 
 ==============================================================================
 INSTALLATION						*md-render-installation*

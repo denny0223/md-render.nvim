@@ -18,6 +18,14 @@ function M.check()
   health.info("Autoplay: " .. tostring(config.autoplay ~= false))
   health.info("Mermaid npx fallback: " .. tostring(config.mermaid_allow_npx ~= false))
 
+  health.start "Icons"
+  local icons = require "md-render.icons"
+  health.info("Icon style: " .. icons.config().style .. "; configure before opening previews")
+  health.info "Icon fonts are configured in the terminal; see :help md-render-icons"
+  if icons.config().style == "unicode" and not vim.o.emoji then
+    health.warn "Unicode icons expect 'emoji'; use :set emoji and reopen previews"
+  end
+
   health.start "Optional media tools (ordinary Markdown needs none of these)"
   local function tool(name, purpose, package)
     if vim.fn.executable(name) == 1 then

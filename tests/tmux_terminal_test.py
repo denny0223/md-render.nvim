@@ -83,7 +83,8 @@ def scaled_positions(screen):
 def rich_frame(screen, geometry, snapshot):
     """Return a painted target and its origin only after resize has settled."""
     ctx = snapshot.get("context") or {}
-    if (snapshot.get("backend") != "native" or not ctx.get("supported") or not ctx.get("drawable")
+    if (snapshot.get("backend") != "native" or snapshot.get("dirty") or snapshot.get("rebuild_pending")
+            or not ctx.get("supported") or not ctx.get("drawable")
             or any(ctx.get(key) != geometry[key] for key in ("left", "top", "width", "height"))
             or (snapshot.get("columns"), snapshot.get("rows")) != (geometry["width"], geometry["height"])
             or not ctx.get("key") or snapshot.get("tmux_key") != ctx["key"] + ":true"
@@ -329,6 +330,7 @@ end})
               end
               return vim.json.encode({backend=s and s.content.heading_backend,
                 fallback=s and s.content.heading_fallback,context=ts and ts.tmux,tmux_key=ts and ts.tmux_key,
+                dirty=s and s.dirty,rebuild_pending=s and s._debounce_timer ~= nil,
                 placements=s and s.content.text_placements,drawn=ts and ts.drawn,erased=ts and ts.erased,
                 last_drawn=ts and ts.last_drawn,last_layout=ts and ts.last_layout,
                 owes_invalidate=ts and ts.owes_invalidate,closed=ts and ts.closed,
@@ -803,6 +805,7 @@ end})
                     end
                   end
                   return vim.json.encode({backend=s and s.content.heading_backend,
+                    dirty=s and s.dirty,rebuild_pending=s and s._debounce_timer ~= nil,
                     context=ts and ts.tmux,tmux_key=ts and ts.tmux_key,
                     placements=s and #s.content.text_placements,
                     drawn=ts and ts.drawn and #ts.drawn,last_drawn=ts and ts.last_drawn,

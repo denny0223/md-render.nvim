@@ -343,6 +343,11 @@ Fragments on links to another file do not yet select headings. Windows/UNC
 paths remain outside this feature's scope. Pager uses the operated window; see
 |:MdRender-pager|.
 
+Search (/, ?, n, N), marks, Visual selection, yank, scrolling, and native
+window commands operate on displayed text. :w, :update, :x, and ZZ save the
+source; the preview's [+] reflects unsaved source changes. Editing and
+partial/append/alternate-file writes require switching to source first.
+
 ==============================================================================
 COMMANDS						    *md-render-commands*
 
@@ -453,10 +458,13 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 	  yank (y), visual selection, marks, `za` / `<CR>` (toggle folds
 	  and expand regions), and <LeftMouse> (folds, expand, link open).
 
-	  `:w` and `:w!` are forwarded to the source buffer so you can
-	  save without leaving render mode.  Different filenames (e.g.
-	  `:w other.md`, `:saveas`) are not supported — switch to source
-	  with |:MdRender-toggle| first.
+	  `:w` / `:w!`, `:update`, `:x`, and `ZZ` save the source buffer;
+	  conditional writes run only when the source is modified. Native
+	  ++ write options are forwarded, and [+] reflects source dirtiness.
+	  Partial, append, and alternate-file writes (e.g. `:1w`, `:w >>`,
+	  `:w other.md`, `:saveas`) are rejected. Switch to source with
+	  |:MdRender-toggle| first.
+	  After unloading the source, reload it before saving from the preview.
 
 	  The render buffer is named `<source-path> [render]` so it's
 	  identifiable in your statusline and pickers.

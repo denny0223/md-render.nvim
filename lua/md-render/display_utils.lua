@@ -326,6 +326,7 @@ end
 ---@param opts? { title_url?: string }
 function M.apply_content_to_buffer(buf, ns, content, opts)
   opts = opts or {}
+  local was_modified = vim.bo[buf].modified
   content.highlight_ns = ns
   vim.b[buf].md_render_heading_fallback = content.heading_fallback
   -- Replacing unchanged rows would collapse native jump/mark positions into
@@ -340,11 +341,9 @@ function M.apply_content_to_buffer(buf, ns, content, opts)
     local replacement = added == 0 and {} or vim.list_slice(content.lines, from, from + added - 1)
     vim.api.nvim_buf_set_lines(buf, start, start + removed, false, replacement)
   end
-  -- Clear 'modified' synchronously so callers (toggle/split render bufs
-  -- with buftype=acwrite, telescope/snacks previewers, etc.) don't have
-  -- a window where :qa would see the buffer as dirty before any
-  -- TextChanged-based reset has a chance to fire.
-  vim.bo[buf].modified = false
+  -- Drawing must preserve the source's unsaved state without dirtying a clean
+  -- preview buffer.
+  vim.bo[buf].modified = was_modified
 
   for _, hl_info in ipairs(content.highlights) do
     local line_text = content.lines[hl_info.line + 1]
@@ -1183,6 +1182,7 @@ function M.setup_images(win, content, ns, opts)
     end
     -- Only replace text on lines that had placeholder extmarks
     if next(placeholder_lines) then
+      local was_modified = vim.bo[buf].modified
       local was_modifiable = vim.bo[buf].modifiable
       vim.bo[buf].modifiable = true
       for line_idx in pairs(placeholder_lines) do
@@ -1195,11 +1195,8 @@ function M.setup_images(win, content, ns, opts)
         end
       end
       vim.bo[buf].modifiable = was_modifiable
-      -- Clear 'modified' synchronously: with buftype=acwrite (toggle/split
-      -- render bufs), an async image-placement write here would otherwise
-      -- leave the buffer marked dirty until the TextChanged-based reset
-      -- catches up, which races with :qa.
-      vim.bo[buf].modified = false
+      -- An asynchronous image redraw must retain the source's unsaved state.
+      vim.bo[buf].modified = was_modified
     end
   end
 

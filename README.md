@@ -292,6 +292,8 @@ Outside pager mode, directories open in the original source window through the c
 
 Local links support relative paths, POSIX absolute paths, and `file:///` URLs, including encoded filenames, inline/reference links, and optional titles. Missing or unreadable files leave the preview unchanged. Fragments on links to another file do not yet select a heading; Windows/UNC paths remain outside this feature's scope.
 
+Search (`/`, `?`, `n`, `N`), marks, Visual selection, yank, scrolling, and native window commands work on the displayed text. `:w`, `:update`, `:x`, and `ZZ` save the source; the preview's `[+]` reflects unsaved source changes. Editing and partial/append/alternate-file writes require switching to source first. After unloading the source, reload it before saving from the preview.
+
 Reference links use the first valid definition, match labels with Unicode case folding and normalized whitespace, and resolve in table headers and cells. Valid definitions, including multiline and quoted definitions, are hidden even when unused; malformed definitions remain ordinary Markdown.
 
 ### Image tab keys
@@ -353,7 +355,7 @@ Behavior:
 autocmd FileType markdown silent! MdRender auto on
 ```
 
-See `:help :MdRender-auto` for behavior details — the `i` / `I` / `a` / `A` / `o` / `O` remaps, `:w` forwarding, and the editing operations that are blocked on the read-only render buffer.
+See `:help :MdRender-auto` for behavior details — the `i` / `I` / `a` / `A` / `o` / `O` remaps, source-save forwarding, and the editing operations that are blocked on the read-only render buffer.
 
 ### Scaled headings (experimental)
 

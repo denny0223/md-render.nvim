@@ -199,6 +199,9 @@ vim.wait(300, function()
 end)
 assert(#jobs == 0, "closing the preview stops connection polling")
 
+-- Idle polling checks can expire the cache; answer the connection mock before
+-- starting the next upload rather than relying on the runner's elapsed time.
+assert(inspect(new_client).key, "complete the owning-client inspection after the polling idle period")
 local retired = assert(image.transmit_png "YWJj")
 blocked(7, "1", "copy mode")
 image.delete_image(retired)
@@ -216,6 +219,7 @@ vim.wait(300, function()
 end)
 assert(#jobs == 0, "flushing cleanup releases its observer")
 
+assert(inspect(new_client).key, "complete the owning-client inspection after the cleanup idle period")
 retired = assert(image.transmit_png "YWJj")
 blocked(7, "1", "copy mode")
 image.delete_image(retired)

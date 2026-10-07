@@ -402,16 +402,18 @@ do
     return media
   end
   local function apply(media)
+    local modified = vim.bo[buf].modified
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
     display.apply_content_to_buffer(buf, ns, media)
     vim.bo[buf].modifiable = false
-    return vim.api.nvim_buf_get_changedtick(buf)
+    assert(vim.bo[buf].modified == modified, "applying content changed buffer dirtiness")
+    return vim.api.nvim_buf_get_changedtick(buf), modified
   end
-  local function failure_overlay(media, tick)
+  local function failure_overlay(media, tick, modified)
     assert(vim.api.nvim_buf_get_changedtick(buf) == tick, "failure invalidated the picker buffer cache")
     assert(vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), media.lines), "failure changed buffer text")
-    assert(not vim.bo[buf].modified and not vim.bo[buf].modifiable, "failure changed buffer flags")
+    assert(vim.bo[buf].modified == modified and not vim.bo[buf].modifiable, "failure changed buffer flags")
     local p = media.image_placements[1]
     local row = p.line + math.floor(p.rows / 2)
     local first, last = media.lines[row + 1]:find("Loading image...", 1, true)
@@ -433,30 +435,32 @@ do
     vim.env.PATH = bin
     assert(vim.fn.executable "magick" == 0 and vim.fn.executable "identify" == 0)
     local media = make_content "missing-magick"
-    local tick = apply(media)
+    vim.bo[buf].modified = true
+    local tick, modified = apply(media)
     local missing = backend.setup(win, media, ns)
     owners[#owners + 1] = missing
     wait_for(function()
       return missing.objects[1] and missing.objects[1].img:failed()
     end, "missing ImageMagick did not fail")
     vim.wait(30) -- Drain the converter's scheduled placement error callback.
-    failure_overlay(media, tick)
+    failure_overlay(media, tick, modified)
     assert(#messages == 1 and messages[1].level == vim.log.levels.WARN, "one useful warning must be delivered")
     for _, hint in ipairs { "ImageMagick 7", "Neovim's PATH", ":checkhealth md-render", ":checkhealth snacks" } do
       assert(messages[1].message:find(hint, 1, true), "missing-tool warning lacks " .. hint)
     end
     local failed_image = missing.objects[1].img
     backend.cleanup(missing)
-    tick = apply(media)
+    vim.bo[buf].modified = false
+    tick, modified = apply(media)
     local cached = backend.setup(win, media, ns)
     owners[#owners + 1] = cached
     wait_for(function()
       return cached.objects[1] ~= nil
     end, "cached failure did not create a placement")
     assert(cached.objects[1].img == failed_image and failed_image:failed(), "fixture did not reuse the failed image")
-    failure_overlay(media, tick) -- No later converter callback repairs a cached constructor failure.
+    failure_overlay(media, tick, modified) -- No later converter callback repairs a cached constructor failure.
     cached.objects[1]:error()
-    failure_overlay(media, tick)
+    failure_overlay(media, tick, modified)
     assert(#messages == 1, "reopening or repeated errors duplicated the same warning")
     backend.cleanup(cached)
 

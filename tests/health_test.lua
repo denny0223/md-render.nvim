@@ -197,8 +197,8 @@ do
       package.loaded["md-render.health"] = nil
       messages = {}
       require("md-render.health").check()
-      assert(started, "configured Python failed to start from the trusted cwd")
       report = table.concat(messages, "\n")
+      assert(started, "configured Python failed to start from the trusted cwd: " .. report)
       assert(report:find("Media cache:", 1, true), "health did not finish the real probe")
       assert(not report:find("ENOENT", 1, true), "relative Python became unavailable after switching cwd")
       for _, name in ipairs(modules) do

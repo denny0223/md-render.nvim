@@ -47,6 +47,10 @@ class TmuxDiagnosticsTest(unittest.TestCase):
         self.assertIsNone(driver.rich_frame(stale_screen, geometry, current))
         self.assertEqual(driver.rich_frame(paint(0, 0), geometry, current),
                          ((6, 14, 2, 12), current["context"]))
+        # Native paint can recover before the debounced content reflow runs.
+        for pending in ({"dirty": True}, {"rebuild_pending": True}):
+            with self.subTest(pending=pending):
+                self.assertIsNone(driver.rich_frame(paint(0, 0), geometry, {**current, **pending}))
 
     def run_driver(self, output=None, *, plain=False, fault=None, strict=False):
         calls, state_reads = [], 0

@@ -303,6 +303,50 @@ Session.__index = Session
 --- nothing else references is collected normally.
 MdPreview._sessions = setmetatable({}, { __mode = "v" })
 
+local modified_sources = {}
+
+local function sync_source_modified(source_bufnr)
+  local found = false
+  for buf, session in pairs(MdPreview._sessions) do
+    if session.source_bufnr == source_bufnr and vim.api.nvim_buf_is_valid(buf) then
+      session:sync_modified()
+      found = true
+    end
+  end
+  return found
+end
+
+-- Mirror explicit option changes; 0.13 also reports native dirty transitions here.
+vim.api.nvim_create_autocmd("OptionSet", {
+  pattern = "modified",
+  callback = function()
+    sync_source_modified(vim.api.nvim_get_current_buf())
+  end,
+})
+
+local function attach_source_modified(source_bufnr)
+  if modified_sources[source_bufnr] or not vim.api.nvim_buf_is_loaded(source_bufnr) then return end
+  local function sync(_, buf)
+    -- Returning true retires just this attachment after its last preview.
+    if not sync_source_modified(buf) then
+      modified_sources[buf] = nil
+      return true
+    end
+  end
+  modified_sources[source_bufnr] = vim.api.nvim_buf_attach(source_bufnr, false, {
+    on_lines = sync,
+    on_changedtick = sync,
+    on_reload = sync,
+    on_detach = function(_, buf)
+      modified_sources[buf] = nil
+      -- Detach precedes the final unload flags; an autocmd may also abort it.
+      vim.schedule(function()
+        if sync_source_modified(buf) then attach_source_modified(buf) end
+      end)
+    end,
+  }) or nil
+end
+
 local deferred_rebuilds = {}
 
 --- Reflow replaces buffer lines. Keep native operations on their original
@@ -416,7 +460,7 @@ function Session.new(source_bufnr, ns_name, opts)
   -- on some setups (third-party autocmds firing even with eventignore=all).
   vim.bo[self.buf].modifiable = true
   display_utils.apply_content_to_buffer(self.buf, self.ns, self.content)
-  vim.bo[self.buf].modified = false
+  self:sync_modified()
 
   -- Initialize fold_state from default fold states (e.g. `> [!TIP]-`)
   for _, fold in ipairs(self.content.callout_folds) do
@@ -428,6 +472,14 @@ function Session.new(source_bufnr, ns_name, opts)
   MdPreview._sessions[self.buf] = self
 
   return self
+end
+
+--- Native :update / :x / ZZ consult this flag before invoking BufWriteCmd.
+function Session:sync_modified()
+  if vim.api.nvim_buf_is_valid(self.buf) then
+    vim.bo[self.buf].modified = vim.api.nvim_buf_is_valid(self.source_bufnr) and vim.bo[self.source_bufnr].modified
+      or false
+  end
 end
 
 --- Infer paths from the current source name; :saveas can move a cached source.
@@ -480,9 +532,8 @@ function Session:rebuild()
   vim.api.nvim_buf_clear_namespace(self.buf, self.ns, 0, -1)
   display_utils.apply_content_to_buffer(self.buf, self.ns, new_content)
   vim.api.nvim_set_option_value("modifiable", false, { buf = self.buf })
-  -- acwrite buftype tracks 'modified'; our internal rebuild shouldn't
-  -- count as a user edit.
-  vim.bo[self.buf].modified = false
+  -- Reflow itself is not an edit; conditional writes still need source dirtiness.
+  self:sync_modified()
 
   for w, view in pairs(saved_views) do
     if vim.api.nvim_win_is_valid(w) then
@@ -1086,6 +1137,7 @@ local function install_live_update(session)
     group = augroup,
     buffer = source_bufnr,
     callback = function()
+      sync_source_modified(source_bufnr)
       for _, current in pairs(MdPreview._sessions) do
         if current.source_bufnr == source_bufnr and current.cache then schedule_live_rebuild(current) end
       end
@@ -1836,7 +1888,59 @@ local function apply_render_buf_options(session)
   vim.bo[session.buf].swapfile = false
   vim.bo[session.buf].modifiable = false
   vim.bo[session.buf].readonly = false
-  vim.bo[session.buf].modified = false
+  session:sync_modified()
+end
+
+--- Forward a complete write while preserving source errors and preview state.
+function Session:write_source(file)
+  if not vim.api.nvim_buf_is_valid(self.source_bufnr) then error("md-render: source buffer is gone; cannot save", 0) end
+  if not vim.api.nvim_buf_is_loaded(self.source_bufnr) then
+    -- A queued write can precede the deferred dirty mirror after :bunload!.
+    sync_source_modified(self.source_bufnr)
+    error("md-render: source buffer is unloaded; reload the source before saving", 0)
+  end
+  local render_name = vim.api.nvim_buf_get_name(self.buf)
+  if file ~= "" and file ~= render_name then
+    error(
+      "md-render: writing to a different file from render mode is not supported; "
+        .. "use :MdRenderToggle and save from source",
+      0
+    )
+  end
+  local bang = vim.v.cmdbang == 1 and "!" or ""
+  local cmdarg = vim.v.cmdarg
+  -- Use the actual window: nvim_buf_call can leave :write on the render.
+  -- Suppress enter/leave events while swapping; save autocmds run normally.
+  local win = vim.api.nvim_get_current_win()
+  local saved_buf = vim.api.nvim_win_get_buf(win)
+  local saved_ei = vim.o.eventignore
+  local ok, err = pcall(function()
+    without_events(function()
+      vim.api.nvim_win_set_buf(win, self.source_bufnr)
+    end)
+    vim.api.nvim_command("write" .. bang .. " " .. cmdarg)
+  end)
+  local restored, restore_err = pcall(without_events, function()
+    if
+      vim.api.nvim_win_is_valid(win)
+      and vim.api.nvim_buf_is_valid(saved_buf)
+      and vim.api.nvim_win_get_buf(win) == self.source_bufnr
+    then
+      vim.api.nvim_win_set_buf(win, saved_buf)
+    end
+  end)
+  vim.o.eventignore = saved_ei
+  sync_source_modified(self.source_bufnr)
+  if not ok then
+    -- A formatter may edit before failing. Refresh after reporting its error.
+    vim.schedule(function()
+      for _, current in pairs(MdPreview._sessions) do
+        if current.source_bufnr == self.source_bufnr and current.cache then schedule_live_rebuild(current) end
+      end
+    end)
+    error(err, 0)
+  end
+  if not restored then error(restore_err, 0) end
 end
 
 --- Re-assert read-only on entry; revert on accidental edit.
@@ -1874,6 +1978,7 @@ local function install_render_buf_guards(session)
     callback = function()
       if vim.api.nvim_buf_is_valid(session.buf) then
         vim.bo[session.buf].modifiable = false
+        session:sync_modified()
         -- Don't set readonly = true here: Vim's :w checks readonly before
         -- firing BufWriteCmd, so doing so would break our :w forwarding.
       end
@@ -1898,76 +2003,46 @@ local function install_render_buf_guards(session)
     end,
   })
 
-  -- Reset 'modified' after our own internal writes. The buffer is
+  -- Restore source dirtiness after our own internal writes. The buffer is
   -- modifiable=false (re-asserted by BufEnter), so user edits are blocked
   -- at the Vim level (E21) and never reach TextChanged. Any TextChanged
   -- that fires here is from internal writes (apply_content_to_buffer in
   -- Session:rebuild, clear_placeholder_text during async image placement,
-  -- the on_download rebuild in display_utils.setup_images), and acwrite
-  -- buftype tracks 'modified' which would otherwise leave the render
-  -- buffer marked dirty and block :qa with E162.
+  -- the on_download rebuild in display_utils.setup_images). They must not
+  -- make a clean source appear dirty or erase its unsaved state.
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
     group = augroup,
     buffer = session.buf,
     callback = function()
-      if vim.api.nvim_buf_is_valid(session.buf) then vim.bo[session.buf].modified = false end
+      session:sync_modified()
     end,
   })
 
+  -- :saveas renames before BufWriteCmd. A native exception aborts interactive
+  -- Ex too; an error from a Lua callback only interrupts API command callers.
+  vim.api.nvim_create_autocmd("BufFilePre", {
+    group = augroup,
+    buffer = session.buf,
+    command = "throw 'md-render: renaming a rendered buffer is not supported; use :MdRenderToggle and save from source'",
+  })
+
+  -- Alternate filenames, partial ranges and appends bypass BufWriteCmd.
+  vim.api.nvim_create_autocmd({ "FileWriteCmd", "FileAppendCmd" }, {
+    group = augroup,
+    buffer = session.buf,
+    command = "throw 'md-render: partial writes, appends or other filenames are not supported; use :MdRenderToggle and save from source'",
+  })
+
   -- Forward `:w` / `:w!` on the render buffer to a `:write` on the source.
-  -- :saveas / :w other-name is rejected with a warning (use :MdRenderToggle
+  -- :saveas / :w other-name is rejected (use :MdRenderToggle
   -- to switch to source first).
   vim.api.nvim_create_autocmd("BufWriteCmd", {
     group = augroup,
     buffer = session.buf,
     nested = true,
-    callback = function(ev)
-      if not vim.api.nvim_buf_is_valid(session.source_bufnr) then
-        vim.notify("md-render: source buffer is gone; cannot save", vim.log.levels.ERROR)
-        return
-      end
-      local render_name = vim.api.nvim_buf_get_name(session.buf)
-      if ev.file ~= "" and ev.file ~= render_name then
-        vim.notify(
-          "md-render: writing to a different file from render mode is not supported; "
-            .. "use :MdRenderToggle and save from source",
-          vim.log.levels.WARN
-        )
-        return
-      end
-      local bang = vim.v.cmdbang == 1 and "!" or ""
-      -- nvim_buf_call doesn't reliably switch the curbuf for the `:write`
-      -- ex command (it ends up writing the actual current window's
-      -- buffer — i.e. the render buffer — and triggers E45). Swap the
-      -- current window's buffer to source for the write, then restore.
-      -- eventignore=all around the swaps suppresses BufLeave/Enter side
-      -- effects; the write itself runs with autocmds enabled so
-      -- BufWritePre/Post (formatter on save, etc.) fire normally.
-      local win = vim.api.nvim_get_current_win()
-      local saved_buf = vim.api.nvim_win_get_buf(win)
-      local saved_ei = vim.o.eventignore
-      local ok, err = pcall(function()
-        without_events(function()
-          vim.api.nvim_win_set_buf(win, session.source_bufnr)
-        end)
-        vim.api.nvim_command("write" .. bang)
-      end)
-      local restored, restore_err = pcall(without_events, function()
-        if
-          vim.api.nvim_win_is_valid(win)
-          and vim.api.nvim_buf_is_valid(saved_buf)
-          and vim.api.nvim_win_get_buf(win) == session.source_bufnr
-        then
-          vim.api.nvim_win_set_buf(win, saved_buf)
-        end
-      end)
-      vim.o.eventignore = saved_ei
-      -- The render buffer's 'modified' flag was set by Vim when :w was
-      -- invoked; clear it so the user doesn't see [+] linger.
-      if vim.api.nvim_buf_is_valid(session.buf) then vim.bo[session.buf].modified = false end
-      if not ok then error(err, 0) end
-      if not restored then error(restore_err, 0) end
-    end,
+    -- Lua callback errors do not abort interactive :wq!. Re-throw at Ex level.
+    command = "try | call luaeval(\"require('md-render.preview')._sessions[_A[1]]:write_source(_A[2])\", "
+      .. "[str2nr(expand('<abuf>')), expand('<afile>')]) | catch | throw 'md-render: ' . v:exception | endtry",
   })
 end
 
@@ -2002,11 +2077,25 @@ local function install_source_watcher(session)
   local source_bufnr = session.source_bufnr
   local augroup = vim.api.nvim_create_augroup(toggle_src_augroup(source_bufnr), { clear = true })
 
+  attach_source_modified(source_bufnr)
+  -- Neovim 0.13 reports modified changes through OptionSet instead.
+  local events = { "BufReadPost" }
+  if vim.fn.exists "##BufModifiedSet" == 1 then table.insert(events, "BufModifiedSet") end
+  vim.api.nvim_create_autocmd(events, {
+    group = augroup,
+    buffer = source_bufnr,
+    callback = function()
+      attach_source_modified(source_bufnr)
+      sync_source_modified(source_bufnr)
+    end,
+  })
+
   vim.api.nvim_create_autocmd("BufWipeout", {
     group = augroup,
     buffer = source_bufnr,
     once = true,
     callback = function()
+      modified_sources[source_bufnr] = nil
       local astate = _auto_state[source_bufnr]
       if astate then
         close_timer(astate.in_timer)

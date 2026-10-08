@@ -111,6 +111,69 @@ for _, case in ipairs(cases) do
   end
 end
 
+-- Rules must occupy one screen row, including indents and details bars.
+do
+  local display = require "md-render.display_utils"
+  local buf = vim.api.nvim_create_buf(false, true)
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    row = 0,
+    col = 0,
+    width = 40,
+    height = 10,
+    style = "minimal",
+  })
+  vim.wo[win].wrap = true
+  local ns = vim.api.nvim_create_namespace "rule-width-test"
+  local function check_fits(content, width)
+    vim.bo[buf].modifiable = true
+    display.apply_content_to_buffer(buf, ns, content)
+    for row, line in ipairs(content.lines) do
+      assert(vim.fn.strdisplaywidth(line) <= width, "display row overflows: " .. line)
+      local height = vim.api.nvim_win_text_height(win, { start_row = row - 1, end_row = row - 1 }).all
+      assert(height == 1, "a fitted buffer row must occupy one screen row: " .. line)
+    end
+  end
+  local saved_ambiwidth = vim.o.ambiwidth
+  for _, ambiwidth in ipairs { "single", "double" } do
+    vim.o.ambiwidth = ambiwidth
+    for _, width in ipairs { 20, 21, 40, 41, 80 } do
+      vim.api.nvim_win_set_config(win, { width = width })
+      for _, opts in ipairs { {}, { indent = "" }, { indent = "    " } } do
+        opts.max_width, opts.text_scale = width, false
+        for _, source in ipairs {
+          { "---" },
+          { "***" },
+          { "___" },
+          { "<hr>" },
+          { "- item", "", "  ---" },
+          { "<details open>", "<summary>Title</summary>", "", "---", "", "</details>" },
+          { "<details open>", "<summary>Title</summary>", "<hr>", "</details>" },
+          { "body[^1]", "", "[^1]: note" },
+        } do
+          local content = preview.build_content(source, opts)
+          check_fits(content, width)
+          local rules = 0
+          for _, line in ipairs(content.lines) do
+            if line:find("─", 1, true) then
+              rules = rules + 1
+              local cells = vim.fn.strdisplaywidth(line)
+              assert(
+                cells <= width and cells > width - vim.fn.strdisplaywidth "─",
+                "rule must fill the available width"
+              )
+            end
+          end
+          assert(rules == 1, "each rule source must produce exactly one rule")
+        end
+      end
+    end
+  end
+  vim.o.ambiwidth = saved_ambiwidth
+  vim.api.nvim_win_close(win, true)
+  vim.api.nvim_buf_delete(buf, { force = true })
+end
+
 -- Formatting and link byte offsets must follow the newly wrapped lines.
 local label = string.rep("中文", 20)
 local out = preview.build_content({ "前綴 **" .. label .. "** [" .. label .. "](https://example.com)" }, {

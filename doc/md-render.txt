@@ -29,6 +29,7 @@ Usage							       |md-render-usage|
   Image							       |md-render-image|
   Image tab keys				       |md-render-image-view|
 Example							     |md-render-example|
+Global Variables				    |md-render-global-variables|
 Buffer Variables				 |md-render-buffer-variables|
 Highlight Groups					  |md-render-highlights|
 Optional Dependencies					|md-render-dependencies|
@@ -56,7 +57,8 @@ Features: ~
   `__text__`), strikethrough (`~text~`, `~~text~~`), inline code, links,
   and Obsidian `==highlight==`.
 - Tables with box-drawing borders, column alignment, and cell wrapping.
-  Layout uses the available window width unless max_width is set;
+  Layout uses the available window width by default; |g:md_render_max_width|
+  caps it, while an explicit max_width takes precedence with a fixed width;
   wider tables can be scrolled with zh / zl.
 - Callouts and folds (GitHub / Obsidian alert types with colored borders,
   icons, and folding you can toggle by click or `za` / `<CR>`)
@@ -440,9 +442,15 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 	                (defaults to `toggle`)
 	  demo        - show a demo window with every supported notation
 
-	Tab completion lists the subcommands for the first arg, and
-	`on` / `off` / `toggle` after `auto` and `textsize`.
-	`textsize` also completes `auto` / `image` / `native` / `status`.
+	`float`, `tab`, `pager`, `toggle` and `split` take `width={N}` to render that
+	preview at {N} columns, as in `:MdRender float width=120`.  The width is
+	that of a whole rendered line, indent included, and it stays fixed: it
+	does not follow the window when the window is resized.  Without it,
+	the width follows the window up to |g:md_render_max_width|.
+
+	Tab completion lists the subcommands for the first arg, `on` / `off` /
+	`toggle` after `auto` and `textsize`, and `width=` after the subcommands that
+	take it. `textsize` also completes `auto` / `image` / `native` / `status`.
 
 	The per-subcommand sections below describe behaviour in detail.
 
@@ -1037,9 +1045,9 @@ MdPreview.toggle({opts}) ~
 	See |:MdRender-toggle|.
 
 	Parameters: ~
-	  {opts}  (table|nil) Optional settings (used only when the render
-		  buffer is created for the first time):
-		  - {max_width}  (integer) Maximum rendering width
+	  {opts}  (table|nil) Optional settings:
+		  - {max_width}  (integer) Fixed rendering width, also applied
+		    to a reused preview when switching from source to render
 
 	Example: >lua
 	  require("md-render").preview.toggle()
@@ -1051,8 +1059,8 @@ MdPreview.auto_on({opts}) ~
 	buffer and immediately swap to render mode.  See |:MdRender-auto|.
 
 	Parameters: ~
-	  {opts}  (table|nil) Forwarded to |MdPreview.toggle()| when the
-		  render buffer is first created.
+	  {opts}  (table|nil) Forwarded to |MdPreview.toggle()| when enabling
+		  auto mode from source mode.
 
 							   *MdPreview.auto_off()*
 MdPreview.auto_off() ~
@@ -1080,9 +1088,8 @@ MdPreview.split({opts}) ~
 		  - {mods}      (table) Command modifiers, typically the
 				`args.smods` table from a user-command
 				callback (e.g. `{ vertical = true }`).
-		  - {max_width} (integer) Maximum rendering width (used
-				only when the render buffer is created
-				for the first time).
+		  - {max_width} (integer) Fixed rendering width, also applied
+				when reusing a preview buffer.
 
 	Example: >lua
 	  require("md-render").preview.split({ mods = { vertical = true } })
@@ -1374,10 +1381,10 @@ HTTP(S) URLs and redirects, treats URLs literally, and ignores .curlrc.
 Proxy and CA environment settings still apply. Use |image.set_download_fn()|
 for custom authentication.
 
-With Snacks, automatic layout uses the available window width (unless
-max_width is explicit) and fits images within the window height minus six
-rows. Images keep their aspect ratio and do not grow beyond their original
-pixel size.
+With Snacks, automatic layout uses the available window width, capped by
+|g:md_render_max_width| when set; an explicit max_width takes precedence.
+Images fit within the window height minus six rows, keep their aspect ratio,
+and do not grow beyond their original pixel size.
 
                                                          *md-render-obsidian*
 Obsidian attachments ~
@@ -1523,6 +1530,29 @@ A complete example showing how to render Markdown and display it in a buffer:
   local win = vim.api.nvim_get_current_win()
   md.display_utils.setup_images(win, content, ns)
 <
+
+==============================================================================
+GLOBAL VARIABLES				    *md-render-global-variables*
+
+							 *g:md_render_max_width*
+g:md_render_max_width ~
+	The automatic width limit, in columns, for ordinary text and tables in
+	either image backend. A preview without an explicit width uses the
+	available window width up to this limit and follows window resizes: >lua
+
+	  vim.g.md_render_max_width = 120
+<
+	When unset, the native image backend caps ordinary text at 80 columns;
+	Snacks and tables use the available window width. An invalid value warns
+	and applies an 80-column limit to both ordinary text and tables.
+
+	The width is that of a whole rendered line, indent included. It must be
+	a finite number of at least 1; fractional values are rounded down to
+	whole columns. It is read each time a preview is sized, so a change applies to
+	the next preview, and to an open one when its window is resized.
+
+	`width={N}` on |:MdRender| and `max_width` in the Lua API
+	(|md-render-preview|) take precedence and give one preview a fixed width.
 
 ==============================================================================
 BUFFER VARIABLES				 *md-render-buffer-variables*

@@ -49,7 +49,7 @@ The complete [reference manual](doc/md-render.txt), including the library API, i
 - **Status footer** — the floating preview shows the file name, your position in the source, and a box-drawing progress bar on its bottom border, without stealing a content row or touching your statusline
 - **Library API** — use the rendering engine programmatically from your own plugins
 
-Tables use the available window width unless `max_width` is set. Use `zh` / `zl` to scroll horizontally when a table is wider than the window.
+Tables use the available window width by default. A global width limit or an explicit `max_width` also limits tables; see [Rendering width](#rendering-width). Use `zh` / `zl` to scroll horizontally when a table is wider than the window.
 
 <figure align="center">
   <img src="assets/screenshot-rendering.png" width="672" height="751" alt="Inline formatting, tables, callouts, code blocks, and CJK line-breaking" />
@@ -242,7 +242,7 @@ After loading the plugins, check the setup:
 
 Both backends play animated GIFs and videos. The Snacks backend uses Kitty animation support, including inside tmux; video frame extraction requires `ffmpeg`. The Snacks backend prepares images throughout the document, including off-screen images; diagram rendering, downloads, and frame extraction share a two-job limit across previews, and work already running may finish into the cache after closing a preview. Image-heavy documents therefore do more work up front.
 
-Automatic layout uses the available window width instead of the native backend's 80-column cap. Images fit proportionally within that width and the window height minus six rows, without enlarging beyond their original pixel size. An explicitly supplied `max_width` still takes precedence. See [Image tab keys](#image-tab-keys) for navigation.
+Automatic layout uses the available window width instead of the native backend's default 80-column cap. Images fit proportionally within that width and the window height minus six rows, without enlarging beyond their original pixel size. A global width limit also applies to Snacks; an explicitly supplied `max_width` takes precedence. See [Rendering width](#rendering-width) and [Image tab keys](#image-tab-keys).
 
 ## Comparison with similar plugins
 
@@ -345,11 +345,25 @@ The plugin exposes a single `:MdRender` command with subcommands:
 | `:MdRender pager` | Pager mode — full-screen, no chrome, `q` to quit Neovim |
 | `:MdRender demo` | Show a demo window with all supported Markdown notations |
 
-Tab completion lists the subcommands for the first arg, `on` / `off` / `toggle` after `auto` and `textsize`, and `auto` / `image` / `native` / `status` after `textsize`.
+`float`, `tab`, `pager`, `toggle` and `split` take `width=N` to render that preview at a fixed width of `N` columns, as in `:MdRender float width=120`. See [Rendering width](#rendering-width).
+
+Tab completion lists the subcommands for the first arg, `on` / `off` / `toggle` after `auto` and `textsize`, `auto` / `image` / `native` / `status` after `textsize`, and `width=` after the subcommands that take it.
 
 Tab previews stay open when you switch tabs, including while viewing an image. `q` in the image tab returns to the document. `:MdRender tab` closes the current document's tab preview; invoked from another Markdown source, it replaces that preview with the new document.
 
 > **Backwards compatibility.** The legacy top-level commands (`:MdRenderTab`, `:MdRenderToggle`, `:MdRenderSplit`, `:MdRenderAuto`, `:MdRenderPager`, `:MdRenderDemo`) still work and forward to the new dispatcher. They print a one-shot deprecation warning per Neovim session and will be removed in a future major version.
+
+### Rendering width
+
+Automatic layout follows the available window width when resized. By default, the native image backend caps ordinary text at 80 columns, while Snacks and tables use the available width. Set a global limit to control both ordinary text and tables in either backend:
+
+```lua
+vim.g.md_render_max_width = 120
+```
+
+The global limit follows the window up to the configured width. It is read when a preview is sized, including when an open preview is resized. Invalid values warn and use an 80-column limit; unset the option to restore the backend defaults.
+
+The width is that of a whole rendered line, indent included. `width=N` on `:MdRender`, or `max_width` in the Lua API (`preview.show({ max_width = 120 })`), takes precedence and gives one preview a fixed width: it stays at that width when the window is resized. Supplying a width when reopening a cached toggle or split preview also updates that preview.
 
 ### In-place toggle
 

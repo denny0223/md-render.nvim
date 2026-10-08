@@ -30,6 +30,7 @@ Snacks.nvim 連携					      |md-render-snacks|
   Image							       |md-render-image|
   画像タブのキー				       |md-render-image-view|
 使用例							     |md-render-example|
+グローバル変数					    |md-render-global-variables|
 バッファ変数					 |md-render-buffer-variables|
 ハイライトグループ					  |md-render-highlights|
 オプション依存						|md-render-dependencies|
@@ -57,7 +58,8 @@ md-render.nvim は Neovim 用の Markdown レンダリングエンジンです�
   `__文字__`）、取り消し線（`~文字~`、`~~文字~~`）、インラインコード、
   リンク、Obsidian `==highlight==`。
 - テーブル（罫線文字、列アラインメント、セルの折り返し）
-  ウィンドウの利用可能な幅を使い、`max_width` で幅を指定可能。
+  既定ではウィンドウの利用可能な幅を使います。幅の上限には
+  |g:md_render_max_width| を使い、明示した max_width は優先する固定幅です。
   ウィンドウより広いテーブルは `zh` / `zl` で横スクロール可能。
 - コールアウト & 折りたたみ（GitHub / Obsidian のアラートタイプに対応。色付き
   ボーダー・アイコン・クリックまたは `za` / `<CR>` で折りたたみ切り替え）
@@ -442,8 +444,16 @@ Windows／UNC パスは対応範囲外です。
 	                `toggle` を取る(既定は `toggle`)
 	  demo        - 対応している全記法のデモウィンドウを表示
 
-	タブ補完では第1引数としてサブコマンド一覧、`auto` と `textsize` の
-	後では `on` / `off` / `toggle` が候補になります。
+	`float` / `tab` / `pager` / `toggle` / `split` は `width={N}` を取り、そのプレ
+	ビューを {N} 桁の幅で描画します(例: `:MdRender float width=120`)。この幅
+	はインデントを含む描画した行全体の幅で、固定です。ウィンドウの大きさを
+	変えても追従しません。指定しなければ、幅はウィンドウに追従し、上限は
+	|g:md_render_max_width| になります。
+
+	タブ補完では、第1引数ではサブコマンド一覧が、第2引数ではサブコマンドが
+	`auto` か `textsize` なら `on` / `off` / `toggle`、幅を取るサブコマンドなら
+	`width=` が候補になります。textsize ではさらに `auto` / `image` /
+	`native` / `status` も補完します。
 
 	各サブコマンドの詳細は以下のセクションを参照してください。
 
@@ -995,9 +1005,9 @@ MdPreview.toggle({opts}) ~
 	で切り替えます。詳細は |:MdRender-toggle| を参照してください。
 
 	パラメータ: ~
-	  {opts}  (table|nil) オプション設定(レンダーバッファの初回生成時の
-		  みに使用されます):
-		  - {max_width}  (integer) 最大レンダリング幅
+	  {opts}  (table|nil) オプション設定:
+		  - {max_width}  (integer) 固定の描画幅。source から render へ
+		    切り替える際、再利用するプレビューにも適用されます。
 
 	使用例: >lua
 	  require("md-render").preview.toggle()
@@ -1009,8 +1019,8 @@ MdPreview.auto_on({opts}) ~
 	即座に render モードへ切り替えます。詳細は |:MdRender-auto| を参照。
 
 	パラメータ: ~
-	  {opts}  (table|nil) レンダーバッファ初回生成時に |MdPreview.toggle()|
-		  へ転送されます。
+	  {opts}  (table|nil) source モードから自動切替を有効にするときに
+		  |MdPreview.toggle()| へ転送されます。
 
 							   *MdPreview.auto_off()*
 MdPreview.auto_off() ~
@@ -1035,8 +1045,8 @@ MdPreview.split({opts}) ~
 		  - {mods}      (table) コマンドモディファイア。通常はユー
 				ザーコマンドコールバックの `args.smods` を
 				そのまま渡します(例: `{ vertical = true }`)。
-		  - {max_width} (integer) 最大レンダリング幅(レンダーバッ
-				ファが初めて作成されるときのみ使用)。
+		  - {max_width} (integer) 固定の描画幅。プレビューバッファを
+				再利用する場合も適用されます。
 
 	使用例: >lua
 	  require("md-render").preview.split({ mods = { vertical = true } })
@@ -1342,9 +1352,10 @@ prefix を使います。閲覧中のプロジェクトの .npmrc やローカ�
 に対応し、URL を文字どおり扱い、.curlrc を無視します。プロキシと CA の環境設定
 は引き続き有効です。独自の認証には |image.set_download_fn()| を使います。
 
-Snacks の自動レイアウトは利用可能なウィンドウ幅を使います（max_width を明示
-した場合はそちらを優先）。画像は縦横比を保ち、その幅と「高さ − 6 行」に
-収まり、元のピクセルサイズを超えて拡大しません。
+Snacks の自動レイアウトは利用可能なウィンドウ幅を使い、設定されていれば
+|g:md_render_max_width| を上限とします。明示した max_width は優先されます。
+画像は縦横比を保ち、その幅と「高さ − 6 行」に収まり、元のピクセルサイズを
+超えて拡大しません。
 
                                                          *md-render-obsidian*
 Obsidian の添付ファイル ~
@@ -1495,6 +1506,30 @@ Markdown をレンダリングしてバッファに表示する完全な例で�
   local win = vim.api.nvim_get_current_win()
   md.display_utils.setup_images(win, content, ns)
 <
+
+==============================================================================
+グローバル変数					    *md-render-global-variables*
+
+							 *g:md_render_max_width*
+g:md_render_max_width ~
+	本文とテーブルの自動レイアウトの上限を桁数で指定します。どちらの画像
+	バックエンドにも適用されます。固定幅の指定がないプレビューは、この値を
+	上限としてウィンドウの利用可能な幅で描画し、リサイズに追従します: >lua
+
+	  vim.g.md_render_max_width = 120
+<
+	未設定の場合、ネイティブ画像バックエンドの本文は上限 80 桁、Snacks と
+	テーブルはウィンドウの利用可能な幅を使います。不正な値は警告を出し、
+	本文とテーブルの両方に上限 80 桁を適用します。
+
+	この幅はインデントを含む描画した行全体の幅で、1 以上の有限の数を指定します。
+	小数部分は切り捨てます。プレビューのサイズを決めるたびに
+	読み直すので、変更は次のプレビューから反映されます。開いているプレビュー
+	には、リサイズ時に反映されます。
+
+	1 つのプレビューだけ幅を固定したいときは |:MdRender| の `width={N}` か、
+	Lua API (|md-render-preview|) の `max_width` を使います。これらはグローバル
+	設定より優先されます。
 
 ==============================================================================
 バッファ変数					 *md-render-buffer-variables*

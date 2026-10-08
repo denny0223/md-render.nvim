@@ -130,6 +130,80 @@ for _, backend in ipairs { "kitty", "snacks" } do
   close(session, win)
 end
 
+-- A configured cap applies to both backends and tables, while each backend
+-- keeps its existing automatic policy when the setting is removed.
+for _, backend in ipairs { "kitty", "snacks" } do
+  vim.g.md_render_max_width = 60.9
+  session, win = open(backend)
+  vim.api.nvim_buf_set_lines(session.source_bufnr, 0, 0, false, {
+    "| Details |",
+    "| --- |",
+    "| " .. string.rep("word ", 40) .. "|",
+    "",
+  })
+  session:refresh_source()
+  session:rebuild()
+  assert(session.opts.max_width == 60 and session.opts.table_max_width == 60, "configured widths round down")
+  assert(vim.fn.strdisplaywidth(session.content.lines[1]) == 60, "rendered tables respect the configured cap")
+  resize(session, win, 40, 30)
+  assert(session.opts.max_width == 40 and session.opts.table_max_width == 40, "configured caps follow narrow windows")
+  vim.g.md_render_max_width = 100
+  resize(session, win, 120, 50)
+  assert(session.opts.max_width == 100 and session.opts.table_max_width == 100, "resizing reads a changed global cap")
+  assert(vim.fn.strdisplaywidth(session.content.lines[1]) == 100, "tables rebuild at the changed cap")
+  vim.g.md_render_max_width = nil
+  resize(session, win, 121, 51)
+  local automatic_width = backend == "kitty" and 80 or 121
+  assert(
+    session.opts.max_width == automatic_width and session.opts.table_max_width == 121,
+    "removing the cap restores backend defaults"
+  )
+
+  -- Requesting the current automatic width must still make it fixed.
+  local render_buf = session.buf
+  preview.toggle()
+  preview.toggle { max_width = automatic_width }
+  vim.g.md_render_max_width = 30
+  vim.api.nvim_win_set_config(win, { width = 50, height = 20 })
+  vim.api.nvim_exec_autocmds("WinResized", { pattern = tostring(win), modeline = false })
+  assert(
+    session.opts.max_width == automatic_width and session.opts.table_max_width == automatic_width,
+    "an equal explicit width stays fixed over global changes and resize"
+  )
+  if backend == "snacks" then
+    assert(
+      vim.wait(1000, function()
+        return session.content.image_placements[1].rows == 14
+      end),
+      "fixed width still follows Snacks viewport height"
+    )
+  end
+  preview.toggle()
+  preview.toggle { max_width = 70 }
+  assert(session.buf == render_buf and session.opts.max_width == 70, "a reused preview applies the new width")
+  preview.toggle()
+  preview.toggle()
+  assert(session.opts.max_width == 70, "navigation re-entry retains the last explicit width")
+  vim.g.md_render_max_width = nil
+  close(session, win)
+end
+
+local notify_once, warnings = vim.notify_once, 0
+vim.notify_once = function()
+  warnings = warnings + 1
+end
+for _, invalid in ipairs { "wide", true, 0, -1, math.huge, -math.huge, 0 / 0 } do
+  vim.g.md_render_max_width = invalid
+  local content = preview.build_content { "---" }
+  assert(vim.fn.strdisplaywidth(content.lines[1]) == 80, "invalid caps retain a finite default")
+end
+assert(warnings == 7, "invalid global widths produce warnings")
+session, win = open("snacks", { max_width = 70 })
+assert(session.opts.max_width == 70 and warnings == 7, "explicit widths take precedence over an invalid global value")
+close(session, win)
+vim.g.md_render_max_width = nil
+vim.notify_once = notify_once
+
 -- A shared render buffer must preserve borders in every window, including
 -- a resized window whose explicit render width does not trigger a rebuild.
 local shared_source = vim.api.nvim_create_buf(false, true)

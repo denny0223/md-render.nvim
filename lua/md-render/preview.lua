@@ -15,7 +15,24 @@ local get_or_create_session
 --- Upper bound on render width when not explicitly overridden by the user.
 --- Long lines hurt readability even in wide windows, so we cap auto-sized
 --- render windows here while still adapting downward in narrow splits.
+--- `g:md_render_max_width` replaces it; see |g:md_render_max_width|.
 local DEFAULT_MAX_WIDTH = 80
+
+--- Read the configured cap on every use so resizing picks up changes.
+---@return integer
+local function default_max_width()
+  local w = vim.g.md_render_max_width
+  if w == nil then return DEFAULT_MAX_WIDTH end
+  if type(w) == "number" and w >= 1 and w < math.huge then return math.floor(w) end
+  vim.notify_once(
+    ("md-render: g:md_render_max_width must be a finite positive number, got %s; using %d"):format(
+      vim.inspect(w),
+      DEFAULT_MAX_WIDTH
+    ),
+    vim.log.levels.WARN
+  )
+  return DEFAULT_MAX_WIDTH
+end
 
 local function close_timer(timer)
   if timer and not timer:is_closing() then
@@ -122,7 +139,7 @@ end
 MdPreview.build_content = function(lines, opts)
   opts = opts or {}
   lines = vim.tbl_map(require("md-render.character_references").normalize_nul, lines)
-  local max_width = opts.max_width or DEFAULT_MAX_WIDTH
+  local max_width = opts.max_width or default_max_width()
   local expand_state = opts.expand_state or {}
 
   local b = ContentBuilder.new()
@@ -742,9 +759,11 @@ end
 --- Update automatic layout bounds; return whether a rebuild is needed.
 function Session:resize(win)
   local snacks = require("md-render.image").config().backend == "snacks"
+  local available = usable_win_width(win)
+  local cap = not self._explicit_max_width and vim.g.md_render_max_width ~= nil and default_max_width() or nil
   local width = self._explicit_max_width and self.opts.max_width
-    or math.min(usable_win_width(win), snacks and math.huge or DEFAULT_MAX_WIDTH)
-  local table_width = self._explicit_max_width and self.opts.max_width or usable_win_width(win)
+    or math.min(available, cap or (snacks and math.huge or DEFAULT_MAX_WIDTH))
+  local table_width = self._explicit_max_width and self.opts.max_width or math.min(available, cap or math.huge)
   local height = snacks and math.max(1, vim.api.nvim_win_get_height(win) - 6) or nil
   local normal = vim.api.nvim_win_get_config(win).relative ~= "" and "NormalFloat" or "Normal"
   local changed = width ~= (self.opts.max_width or DEFAULT_MAX_WIDTH)
@@ -2196,6 +2215,14 @@ get_or_create_session = function(source_bufnr, opts, cache)
   end
 
   if session then
+    -- A width asked for now wins over the one the session was created with:
+    -- `:MdRender toggle width=N` reaches here with a session that already
+    -- exists from an earlier toggle.
+    if opts and opts.max_width and (not session._explicit_max_width or opts.max_width ~= session.opts.max_width) then
+      session.opts.max_width = opts.max_width
+      session._explicit_max_width = true
+      session.dirty = true
+    end
     -- Keep render content in sync with the latest source state.
     -- Live-update normally clears `dirty`, but fall back to a content
     -- comparison so that direct `nvim_buf_set_lines` (which may not fire
@@ -3033,6 +3060,11 @@ MdPreview.toggle = function(opts)
     session:rebuild()
   end
 
+  -- BufEnter restores this window's layout before binding the reused session.
+  local context = navigation_windows[win]
+  if opts and opts.max_width and context then
+    context.layout = { max_width = opts.max_width, indent = session.opts.indent }
+  end
   vim.api.nvim_win_set_buf(win, session.buf)
   if session.win ~= win then session:bind_window(win) end
   session:scroll_to_source_line(source_cursor_line)

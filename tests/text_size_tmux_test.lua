@@ -133,6 +133,59 @@ assert(size.resolve_backend() == "plain")
 -- The frozen clock only belongs to cache checks; vim.wait needs real time.
 vim.uv.hrtime = hrtime
 
+-- Cleanup must also follow already queued TUI output. A cursor reply from
+-- another query cannot consume the later reply that proves our stream drained.
+local restore_system, restore_send = vim.system, vim.api.nvim_ui_send
+local restores, queries = 0, {}
+vim.system = function(args, opts)
+  if args[4] == "display-message" then return { kill = function() end } end
+  assert(args[3] == "/tmp/test.sock" and args[4] == "refresh-client" and args[6] == "/dev/pts/1")
+  assert(opts.timeout == 150)
+  restores = restores + 1
+end
+vim.api.nvim_ui_send = function(bytes)
+  queries[#queries + 1] = bytes
+end
+local function response(bytes)
+  vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = bytes } })
+end
+tmux.redraw("/dev/pts/1", true)
+assert(restores == 1 and queries[1] == "\27P$q q\27\\", "query tmux after queued passthrough without blocking cleanup")
+tmux.redraw("/dev/pts/1", true)
+assert(restores == 2 and #queries == 1, "multiple previews share one outstanding query")
+response "\27P1$r4:3m"
+response "\27P1$r q2 qjunk"
+assert(restores == 2, "ignore unrelated or malformed terminal replies")
+response "\27P1$r q2 q"
+assert(restores == 3, "tmux's cursor reply restores after earlier output")
+response "\27P1$r2 q\27\\"
+assert(restores == 4, "an earlier cursor reply must not consume our ordered reply")
+vim.api.nvim_exec_autocmds("FocusGained", { modeline = false })
+response "\27P1$r q2 q"
+assert(restores == 4, "late replies cannot erase headings after focus recovery")
+tmux.redraw("/dev/pts/1", true)
+assert(#queries == 2, "focus recovery starts a new cleanup interval")
+vim.api.nvim_exec_autocmds("UIEnter", { modeline = false })
+tmux.get()
+vim.api.nvim_exec_autocmds("UILeave", { modeline = false })
+tmux.get()
+response "\27P1$r q2 q"
+assert(restores == 6, "UI capability cache resets preserve cleanup on the same pane stream")
+vim.api.nvim_exec_autocmds("FocusGained", { modeline = false })
+tmux.redraw("/dev/pts/1", true)
+vim.env.TMUX_PANE = "%9"
+tmux.get()
+response "\27P1$r q2 q"
+assert(restores == 7, "changing the pane retires cleanup for the old stream")
+vim.env.TMUX_PANE = "%3"
+tmux.get()
+tmux.redraw("/dev/pts/1", true)
+vim.env.TMUX = "/tmp/replaced.sock,456,0"
+response "\27P1$r q2 q"
+assert(restores == 8, "a reply from an old socket cannot refresh the replacement connection")
+vim.env.TMUX = "/tmp/test.sock,123,0"
+vim.system, vim.api.nvim_ui_send = restore_system, restore_send
+
 -- Focus protects every output path, including queued scrolls and keepalive.
 vim.o.termguicolors = true
 local get, redraw, send = tmux.get, tmux.redraw, vim.api.nvim_ui_send
@@ -140,8 +193,10 @@ ctx.width, ctx.height = vim.o.columns, vim.o.lines
 tmux.get = function()
   return ctx
 end
-local writes, redraws = {}, 0
-tmux.redraw = function()
+local writes, redraws, ordered_restore = {}, 0, nil
+tmux.redraw = function(_, after_output)
+  assert(after_output == false or after_output == true, "all native cleanup paths specify the current focus")
+  ordered_restore = after_output
   redraws = redraws + 1
 end
 vim.api.nvim_ui_send = function(bytes)
@@ -179,8 +234,14 @@ assert(
   end, 10),
   "foreground startup must not need an initial FocusGained"
 )
+ctx.key = ctx.key .. ":updated"
+size.paint(state)
+assert(redraws == 1 and not ordered_restore, "foreground context cleanup needs no output barrier")
 vim.api.nvim_exec_autocmds("FocusLost", { modeline = false })
-assert(redraws == 1 and state.drawn == nil and state.last_drawn == 0, "tmux owns cleanup on focus loss")
+assert(
+  redraws == 2 and ordered_restore and state.drawn == nil and state.last_drawn == 0,
+  "tmux owns cleanup after queued output on focus loss"
+)
 assert(
   size.resolve_backend() == "native" and state.content == content,
   "pausing must not rebuild or change the backend"
@@ -213,6 +274,7 @@ local other_win = vim.api.nvim_open_win(buf, false, {
 })
 local other = size.attach(other_win, content)
 size.detach(state)
+assert(not ordered_restore, "foreground detach needs no output barrier")
 assert(not vim.o.termsync, "another native preview still needs passthrough-compatible redraws")
 size.detach(other)
 assert(vim.o.termsync, "closing the last native preview restores the original setting")

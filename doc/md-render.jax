@@ -380,9 +380,9 @@ Enter は #heading などのリンクや脚注の参照から、文書内の対�
 
 |:MdRender-toggle| で開かれたレンダーモードのバッファでは `q` / `<Esc>` /
 `<C-c>` は閉じる動作に**割り当てられません**。ソースに戻すには再度
-|:MdRender-toggle| を呼びます。`<LeftMouse>` / `za` / `<CR>` は折りたたみ・
-展開を引き続き切り替えます。Snacks では `<CR>` で画像も開けます。
-リンク open は `<LeftMouse>`、`<MouseMove>` の URL 表示も有効なままです。
+|:MdRender-toggle| を呼びます。折りたたみ・展開の切り替えには引き続き
+`<LeftMouse>` / `za` / `<CR>` が使えます。Snacks では `<CR>` で画像も開けます。
+リンク open は `<LeftMouse>`、URL を表示する `<MouseMove>` も有効なままです。
 
 `gf` はリンク元ファイルのディレクトリを基準に解決し、作業ディレクトリには
 依存しません。Markdown は現在のプレビューを使い、その他のファイルは元の編集
@@ -430,12 +430,12 @@ Windows／UNC パスは対応範囲外です。
 	  float       - フローティングプレビュー(既定。引数なしの
 	                |:MdRender| と同じ)
 	  tab         - 新しいタブでプレビューをトグル
-	  pager       - ページャーモード(フルスクリーン、`q` で Neovim 終
-	                了)
+	  pager       - ページャーモード(フルスクリーンで表示し、キー `q` で
+	                Neovim を終了)
 	  toggle      - カレントウィンドウのバッファをソース ↔ レンダーで
 	                その場切り替え
-	  split       - ソースとレンダーを並べてスプリット表示。`:vert` /
-	                `:tab` / `:topleft` / `:botright` を尊重
+	  split       - ソースとレンダーを並べてスプリット表示し、コマンド修飾
+	                子 `:vert` / `:tab` / `:topleft` / `:botright` を尊重
 	  auto        - [実験的] Insert モードに連動して自動切替。第2引数
 	                として `on` / `off` / `toggle` を取る(既定は
 	                `toggle`)
@@ -497,9 +497,9 @@ Windows／UNC パスは対応範囲外です。
 	現在のバッファについて、Insert モードに連動して source/render を自動的
 	に切り替えます。状態はバッファ単位で `b:md_render_auto` に保持されます。
 
-	- `:MdRender auto on` は現在のバッファを即座に render モードへ切り替
-	  え、`InsertEnter` で source、`InsertLeave` で render に戻る autocmd
-	  を登録します。
+	- `:MdRender auto on` は現在のバッファを即座に render モードへ切り替えま
+	  す。さらに、source に戻す `InsertEnter` と render に戻す `InsertLeave`
+	  の autocmd を登録します。
 	- `:MdRender auto off` は autocmd を解除しバッファのマーカーをクリア
 	  します。表示モードは変更しません。
 	- `:MdRender auto toggle`、または第2引数なしの `:MdRender auto` は
@@ -516,22 +516,22 @@ Windows／UNC パスは対応範囲外です。
 	  が発火しません。auto モード中はレンダーバッファ上で `i` / `I` /
 	  `a` / `A` / `o` / `O` を再マップし、まず source に切り替えてから
 	  対応する位置で Insert に入る形にしています。
-	- `<Esc>` で source の Normal モードに戻ると、|InsertLeave| autocmd
-	  が 50ms デバウンスで render へ戻します。
+	- `<Esc>` で source の Normal モードに戻ると、50ms のデバウンスを挟んで
+	  |InsertLeave| autocmd が render へ戻します。
 	- `i<Esc>i<Esc>` のような連射でも最後の状態だけが反映されます。
 	- 切替はカレントウィンドウのみが対象です。同じソースを表示している他
 	  ウィンドウは手動で |:MdRender-toggle| してください。
 
 	レンダーバッファ上で効くもの: ~
 
-	  読み取り系操作: 移動 (hjkl, gg, G, ...)、検索 (/, ?)、yank (y)、
-	  ビジュアル選択、マーク、`za` / `<CR>`(折りたたみ・展開の切り替え)、
+	  読み取り系操作: 移動 (hjkl, gg, G, ...)、検索 (/, ?)、yank (y)、ビ
+	  ジュアル選択、マーク、折りたたみ・展開の切り替え (`za` / `<CR>`)、
 	  <LeftMouse>(折りたたみ・展開・リンク open)。
 
-	  `:w` / `:w!`、`:update`、`:x`、`ZZ` はソースを保存し、条件付きの
+	  `:w` / `:w!` / `:update` / `:x` / `ZZ` はソースを保存し、条件付きの
 	  書き込みはソースが変更された時だけ実行します。標準の ++ オプションも
 	  転送し、[+] はソースの未保存状態を示します。部分範囲・追記・別名
-	  （`:1w`、`:w >>`、`:w other.md`、`:saveas`）は拒否します。
+	  (`:1w` / `:w >>` / `:w other.md` / `:saveas`) は拒否します。
 	  |:MdRender-toggle| でソースに戻ってから操作してください。
 	  ソースをアンロードした場合は、プレビューから保存する前に再読み込み
 	  してください。
@@ -976,8 +976,8 @@ MdPreview.show({opts}) ~
 	カーソル位置が対応するソースの行、そして罫線素片で描いたプログレスバー
 	です: >
 	  ╰──────────── README.md   25/100  ━━╾─────── ╯
-<	カーソルに追従し、ウィンドウの幅が足りないときはバー、位置の順に省略され
-	ます。|md-render-float-footer| を参照してください。
+<	カーソルに追従し、ウィンドウの幅が足りないときはバー、位置の順に省略さ
+	れます。詳しくは |md-render-float-footer| を参照してください。
 
 	パラメータ: ~
 	  {opts}  (table|nil) オプション設定:
@@ -1538,10 +1538,10 @@ g:md_render_max_width ~
 							       *b:md_render*
 b:md_render ~
 	md-render が描画するすべてのバッファで `true` になります。フローティング
-	プレビュー、タブ・分割表示、ページャ、|:MdRender-toggle| が差し替える
-	バッファ、そして |:MdRender-demo| が対象です。他では設定しないため、
-	バッファ名やファイルタイプ (どちらも他のプラグインやユーザが自由に変更
-	できます) に頼らずに識別できます。
+	プレビュー、タブ・分割表示、ページャ、それに |:MdRender-toggle| が差し替
+	えるバッファと |:MdRender-demo| が対象です。他では設定しないため、バッ
+	ファ名やファイルタイプ (どちらも他のプラグインやユーザが自由に変更でき
+	ます) に頼らずに識別できます。
 
 	ウィンドウローカルではなくバッファローカルにしてあります。
 	|:MdRender-toggle| はウィンドウを保ったままバッファを入れ替えますし、

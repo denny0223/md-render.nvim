@@ -804,7 +804,18 @@ local function visible_placements(state)
         local icon_col
         if p.icon and p.icon_col then
           local ipos = vim.fn.screenpos(win, p.line + 1, p.icon_col + 1)
-          if ipos.row == pos.row and ipos.col >= left then icon_col = ipos.col end
+          if
+            ipos.row == pos.row
+            and ipos.col >= left
+            and not display.covered_by_float({
+              top = pos.row,
+              left = ipos.col,
+              bottom = pos.row + p.scale - 1,
+              right = ipos.col + p.scale - 1,
+            }, overlays)
+          then
+            icon_col = ipos.col
+          end
         end
         table.insert(out, { p = p, row = pos.row, col = pos.col, icon_col = icon_col, sgr = sgr, styles = styles })
       end

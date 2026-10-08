@@ -27,6 +27,58 @@ local function test(name, fn)
   end
 end
 
+test("floating rectangles include only existing border sides and count the winbar once", function()
+  local owner = vim.api.nvim_get_current_win()
+  for _, case in ipairs {
+    { "none", 0, 0 },
+    { { "" }, 0, 0 },
+    { "single", 2, 2 },
+    { { "x" }, 2, 2 },
+    { { "", "", "", "|", "", "", "", "|" }, 0, 2 },
+    { { "", "-", "", "", "", "", "", "" }, 1, 0 },
+    { { "", "", "", { "|", "WarningMsg" }, "", "", "", "" }, 0, 1 },
+    { "shadow", 1, 1 },
+  } do
+    local float = vim.api.nvim_open_win(0, false, {
+      relative = "editor",
+      row = 2,
+      col = 4,
+      width = 8,
+      height = 3,
+      border = case[1],
+      style = "minimal",
+    })
+    for _, winbar in ipairs { "", "bar" } do
+      vim.wo[float].winbar = winbar
+      local rect = display_utils.floating_rects(owner)[1] or {}
+      assert_eq(rect.top, 3, "top includes the frame")
+      assert_eq(rect.left, 5, "left includes the frame")
+      assert_eq(rect.bottom, 5 + case[2], "height includes each visible border and the winbar once")
+      assert_eq(rect.right, 12 + case[3], "width includes only visible side borders")
+    end
+    vim.api.nvim_win_close(float, true)
+  end
+end)
+
+test("floating rectangles follow the owner's tab and stacking order", function()
+  local split = vim.api.nvim_get_current_win()
+  local config = { relative = "editor", row = 2, col = 4, width = 8, height = 3, border = "none", zindex = 80 }
+  local owner = vim.api.nvim_open_win(0, false, config)
+  local float = vim.api.nvim_open_win(0, false, config)
+  for _, case in ipairs { { 50, false, 0 }, { 80, false, 1 }, { 90, false, 1 }, { 90, true, 0 } } do
+    vim.api.nvim_win_set_config(float, { zindex = case[1], hide = case[2] })
+    assert_eq(#display_utils.floating_rects(owner), case[3], "only visible floats at least as high cover the owner")
+  end
+  vim.api.nvim_win_set_config(float, { zindex = 50, hide = false })
+  assert_eq(#display_utils.floating_rects(split), 2, "every visible float covers a split")
+  vim.api.nvim_win_set_config(float, { zindex = 80 })
+  vim.cmd "tab split"
+  assert_eq(#display_utils.floating_rects(owner), 1, "the owner determines the tab even when another tab is current")
+  vim.cmd "tabclose"
+  vim.api.nvim_win_close(float, true)
+  vim.api.nvim_win_close(owner, true)
+end)
+
 test("heading style stacks preserve line backgrounds", function()
   local buf = vim.api.nvim_create_buf(false, true)
   local ns = vim.api.nvim_create_namespace "heading_line_background_test"

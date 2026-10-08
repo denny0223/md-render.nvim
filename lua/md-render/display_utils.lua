@@ -85,17 +85,32 @@ end
 
 --- Terminal overlays must leave floating UI, including its border, to Neovim.
 function M.floating_rects(owner)
+  local own = vim.api.nvim_win_get_config(owner)
+  local own_z = own.relative ~= "" and (own.zindex or 50) or nil
   local rects = {}
-  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(vim.api.nvim_win_get_tabpage(owner))) do
     local cfg = vim.api.nvim_win_get_config(win)
-    if win ~= owner and cfg.relative ~= "" then
+    if win ~= owner and cfg.relative ~= "" and not cfg.hide and (own_z == nil or (cfg.zindex or 50) >= own_z) then
       local pos = vim.api.nvim_win_get_position(win)
-      local border = cfg.border and cfg.border ~= "none" and 2 or 0
+      local border = cfg.border
+      local t, r, b, l = 0, 0, 0, 0
+      if type(border) == "table" and #border > 0 then
+        -- Clockwise from the top-left corner; a shorter list repeats.
+        local function present(i)
+          local c = border[(i - 1) % #border + 1]
+          if type(c) == "table" then c = c[1] end
+          return c ~= nil and c ~= ""
+        end
+        t, r, b, l = present(2) and 1 or 0, present(4) and 1 or 0, present(6) and 1 or 0, present(8) and 1 or 0
+      elseif type(border) == "string" and border ~= "none" and border ~= "" then
+        t, r, b, l = 1, 1, 1, 1
+      end
       rects[#rects + 1] = {
         top = pos[1] + 1,
         left = pos[2] + 1,
-        bottom = pos[1] + vim.api.nvim_win_get_height(win) + border,
-        right = pos[2] + vim.api.nvim_win_get_width(win) + border,
+        -- The API height already includes the winbar.
+        bottom = pos[1] + t + vim.api.nvim_win_get_height(win) + b,
+        right = pos[2] + l + vim.api.nvim_win_get_width(win) + r,
       }
     end
   end

@@ -260,6 +260,29 @@ state.entries[1].visible = true
 local function paint()
   vim.api.nvim_exec_autocmds("SafeState", {})
 end
+local popup_buf = vim.api.nvim_create_buf(false, true)
+local popup = vim.api.nvim_open_win(popup_buf, false, {
+  relative = "editor",
+  row = p.line + 1,
+  col = p.col + 1,
+  width = 3,
+  height = 1,
+  border = "none",
+})
+paint()
+assert(state.drawn == 1 and not state.entries[1].visible, "a float over the lower row withdraws its heading image")
+assert(not state.entries[1].mask_ids, "covered images restore native text instead of leaving a blank mask")
+vim.api.nvim_win_set_config(popup, { hide = true })
+paint()
+assert(state.drawn == 2 and state.entries[1].mask_ids, "hiding the float restores the image and its mask")
+vim.api.nvim_win_set_config(popup, { hide = false })
+paint()
+assert(state.drawn == 1, "showing the float withdraws the image again")
+vim.api.nvim_win_close(popup, true)
+vim.api.nvim_buf_delete(popup_buf, { force = true })
+paint()
+assert(state.drawn == 2 and state.entries[1].mask_ids, "closing the float restores the image and its mask")
+
 -- An ordinary image redraw does not physically clear terminal-only URLs.
 utils.announce_repaint "image"
 assert(state.linked, "redraw! must retain the outstanding terminal URL cleanup")

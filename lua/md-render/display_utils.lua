@@ -4,25 +4,25 @@ local async = require "md-render.async"
 
 local M = {}
 
---- Overlay a failure within the reserved image area without changing buffer text.
-function M.show_image_error(buf, ns, placement)
+local function show_image_error(buf, ns, placement)
   local count = vim.api.nvim_buf_line_count(buf)
   if placement.line >= count then return end
   local row = math.min(placement.line + math.floor((placement.rows or 1) / 2), count - 1)
   local line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1]
-  local first, last = line:find "Loading %w+%.%.%."
-  if not first then
-    first, last = line:find "Rendering %w+ diagram%.%.%."
-  end
+  local pending = placement.mermaid_source
+    or placement.plantuml_source
+    or placement.src_url
+    or line:find "Loading %w+%.%.%."
+    or line:find "Rendering %w+ diagram%.%.%."
   local columns = placement.cols or 50
   local width, prefix = columns, ""
   local col
-  if first and not placement.cell_cols then
-    -- Progress is centered in the original rectangle; byte offsets include UTF-8 prefixes.
-    col = math.max(0, first - 1 - math.max(0, math.floor((width - (last - first + 1)) / 2)))
-    width = math.max(width, vim.fn.strdisplaywidth(line:sub(col + 1, last)))
-    -- Start at column zero so wrapped continuation rows cannot expose a progress prefix.
-    prefix, col = line:sub(1, col), 0
+  if pending and not placement.cell_cols then
+    -- The source fields identify the reserved progress row even after clipping.
+    local start = vim.fn.match(line, "\\%" .. ((placement.col or 0) + 1) .. "v")
+    prefix = line:sub(1, start >= 0 and start or #line)
+    col = 0
+    width = math.max(width, vim.fn.strdisplaywidth(line) - vim.fn.strdisplaywidth(prefix))
   else
     row = placement.line
     line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1]
@@ -46,9 +46,16 @@ function M.show_image_error(buf, ns, placement)
   vim.api.nvim_buf_set_extmark(buf, ns, row, col, {
     virt_text = { { prefix .. status .. string.rep(" ", width - #status), "ErrorMsg" } },
     virt_text_pos = "overlay",
-    virt_text_repeat_linebreak = first ~= nil and not placement.cell_cols or false,
+    virt_text_repeat_linebreak = pending ~= nil and not placement.cell_cols or false,
     priority = vim.hl.priorities.user,
   })
+end
+
+--- Overlay a failure using the target buffer's display options, even after an async callback.
+function M.show_image_error(buf, ns, placement)
+  vim.api.nvim_buf_call(buf, function()
+    show_image_error(buf, ns, placement)
+  end)
 end
 
 --- Mouse coordinates shared by preview clicks and URL hover.

@@ -35,6 +35,7 @@ end
 local function check(session, cols, rows)
   local p = session.content.image_placements[1]
   assert(p and p.cols == cols and p.rows == rows, vim.inspect { expected = { cols, rows }, placement = p })
+  assert(p.col >= 2 and p.col + p.cols <= session.opts.max_width, "image must fit after the document indent")
 end
 
 local function resize(session, win, width, height)
@@ -61,14 +62,14 @@ assert(session.opts.max_width == 80, "native automatic text width remains capped
 check(session, 50, 25)
 resize(session, win, 40, 20)
 assert(session.opts.max_width == 40, "native preview still adapts to a narrow window")
-check(session, 38, 19) -- Native retains its 25-row limit, rather than window height minus six.
+check(session, 36, 18) -- Two indent columns and two margin columns leave 36 image columns.
 close(session, win)
 
 session, win = open "snacks"
 assert(session.opts.max_width == 120, "Snacks uses the available window width")
 check(session, 88, 44)
 resize(session, win, 60, 50)
-check(session, 58, 29)
+check(session, 56, 28)
 resize(session, win, 60, 20)
 check(session, 28, 14)
 close(session, win)

@@ -3372,6 +3372,11 @@ function ContentBuilder:render_document(lines, opts)
     return base_indent .. tail, #base_indent + byte_end
   end
 
+  local function image_columns(indent)
+    local column = self:_display_column(indent)
+    return math.max(1, base_max_width - column), column - (self._details_prefix_width or 0)
+  end
+
   -- A complete details element can share a physical row with its body and
   -- following text. Render each fragment under that row's existing owner.
   local function render_details_fragment(text, indent, max_width, body, raw_html, literal_ranges)
@@ -3546,6 +3551,7 @@ function ContentBuilder:render_document(lines, opts)
   end
 
   local function discard_code_rows()
+    lines_shown = lines_shown - (#self.lines - code_block_start)
     for _ = code_block_start + 1, #self.lines do
       table.remove(self.lines)
       table.remove(self.source_line_map)
@@ -3559,7 +3565,7 @@ function ContentBuilder:render_document(lines, opts)
     end, self.link_metadata)
   end
 
-  local function finish_code_block(indent, max_width)
+  local function finish_code_block(indent)
     -- Mermaid code blocks: render as image if possible
     local mermaid_handled = false
     if code_block_lang and code_block_lang:lower() == "mermaid" and code_source_lines and #code_source_lines > 0 then
@@ -3572,7 +3578,8 @@ function ContentBuilder:render_document(lines, opts)
         local cached = image.get_mermaid_cached(mermaid_source)
         local display_cols, display_rows
         local orig_img_w, orig_img_h
-        local img_max_cols = max_width - 2
+        local image_width, indent_width = image_columns(indent)
+        local img_max_cols = math.max(1, image_width - 2)
 
         if cached then
           orig_img_w, orig_img_h = image.image_dimensions(cached)
@@ -3583,23 +3590,24 @@ function ContentBuilder:render_document(lines, opts)
         end
 
         if not display_cols then
-          display_cols = math.floor(img_max_cols * 0.8)
+          display_cols = math.max(1, math.floor(img_max_cols * 0.8))
           display_rows = 15
         end
 
-        local header = indent .. "Mermaid"
+        local header = truncate_body(indent .. "Mermaid")
         self:add_line(header, {
           { col = 0, end_col = #header, hl = "Comment" },
         })
         local img_start_line = #self.lines
-        local img_col = math.max(0, math.floor((max_width - display_cols) / 2))
+        local img_col = indent_width + math.max(0, math.floor((image_width - display_cols) / 2))
         if not cached then
           local placeholder_msg = "Rendering mermaid diagram..."
           local placeholder_row = math.floor(display_rows / 2)
           for r = 1, display_rows do
             if r == placeholder_row + 1 then
               local pad = math.max(0, math.floor((display_cols - vim.api.nvim_strwidth(placeholder_msg)) / 2))
-              local placeholder_line = indent .. string.rep(" ", img_col) .. string.rep(" ", pad) .. placeholder_msg
+              local placeholder_line =
+                truncate_body(indent .. string.rep(" ", img_col - indent_width + pad) .. placeholder_msg)
               self:add_line(placeholder_line, {
                 { col = 0, end_col = #placeholder_line, hl = "Comment" },
               })
@@ -3645,7 +3653,8 @@ function ContentBuilder:render_document(lines, opts)
         local cached = image.get_plantuml_cached(plantuml_source)
         local display_cols, display_rows
         local orig_img_w, orig_img_h
-        local img_max_cols = max_width - 2
+        local image_width, indent_width = image_columns(indent)
+        local img_max_cols = math.max(1, image_width - 2)
 
         if cached then
           orig_img_w, orig_img_h = image.image_dimensions(cached)
@@ -3656,23 +3665,24 @@ function ContentBuilder:render_document(lines, opts)
         end
 
         if not display_cols then
-          display_cols = math.floor(img_max_cols * 0.8)
+          display_cols = math.max(1, math.floor(img_max_cols * 0.8))
           display_rows = 15
         end
 
-        local header = indent .. "PlantUML"
+        local header = truncate_body(indent .. "PlantUML")
         self:add_line(header, {
           { col = 0, end_col = #header, hl = "Comment" },
         })
         local img_start_line = #self.lines
-        local img_col = math.max(0, math.floor((max_width - display_cols) / 2))
+        local img_col = indent_width + math.max(0, math.floor((image_width - display_cols) / 2))
         if not cached then
           local placeholder_msg = "Rendering PlantUML diagram..."
           local placeholder_row = math.floor(display_rows / 2)
           for r = 1, display_rows do
             if r == placeholder_row + 1 then
               local pad = math.max(0, math.floor((display_cols - vim.api.nvim_strwidth(placeholder_msg)) / 2))
-              local placeholder_line = indent .. string.rep(" ", img_col) .. string.rep(" ", pad) .. placeholder_msg
+              local placeholder_line =
+                truncate_body(indent .. string.rep(" ", img_col - indent_width + pad) .. placeholder_msg)
               self:add_line(placeholder_line, {
                 { col = 0, end_col = #placeholder_line, hl = "Comment" },
               })
@@ -3700,7 +3710,12 @@ function ContentBuilder:render_document(lines, opts)
       end
     end
 
-    if not mermaid_handled and not plantuml_handled then
+    local replaced = mermaid_handled or plantuml_handled
+    if replaced then
+      if in_details and details_summary_rendered and not skip_details_body then
+        apply_details_body_prefix(code_block_start, #self.lines)
+      end
+    else
       if code_block_lang and code_block_start < #self.lines then
         local cb_prefix = #indent + #code_fence_indent
         if in_details and details_summary_rendered then cb_prefix = cb_prefix + #"│ " end
@@ -3727,6 +3742,8 @@ function ContentBuilder:render_document(lines, opts)
     code_source_lines = nil
     code_block_id = nil
     code_fence_indent = ""
+    -- Replacement rows have already been counted and received their details bar.
+    if replaced then return #self.lines end
   end
 
   for src_idx, line in ipairs(lines) do
@@ -3788,11 +3805,7 @@ function ContentBuilder:render_document(lines, opts)
       and (origin.code == false or origin.code_opener or container_indent ~= code_container_indent)
       and not origin.code_closer
     then
-      local before = #self.lines
-      finish_code_block(base_indent .. code_container_indent, math.max(1, base_max_width - #code_container_indent))
-      if in_details and details_summary_rendered and not skip_details_body and #self.lines > before then
-        apply_details_body_prefix(before, #self.lines)
-      end
+      finish_code_block(base_indent .. code_container_indent)
     end
     if
       in_callout_code_block
@@ -4920,7 +4933,7 @@ function ContentBuilder:render_document(lines, opts)
         code_block_id = src_idx
         code_block_has_truncation = false
       else
-        finish_code_block(indent, max_width)
+        lines_before = finish_code_block(indent) or lines_before
       end
     elseif in_code_block then
       -- Dedent by the opening fence's indent, then put it back on output:
@@ -5175,6 +5188,7 @@ function ContentBuilder:render_document(lines, opts)
 
           local resolved, src_url, display_cols, display_rows, is_animated
           local orig_img_w, orig_img_h
+          local image_width, indent_width = image_columns(indent)
 
           local graphics = img_entry.path ~= "" and image.supports_kitty()
           if graphics and is_video then
@@ -5186,7 +5200,7 @@ function ContentBuilder:render_document(lines, opts)
               resolved = image.resolve_local(img_entry.path, buf_dir)
             end
             is_animated = true
-            local img_max_cols = max_width - 2
+            local img_max_cols = math.max(1, image_width - 2)
             if resolved then
               orig_img_w, orig_img_h = image.video_dimensions(resolved, true)
               if orig_img_w and orig_img_h then
@@ -5196,13 +5210,13 @@ function ContentBuilder:render_document(lines, opts)
             end
             if not display_cols then
               -- Video not yet cached or ffprobe unavailable: use placeholder size
-              display_cols = math.floor(img_max_cols * 0.8)
+              display_cols = math.max(1, math.floor(img_max_cols * 0.8))
               display_rows = 15
             end
           elseif graphics then
             resolved = image.resolve(img_entry.path, buf_dir)
             src_url = image.is_url(img_entry.path) and img_entry.path or nil
-            local img_max_cols = max_width - 2
+            local img_max_cols = math.max(1, image_width - 2)
             if resolved then
               orig_img_w, orig_img_h = image.image_dimensions(resolved)
               if orig_img_w and orig_img_h then
@@ -5222,7 +5236,7 @@ function ContentBuilder:render_document(lines, opts)
             end
             if not display_cols then
               if src_url or is_video then
-                display_cols = math.floor(img_max_cols * 0.8)
+                display_cols = math.max(1, math.floor(img_max_cols * 0.8))
                 display_rows = 15
               end
             end
@@ -5245,10 +5259,9 @@ function ContentBuilder:render_document(lines, opts)
               )
               local img_start_line = #self.lines
               -- Center the image horizontally
-              local img_col = math.max(0, math.floor((max_width - display_cols) / 2))
+              local img_col = indent_width + math.max(0, math.floor((image_width - display_cols) / 2))
               -- Show placeholder with background highlight while the image is loading.
               -- The image overlay (Kitty graphics) will cover this once loaded.
-              local indent_width = vim.api.nvim_strwidth(indent)
               local placeholder_msg
               if is_video then
                 placeholder_msg = "Loading video..."
@@ -5443,13 +5456,7 @@ function ContentBuilder:render_document(lines, opts)
   if in_html_table and not truncated then release_html_table() end
   if in_details_summary and not truncated then finish_details_summary() end
   if in_figure and not truncated then render_figure_caption(figure_indent, figure_width) end
-  if in_code_block then
-    local before = #self.lines
-    finish_code_block(base_indent .. code_container_indent, math.max(1, base_max_width - #code_container_indent))
-    if in_details and details_summary_rendered and not skip_details_body and #self.lines > before then
-      apply_details_body_prefix(before, #self.lines)
-    end
-  end
+  if in_code_block then finish_code_block(base_indent .. code_container_indent) end
 
   -- Flush any remaining table lines at end of document
   if not truncated then

@@ -3289,6 +3289,14 @@ function ContentBuilder:render_document(lines, opts)
     end
   end
 
+  local function add_horizontal_rule(indent, details_body)
+    local width = base_max_width - vim.fn.strdisplaywidth(indent)
+    if details_body then width = width - vim.fn.strdisplaywidth "│ " end
+    local rule = indent .. string.rep("─", math.max(0, math.floor(width / vim.fn.strdisplaywidth "─")))
+    self:add_line(rule, { { col = 0, end_col = #rule, hl = "FloatBorder" } })
+    if details_body then apply_details_body_prefix(#self.lines - 1, #self.lines) end
+  end
+
   -- A complete details element can share a physical row with its body and
   -- following text. Render each fragment under that row's existing owner.
   local function render_details_fragment(text, indent, max_width, body, raw_html, literal_ranges)
@@ -4574,12 +4582,7 @@ function ContentBuilder:render_document(lines, opts)
         self:add_line(indent)
         lines_shown = lines_shown + 1
       end
-      local hr_lines_before = #self.lines
-      local rule = indent .. string.rep("─", max_width)
-      self:add_line(rule, { { col = 0, end_col = #rule, hl = "FloatBorder" } })
-      if in_details and details_summary_rendered and not skip_details_body then
-        apply_details_body_prefix(hr_lines_before, #self.lines)
-      end
+      add_horizontal_rule(indent, in_details and details_summary_rendered and not skip_details_body)
       lines_shown = lines_shown + 1
       prev_was_heading = false
       prev_was_hr = true
@@ -4628,12 +4631,7 @@ function ContentBuilder:render_document(lines, opts)
         self:add_line(indent)
         lines_shown = lines_shown + 1
       end
-      local hr_lines_before = #self.lines
-      local rule = indent .. string.rep("─", max_width)
-      self:add_line(rule, { { col = 0, end_col = #rule, hl = "FloatBorder" } })
-      if in_details and details_summary_rendered and not skip_details_body then
-        apply_details_body_prefix(hr_lines_before, #self.lines)
-      end
+      add_horizontal_rule(indent, in_details and details_summary_rendered and not skip_details_body)
       lines_shown = lines_shown + 1
       prev_was_heading = false
       prev_was_hr = true
@@ -5375,8 +5373,7 @@ function ContentBuilder:render_document(lines, opts)
   if not truncated and #footnote_defs > 0 then
     -- Separator
     self:add_line(base_indent)
-    local rule = base_indent .. string.rep("─", base_max_width)
-    self:add_line(rule, { { col = 0, end_col = #rule, hl = "FloatBorder" } })
+    add_horizontal_rule(base_indent)
 
     for _, def in ipairs(footnote_defs) do
       self:set_source_line(def.source_line + source_line_offset)

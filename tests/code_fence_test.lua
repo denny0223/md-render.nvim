@@ -549,7 +549,7 @@ do
   }
   local payload = { " local msg = '甲'", " prefix " .. url, "    \t", "", "", " [bad]: /bad" }
   local narrow = vim.deepcopy(payload)
-  narrow[2] = " prefix https://exa…"
+  narrow[2] = " prefix https://examp…"
   local source = vim.api.nvim_create_buf(false, true)
   vim.bo[source].filetype = "markdown"
   vim.api.nvim_buf_set_lines(source, 0, -1, false, source_lines)
@@ -603,9 +603,16 @@ do
       assert_eq(keyword, "local", "public quoted Treesitter range covers the literal keyword")
       assert_eq(
         code_url,
-        { url, expected == narrow and "https://exa" or url },
+        { url, expected == narrow and "https://examp" or url },
         "public quoted URL range keeps the full target"
       )
+      if expected == narrow then
+        assert_eq(
+          vim.fn.strdisplaywidth(c.lines[block.start_line + 2]),
+          session.opts.max_width,
+          "collapsed quoted code uses its complete width without deducting the list twice"
+        )
+      end
       assert_eq(
         c.lines[#c.lines],
         "  after [bad]",
@@ -621,7 +628,7 @@ do
     for step = 1, 2 do
       local block = check(narrow)
       local link = session.content.link_metadata[1]
-      assert_eq({ link.col_start, link.col_end }, { 16, 27 }, "narrow quoted link has exact visible UTF-8 byte columns")
+      assert_eq({ link.col_start, link.col_end }, { 16, 29 }, "narrow quoted link has exact visible UTF-8 byte columns")
       vim.fn.getmousepos = function()
         return { winid = session.win, line = block.start_line + 2, column = link.col_start + 1 }
       end

@@ -23,6 +23,7 @@
 
 ---@class MdRender.CalloutFold
 ---@field header_line integer 0-indexed rendered line of the callout header
+---@field header_end_line? integer last rendered row of the wrapped header
 ---@field source_line integer 1-indexed source line index
 ---@field collapsed boolean current fold state
 ---@field start_source_line integer 1-indexed physical source row, including the body offset
@@ -227,6 +228,21 @@ local inline = require "md-render.inline"
 
 local wrap_words = wrap_mod.wrap_words
 
+local pad_icon = icons.pad_icon
+
+local function fold_indicator(is_collapsed)
+  return " " .. pad_icon(icons.get_fold_icon(is_collapsed))
+end
+
+-- The details bar follows the base indent, before any container indentation.
+function ContentBuilder:_display_column(indent)
+  local offset = self._details_prefix_width or 0
+  if offset == 0 then return vim.fn.strdisplaywidth(indent) end
+  local base = self._details_indent
+  local column = vim.fn.strdisplaywidth(base) + offset
+  return column + vim.fn.strdisplaywidth(indent:sub(#base + 1), column)
+end
+
 -- Wrapped rows are ordered source slices, so their byte ends are nondecreasing.
 local function first_span_row(wrapped_lines, line_starts, col)
   local first, last = 1, #wrapped_lines
@@ -424,7 +440,14 @@ function ContentBuilder:add_wrapped_markdown(
     local boundary = hard_breaks[i]
     local last = boundary and boundary.col - content_offset or #wrap_text
     local segment = wrap_text:sub(first + 1, last)
-    local rows, starts = wrap_words(segment, content_max_width)
+    local measure
+    if segment:find("\t", 1, true) then
+      local column = self:_display_column(indent .. quote_prefix) + list_cont_len
+      measure = function(value)
+        return vim.fn.strdisplaywidth(value, column)
+      end
+    end
+    local rows, starts = wrap_words(segment, content_max_width, measure)
     if segment == "" then
       rows, starts = { "" }, { 0 }
     end
@@ -626,9 +649,13 @@ function ContentBuilder:_emit_image_header(indent, img_icon, icon_hl, display_na
   local icon_end = icon_start + #img_icon
   local icon_display_width = vim.api.nvim_strwidth(img_icon)
   local cont_width = icon_display_width + 1
-  local available = math.max(1, max_width - vim.api.nvim_strwidth(indent) - cont_width)
+  local offset = self._details_prefix_width or 0
+  local column = self:_display_column(indent) + cont_width
+  local available = math.max(1, max_width - (column - offset))
 
-  local wrapped, _ = wrap_words(display_name, available)
+  local wrapped = wrap_words(display_name, available, function(value)
+    return vim.fn.strdisplaywidth(value, column)
+  end)
 
   for idx, segment in ipairs(wrapped) do
     if idx == 1 then
@@ -1005,8 +1032,13 @@ function ContentBuilder:add_markdown_line(
       end
     end
   end
-  local indent_w = vim.api.nvim_strwidth(indent)
-  local wrap_max = math.max(1, max_width - indent_w)
+  local column_offset = self._details_prefix_width or 0
+  local column = self:_display_column(indent)
+  local indent_w = column - column_offset
+  local indicator_width = fold_mod
+      and math.max(vim.fn.strdisplaywidth(fold_indicator(true)), vim.fn.strdisplaywidth(fold_indicator(false)))
+    or 0
+  local wrap_max = math.max(1, max_width - indent_w - indicator_width)
 
   local lines_before_fn = #self.lines
   local image_added = level
@@ -1017,7 +1049,7 @@ function ContentBuilder:add_markdown_line(
   if spec then
     self:add_native_heading(rendered_text, md_highlights, md_links, indent, spec, level, max_width)
   elseif not image_added then
-    if #hard_breaks > 0 or indent_w + vim.api.nvim_strwidth(rendered_text) > max_width then
+    if #hard_breaks > 0 or indent_w + vim.fn.strdisplaywidth(rendered_text, column) + indicator_width > max_width then
       self:add_wrapped_markdown(
         rendered_text,
         md_highlights,
@@ -1163,8 +1195,6 @@ function ContentBuilder:apply_alert_styling(lines_before, lines_after, alert_typ
   end
 end
 
-local pad_icon = icons.pad_icon
-
 local get_file_icon = icons.get_file_icon
 
 --- Append a fold indicator (›/∨) to the end of a callout header line
@@ -1172,7 +1202,7 @@ local get_file_icon = icons.get_file_icon
 ---@param line_idx integer 0-indexed rendered line
 ---@param is_collapsed boolean
 function ContentBuilder:add_fold_indicator(line_idx, is_collapsed)
-  local indicator = " " .. pad_icon(icons.get_fold_icon(is_collapsed))
+  local indicator = fold_indicator(is_collapsed)
   local line = self.lines[line_idx + 1]
   if not line then return end
 
@@ -2832,6 +2862,7 @@ end
 
 function ContentBuilder:render_document(lines, opts)
   opts = opts or {}
+  self._details_prefix_width, self._details_indent = nil, nil
   local markdown = require "md-render.markdown"
   lines = vim.tbl_map(require("md-render.character_references").normalize_nul, lines)
 
@@ -3099,6 +3130,7 @@ function ContentBuilder:render_document(lines, opts)
   local html_table_sources = {}
 
   local function finish_details_fold(source)
+    self._details_prefix_width, self._details_indent = nil, nil
     if not details_fold then return end
     details_fold.end_source_line = source + source_line_offset
     details_fold.end_line = #self.lines - 1
@@ -3185,10 +3217,19 @@ function ContentBuilder:render_document(lines, opts)
     local det_full = det_icon .. det_rendered
     table.insert(det_hls, 1, { col = 0, end_col = #det_full, hl = "Title" })
 
-    self:add_simple_markdown(det_full, det_hls, det_links, base_indent)
+    self:add_wrapped_markdown(
+      det_full,
+      det_hls,
+      det_links,
+      base_indent,
+      math.max(1, base_max_width - vim.fn.strdisplaywidth(base_indent)),
+      "",
+      det_icon
+    )
 
     details_fold = {
       header_line = det_lines_before,
+      header_end_line = #self.lines > det_lines_before + 1 and #self.lines - 1 or nil,
       source_line = details_src_idx,
       collapsed = is_collapsed,
       start_source_line = details_src_idx + source_line_offset,
@@ -3199,6 +3240,9 @@ function ContentBuilder:render_document(lines, opts)
     if is_collapsed then skip_details_body = true end
 
     details_summary_rendered = true
+    -- The bar is inserted later, but wrapping already needs its actual column.
+    self._details_prefix_width = is_collapsed and 0 or vim.fn.strdisplaywidth "│ "
+    self._details_indent = base_indent
     lines_shown = lines_shown + (#self.lines - det_lines_before)
   end
 
@@ -3297,6 +3341,22 @@ function ContentBuilder:render_document(lines, opts)
     if details_body then apply_details_body_prefix(#self.lines - 1, #self.lines) end
   end
 
+  local function body_width()
+    return math.max(1, base_max_width - (self._details_prefix_width or 0))
+  end
+
+  local function body_display_width(line)
+    local column = self:_display_column(base_indent)
+    return vim.fn.strdisplaywidth(base_indent) + vim.fn.strdisplaywidth(line:sub(#base_indent + 1), column)
+  end
+
+  local function truncate_body(line)
+    local width = math.max(0, body_width() - vim.fn.strdisplaywidth(base_indent))
+    local tail, byte_end = wrap_mod.truncate(line:sub(#base_indent + 1), width, nil, self:_display_column(base_indent))
+    -- Keep the insertion point intact even when only the decoration fits.
+    return base_indent .. tail, #base_indent + byte_end
+  end
+
   -- A complete details element can share a physical row with its body and
   -- following text. Render each fragment under that row's existing owner.
   local function render_details_fragment(text, indent, max_width, body, raw_html, literal_ranges)
@@ -3357,9 +3417,9 @@ function ContentBuilder:render_document(lines, opts)
       link.col_start, link.col_end = link.col_start + #quote_prefix, link.col_end + #quote_prefix
     end
     if quote_prefix ~= "" then table.insert(highlights, 1, { col = 0, end_col = #quote_prefix, hl = "FloatBorder" }) end
-    local width = base_max_width - vim.api.nvim_strwidth(display_indent)
-    if in_details and details_summary_rendered then width = width - vim.fn.strdisplaywidth "│ " end
-    if vim.api.nvim_strwidth(text) > width then
+    local column = self:_display_column(display_indent)
+    local width = base_max_width - column
+    if vim.fn.strdisplaywidth(text, column) > width then
       self:add_wrapped_markdown(text, highlights, links, display_indent, math.max(1, width), quote_prefix)
     else
       self:add_simple_markdown(text, highlights, links, display_indent)
@@ -3389,6 +3449,7 @@ function ContentBuilder:render_document(lines, opts)
     -- Keep supported tags such as <em>/<strong> while preserving raw text,
     -- and wrap long captions instead of overflowing the window.
     if figure_caption then
+      max_width = math.min(max_width, body_width())
       -- Trigger line is </figure>; restore the figcaption's own
       -- source line so its render rows are attributed to it.
       local saved_src_line = self._current_source_line
@@ -3409,19 +3470,26 @@ function ContentBuilder:render_document(lines, opts)
         hl = "Comment",
       })
 
-      local indent_width = vim.api.nvim_strwidth(indent)
+      local indent_column = self:_display_column(indent)
+      local indent_width = indent_column - (self._details_prefix_width or 0)
       local available = math.max(1, max_width - indent_width)
+      local function measure(value)
+        return vim.fn.strdisplaywidth(value, indent_column)
+      end
       local wrapped_lines, line_starts
-      if vim.api.nvim_strwidth(rendered_text) > available then
-        wrapped_lines, line_starts = wrap_words(rendered_text, available)
+      if measure(rendered_text) > available then
+        wrapped_lines, line_starts = wrap_words(rendered_text, available, measure)
       else
         wrapped_lines, line_starts = { rendered_text }, { 0 }
       end
 
       local base_line = #self.lines
       for idx, wline in ipairs(wrapped_lines) do
-        local line_width = vim.api.nvim_strwidth(wline)
+        local line_width = measure(wline)
         local pad = math.max(0, math.floor((max_width - line_width) / 2) - indent_width)
+        while pad > 0 and body_display_width(indent .. string.rep(" ", pad) .. wline) > max_width do
+          pad = pad - 1
+        end
         local prefix_len = #indent + pad
         local padded = indent .. string.rep(" ", pad) .. wline
         local line_start = line_starts[idx] or 0
@@ -3830,7 +3898,7 @@ function ContentBuilder:render_document(lines, opts)
           comment_width = comment_width - vim.fn.strdisplaywidth "│ "
         end
         comment_width = math.max(1, comment_width)
-        if vim.api.nvim_strwidth(comment_text) > comment_width then
+        if body_display_width(indent .. comment_text) > body_width() then
           self:add_wrapped_markdown(comment_text, comment_highlights, {}, indent, comment_width, comment.prefix)
         else
           self:add_simple_markdown(comment_text, comment_highlights, {}, indent)
@@ -3870,20 +3938,12 @@ function ContentBuilder:render_document(lines, opts)
       end
       local code_content = strip_container_prefix(line, 4, origin.column)
       local indented_line = indent .. code_content
-      local display_width = vim.api.nvim_strwidth(indented_line)
+      local display_width = body_display_width(indented_line)
+      local code_width = body_width()
       local content_byte_end = #indented_line
       local ib_lines_before = #self.lines
-      if display_width > max_width then
-        local target = max_width - vim.api.nvim_strwidth "…"
-        local current_width = 0
-        local byte_pos = 0
-        for char in indented_line:gmatch "[%z\1-\127\194-\253][\128-\191]*" do
-          local char_width = vim.api.nvim_strwidth(char)
-          if current_width + char_width > target then break end
-          current_width = current_width + char_width
-          byte_pos = byte_pos + #char
-        end
-        local truncated_line = indented_line:sub(1, byte_pos) .. "…"
+      if display_width > code_width then
+        local truncated_line, byte_pos = truncate_body(indented_line)
         self:add_line(truncated_line, { { col = 0, end_col = -1, hl = "String" } })
         content_byte_end = byte_pos
       else
@@ -4391,7 +4451,8 @@ function ContentBuilder:render_document(lines, opts)
                   { raw_html = origin.html ~= nil, literal_html_ranges = seg_literals }
                 )
                 table.insert(dt_hls, { col = 0, end_col = #dt_rendered, hl = "Bold" })
-                self:add_simple_markdown(dt_rendered, dt_hls, dt_links, indent)
+                local dt_width = base_max_width - self:_display_column(indent)
+                self:add_wrapped_markdown(dt_rendered, dt_hls, dt_links, indent, math.max(1, dt_width), "")
               end
             end
             if in_details and details_summary_rendered and not skip_details_body then
@@ -4417,7 +4478,8 @@ function ContentBuilder:render_document(lines, opts)
           end
           if dd_content and dd_content ~= "" then
             local dd_indent = indent .. "  "
-            local dd_width = math.max(1, base_max_width - vim.api.nvim_strwidth(dd_indent))
+            local dd_column = self:_display_column(dd_indent)
+            local dd_width = math.max(1, base_max_width - dd_column)
             local dd_lines_before = #self.lines
             -- Split on <br> / <br/> / <br /> and render each segment
             local parts, starts = html_breaks(dd_content, dd_literals)
@@ -4434,7 +4496,7 @@ function ContentBuilder:render_document(lines, opts)
                   true,
                   { raw_html = origin.html ~= nil, literal_html_ranges = seg_literals }
                 )
-                if vim.api.nvim_strwidth(dd_rendered) > dd_width then
+                if vim.fn.strdisplaywidth(dd_rendered, dd_column) > dd_width then
                   self:add_wrapped_markdown(dd_rendered, dd_hls, dd_links, dd_indent, dd_width, "")
                 else
                   self:add_simple_markdown(dd_rendered, dd_hls, dd_links, dd_indent)
@@ -4449,7 +4511,7 @@ function ContentBuilder:render_document(lines, opts)
           -- Unrecognized text remains readable inside this raw owner.
           if not dt_content and not dd_content then
             local before = #self.lines
-            self:add_markdown_line(rest, indent, base_max_width, repo_base_url, autolinks, ref_links, nil, nil, {
+            self:add_markdown_line(rest, indent, body_width(), repo_base_url, autolinks, ref_links, nil, nil, {
               raw_html = origin.html ~= nil,
               literal_html_ranges = rest_literals,
             })
@@ -4605,7 +4667,7 @@ function ContentBuilder:render_document(lines, opts)
         if lines_shown > 0 and not prev_rendered_blank and not prev_was_hr then self:add_line(indent) end
         local text_scale = self.text_scale
         if in_details and self:heading_renderer() == "image" then self.text_scale = false end
-        self:add_markdown_line(line, indent, base_max_width, repo_base_url, autolinks, ref_links, nil, nil, {
+        self:add_markdown_line(line, indent, body_width(), repo_base_url, autolinks, ref_links, nil, nil, {
           raw_html = true,
           heading_level = html_heading_level,
           heading_source = html_heading_source,
@@ -4853,19 +4915,11 @@ function ContentBuilder:render_document(lines, opts)
       local content = strip_indent(line, #code_fence_indent)
       table.insert(code_source_lines, content)
       local indented = indent .. code_fence_indent .. content
-      local display_width = vim.api.nvim_strwidth(indented)
-      if not expand_state[code_block_id] and display_width > max_width then
+      local display_width = body_display_width(indented)
+      local code_width = body_width()
+      if not expand_state[code_block_id] and display_width > code_width then
         code_block_has_truncation = true
-        local target = max_width - vim.api.nvim_strwidth "…"
-        local current_width = 0
-        local byte_pos = 0
-        for char in indented:gmatch "[%z\1-\127\194-\253][\128-\191]*" do
-          local char_width = vim.api.nvim_strwidth(char)
-          if current_width + char_width > target then break end
-          current_width = current_width + char_width
-          byte_pos = byte_pos + #char
-        end
-        local truncated_line = indented:sub(1, byte_pos) .. "…"
+        local truncated_line, byte_pos = truncate_body(indented)
         self:add_line(truncated_line, {
           { col = 0, end_col = byte_pos, hl = "String" },
           { col = byte_pos, end_col = #truncated_line, hl = "Underlined" },
@@ -4940,22 +4994,18 @@ function ContentBuilder:render_document(lines, opts)
           stripped = strip_container_prefix(stripped, #callout_code_fence.indent, code_column)
           table.insert(callout_code_source_lines, stripped)
           local code_line = callout_code_prefix .. stripped
-          local display_width = vim.api.nvim_strwidth(code_line)
-          if not expand_state[callout_code_block_id] and display_width > max_width then
+          local display_width = body_display_width(code_line)
+          local code_width = body_width()
+          if not expand_state[callout_code_block_id] and display_width > code_width then
             callout_code_has_truncation = true
-            local target = max_width - vim.api.nvim_strwidth "…"
-            local current_width = 0
-            local byte_pos = 0
-            for char in code_line:gmatch "[%z\1-\127\194-\253][\128-\191]*" do
-              local char_width = vim.api.nvim_strwidth(char)
-              if current_width + char_width > target then break end
-              current_width = current_width + char_width
-              byte_pos = byte_pos + #char
-            end
-            local truncated_code = code_line:sub(1, byte_pos) .. "…"
+            local truncated_code, byte_pos = truncate_body(code_line)
             self:add_line(truncated_code, {
-              { col = #indent, end_col = #callout_code_prefix, hl = "FloatBorder" },
-              { col = #callout_code_prefix, end_col = byte_pos, hl = "String" },
+              {
+                col = math.min(#indent, byte_pos),
+                end_col = math.min(#callout_code_prefix, byte_pos),
+                hl = "FloatBorder",
+              },
+              { col = math.min(#callout_code_prefix, byte_pos), end_col = byte_pos, hl = "String" },
               { col = byte_pos, end_col = #truncated_code, hl = "Underlined" },
             })
             detect_urls_in_code_line(self, stripped, #callout_code_prefix, byte_pos)
@@ -5154,8 +5204,15 @@ function ContentBuilder:render_document(lines, opts)
             if display_cols and display_rows then
               local raw_icon, icon_hl = icons.get_image_icon(img_entry.path, is_video and "video" or "image")
               local img_icon = pad_icon(raw_icon)
-              local header_lines_added =
-                self:_emit_image_header(indent, img_icon, icon_hl, display_name, max_width, "Comment", img_entry.href)
+              local header_lines_added = self:_emit_image_header(
+                indent,
+                img_icon,
+                icon_hl,
+                display_name,
+                body_width(),
+                "Comment",
+                img_entry.href
+              )
               local img_start_line = #self.lines
               -- Center the image horizontally
               local img_col = math.max(0, math.floor((max_width - display_cols) / 2))
@@ -5217,8 +5274,15 @@ function ContentBuilder:render_document(lines, opts)
             -- Fallback belongs to this occurrence, even after another image rendered.
             local raw_icon, icon_hl = icons.get_image_icon(img_entry.path, is_video and "video" or "image")
             local img_icon = pad_icon(raw_icon)
-            local fb_lines =
-              self:_emit_image_header(indent, img_icon, icon_hl, display_name, max_width, "Underlined", img_entry.href)
+            local fb_lines = self:_emit_image_header(
+              indent,
+              img_icon,
+              icon_hl,
+              display_name,
+              body_width(),
+              "Underlined",
+              img_entry.href
+            )
             lines_shown = lines_shown + fb_lines
           end
           handled = true
@@ -5294,6 +5358,7 @@ function ContentBuilder:render_document(lines, opts)
               self:add_fold_indicator(lines_before, is_collapsed)
               local fold = {
                 header_line = lines_before,
+                header_end_line = #self.lines > lines_before + 1 and #self.lines - 1 or nil,
                 source_line = src_indices[src_idx],
                 collapsed = is_collapsed,
                 start_source_line = src_indices[src_idx] + source_line_offset,

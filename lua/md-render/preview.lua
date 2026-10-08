@@ -179,7 +179,7 @@ MdPreview.build_content = function(lines, opts)
           -- label is ASCII (key matches [%w_%-]+), so bytes == display cols.
           local value_col = #label + 2
           local full_line = label .. ": " .. entry.value
-          local display_width = vim.api.nvim_strwidth(full_line)
+          local display_width = vim.fn.strdisplaywidth(full_line)
           if display_width > max_width then
             local block_id = -entry.source_line
             local expanded = expand_state[block_id] or false
@@ -188,7 +188,9 @@ MdPreview.build_content = function(lines, opts)
               -- Wrap the value across lines, aligning continuation lines
               -- under the value's start column.
               local value_width = math.max(1, max_width - value_col)
-              local wrapped = wrap.wrap_words(entry.value, value_width)
+              local wrapped = wrap.wrap_words(entry.value, value_width, function(value)
+                return vim.fn.strdisplaywidth(value, value_col)
+              end)
               local cont_indent = string.rep(" ", value_col)
               for idx, wline in ipairs(wrapped) do
                 if idx == 1 then
@@ -205,16 +207,7 @@ MdPreview.build_content = function(lines, opts)
                 end
               end
             else
-              local target = max_width - vim.api.nvim_strwidth "…"
-              local current_width = 0
-              local byte_pos = 0
-              for char in full_line:gmatch "[%z\1-\127\194-\253][\128-\191]*" do
-                local char_width = vim.api.nvim_strwidth(char)
-                if current_width + char_width > target then break end
-                current_width = current_width + char_width
-                byte_pos = byte_pos + #char
-              end
-              local truncated = full_line:sub(1, byte_pos) .. "…"
+              local truncated, byte_pos = wrap.truncate(full_line, max_width)
               b:add_line(truncated, {
                 { col = 0, end_col = math.min(#label, byte_pos), hl = "Comment" },
                 { col = math.min(value_col, byte_pos), end_col = byte_pos, hl = "String" },
@@ -516,7 +509,9 @@ function Session.new(source_bufnr, ns_name, opts)
 
   self.opts.fold_state = self.fold_state
   self.opts.expand_state = self.expand_state
-  self.content = MdPreview.build_content(self.source_lines, self.opts)
+  self.content = vim.api.nvim_buf_call(self.buf, function()
+    return MdPreview.build_content(self.source_lines, self.opts)
+  end)
   -- Defensive: nvim_buf_set_name above can leave the buffer modifiable=false
   -- on some setups (third-party autocmds firing even with eventignore=all).
   vim.bo[self.buf].modifiable = true
@@ -580,7 +575,9 @@ function Session:rebuild(force)
   end
   self.opts.fold_state = self.fold_state
   self.opts.expand_state = self.expand_state
-  local new_content = MdPreview.build_content(self.source_lines, self.opts)
+  local new_content = vim.api.nvim_buf_call(self.buf, function()
+    return MdPreview.build_content(self.source_lines, self.opts)
+  end)
 
   local wins = vim.fn.win_findbuf(self.buf)
   local saved_views = {}

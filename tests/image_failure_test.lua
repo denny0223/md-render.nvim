@@ -34,7 +34,10 @@ local function covers_progress(mark, content, row, progress)
   local line = content.lines[row + 1]
   local first, last = assert(line:find(progress, 1, true))
   assert(mark[2] == row and mark[3] <= first - 1, "failure missed the reserved progress position")
-  assert(mark[3] + #mark[4].virt_text[1][1] >= last, "short failure left progress text visible")
+  assert(
+    vim.fn.strdisplaywidth(line:sub(1, mark[3]) .. mark[4].virt_text[1][1]) >= vim.fn.strdisplaywidth(line:sub(1, last)),
+    "short failure left progress text visible"
+  )
 end
 
 -- The documented setup_images API permits callers without an auto-rebuild callback.
@@ -63,13 +66,58 @@ end
 image.render_mermaid_async = function(_, callback)
   callback(nil)
 end
-content = build({ "```mermaid", "graph LR", " A-->B", "```", "after" }, { max_width = 16 })
+image.has_plantuml, image.render_plantuml_async = image.has_mmdc, image.render_mermaid_async
+for _, lang in ipairs { "mermaid", "plantuml" } do
+  for _, width in ipairs { 8, 14, 16 } do
+    content = build({ "```" .. lang, "A-->B", "```", "after" }, { max_width = width })
+    p = content.image_placements[1]
+    row = p.line + math.floor(p.rows / 2)
+    state = display.setup_images(win, content, ns)
+    wait_for(failure, "narrow diagram failure had no feedback")
+    assert(vim.fn.strdisplaywidth(content.lines[row + 1]) <= width, "narrow progress must fit its reserved row")
+    covers_progress(failure(), content, row, vim.trim(content.lines[row + 1]))
+    display.cleanup_images(state)
+  end
+end
+
+-- Async completion can run in another buffer with a different native tab width.
+local saved_tabstop = vim.bo[buf].tabstop
+vim.bo[buf].tabstop = 8
+content = build({ "<details open>", "<summary>M</summary>", "", "```mermaid", "A-->B", "```", "", "</details>" }, {
+  max_width = 20,
+  indent = "\t",
+})
 p = content.image_placements[1]
 row = p.line + math.floor(p.rows / 2)
-state = display.setup_images(win, content, ns)
-wait_for(failure, "narrow diagram failure had no feedback")
-covers_progress(failure(), content, row, "Rendering mermaid diagram...")
+local prefix_end = vim.fn.match(content.lines[row + 1], "\\%" .. (p.col + 1) .. "v")
+local expected_prefix = content.lines[row + 1]:sub(1, prefix_end)
+assert(expected_prefix:find("│ ", 1, true), "fixture must contain the details bar before the image")
+local details_win = vim.api.nvim_open_win(buf, false, {
+  relative = "editor",
+  row = 0,
+  col = 0,
+  width = 20,
+  height = 25,
+  style = "minimal",
+})
+local caller = vim.api.nvim_create_buf(false, true)
+vim.bo[caller].tabstop = 4
+vim.api.nvim_win_set_buf(win, caller)
+state = display.setup_images(details_win, content, ns)
+wait_for(failure, "details diagram failure had no feedback")
+assert(vim.api.nvim_get_current_buf() == caller, "async completion must retain the caller buffer")
+local details_mark = failure()
+covers_progress(details_mark, content, row, vim.trim(content.lines[row + 1]))
+assert(
+  details_mark[4].virt_text[1][1]:sub(1, #expected_prefix) == expected_prefix,
+  "failure must retain the native tab and UTF-8 details prefix"
+)
+assert(not details_mark[4].virt_text[1][1]:find("Ren", 1, true), "failure retained progress in the details prefix")
 display.cleanup_images(state)
+vim.api.nvim_win_close(details_win, true)
+vim.api.nvim_win_set_buf(win, buf)
+vim.api.nvim_buf_delete(caller, { force = true })
+vim.bo[buf].tabstop = saved_tabstop
 
 -- Table placements use display columns; UTF-8 indentation and borders use more bytes.
 content = build({ "| 中文 | 圖片 |", "| --- | --- |", "| 相鄰內容 | ![圖](tests/fixtures/test_4x4.png) |" }, {
@@ -121,21 +169,38 @@ local ok, err = pcall(function()
     image._test_cell_size = {cell_w = 8, cell_h = 16}
     image.has_mmdc = function() return true end
     image.render_mermaid_async = function(_, callback) callback(nil) end
+    vim.bo.tabstop = 8
     vim.api.nvim_ui_send = function() end
     vim.wo.wrap, vim.wo.number, vim.wo.relativenumber = true, false, false
     vim.wo.signcolumn, vim.wo.foldcolumn = "no", "0"
     vim.o.laststatus, vim.o.showtabline = 0, 0
   ]]
-  for _, case in ipairs { { 16, "  " }, { 16, "　" }, { 18, "│ 日本語 " }, { 80, "  " } } do
+  for _, case in ipairs {
+    { 8, "  " },
+    { 10, "  " },
+    { 12, "  " },
+    { 14, "  " },
+    { 16, "  " },
+    { 16, "　" },
+    { 18, "│ 日本語 " },
+    { 20, "\t", true },
+    { 80, "  " },
+  } do
     vim.rpcrequest(child, "nvim_ui_try_resize", case[1], 32)
     child_lua(
       [[
-      local width, indent = ...
+      local width, indent, details = ...
       local display = require "md-render.display_utils"
       if _G.failure_state then display.cleanup_images(_G.failure_state) end
       local b = require("md-render.content_builder").ContentBuilder.new()
-      b:render_document({"before", "```mermaid", "graph LR", " A-->B", "```", "after"}, {max_width=width, indent=indent})
+      local source = {"before", "```mermaid", "graph LR", " A-->B", "```", "after"}
+      if details then
+        source = {"before", "<details open>", "<summary>M</summary>", "", "```mermaid", "A-->B", "```", "", "</details>", "after"}
+      end
+      b:render_document(source, {max_width=width, indent=indent})
       local content = b:result()
+      local placement = content.image_placements[1]
+      _G.failure_progress_row = placement.line + math.floor(placement.rows / 2)
       local ns = vim.api.nvim_create_namespace "failure-screen"
       vim.bo.modifiable = true
       vim.api.nvim_buf_clear_namespace(0, -1, 0, -1)
@@ -154,18 +219,28 @@ local ok, err = pcall(function()
       case
     )
     vim.rpcrequest(child, "nvim_command", "redraw!")
-    local screen = child_lua [[
+    local output = child_lua [[
       local lines = {}
       for row = 1, vim.o.lines do
         local cells = {}
         for col = 1, vim.o.columns do cells[#cells+1] = vim.fn.screenstring(row, col) end
         lines[#lines+1] = table.concat(cells)
       end
-      return table.concat(lines, "\n")
+      local progress = vim.fn.screenpos(vim.api.nvim_get_current_win(), _G.failure_progress_row + 1, 1).row
+      return { text = table.concat(lines, "\n"), progress = lines[progress] }
     ]]
-    assert(screen:find("failed", 1, true) or screen:find("Failed", 1, true), screen)
-    for _, progress in ipairs { "Rendering", "mermaid", "diagram", "..." } do
+    local screen = output.text
+    assert(screen:find("failed", 1, true) or screen:find("Failed", 1, true) or screen:find("!", 1, true), screen)
+    for _, progress in ipairs { "Ren", "mermaid", "diagram", "..." } do
       assert(not screen:find(progress, 1, true), "wrapped progress remains visible: " .. screen)
+    end
+    assert(
+      output.progress and not output.progress:find("…", 1, true),
+      "progress ellipsis remains visible: " .. screen
+    )
+    if case[3] then
+      local prefix = string.rep(" ", vim.fn.strdisplaywidth(case[2])) .. "│ "
+      assert(output.progress:sub(1, #prefix) == prefix, "failure moved or hid the details bar: " .. screen)
     end
     assert(screen:find("before", 1, true) and screen:find("after", 1, true), "adjacent content disappeared")
     if case[1] == 80 then assert(screen:find(":checkhealth md-render", 1, true), screen) end

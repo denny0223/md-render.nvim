@@ -6,6 +6,7 @@ local Builder = require("md-render.content_builder").ContentBuilder
 local display = require "md-render.display_utils"
 local image = require "md-render.image"
 local links = require "md-render.links"
+local png = vim.fn.getcwd() .. "/tests/fixtures/test_4x4.png"
 local cached, enabled = false, true
 local cache_sources = {}
 image.supports_kitty = function()
@@ -22,7 +23,8 @@ image.get_mermaid_cached = function(source)
   return cached and "/tmp/diagram-fence.png" or nil
 end
 image.get_plantuml_cached = image.get_mermaid_cached
-image.image_dimensions = function()
+image.image_dimensions = function(path)
+  if path == png then return 320, 160 end
   return 1000, 100
 end
 image.get_cell_size = function()
@@ -92,8 +94,9 @@ for _, lang in ipairs { "mermaid", "plantuml" } do
             local payload = "Alice -> Bob: 甲"
             local c = build(lang, list, details, ending, payload)
             local p = assert(c.image_placements[1])
-            local cols = cached and (list and 44 or 46) or (list and 35 or 36)
-            local col = (cached and 1 or (list and 5 or 6)) + (details and 2 or 0)
+            local inset = (list and 2 or 0) + (details and 2 or 0)
+            local cols = cached and 46 - inset or ({ [0] = 36, [2] = 35, [4] = 33 })[inset]
+            local col = cached and 1 + inset or ({ [0] = 6, [2] = 7, [4] = 9 })[inset]
             local expected = {
               line = (details and 2 or 0) + (list and 1 or 0) + 1,
               col = col,
@@ -105,10 +108,11 @@ for _, lang in ipairs { "mermaid", "plantuml" } do
             }
             if not cached then expected[lang .. "_source"] = payload end
             eq(c.image_placements, { expected }, ending .. " exact diagram geometry/payload")
+            assert(p.cols >= 1 and p.rows >= 1 and p.col + p.cols <= 48, ending .. " diagram fits the text area")
             eq(cache_sources[#cache_sources], payload, ending .. " cache receives dedented literal bytes")
             local prefix = (details and "│ " or "") .. (list and "  " or "")
             local title = lang == "mermaid" and "Mermaid" or "PlantUML"
-            eq(c.lines[p.line], (list and "  " or "") .. title, ending .. " existing diagram header")
+            eq(c.lines[p.line], prefix .. title, ending .. " header shares the body's container prefix")
             local body = vim.list_slice(c.lines, p.line + 1, p.line + p.rows)
             local expected_body = {}
             for row = 1, p.rows do
@@ -116,7 +120,7 @@ for _, lang in ipairs { "mermaid", "plantuml" } do
               if not cached and row == 8 then
                 local message = "Rendering " .. (lang == "mermaid" and "mermaid" or "PlantUML") .. " diagram..."
                 local pad = math.max(0, math.floor((cols - vim.api.nvim_strwidth(message)) / 2))
-                text = text .. string.rep(" ", col - (details and 2 or 0) + pad) .. message
+                text = text .. string.rep(" ", col - inset + pad) .. message
               end
               expected_body[row] = text
             end
@@ -200,5 +204,67 @@ for _, lang in ipairs { "mermaid", "plantuml" } do
     end
   end
 end
+test("local images in details fit their reserved rows and placement with tab indentation", function()
+  cached, enabled = false, true
+  for _, indent in ipairs { "  ", "\t" } do
+    render({ "<details open>", "<summary>Image</summary>", "", "![Image](" .. png .. ")", "", "</details>" }, {
+      max_width = 20,
+      indent = indent,
+    }, function(c)
+      local p = assert(c.image_placements[1], "local PNG must enter the graphics path")
+      assert(p.cols >= 1 and p.rows >= 1 and p.col + p.cols <= 20, "details image placement exceeds the text area")
+      eq({ p.img_w, p.img_h }, { 320, 160 }, "local PNG uses the controlled dimensions")
+      local prefix = indent .. "│ "
+      for row = p.line - p.label_rows + 1, p.line + p.rows do
+        assert(c.lines[row]:sub(1, #prefix) == prefix, "image header and every reserved row share the details bar")
+        local _, bars = c.lines[row]:gsub("│ ", "")
+        eq(bars, 1, "image header and reserved rows have exactly one details bar")
+        assert(vim.fn.strdisplaywidth(c.lines[row]) <= 20, "details image row exceeds the text area")
+      end
+    end)
+  end
+end)
+test("tiny cached and pending diagrams retain positive placement dimensions", function()
+  enabled = true
+  for _, cache_hit in ipairs { false, true } do
+    cached = cache_hit
+    for _, lang in ipairs { "mermaid", "plantuml" } do
+      local c = build(lang, false, false, "eof", "A-->B", { max_width = 3 })
+      local p = assert(c.image_placements[1])
+      assert(p.cols >= 1 and p.rows >= 1 and p.col + p.cols <= 3, "tiny diagram placement must fit")
+    end
+  end
+end)
+test("replaced diagram rows do not consume the line limit twice", function()
+  cached, enabled = false, true
+  for _, lang in ipairs { "mermaid", "plantuml" } do
+    render({ "```" .. lang, "A-->B", "B-->C", "```", "after" }, { max_width = 20, max_lines = 18 }, function(c)
+      local after
+      for row, text in ipairs(c.lines) do
+        if text == "after" then after = row end
+      end
+      assert(after, "discarded literal code rows truncated the paragraph after a pending diagram")
+      eq(c.source_line_map[after], 5, "following paragraph retains its physical source owner")
+    end)
+  end
+end)
+test("pending diagram labels fit narrow rows with container prefixes", function()
+  local saved_ambiwidth = vim.o.ambiwidth
+  cached, enabled = false, true
+  for _, ambiwidth in ipairs { "single", "double" } do
+    vim.o.ambiwidth = ambiwidth
+    for _, width in ipairs { 14, 20, 21, 40 } do
+      for _, lang in ipairs { "mermaid", "plantuml" } do
+        for _, details in ipairs { false, true } do
+          local c = build(lang, true, details, "closed", "A-->B", { max_width = width, indent = "  " })
+          for _, text in ipairs(c.lines) do
+            assert(vim.fn.strdisplaywidth(text) <= width, "pending diagram overflow: " .. text)
+          end
+        end
+      end
+    end
+  end
+  vim.o.ambiwidth = saved_ambiwidth
+end)
 print(string.format("diagram_fence_layout_test: %d passed, %d failed", passed, failed))
 if failed > 0 then os.exit(1) end

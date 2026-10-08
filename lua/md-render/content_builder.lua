@@ -642,8 +642,9 @@ end
 ---@param max_width integer
 ---@param name_hl string Highlight group for the display name text
 ---@param href? string enclosing Markdown link, independent of the image source
+---@param hard_wrap? boolean preserve literal filenames without word segmentation
 ---@return integer lines_added Number of lines emitted
-function ContentBuilder:_emit_image_header(indent, img_icon, icon_hl, display_name, max_width, name_hl, href)
+function ContentBuilder:_emit_image_header(indent, img_icon, icon_hl, display_name, max_width, name_hl, href, hard_wrap)
   display_name = display_name:gsub("\r\n", "\n"):gsub("[\r\n]", " ")
   local icon_start = #indent
   local icon_end = icon_start + #img_icon
@@ -653,9 +654,23 @@ function ContentBuilder:_emit_image_header(indent, img_icon, icon_hl, display_na
   local column = self:_display_column(indent) + cont_width
   local available = math.max(1, max_width - (column - offset))
 
-  local wrapped = wrap_words(display_name, available, function(value)
-    return vim.fn.strdisplaywidth(value, column)
-  end)
+  local word_rows
+  if hard_wrap then
+    word_rows = wrap_mod.wrap_cells(display_name, available, column)
+  else
+    word_rows = wrap_words(display_name, available, function(value)
+      return vim.fn.strdisplaywidth(value, column)
+    end)
+  end
+  local wrapped = {}
+  for _, row in ipairs(word_rows) do
+    if not hard_wrap and vim.fn.strdisplaywidth(row, column) > available then
+      local parts = wrap_mod.wrap_cells(row, available, column)
+      vim.list_extend(wrapped, parts)
+    else
+      wrapped[#wrapped + 1] = row
+    end
+  end
 
   for idx, segment in ipairs(wrapped) do
     if idx == 1 then
@@ -4888,19 +4903,17 @@ function ContentBuilder:render_document(lines, opts)
         if code_block_filename then
           local file_icon, icon_hl = get_file_icon(code_block_filename)
           file_icon = pad_icon(file_icon)
-          local icon_start = #indent + #code_fence_indent
-          local icon_end = icon_start + #file_icon
-          local fname_line = indent .. code_fence_indent .. file_icon .. " " .. code_block_filename
-          local hls = {
-            { col = icon_end, end_col = #fname_line, hl = "Comment" },
-          }
-          if icon_hl then
-            table.insert(hls, 1, { col = icon_start, end_col = icon_end, hl = icon_hl })
-          else
-            hls[1].col = icon_start
-          end
-          self:add_line(fname_line, hls)
-          lines_shown = lines_shown + 1
+          local added = self:_emit_image_header(
+            indent .. code_fence_indent,
+            file_icon,
+            icon_hl or "Comment",
+            code_block_filename,
+            body_width(),
+            "Comment",
+            nil,
+            true
+          )
+          lines_shown = lines_shown + added
         end
         code_block_start = #self.lines
         code_source_lines = {}
@@ -4962,23 +4975,27 @@ function ContentBuilder:render_document(lines, opts)
                 callout_code_lang = (lang_part ~= "") and lang_part or nil
                 local cb_file_icon, cb_icon_hl = get_file_icon(file_part)
                 cb_file_icon = pad_icon(cb_file_icon)
-                local cb_icon_start = #callout_code_prefix
-                local cb_icon_end = cb_icon_start + #cb_file_icon
-                local fname_line = callout_code_prefix .. cb_file_icon .. " " .. file_part
-                local cb_hls = {
-                  { col = #indent, end_col = cb_icon_start, hl = "FloatBorder" },
-                  { col = cb_icon_end, end_col = #fname_line, hl = "Comment" },
-                }
-                if cb_icon_hl then
-                  table.insert(cb_hls, 2, { col = cb_icon_start, end_col = cb_icon_end, hl = cb_icon_hl })
-                else
-                  cb_hls[2].col = cb_icon_start
+                local added = self:_emit_image_header(
+                  callout_code_prefix,
+                  cb_file_icon,
+                  cb_icon_hl or "Comment",
+                  file_part,
+                  body_width(),
+                  "Comment",
+                  nil,
+                  true
+                )
+                for i = #self.highlights - added + 1, #self.highlights do
+                  table.insert(self.highlights[i].groups, 1, {
+                    col = #indent,
+                    end_col = #callout_code_prefix,
+                    hl = "FloatBorder",
+                  })
                 end
-                self:add_line(fname_line, cb_hls)
                 if current_alert_type then
                   self:apply_alert_styling(lines_before, #self.lines, current_alert_type, false)
                 end
-                lines_shown = lines_shown + 1
+                lines_shown = lines_shown + added
               end
             end
             callout_code_depth, callout_code_container = quote_depth, container_indent
@@ -5024,11 +5041,24 @@ function ContentBuilder:render_document(lines, opts)
             prefix = prefix .. string.rep(" ", origin.list_column)
             stripped = strip_container_prefix(stripped, origin.list_column + 4, code_column)
           end
-          self:add_line(prefix .. stripped, {
-            { col = #indent, end_col = #prefix, hl = "FloatBorder" },
-            { col = #prefix, end_col = -1, hl = "String" },
+          local code_line, byte_pos = prefix .. stripped, #prefix + #stripped
+          local expanded = expand_state[src_idx] or false
+          if not expanded and body_display_width(code_line) > body_width() then
+            code_line, byte_pos = truncate_body(code_line)
+          end
+          if expanded or byte_pos < #prefix + #stripped then
+            table.insert(self.expandable_regions, {
+              start_line = #self.lines,
+              end_line = #self.lines,
+              block_id = src_idx,
+              expanded = expanded,
+            })
+          end
+          self:add_line(code_line, {
+            { col = math.min(#indent, byte_pos), end_col = math.min(#prefix, byte_pos), hl = "FloatBorder" },
+            { col = math.min(#prefix, byte_pos), end_col = byte_pos, hl = "String" },
           })
-          detect_urls_in_code_line(self, stripped, #prefix, #prefix + #stripped)
+          detect_urls_in_code_line(self, stripped, #prefix, byte_pos)
           handled = true
         end
       end

@@ -212,5 +212,110 @@ test("keys wider than the viewport keep valid highlight ranges", function()
   end
 end)
 
+test("expanded wide keys preserve native glyphs, tabs, source rows and styles", function()
+  local key = "a_very_long_property_key"
+  local value = "中文 é👩‍💻👍🏽🇹🇼\tvalue  tail "
+  local source = { "---", key .. ": " .. value, "---", "body" }
+  local original = vim.deepcopy(source)
+  local full_line = "  " .. key .. ": " .. value
+  local boundaries, offset = { [0] = true }, 0
+  for _, glyph in ipairs(vim.fn.split(full_line, "\\zs")) do
+    offset = offset + #glyph
+    boundaries[offset] = true
+  end
+  local tabstop = vim.bo.tabstop
+  for _, tabs in ipairs { 4, 8 } do
+    vim.bo.tabstop = tabs
+    for _, width in ipairs { 12, #key + 4 } do
+      local content = preview.build_content(source, {
+        max_width = width,
+        text_scale = false,
+        expand_state = { [-2] = true },
+      })
+      local region = assert(content.expandable_regions[1])
+      local parts, labels, values = {}, {}, {}
+      offset = 0
+      for row = region.start_line + 1, region.end_line + 1 do
+        local line = content.lines[row]
+        parts[#parts + 1] = line
+        offset = offset + #line
+        assert_true(boundaries[offset], "wrapped row ends at a complete native glyph")
+        assert_true(vim.fn.strdisplaywidth(line) <= width, "wide-key row fits with the active tabstop")
+        assert_eq(content.source_line_map[row], 2, "wide-key rows retain their property source")
+      end
+      for _, entry in ipairs(content.highlights) do
+        if entry.line >= region.start_line and entry.line <= region.end_line then
+          for _, group in ipairs(entry.groups) do
+            local parts_by_style = group.hl == "Comment" and labels or values
+            parts_by_style[#parts_by_style + 1] = content.lines[entry.line + 1]:sub(group.col + 1, group.end_col)
+          end
+        end
+      end
+      assert_eq(table.concat(parts), full_line, "expanded rows retain all property bytes")
+      assert_eq(table.concat(labels), "  " .. key, "wide-key label styles retain byte boundaries")
+      assert_eq(table.concat(values), value, "wide-key value styles retain byte boundaries")
+      assert_eq(region.block_id, -2, "wide-key interaction id stays tied to the source row")
+    end
+  end
+  vim.bo.tabstop = tabstop
+  assert_eq(source, original, "wide-key rendering leaves source bytes unchanged")
+end)
+
+test("wide-key wrapping bounds total native scans and source slices", function()
+  for _, size in ipairs { 4096, 8192, 16384 } do
+    local source = { "---", string.rep("k", size) .. ": value", "---" }
+    for _, width in ipairs { 20, 80 } do
+      local split, displaywidth, sub = vim.fn.split, vim.fn.strdisplaywidth, string.sub
+      local bytes = 0
+      local function charge(length)
+        bytes = bytes + length
+        assert(bytes <= 12 * #source[2], "wide-key wrapping exceeded its linear native-work budget")
+      end
+      vim.fn.split = function(text, ...)
+        charge(#text)
+        return split(text, ...)
+      end
+      vim.fn.strdisplaywidth = function(text, ...)
+        charge(#text)
+        return displaywidth(text, ...)
+      end
+      string.sub = function(text, ...)
+        local result = sub(text, ...)
+        charge(#result)
+        return result
+      end
+      local ok, content = pcall(preview.build_content, source, {
+        max_width = width,
+        text_scale = false,
+        expand_state = { [-2] = true },
+      })
+      vim.fn.split, vim.fn.strdisplaywidth, string.sub = split, displaywidth, sub
+      assert(ok, content)
+      local region = content.expandable_regions[1]
+      assert_eq(
+        table.concat(vim.list_slice(content.lines, region.start_line + 1, region.end_line + 1)),
+        "  " .. source[2],
+        "bounded wrapping retains the whole large property"
+      )
+    end
+  end
+end)
+
+test("native cell wrapping tracks byte starts and prefix-dependent tabs", function()
+  local wrap_cells = require("md-render.wrap").wrap_cells
+  local tabstop = vim.bo.tabstop
+  vim.bo.tabstop = 8
+  local rows, starts = wrap_cells("a\tb\tc", 8, 2)
+  assert_eq(rows, { "a\tb", "\tc" }, "each row measures tabs from the same prefix column")
+  assert_eq(starts, { 0, 3 }, "hard-wrap starts are source byte offsets")
+  rows, starts = wrap_cells("👩‍💻a", 1)
+  assert_eq(rows, { "👩‍💻", "a" }, "an oversized native glyph remains complete")
+  assert_eq(starts, { 0, #"👩‍💻" }, "oversized glyph starts retain complete UTF-8 boundaries")
+  rows, starts = wrap_cells("", 8)
+  assert_eq(rows, {}, "empty cell wrapping follows wrap_words")
+  assert_eq(starts, {}, "empty cell wrapping has no source offsets")
+  vim.bo.tabstop = tabstop
+end)
+
 print(string.format("\n%d passed, %d failed", pass_count, fail_count))
 if fail_count > 0 then vim.cmd "cquit 1" end

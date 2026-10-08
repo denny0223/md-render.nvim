@@ -185,25 +185,38 @@ MdPreview.build_content = function(lines, opts)
             local expanded = expand_state[block_id] or false
             local start_line = #b.lines
             if expanded then
-              -- Wrap the value across lines, aligning continuation lines
-              -- under the value's start column.
-              local value_width = math.max(1, max_width - value_col)
-              local wrapped = wrap.wrap_words(entry.value, value_width, function(value)
-                return vim.fn.strdisplaywidth(value, value_col)
-              end)
-              local cont_indent = string.rep(" ", value_col)
-              for idx, wline in ipairs(wrapped) do
-                if idx == 1 then
-                  local line = label .. ": " .. wline
-                  b:add_line(line, {
-                    { col = 0, end_col = #label, hl = "Comment" },
-                    { col = value_col, end_col = #line, hl = "String" },
+              if value_col >= max_width then
+                -- A key can consume the whole row; align values only when room remains.
+                local rows, starts = wrap.wrap_cells(full_line, max_width)
+                for index, row in ipairs(rows) do
+                  local offset = starts[index]
+                  local size = #row
+                  b:add_line(row, {
+                    { col = 0, end_col = math.max(0, math.min(#label - offset, size)), hl = "Comment" },
+                    { col = math.max(0, math.min(value_col - offset, size)), end_col = size, hl = "String" },
                   })
-                else
-                  local line = cont_indent .. wline
-                  b:add_line(line, {
-                    { col = value_col, end_col = #line, hl = "String" },
-                  })
+                end
+              else
+                -- Wrap the value across lines, aligning continuation lines
+                -- under the value's start column.
+                local value_width = math.max(1, max_width - value_col)
+                local wrapped = wrap.wrap_words(entry.value, value_width, function(value)
+                  return vim.fn.strdisplaywidth(value, value_col)
+                end)
+                local cont_indent = string.rep(" ", value_col)
+                for idx, wline in ipairs(wrapped) do
+                  if idx == 1 then
+                    local line = label .. ": " .. wline
+                    b:add_line(line, {
+                      { col = 0, end_col = #label, hl = "Comment" },
+                      { col = value_col, end_col = #line, hl = "String" },
+                    })
+                  else
+                    local line = cont_indent .. wline
+                    b:add_line(line, {
+                      { col = value_col, end_col = #line, hl = "String" },
+                    })
+                  end
                 end
               end
             else

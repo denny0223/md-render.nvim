@@ -32,18 +32,7 @@ local function without_events(fn)
   if not ok then error(err, 0) end
 end
 
---- Usable text-area width of a window, excluding the gutter (signcolumn,
---- number column, foldcolumn, statuscolumn). `nvim_win_get_width` returns the
---- full window width including these, which would mis-size content centered
---- against the visible text area.
----@param win integer
----@return integer
-local function usable_win_width(win)
-  local total = vim.api.nvim_win_get_width(win)
-  local wininfo = vim.fn.getwininfo(win)[1]
-  local textoff = (wininfo and wininfo.textoff) or 0
-  return math.max(1, total - textoff)
-end
+local usable_win_width = display_utils.usable_win_width
 
 -- Preserve soft wrapping for ordinary text. Only overflowing tables and
 -- expanded regions need horizontal scrolling.

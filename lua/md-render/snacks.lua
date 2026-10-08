@@ -13,21 +13,24 @@ local function build_image_content(filepath, winid)
 
   if not img_w and not is_video then return nil end
 
-  local win_width = vim.api.nvim_win_get_width(winid)
+  local win_width = require("md-render.display_utils").usable_win_width(winid)
   local win_height = vim.api.nvim_win_get_height(winid)
-  local max_cols = math.max(10, win_width - 2)
+  local max_cols = math.max(1, win_width - 2)
   local max_rows = math.max(5, win_height - 2)
   local cols, rows
   if img_w and img_h then
     cols, rows = image.calc_display_size(img_w, img_h, max_cols, max_rows)
   else
-    cols = math.floor(max_cols * 0.8)
+    cols = math.max(1, math.floor(max_cols * 0.8))
     rows = math.min(15, max_rows)
   end
 
   local filename = filepath:match "([^/]+)$" or filepath
   local header = "  " .. filename
   if img_w and img_h then header = header .. "  (" .. img_w .. "×" .. img_h .. ")" end
+  header = vim.api.nvim_buf_call(vim.api.nvim_win_get_buf(winid), function()
+    return require("md-render.wrap").truncate(header, win_width)
+  end)
 
   local lines = { header }
   for _ = 1, rows do
@@ -107,7 +110,7 @@ function M.preview(opts)
       buf = ctx.buf,
       win = ctx.win,
       tick = vim.api.nvim_buf_get_changedtick(ctx.buf),
-      width = vim.api.nvim_win_get_width(ctx.win),
+      width = require("md-render.display_utils").usable_win_width(ctx.win),
       height = vim.api.nvim_win_get_height(ctx.win),
     }
   end
@@ -205,11 +208,13 @@ function M.preview(opts)
 
       require("md-render").setup_highlights()
       local preview_mod = require "md-render.preview"
-      local max_width = math.max(40, vim.api.nvim_win_get_width(ctx.win) - 4)
+      local max_width = math.max(1, display_utils.usable_win_width(ctx.win) - 4)
       -- text_scale = false: nothing here paints OSC 66 runs, and a scaled
       -- heading reserves a rendered row whether or not it is ever painted.
       local build_opts = { max_width = max_width, buf_dir = vim.fn.fnamemodify(path, ":p:h"), text_scale = false }
-      local content = preview_mod.build_content(lines, build_opts)
+      local content = vim.api.nvim_buf_call(ctx.buf, function()
+        return preview_mod.build_content(lines, build_opts)
+      end)
 
       vim.bo[ctx.buf].modifiable = true
       display_utils.apply_content_to_buffer(ctx.buf, ns, content)
@@ -219,7 +224,9 @@ function M.preview(opts)
       image_state = display_utils.setup_images(ctx.win, content, ns, {
         buf = ctx.buf,
         build_content = function()
-          return preview_mod.build_content(lines, build_opts)
+          return vim.api.nvim_buf_call(ctx.buf, function()
+            return preview_mod.build_content(lines, build_opts)
+          end)
         end,
       })
       last_render = { key = render_key(ctx, path), source_line_map = content.source_line_map }

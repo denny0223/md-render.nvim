@@ -651,7 +651,7 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
     local cur_content = get_content()
     if opts.on_fold_toggle and cur_content.callout_folds then
       for _, fold in ipairs(cur_content.callout_folds) do
-        if fold.header_line == line then return fold end
+        if line >= fold.header_line and line <= (fold.header_end_line or fold.header_line) then return fold end
       end
     end
   end
@@ -868,25 +868,15 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
       local click_line = mouse.line - 1 -- 0-indexed
       local click_col = mouse.column - 1
 
-      -- Helper: check if click is on an internal anchor or URL extmark
-      local function try_open_url()
-        local url = Links.at(buf, ns, click_line, click_col)
-        if url then
-          -- Handle internal anchor links by scrolling
-          if Links.follow_anchor(url, get_content(), win) then return true end
-          -- Obsidian links: always open via system handler
-          if url:match "^obsidian://" then
-            vim.notify("Opening: " .. url, vim.log.levels.INFO)
-            vim.ui.open(url)
-            return true
-          end
-          -- External URLs: skip if OSC8 terminal handles them natively
-          if M.supports_osc8() then return false end
+      -- Links take priority over folding, including links handled by OSC 8.
+      local url = Links.at(buf, ns, click_line, click_col)
+      if url then
+        if Links.follow_anchor(url, get_content(), win) then return end
+        if url:match "^obsidian://" or not M.supports_osc8() then
           vim.notify("Opening: " .. url, vim.log.levels.INFO)
           vim.ui.open(url)
-          return true
         end
-        return false
+        return
       end
 
       -- Check for foldable callout header click
@@ -899,14 +889,9 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
       -- Check for expandable region click (code blocks / tables)
       local region = region_at(click_line)
       if region then
-        -- If click is on a URL, open it instead of toggling expansion
-        if try_open_url() then return end
         opts.on_expand_toggle(region.block_id, not region.expanded)
         return
       end
-
-      -- In OSC 8 terminals, the terminal handles link clicks natively.
-      try_open_url()
     end
   end, { buffer = buf, noremap = true, silent = true })
 

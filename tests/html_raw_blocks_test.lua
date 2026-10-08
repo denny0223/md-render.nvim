@@ -1293,7 +1293,7 @@ do
 
   local payload = "中</summary>" .. hidden .. "&amp;<!--keep-->"
   local literal = opening .. payload .. closing
-  c = build { "<details open>", "<summary>" .. literal, '</details><a href="after.md">後</a>' }
+  c = build({ "<details open>", "<summary>" .. literal, '</details><a href="after.md">後</a>' }, { max_width = 700 })
   eq(c.lines[1]:find(literal, 1, true) ~= nil, true, "deferred summary skips its literal-owned closer")
   eq(c.source_line_map, { 3, 3 }, "deferred summary retains the existing closing-row source policy")
   eq(targets(c), { { 3, "後", "after.md" } }, "deferred summary does not reactivate its hidden link")

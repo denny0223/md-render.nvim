@@ -714,6 +714,28 @@ local function split_segments(text)
   return segments
 end
 
+--- Fit a display prefix without splitting a glyph or undercounting tabs.
+---@param text string
+---@param max_width integer
+---@param suffix? string defaults to an ellipsis
+---@param column? integer starting display column
+---@return string text
+---@return integer byte_end end of the retained source prefix
+function M.truncate(text, max_width, suffix, column)
+  column = column or 0
+  if vim.fn.strdisplaywidth(text, column) <= max_width then return text, #text end
+  suffix = suffix or "…"
+  if vim.fn.strdisplaywidth(suffix) > max_width then suffix = "" end
+  local target = max_width - vim.fn.strdisplaywidth(suffix)
+  local width, byte_end = 0, 0
+  for _, char in ipairs(vim.fn.split(text, "\\zs")) do
+    local cells = vim.fn.strdisplaywidth(char, column + width)
+    if width + cells > target then break end
+    width, byte_end = width + cells, byte_end + #char
+  end
+  return text:sub(1, byte_end) .. suffix, byte_end
+end
+
 --- Wrap text into lines at word boundaries, tracking original positions.
 --- Uses segment-based splitting to handle CJK/fullwidth characters correctly.
 --- Applies kinsoku (JIS X 4051) rules using 追い出し (push-out) strategy:
@@ -724,6 +746,11 @@ end
 ---@return string[] wrapped_lines
 ---@return integer[] line_starts 0-indexed start position of each line in the original text
 function M.wrap_words(text, max_width, measure)
+  if not measure and text:find("\t", 1, true) then
+    measure = function(value)
+      return vim.fn.strdisplaywidth(value)
+    end
+  end
   local wrapped_lines = {}
   local line_starts = {}
   local current = ""

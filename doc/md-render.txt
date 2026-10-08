@@ -705,6 +705,9 @@ reliably and headings inside <details> or callouts retain text. These local limi
 affect only that heading. Search, selection and cursor feedback reveal usable
 text; hovering does not change layout.
 
+Overlapping floats use the same text fallback as native headings; see
+|md-render-text-size|.
+
 Open internal anchors with Enter or an ordinary click; use gf for local files.
 External links use the terminal's OSC 8 shortcut (Ctrl+Shift+click in Kitty).
 
@@ -763,9 +766,13 @@ actions agree.
 
 Unsupported highlights, indexed colors, custom highlight namespaces and
 partially visible headings can temporarily reveal text without rebuilding
-the layout. Scrolling, redraws or overlapping windows may also briefly show
-ordinary text. |md-render-telescope| and |md-render-snacks| previews use
-ordinary headings.
+the layout. Scrolling or redraws may also briefly show ordinary text.
+|md-render-telescope| and |md-render-snacks| previews use ordinary headings.
+
+Native and image headings stay plain while a visible floating window above
+the preview overlaps them, including its border. Floats at the same zindex
+also count conservatively. The selected rendering returns once the overlap
+is removed.
 
 Use :MdRender textsize off to disable sizing, or make it permanent: >lua
 
@@ -804,8 +811,12 @@ Image headings use the separate quiet transport in
 |md-render-tmux-image-headings|. auto tries native support when image
 requirements are not met.
 
-Native fractional sizing can leave gaps between text runs, including CJK
-headings, even without tmux. Tracked in upstream #65:
+Fractionally scaled native headings (`##` to `######`) declare each run's
+width in whole cells, while Kitty positions glyphs using the font's actual
+advances. If these disagree, CJK text can have gaps between runs and Latin
+glyphs can be clipped at run ends, especially with fallback CJK fonts whose
+glyphs are narrower than two cells. This also occurs without tmux. Use
+:MdRender textsize off if your font shows it. Tracked in upstream #65:
 https://github.com/delphinus/md-render.nvim/issues/65
 
                                                  *md-render-eventignore*

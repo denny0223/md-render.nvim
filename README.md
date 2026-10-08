@@ -405,6 +405,8 @@ Headings default to `auto`: **image → native OSC 66 → ordinary text**. Use `
 
 Image and native layouts omit level icons and use a single rule below H1/H2. Ordinary-text layouts retain `#` through `######`, left-aligned within their container, with a double rule below H1 and a single rule below H2.
 
+Native and image headings use ordinary text while a floating window above the preview overlaps them, even partially. Their selected rendering returns when the overlap is removed.
+
 #### Try image headings
 
 Run `:MdRender textsize image`, then `:MdRender toggle` to open a preview. Images require Neovim >= 0.12, Kitty >= 0.28, `termguicolors`, Python 3, PyGObject, Pycairo and Pango/PangoCairo. Automatic font sizing requires [Pango 1.44+](https://docs.gtk.org/Pango/method.FontMetrics.get_height.html). Install the Python packages and fonts on the Neovim host. Explicit `image` mode uses ordinary text when unavailable.
@@ -439,7 +441,7 @@ Select `:MdRender textsize native` for Kitty >= 0.40 without image dependencies.
 
 Moving the cursor through a heading’s margin keeps it enlarged, including with `cursorline`. Entering its text reveals ordinary text for accurate cursor positioning and keyboard link actions.
 
-Native headings reserve two rows per wrapped line. Scrolling or overlapping windows may briefly reveal plain text, and redraws can be more expensive. Telescope and Snacks picker previews do not use native scaling. See `:help md-render-text-size` for troubleshooting.
+Native headings reserve two rows per wrapped line. Scrolling or redraws may briefly reveal plain text, and redraws can be more expensive. Telescope and Snacks picker previews do not use native scaling. See `:help md-render-text-size` for troubleshooting.
 
 **Kitty through tmux:** native headings require tmux >= 3.6, which supplies popup focus events; older servers retain ordinary text. They support one attached Kitty client with `set -g allow-passthrough on` (or `all`, including Snacks) and `set -g focus-events on`. Reattach after changing focus reporting. The plugin reads tmux's terminal identification and pane geometry without changing tmux settings or sending version queries into pane input. Only the focused pane is enlarged: popups, copy mode and focus loss leave ordinary text, and returning restores enlargement automatically without switching backends. External redraws use the existing 500 ms recovery timer.
 
@@ -449,7 +451,7 @@ Start Neovim in the foreground and keep focus reporting enabled. Starting undern
 
 Tested on Linux with Kitty 0.48.2, tmux 3.7c and Neovim 0.12.5, locally and through a loopback SSH PTY. Native headings can coexist with regular Snacks images. Image headings use the separate quiet transport described above; `auto` tries native support when image requirements are not met.
 
-Native fractional sizing can leave visible gaps between text runs, including CJK headings; this also occurs without tmux and is tracked in [upstream #65](https://github.com/delphinus/md-render.nvim/issues/65).
+Fractionally scaled native headings (`##` to `######`) declare each text run's width in whole cells, while Kitty positions glyphs using the font's actual advances. When those widths differ, CJK text can have gaps between runs and Latin glyphs can be clipped at run ends, especially with fallback CJK fonts narrower than two cells. This also occurs without tmux and is tracked in [upstream #65](https://github.com/delphinus/md-render.nvim/issues/65). Use `:MdRender textsize off` if your font shows this limitation.
 
 Use `:MdRender textsize off` to turn scaling off, or disable it in your configuration:
 

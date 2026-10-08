@@ -121,12 +121,13 @@ function M.parse(output, pane)
   return ctx
 end
 
-local cached, sampled_at, connection, pending
+local cached, sampled_at, connection, pending, restore_pending
 local retry_ms = 50
 
 function M.reset()
   if pending and pending.job then pcall(pending.job.kill, pending.job, 15) end
-  cached, sampled_at, connection, pending = nil, nil, nil, nil
+  -- UI cache invalidation does not cancel cleanup on the same pane stream.
+  cached, sampled_at, pending = nil, nil, nil
   retry_ms = 50
 end
 
@@ -139,6 +140,7 @@ function M.get()
   local now = vim.uv.hrtime() / 1e6
   if connection ~= key then
     M.reset()
+    restore_pending = nil
     connection = key
   end
   local unavailable =
@@ -192,11 +194,44 @@ end
 
 --- Let tmux restore its own screen after a pane/client change. Clearing old
 --- absolute coordinates ourselves could erase an unrelated pane or window.
-function M.redraw(client)
+--- On focus loss, also restore after previously queued passthrough reaches tmux.
+function M.redraw(client, after_output)
   local socket = (vim.env.TMUX or ""):match "^(.*),%d+,%d+$"
   if socket and client then
     pcall(vim.system, { "tmux", "-S", socket, "refresh-client", "-t", client }, { timeout = 150 })
+    if
+      after_output and (not restore_pending or restore_pending.socket ~= socket or restore_pending.client ~= client)
+    then
+      restore_pending = { socket = socket, client = client }
+      -- Unwrapped DECRQSS is answered by tmux to this pane, including while a
+      -- popup has focus. Its reply follows earlier output on the same stream.
+      vim.api.nvim_ui_send "\27P$q q\27\\"
+    end
   end
 end
+
+vim.api.nvim_create_autocmd("TermResponse", {
+  callback = function(ev)
+    if not restore_pending then return end
+    local response = ev.data
+    if type(response) == "table" then response = response.sequence end
+    if type(response) ~= "string" then return end
+    response = response:gsub("\27\\$", "")
+    if not response:match "^\27P1%$r q[0-6] q$" and not response:match "^\27P1%$r[0-6] q$" then return end
+    if restore_pending.socket ~= (vim.env.TMUX or ""):match "^(.*),%d+,%d+$" then
+      restore_pending = nil
+      return
+    end
+    -- Keep listening until focus returns: an older or unrelated cursor reply
+    -- may restore early, but must not consume our later, ordered reply.
+    M.redraw(restore_pending.client)
+  end,
+})
+
+vim.api.nvim_create_autocmd("FocusGained", {
+  callback = function()
+    restore_pending = nil
+  end,
+})
 
 return M

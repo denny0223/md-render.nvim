@@ -736,6 +736,34 @@ function M.truncate(text, max_width, suffix, column)
   return text:sub(1, byte_end) .. suffix, byte_end
 end
 
+--- Hard-wrap complete native glyphs, retaining every source byte.
+---@param text string
+---@param max_width integer Maximum text width per row, excluding its prefix
+---@param column? integer Starting display column shared by every row
+---@return string[] rows
+---@return integer[] byte_starts 0-indexed source offsets
+function M.wrap_cells(text, max_width, column)
+  column = column or 0
+  local rows, starts = {}, {}
+  local offset, byte_end, row_width = 0, 0, 0
+  local function add_row()
+    rows[#rows + 1] = text:sub(offset + 1, byte_end)
+    starts[#starts + 1] = offset
+    offset, row_width = byte_end, 0
+  end
+  -- Split once instead of repeatedly scanning the remaining suffix.
+  for _, glyph in ipairs(vim.fn.split(text, "\\zs")) do
+    local cells = vim.fn.strdisplaywidth(glyph, column + row_width)
+    if row_width + cells > max_width and byte_end > offset then
+      add_row()
+      cells = vim.fn.strdisplaywidth(glyph, column)
+    end
+    byte_end, row_width = byte_end + #glyph, row_width + cells
+  end
+  if byte_end > offset then add_row() end
+  return rows, starts
+end
+
 --- Wrap text into lines at word boundaries, tracking original positions.
 --- Uses segment-based splitting to handle CJK/fullwidth characters correctly.
 --- Applies kinsoku (JIS X 4051) rules using 追い出し (push-out) strategy:

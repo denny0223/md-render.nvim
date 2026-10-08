@@ -206,6 +206,8 @@ do
             "</details>",
           },
           { "<details open>", "<summary>Tabs</summary>", "<!-- comment -->aaaa\tb\tc", "</details>" },
+          { ">     " .. code },
+          { "```lua:" .. string.rep("file", 20) .. ".lua", "hello", "```" },
           { "`a\t" .. string.rep("x", width - 4) .. "`" },
           { "<dl>", "<dt>" .. text .. "</dt>", "<dd>body</dd>", "</dl>" },
           { "<details open>", "<summary>Heading</summary>", "<h1>" .. text .. "</h1>", "</details>" },
@@ -250,6 +252,20 @@ do
           end
         end
         icons.setup { style = saved_icon_style }
+        local key = string.rep("key", 40)
+        local metadata = preview.build_content(
+          { "---", key .. ": value", "---" },
+          vim.tbl_extend("force", opts, {
+            expand_state = { [-2] = true },
+          })
+        )
+        check_fits(metadata, width)
+        local region = metadata.expandable_regions[1]
+        assert(
+          table.concat(vim.list_slice(metadata.lines, region.start_line + 1, region.end_line + 1))
+            == "  " .. key .. ": value",
+          "expanded metadata must retain the complete key and value"
+        )
       end
     end
   end
@@ -512,6 +528,7 @@ end
 -- Exercise the public buffer mappings, not a synthetic fold/expand callback.
 do
   local display = require "md-render.display_utils"
+  local icons = require "md-render.icons"
   local function with_session(source_lines, check)
     local previous = vim.api.nvim_get_current_win()
     local source = vim.api.nvim_create_buf(false, true)
@@ -631,6 +648,71 @@ do
     )
   end)
 
+  local payload = "prefix " .. string.rep("中文", 20) .. " https://example.invalid/code"
+  with_session({ ">     " .. payload }, function(session, _, win)
+    local region = assert(session.content.expandable_regions[1], "truncated quoted code must be recoverable")
+    local row = region.start_line + 1
+    assert(vim.fn.strdisplaywidth(session.content.lines[row]) <= 20, "collapsed quoted code must fit")
+    vim.api.nvim_win_set_cursor(win, { row, 0 })
+    mapped "<CR>"
+    assert(session.content.lines[row] == "  │     " .. payload, "expanded quoted code lost literal payload")
+    assert(
+      session.content.source_line_map[row] == 1 and not vim.wo[win].wrap,
+      "expanded code lost source/scroll behavior"
+    )
+    local code_link = assert(session.content.link_metadata[1])
+    local calls = 0
+    vim.ui.open = function(target)
+      assert(target == "https://example.invalid/code", "quoted code click lost the full URL")
+      calls = calls + 1
+    end
+    for _, supported in ipairs { false, true } do
+      display.supports_osc8 = function()
+        return supported
+      end
+      click(win, code_link.line + 1, code_link.col_start)
+      assert(session.content.expandable_regions[1].expanded, "quoted code link click must not collapse the region")
+    end
+    assert(calls == 1, "OSC 8 quoted code links must be left to the terminal")
+    mapped "<CR>"
+    assert(vim.fn.strdisplaywidth(session.content.lines[row]) <= 20, "quoted code must collapse again")
+  end)
+  local metadata = string.rep("long-key-", 15) .. ": 中文é👩‍💻👍🏽🇹🇼\t文字"
+  with_session({ "---", metadata, "---" }, function(session, _, win)
+    local region = assert(session.content.expandable_regions[1])
+    vim.api.nvim_win_set_cursor(win, { region.start_line + 1, 0 })
+    mapped "<CR>"
+    region = session.content.expandable_regions[1]
+    local parts = {}
+    for row = region.start_line + 1, region.end_line + 1 do
+      assert(session.content.source_line_map[row] == 2, "expanded property row lost its physical source")
+      assert(vim.fn.strdisplaywidth(session.content.lines[row]) <= 20, "expanded property row must fit")
+      parts[#parts + 1] = session.content.lines[row]
+    end
+    assert(table.concat(parts) == "  " .. metadata, "expanded property must retain its complete key and Unicode value")
+    vim.api.nvim_win_set_cursor(win, { region.end_line + 1, 0 })
+    mapped "za"
+    assert(not session.content.expandable_regions[1].expanded, "za on a property continuation must collapse it")
+  end)
+  local filename = string.rep("long中文", 10) .. ".lua"
+  local file_icon = icons.pad_icon(icons.get_file_icon(filename)):gsub("%s", "")
+  for _, quote in ipairs { "", "> " } do
+    with_session({ quote .. "```lua:" .. filename, quote .. "x=1", quote .. "```" }, function(session)
+      for _, line in ipairs(session.content.lines) do
+        assert(vim.fn.strdisplaywidth(line) <= 20, "filename layout must fit")
+      end
+      mapped "zR"
+      local block = assert(session.content.code_blocks[1])
+      local parts = {}
+      for row = 1, block.start_line do
+        local prefix = quote == "" and "  " or "  │ "
+        assert(session.content.source_line_map[row] == 1, "filename row lost its opener's physical source")
+        parts[#parts + 1] = session.content.lines[row]:sub(#prefix + 1):gsub("%s", "")
+      end
+      assert(table.concat(parts) == file_icon .. filename, "full filename must be recoverable in render mode")
+      assert(vim.deep_equal(block.source_lines, { "x=1" }), "filename layout changed the Treesitter source")
+    end)
+  end
   display.getmousepos, display.supports_osc8, vim.ui.open = mouse, osc8, open
 end
 
@@ -642,6 +724,8 @@ for _, ambiwidth in ipairs { "single", "double" } do
     for _, body in ipairs {
       { "```lua", "x=1", "```" },
       { "> ```lua", "> x=1", "> ```" },
+      { "```lua:long中文.lua", "x=1", "```" },
+      { "> ```lua:long中文.lua", "> x=1", "> ```" },
     } do
       local source = vim.list_extend({ "<details open>", "<summary>S</summary>", "" }, body)
       vim.list_extend(source, { "", "</details>" })

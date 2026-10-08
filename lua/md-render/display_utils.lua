@@ -4,6 +4,14 @@ local async = require "md-render.async"
 
 local M = {}
 
+--- Text-area width after number, sign, fold and status columns.
+---@param win integer
+---@return integer
+function M.usable_win_width(win)
+  local info = vim.fn.getwininfo(win)[1]
+  return math.max(1, vim.api.nvim_win_get_width(win) - (info and info.textoff or 0))
+end
+
 local function show_image_error(buf, ns, placement)
   local count = vim.api.nvim_buf_line_count(buf)
   if placement.line >= count then return end

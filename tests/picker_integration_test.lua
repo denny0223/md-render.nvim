@@ -6,6 +6,8 @@ vim.fn.mkdir(root .. "/notes", "p")
 local path = root .. "/notes/readme.md"
 vim.fn.writefile({ "# Title", "", "First match", "", "![Local](picture.png)", "", "Last match" }, path)
 assert(vim.uv.fs_copyfile("tests/fixtures/test_4x4.png", root .. "/notes/picture.png"))
+local tab_image_name = "a\t" .. string.rep("b", 30) .. ".png"
+assert(vim.uv.fs_copyfile("tests/fixtures/test_4x4.png", root .. "/" .. tab_image_name))
 require("md-render.text_size").setup { enabled = false }
 require("md-render.image")._set_kitty_supported(true)
 
@@ -27,6 +29,23 @@ local function expected_row(content, line)
     if source >= line then return row end
   end
   return #content.source_line_map
+end
+local function assert_media_header(winid, content, backend)
+  local bufnr, header = vim.api.nvim_win_get_buf(winid), content.lines[1]
+  assert(
+    vim.api.nvim_get_current_buf() ~= bufnr and vim.bo.tabstop == 4 and vim.bo[bufnr].tabstop == 8,
+    backend .. " fixture must use a different current buffer's tab width"
+  )
+  assert(display.usable_win_width(winid) == 20, backend .. " fixture must have 20 text columns")
+  assert(header:find("\t", 1, true), backend .. " must retain the filename's tab")
+  local width = vim.api.nvim_buf_call(bufnr, function()
+    return vim.fn.strdisplaywidth(header)
+  end)
+  assert(width <= display.usable_win_width(winid), backend .. " measured the header in another buffer")
+  assert(
+    vim.api.nvim_win_text_height(winid, { start_row = 0, end_row = 0 }).all == 1,
+    backend .. " media header unexpectedly wraps"
+  )
 end
 
 package.preload["telescope.previewers"] = function()
@@ -114,6 +133,27 @@ if telescope_path and telescope_path ~= "" and plenary_path and plenary_path ~= 
     return vim.api.nvim_buf_line_count(real.state.bufnr) == 600 and vim.api.nvim_win_get_cursor(win)[1] == 550
   end)
   assert(vim.api.nvim_buf_get_lines(real.state.bufnr, 599, 600, false)[1] == "line 600", "raw fallback lost content")
+
+  local caller_buf, saved_tabstop = vim.api.nvim_get_current_buf(), vim.bo.tabstop
+  vim.bo[caller_buf].tabstop = 4
+  local narrow_win = vim.api.nvim_open_win(vim.api.nvim_create_buf(false, true), false, {
+    relative = "editor",
+    row = 0,
+    col = 0,
+    width = 20,
+    height = 12,
+    style = "minimal",
+  })
+  vim.wo[narrow_win].wrap = true
+  count = #rendered
+  real:preview({ path = root .. "/" .. tab_image_name }, { layout = { preview = { winid = narrow_win } } })
+  vim.bo[real.state.bufnr].tabstop = 8
+  wait_for(function()
+    return #rendered == count + 1
+  end)
+  assert_media_header(narrow_win, rendered[#rendered].content, "real Telescope")
+  vim.api.nvim_win_close(narrow_win, true)
+  vim.bo[caller_buf].tabstop = saved_tabstop
 
   count = #rendered
   real:preview({ path = path, lnum = 3 }, status)
@@ -211,6 +251,92 @@ for index, name in ipairs(binary_files) do
   assert(fallback == index + 1 and #rendered == count + 2, "binary Markdown entered the renderer")
 end
 
+-- Narrow picker windows must budget their gutter and keep media headers on one row.
+do
+  local narrow_path = root .. "/narrow.md"
+  vim.fn.writefile({ "before", "", "---", "", "```lua", string.rep("x", 100), "```" }, narrow_path)
+  local image_name = string.rep("long-name-", 12) .. ".png"
+  assert(vim.uv.fs_copyfile("tests/fixtures/test_4x4.png", root .. "/" .. image_name))
+  local narrow_buf = vim.api.nvim_create_buf(false, true)
+  local narrow_win = vim.api.nvim_open_win(narrow_buf, true, {
+    relative = "editor",
+    row = 0,
+    col = 0,
+    width = 20,
+    height = 12,
+    style = "minimal",
+  })
+  vim.wo[narrow_win].wrap = true
+  vim.wo[narrow_win].number, vim.wo[narrow_win].signcolumn, vim.wo[narrow_win].foldcolumn = true, "yes", "1"
+  local narrow_preview = { win = { win = narrow_win, buf = narrow_buf } }
+  narrow_preview.reset, narrow_preview.set_title, narrow_preview.minimal =
+    preview.reset, preview.set_title, preview.minimal
+  local narrow_ctx = setmetatable({ preview = narrow_preview, picker = ctx.picker }, {
+    __index = function(_, key)
+      return key == "buf" and narrow_buf or key == "win" and narrow_win or nil
+    end,
+  })
+  local narrow_snacks = require("md-render.snacks").preview()
+  for _, backend in ipairs { "telescope", "snacks" } do
+    for _, name in ipairs { "narrow.md", image_name } do
+      local before = #rendered
+      vim.bo[narrow_buf].modifiable = true
+      if backend == "telescope" then
+        telescope.define_preview({ state = { winid = narrow_win, bufnr = narrow_buf } }, { path = root .. "/" .. name })
+      else
+        narrow_ctx.item = { cwd = root, file = name }
+        narrow_snacks(narrow_ctx)
+      end
+      wait_for(function()
+        return #rendered == before + 1
+      end)
+      local output = rendered[#rendered].content
+      local width = display.usable_win_width(narrow_win)
+      for row, text in ipairs(output.lines) do
+        assert(vim.fn.strdisplaywidth(text) <= width, backend .. " exceeds the available text columns")
+        assert(
+          vim.api.nvim_win_text_height(narrow_win, { start_row = row - 1, end_row = row - 1 }).all == 1,
+          backend .. " unexpectedly wraps a fitted row"
+        )
+      end
+      if name == "narrow.md" then
+        local rule = assert(vim.tbl_filter(function(text)
+          return text:find("─", 1, true)
+        end, output.lines)[1])
+        assert(vim.fn.strdisplaywidth(rule) == width - 4, backend .. " must use the real picker text width")
+      else
+        local placement = assert(output.image_placements[1])
+        assert(placement.cols <= width - 2, backend .. " media must fit the same text area")
+      end
+    end
+  end
+  -- The picker normally owns focus while the preview uses different buffer options.
+  vim.api.nvim_set_current_win(win)
+  local caller_buf, saved_tabstop = vim.api.nvim_get_current_buf(), vim.bo.tabstop
+  vim.bo[caller_buf].tabstop, vim.bo[narrow_buf].tabstop = 4, 8
+  vim.wo[narrow_win].number, vim.wo[narrow_win].signcolumn, vim.wo[narrow_win].foldcolumn = false, "no", "0"
+  for _, backend in ipairs { "telescope", "snacks" } do
+    local before = #rendered
+    vim.bo[narrow_buf].modifiable = true
+    if backend == "telescope" then
+      telescope.define_preview({ state = { winid = narrow_win, bufnr = narrow_buf } }, {
+        path = root .. "/" .. tab_image_name,
+      })
+    else
+      narrow_ctx.item = { cwd = root, file = tab_image_name }
+      narrow_snacks(narrow_ctx)
+    end
+    wait_for(function()
+      return #rendered == before + 1
+    end)
+    assert_media_header(narrow_win, rendered[#rendered].content, backend)
+  end
+  vim.bo[caller_buf].tabstop = saved_tabstop
+  telescope.teardown()
+  vim.api.nvim_win_close(narrow_win, true)
+  vim.api.nvim_buf_delete(narrow_buf, { force = true })
+end
+
 -- Optional real dependency contract: exercise Snacks' actual reset/refresh/file methods.
 local snacks_path = vim.env.MD_RENDER_SNACKS_PATH
 if snacks_path and snacks_path ~= "" then
@@ -255,6 +381,28 @@ if snacks_path and snacks_path ~= "" then
       "binary Markdown did not preserve the native raw preview"
     )
   end
+  local caller_buf, saved_tabstop = vim.api.nvim_get_current_buf(), vim.bo.tabstop
+  vim.bo[caller_buf].tabstop = 4
+  vim.api.nvim_win_set_config(ctx.win, { width = 20 })
+  preview:reset()
+  vim.bo[ctx.buf].tabstop = 8
+  ctx.item = { cwd = root, file = tab_image_name }
+  preview.item = ctx.item
+  count = #rendered
+  native(ctx)
+  assert_media_header(ctx.win, rendered[#rendered].content, "real Snacks")
+  native(ctx)
+  assert(#rendered == count + 1, "real Snacks must reuse a fitted media header")
+  preview:refresh {
+    show_preview = function()
+      native(ctx)
+    end,
+  }
+  wait_for(function()
+    return #rendered == count + 2
+  end)
+  assert_media_header(ctx.win, rendered[#rendered].content, "real Snacks after refresh")
+  vim.bo[caller_buf].tabstop = saved_tabstop
   window:destroy()
   print "Real Snacks dependency: layout refresh, native filesize warning and binary preview OK"
 else

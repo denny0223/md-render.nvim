@@ -3566,16 +3566,25 @@ function ContentBuilder:render_document(lines, opts)
   end
 
   local function finish_code_block(indent)
-    -- Mermaid code blocks: render as image if possible
-    local mermaid_handled = false
-    if code_block_lang and code_block_lang:lower() == "mermaid" and code_source_lines and #code_source_lines > 0 then
+    local diagram = code_block_lang and code_block_lang:lower()
+    if diagram == "puml" then diagram = "plantuml" end
+    local replaced = false
+    if (diagram == "mermaid" or diagram == "plantuml") and code_source_lines and #code_source_lines > 0 then
       local image = require "md-render.image"
-      if image.supports_kitty() and image.has_mmdc(true) then
-        local mermaid_source = table.concat(code_source_lines, "\n")
+      local has_renderer, get_cached, title, loading_name
+      if diagram == "mermaid" then
+        has_renderer, get_cached = image.has_mmdc, image.get_mermaid_cached
+        title, loading_name = "Mermaid", "mermaid"
+      else
+        has_renderer, get_cached = image.has_plantuml, image.get_plantuml_cached
+        title, loading_name = "PlantUML", "PlantUML"
+      end
+      if image.supports_kitty() and has_renderer(true) then
+        local source = table.concat(code_source_lines, "\n")
         discard_code_rows()
 
         -- Only use cached result synchronously; otherwise render async
-        local cached = image.get_mermaid_cached(mermaid_source)
+        local cached = get_cached(source)
         local display_cols, display_rows
         local orig_img_w, orig_img_h
         local image_width, indent_width = image_columns(indent)
@@ -3594,14 +3603,14 @@ function ContentBuilder:render_document(lines, opts)
           display_rows = 15
         end
 
-        local header = truncate_body(indent .. "Mermaid")
+        local header = truncate_body(indent .. title)
         self:add_line(header, {
           { col = 0, end_col = #header, hl = "Comment" },
         })
         local img_start_line = #self.lines
         local img_col = indent_width + math.max(0, math.floor((image_width - display_cols) / 2))
         if not cached then
-          local placeholder_msg = "Rendering mermaid diagram..."
+          local placeholder_msg = "Rendering " .. loading_name .. " diagram..."
           local placeholder_row = math.floor(display_rows / 2)
           for r = 1, display_rows do
             if r == placeholder_row + 1 then
@@ -3628,89 +3637,13 @@ function ContentBuilder:render_document(lines, opts)
           cols = display_cols,
           img_w = orig_img_w,
           img_h = orig_img_h,
-          mermaid_source = not cached and mermaid_source or nil,
+          [diagram .. "_source"] = not cached and source or nil,
         })
         lines_shown = lines_shown + 1 + display_rows
-        mermaid_handled = true
+        replaced = true
       end
     end
 
-    -- PlantUML code blocks: render as image if possible
-    local plantuml_handled = false
-    if
-      not mermaid_handled
-      and code_block_lang
-      and (code_block_lang:lower() == "plantuml" or code_block_lang:lower() == "puml")
-      and code_source_lines
-      and #code_source_lines > 0
-    then
-      local image = require "md-render.image"
-      if image.supports_kitty() and image.has_plantuml(true) then
-        local plantuml_source = table.concat(code_source_lines, "\n")
-        discard_code_rows()
-
-        -- Only use cached result synchronously; otherwise render async
-        local cached = image.get_plantuml_cached(plantuml_source)
-        local display_cols, display_rows
-        local orig_img_w, orig_img_h
-        local image_width, indent_width = image_columns(indent)
-        local img_max_cols = math.max(1, image_width - 2)
-
-        if cached then
-          orig_img_w, orig_img_h = image.image_dimensions(cached)
-          if orig_img_w and orig_img_h then
-            display_cols, display_rows =
-              image.calc_display_size(orig_img_w, orig_img_h, img_max_cols, opts.image_max_height or 25)
-          end
-        end
-
-        if not display_cols then
-          display_cols = math.max(1, math.floor(img_max_cols * 0.8))
-          display_rows = 15
-        end
-
-        local header = truncate_body(indent .. "PlantUML")
-        self:add_line(header, {
-          { col = 0, end_col = #header, hl = "Comment" },
-        })
-        local img_start_line = #self.lines
-        local img_col = indent_width + math.max(0, math.floor((image_width - display_cols) / 2))
-        if not cached then
-          local placeholder_msg = "Rendering PlantUML diagram..."
-          local placeholder_row = math.floor(display_rows / 2)
-          for r = 1, display_rows do
-            if r == placeholder_row + 1 then
-              local pad = math.max(0, math.floor((display_cols - vim.api.nvim_strwidth(placeholder_msg)) / 2))
-              local placeholder_line =
-                truncate_body(indent .. string.rep(" ", img_col - indent_width + pad) .. placeholder_msg)
-              self:add_line(placeholder_line, {
-                { col = 0, end_col = #placeholder_line, hl = "Comment" },
-              })
-            else
-              self:add_line(indent)
-            end
-          end
-        else
-          for _ = 1, display_rows do
-            self:add_line(indent)
-          end
-        end
-        table.insert(self.image_placements, {
-          path = cached,
-          line = img_start_line,
-          col = img_col,
-          rows = display_rows,
-          cols = display_cols,
-          img_w = orig_img_w,
-          img_h = orig_img_h,
-          plantuml_source = not cached and plantuml_source or nil,
-        })
-        lines_shown = lines_shown + 1 + display_rows
-        plantuml_handled = true
-      end
-    end
-
-    local replaced = mermaid_handled or plantuml_handled
     if replaced then
       if in_details and details_summary_rendered and not skip_details_body then
         apply_details_body_prefix(code_block_start, #self.lines)

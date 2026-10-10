@@ -8,21 +8,25 @@ local image = require "md-render.image"
 local links = require "md-render.links"
 local png = vim.fn.getcwd() .. "/tests/fixtures/test_4x4.png"
 local cached, enabled = false, true
+local renderer_available = { mermaid = true, plantuml = true }
 local cache_sources = {}
 image.supports_kitty = function()
   return enabled
 end
 image.has_mmdc = function()
-  return true
+  return renderer_available.mermaid
 end
 image.has_plantuml = function()
-  return true
+  return renderer_available.plantuml
 end
 image.get_mermaid_cached = function(source)
   cache_sources[#cache_sources + 1] = source
-  return cached and "/tmp/diagram-fence.png" or nil
+  return cached and "/tmp/mermaid-fence.png" or nil
 end
-image.get_plantuml_cached = image.get_mermaid_cached
+image.get_plantuml_cached = function(source)
+  cache_sources[#cache_sources + 1] = source
+  return cached and "/tmp/plantuml-fence.png" or nil
+end
 image.image_dimensions = function(path)
   if path == png then return 320, 160 end
   return 1000, 100
@@ -102,7 +106,7 @@ for _, lang in ipairs { "mermaid", "plantuml" } do
               col = col,
               cols = cols,
               rows = cached and 2 or 15,
-              path = cached and "/tmp/diagram-fence.png" or nil,
+              path = cached and "/tmp/" .. lang .. "-fence.png" or nil,
               img_w = cached and 1000 or nil,
               img_h = cached and 100 or nil,
             }
@@ -203,6 +207,39 @@ for _, lang in ipairs { "mermaid", "plantuml" } do
       end)
     end
   end
+end
+for _, case in ipairs {
+  { "MeRmAiD", "mermaid" },
+  { "PlAnTuMl", "plantuml" },
+  { "puml", "plantuml" },
+  { "PuMl", "plantuml" },
+} do
+  test(case[1] .. " uses its renderer's cache and pending source", function()
+    enabled = true
+    for _, cache_hit in ipairs { false, true } do
+      cached = cache_hit
+      local c = build(case[1], false, false, "closed", "A-->B")
+      local p = assert(c.image_placements[1])
+      eq(p.path, cached and "/tmp/" .. case[2] .. "-fence.png" or nil, "renderer-specific cache")
+      eq(p.mermaid_source, not cached and case[2] == "mermaid" and "A-->B" or nil, "Mermaid pending source")
+      eq(p.plantuml_source, not cached and case[2] == "plantuml" and "A-->B" or nil, "PlantUML pending source")
+      eq(c.code_blocks, {}, "recognized diagram has no literal-code metadata")
+    end
+  end)
+end
+for _, case in ipairs { { "MeRmAiD", "mermaid" }, { "PuMl", "plantuml" } } do
+  test(case[1] .. " keeps literal code when only the other renderer is available", function()
+    cached, enabled = true, true
+    renderer_available[case[2]] = false
+    local before = #cache_sources
+    local c = build(case[1], false, false, "closed", "A-->B")
+    eq(c.image_placements, {}, "unavailable renderer retains text even with a cached image")
+    local code = assert(c.code_blocks[1])
+    eq(code.language, case[1], "literal fallback retains the original language")
+    eq(code.source_lines, { "A-->B" }, "literal fallback retains source bytes")
+    eq(#cache_sources, before, "unavailable renderer does not query either cache")
+  end)
+  renderer_available[case[2]] = true
 end
 test("local images in details fit their reserved rows and placement with tab indentation", function()
   cached, enabled = false, true

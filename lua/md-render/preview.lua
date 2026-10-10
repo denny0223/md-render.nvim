@@ -12,10 +12,8 @@ local tab_win = TabWin.new "md_render_preview_tab"
 local MdPreview = {}
 local get_or_create_session
 
---- Upper bound on render width when not explicitly overridden by the user.
---- Long lines hurt readability even in wide windows, so we cap auto-sized
---- render windows here while still adapting downward in narrow splits.
---- `g:md_render_max_width` replaces it; see |g:md_render_max_width|.
+--- Default width for standalone rendering and native automatic text layout.
+--- `g:md_render_max_width` overrides backend defaults; see |g:md_render_max_width|.
 local DEFAULT_MAX_WIDTH = 80
 
 --- Read the configured cap on every use so resizing picks up changes.

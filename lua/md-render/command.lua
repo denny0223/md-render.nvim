@@ -24,7 +24,7 @@ local function parse_opts(sub, rest)
     local width = arg:match "^width=(.*)$"
     if width then
       local n = tonumber(width)
-      if not n or n < 1 or n ~= math.floor(n) then
+      if not n or n < 1 or n >= math.huge or n ~= math.floor(n) then
         vim.notify(
           "MdRender " .. sub .. ": width must be a positive integer, got '" .. width .. "'",
           vim.log.levels.WARN

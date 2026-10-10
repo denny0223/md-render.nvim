@@ -174,7 +174,7 @@ test("dispatch without width= passes no max_width", function()
 end)
 
 test("dispatch rejects a bad width or an unknown argument", function()
-  for _, arg in ipairs { "width=0", "width=-3", "width=1.5", "width=abc", "width=", "bogus" } do
+  for _, arg in ipairs { "width=0", "width=-3", "width=1.5", "width=1e309", "width=nan", "width=abc", "width=", "bogus" } do
     local cmd, calls, restore = with_preview_stub()
     local notes, restore_notify = with_notify_stub()
     cmd.dispatch { fargs = { "float", arg } }

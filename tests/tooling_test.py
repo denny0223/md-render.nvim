@@ -62,9 +62,9 @@ if sys.argv[1] != 'identify':
         return subprocess.run(["/bin/bash", str(self.script), mode], env=self.env | env,
                               capture_output=True, text=True, timeout=15)
 
-    def run_lua(self, test):
+    def run_lua(self, test, **env):
         return subprocess.run([shutil.which("nvim"), "--headless", "-u", "NONE", "--noplugin", "-l", test],
-                              cwd=REPO, env=self.env, capture_output=True, text=True, timeout=10)
+                              cwd=REPO, env=self.env | env, capture_output=True, text=True, timeout=10)
 
     def capture_stubs(self):
         self.executable("wezterm", """import os, signal, time
@@ -273,6 +273,49 @@ else:
             else:
                 self.assertNotEqual(result.returncode, 0)
                 self.assertNotIn("SKIP", result.stdout + result.stderr)
+
+    def test_required_npm_probes_fail_for_missing_tools_or_bad_control(self):
+        test = "tests/execution_policy_test.lua"
+        result = self.run_lua(test, MD_RENDER_REQUIRE_NPM_PROBES="")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("npm configuration/PATH integration skipped", result.stdout + result.stderr)
+        self.executable("node", "")
+        self.executable("npm", "import sys\nprint('undefined')\nprint('controlled npm evidence', file=sys.stderr)\n")
+        for name in ("node", "npm", "python3"):
+            tool = self.bin / name
+            hidden = self.bin / (name + ".hidden")
+            tool.rename(hidden)
+            try:
+                result = self.run_lua(test, MD_RENDER_REQUIRE_NPM_PROBES="1")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("needs npm, Python, and Node", result.stdout + result.stderr)
+            finally:
+                hidden.rename(tool)
+        result = self.run_lua(test, MD_RENDER_REQUIRE_NPM_PROBES="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("fixture must expose ancestor npm configuration", result.stderr)
+        self.assertIn("controlled npm evidence", result.stderr)
+        self.assertIn("code = 0", result.stderr)
+        self.assertIn("signal = 0", result.stderr)
+        self.assertIn("undefined", result.stderr)
+
+    def test_required_mermaid_tools_preserve_local_skip(self):
+        test = "tests/mermaid_security_integration.lua"
+        result = self.run_lua(test, MD_RENDER_REQUIRE_MERMAID_TOOLS="")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SKIP", result.stdout + result.stderr)
+        result = self.run_lua(test, MD_RENDER_REQUIRE_MERMAID_TOOLS="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("required Mermaid configuration isolation needs mmdc", result.stdout + result.stderr)
+        self.assertNotIn("SKIP", result.stdout + result.stderr)
+        self.executable("mmdc", f'''import sys
+from pathlib import Path
+Path(sys.argv[sys.argv.index("-o") + 1]).write_bytes({png((0, 0, 0))!r})
+''')
+        (self.bin / "magick").unlink()
+        result = self.run_lua("tests/mermaid_integration.lua", MD_RENDER_REQUIRE_MERMAID_TOOLS="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PNG decoding requires", result.stdout + result.stderr)
 
     @unittest.skipUnless(any(shutil.which(name) for name in ("magick", "convert", "sips")),
                          "real PNG decoding needs ImageMagick or sips")

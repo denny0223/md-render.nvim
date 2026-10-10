@@ -29,6 +29,7 @@ Snacks.nvim 整合                                            |md-render-snacks|
   圖片                                                       |md-render-image|
   圖片分頁按鍵                                          |md-render-image-view|
 範例                                                       |md-render-example|
+全域變數                                          |md-render-global-variables|
 緩衝區變數                                        |md-render-buffer-variables|
 醒目提示群組                                            |md-render-highlights|
 選用相依項目                                          |md-render-dependencies|
@@ -38,7 +39,7 @@ Snacks.nvim 整合                                            |md-render-snacks|
 
 md-render.nvim 是 Neovim 的 Markdown 渲染引擎，能將 Markdown 原始文字轉為有
 語法醒目提示、可互動的內容，直接顯示在編輯器中。支援浮動視窗、分頁、在同一個
-視窗切換原始文字與預覽（|:MdRender-toggle|），以及從指令列啟動、類似 `less`
+視窗切換原始文字與預覽 (|:MdRender-toggle|)，以及從指令列啟動、類似 `less`
 的分頁閱讀模式。
 
 寫作時可用 |:MdRender-split| 將原始文字與即時預覽並排，兩側也會同步捲動。
@@ -49,10 +50,12 @@ md-render.nvim 是 Neovim 的 Markdown 渲染引擎，能將 Markdown 原始文�
   電子郵件、mailto: 和 xmpp:。網址內成對的括號會保留，縮短顯示時仍連向
   完整目的地。角括號連結的內容與 www. 網址會保留原始字面文字。
   HTTP(S) 也接受單一標籤的主機名稱及緊鄰文字的網址。
-- 豐富的行內格式：斜體（`*文字*`、`_文字_`）、粗體（`**文字**`、`__文字__`）、
-  刪除線（`~文字~`、`~~文字~~`）、行內程式碼、連結、Obsidian `==highlight==`。
+- 豐富的行內格式：斜體可用 `*文字*` 或 `_文字_`，粗體可用 `**文字**` 或
+  `__文字__`，刪除線可用 `~文字~` 或 `~~文字~~`，也支援行內程式碼、連結與
+  Obsidian `==highlight==`。
 - 表格：框線、欄位對齊、儲存格換行。
-  預設使用視窗可用寬度；可透過 `max_width` 指定寬度。
+  預設使用視窗可用寬度，並套用 |g:md_render_max_width| 設定的上限；
+  明確指定的 max_width 優先，使用固定寬度。
   超出視窗寬度時可用 `zh` / `zl` 橫向捲動。
 - 提示區塊與摺疊：支援 GitHub / Obsidian 的提示類型、彩色框線與圖示，可用滑鼠
   點擊或 `za` / `<CR>` 切換摺疊。
@@ -348,13 +351,15 @@ Tag 導覽建立真正的原生 tag stack：Ctrl-T／:pop 返回，:tag 前進�
 浮動預覽仍受原生視窗操作限制。
 
 使用 |:MdRender-toggle| 開啟的預覽緩衝區不會把 `q` / `<Esc>` / `<C-c>` 綁定
-為關閉操作；請再次執行 |:MdRender-toggle| 回到原始文字。`<LeftMouse>`、`za`
-與 `<CR>` 仍可切換摺疊與展開區域；使用 Snacks 後端時，`<CR>` 也可開啟圖片。
-`<LeftMouse>` 仍可開啟連結，`<MouseMove>` 仍可預覽目的地，過長時省略。
+為關閉操作；請再次執行 |:MdRender-toggle| 回到原始文字。摺疊與展開區域仍可用
+`<LeftMouse>` / `za` / `<CR>` 切換；使用 Snacks 後端時，按 `<CR>` 也可開啟
+圖片。
+`<LeftMouse>` 仍可開啟連結。滑鼠事件 `<MouseMove>` 仍可預覽目的地，
+過長時省略。
 
 `gf` 使用連結的確切目的地，依來源檔案目錄解析，不受工作目錄影響。
 Markdown 目標沿用目前的預覽視窗；其他檔案在原始編輯視窗開啟，浮動／分頁
-預覽會先關閉。`Ctrl-O` 返回前一份渲染文件，保留閱讀位置與摺疊狀態；從其他
+預覽會先關閉。按 `Ctrl-O` 返回前一份渲染文件，保留閱讀位置與摺疊狀態；從其他
 檔案返回時，會在原始編輯視窗恢復渲染。游標不在連結上時，仍使用原生 `gf`，
 也支援 `2gf` 等數字前綴。
 
@@ -379,7 +384,7 @@ Pager 以外的模式會在原始編輯視窗交給已設定的目錄瀏覽器�
 指令                                                      *md-render-commands*
 
 本外掛以單一使用者指令 |:MdRender| 搭配子指令提供功能。舊版的獨立指令
-（`:MdRenderTab`、`:MdRenderToggle` 等）仍保留為已棄用的別名，請見
+如 `:MdRenderTab` 與 `:MdRenderToggle` 仍保留為已棄用的別名，請見
 |md-render-deprecated-commands|。
 
                                                                    *:MdRender*
@@ -392,7 +397,7 @@ Pager 以外的模式會在原始編輯視窗交給已設定的目錄瀏覽器�
 	  pager       - 分頁閱讀模式（全螢幕，按 `q` 離開 Neovim）。
 	  toggle      - 在目前視窗切換原始文字與預覽。
 	  split       - 分割視窗，同時顯示原始文字與預覽；支援
-	                `:vert`、`:tab`、`:topleft`、`:botright`。
+	                `:vert` / `:tab` / `:topleft` / `:botright`。
 	  auto        - [實驗功能] 隨插入模式自動切換；第二個引數接受
 	                `on` / `off` / `toggle`（預設 `toggle`）。
 	  textsize    - [實驗功能] 選擇標題放大後端或查看狀態
@@ -400,15 +405,21 @@ Pager 以外的模式會在原始編輯視窗交給已設定的目錄瀏覽器�
 	                `on` / `off` / `toggle`（預設 `toggle`）。
 	  demo        - 開啟示範視窗，展示所有支援的記法。
 
+	`float` / `tab` / `pager` / `toggle` / `split` 接受 `width={N}`，
+	將該次預覽固定為 {N} 欄，例如 `:MdRender float width=120`。
+	此寬度包含縮排，不隨視窗大小改變。未指定固定寬度時，預覽隨視窗調整，
+	上限由 |g:md_render_max_width| 決定。
+
 	第一個引數可用 Tab 補齊子指令；在 `auto` 與 `textsize` 後，可補齊
-	`on` / `off` / `toggle`。
+	`on` / `off` / `toggle`。textsize 另有 `auto` / `image` / `native` /
+	`status`；接受寬度的子指令則提供 `width=`。
 
 	以下各節說明每個子指令的詳細行為。
 
                                                              *:MdRender-float*
 :MdRender float ~
 	切換目前 Markdown 緩衝區的浮動預覽視窗。
-	未提供子指令時，|:MdRender| 預設使用此模式。
+	未提供子指令時，執行 |:MdRender| 預設使用此模式。
 
                                                                *:MdRender-tab*
 :MdRender tab ~
@@ -456,8 +467,8 @@ Pager 以外的模式會在原始編輯視窗交給已設定的目錄瀏覽器�
 	- 預覽緩衝區是 `nomodifiable`，無法直接觸發 |InsertEnter|。自動模式
 	  啟用時，預覽緩衝區的 `i` / `I` / `a` / `A` / `o` / `O` 會先切回
 	  原始文字，再於對應位置進入插入模式。
-	- `<Esc>` 會回到來源的一般模式；|InsertLeave| 自動指令會等待 50 ms，
-	  合併短時間內的重複事件後，再切回預覽。
+	- `<Esc>` 會回到來源的一般模式，觸發的 |InsertLeave| 自動指令會等待
+	  50 ms，合併短時間內的重複事件後，再切回預覽。
 	- 快速輸入 `i<Esc>i<Esc>` 時，會合併成最後的狀態。
 	- 只切換目前視窗；其他顯示同一份來源的視窗需手動執行
 	  |:MdRender-toggle|。
@@ -465,12 +476,12 @@ Pager 以外的模式會在原始編輯視窗交給已設定的目錄瀏覽器�
 	預覽緩衝區可執行的操作：~
 
 	  唯讀操作：移動（hjkl、gg、G 等）、搜尋（/、?）、複製（y）、視覺
-	  選取、標記、`za` / `<CR>`（切換摺疊與展開區域），以及 <LeftMouse>
+	  選取、標記、摺疊與展開區域切換 (`za` / `<CR>`)，以及 <LeftMouse>
 	  （摺疊、展開、開啟連結）。
 
-	  `:w`／`:w!`、`:update`、`:x` 與 `ZZ` 會儲存來源；條件式寫入只在
+	  `:w` / `:w!` / `:update` / `:x` 與 `ZZ` 會儲存來源；條件式寫入只在
 	  來源已修改時執行。原生 ++ 寫入選項會轉送，[+] 代表來源未儲存。
-	  部分範圍、附加與另存檔名（例如 `:1w`、`:w >>`、`:w other.md`、
+	  部分範圍、附加與另存檔名（例如 `:1w` / `:w >>` / `:w other.md` /
 	  `:saveas`）會被拒絕；請先用 |:MdRender-toggle| 回到原始文字。
 	  來源被卸載後，須先重新載入來源，才能從預覽儲存。
 
@@ -561,7 +572,7 @@ Pager 以外的模式會在原始編輯視窗交給已設定的目錄瀏覽器�
 	具名檔案依來源目錄解析相對連結。未命名／stdin Markdown 固定使用啟動
 	pager 時的工作目錄，不受後續 :cd 影響。stdin 須設定 filetype=markdown；
 	可透過 |MdPreview.show_pager()| 的 {buf_dir} 覆寫基準。Neovim 會將 stdin
-	標為已修改，`q` 也會保護它；可先儲存至檔案，或自行 :qa! 放棄內容。
+	標為已修改，按 `q` 也會保護它；可先儲存至檔案，或自行 :qa! 放棄內容。
 
                                                           *:MdRender-textsize*
 :MdRender textsize [on|off|toggle|auto|image|native|status] ~
@@ -589,6 +600,9 @@ Pager 以外的模式會在原始編輯視窗交給已設定的目錄瀏覽器�
 	<details> 與提示區塊內的標題也保留文字，維持容器的背景與互動。
 	需要終端 Shift＋拖曳複製時，先用 :MdRender textsize off 顯示渲染後
 	文字，或用 |:MdRender-toggle| 回到原文。
+
+	浮窗遮擋時，圖片標題與原生標題同樣退回一般文字，詳見
+	|md-render-text-size|。
 
 tmux 圖片標題（實驗功能）                      *md-render-tmux-image-headings*
 
@@ -632,8 +646,11 @@ quiet 傳輸未經確認。直接連接 Kitty 仍確認上傳成功後才遮字�
 顯示一般文字，讓游標位置與鍵盤連結操作一致。
 
 不支援的高亮、索引色、自訂高亮 namespace，或只顯示一部分的標題，可能暫時
-讓出一般文字，不重新排版。捲動、重繪或其他視窗遮住預覽時，也可能短暫顯示
-一般文字。|md-render-telescope| 與 |md-render-snacks| 的預覽使用一般標題。
+讓出一般文字，不重新排版。捲動或重繪時，也可能短暫顯示一般文字。
+|md-render-telescope| 與 |md-render-snacks| 的預覽使用一般標題。
+
+浮在預覽上方且可見的視窗，包含框線，只要與標題重疊，原生與圖片標題都會維持
+一般文字。同一 zindex 的浮窗也會保守視為遮擋；重疊移除後恢復原本的渲染方式。
 
 執行 :MdRender textsize off 可停用縮放，或以下列設定永久停用： >lua
 
@@ -667,8 +684,11 @@ FocusLost／FocusGained，以及 tmux 切換瞬間完全沒有暫態畫面，都
 |md-render-tmux-image-headings| 說明的獨立 quiet 傳輸；不符圖片條件時，
 auto 會嘗試 native 後端。
 
-native 分數字級可能在文字分段之間留下明顯空隙，包含漢字標題；直接使用 Kitty
-也會發生，由 upstream #65 追蹤：
+使用分數倍率的原生標題 (`##` 到 `######`) 會以整數格數指定每段文字的寬度，
+Kitty 則依字型的實際字距排列字形。兩者不一致時，漢字可能在分段之間留下空隙，
+拉丁字母也可能在分段末尾被裁切，尤其是字形不足兩格寬的 CJK 替代字型。
+直接使用 Kitty 也會發生；若使用的字型出現此限制，可執行 :MdRender textsize off
+關閉縮放。由 upstream #65 追蹤：
 https://github.com/delphinus/md-render.nvim/issues/65
 
                                                        *md-render-eventignore*
@@ -726,7 +746,7 @@ SANDBOX 模式封鎖本機檔案與 URL 存取，包括外部引用。這是繪�
                                                               *:MdRenderSplit*
 :MdRenderSplit ~
 	已棄用的 `:MdRender split` 別名。所有 Vim 分割修飾詞
-	（`:vert`、`:tab`、`:topleft`、`:botright`）的作用相同。
+	包括 `:vert` / `:tab` / `:topleft` / `:botright`，作用相同。
 
                                                               *:MdRenderPager*
 :MdRenderPager ~
@@ -892,8 +912,9 @@ MdPreview.toggle({opts}) ~
 	在目前視窗切換原始文字與預覽。請見 |:MdRender-toggle|。
 
 	參數：~
-	  {opts}  (table|nil) 選用設定，僅在首次建立預覽緩衝區時使用：
-	    - {max_width}  (integer) 最大渲染寬度。
+	  {opts}  (table|nil) 選用設定：
+	    - {max_width}  (integer) 固定渲染寬度。從來源切入預覽時，也會
+	                   套用到重複使用的預覽。
 
 	範例： >lua
 	  require("md-render").preview.toggle()
@@ -905,7 +926,8 @@ MdPreview.auto_on({opts}) ~
 	請見 |:MdRender-auto|。
 
 	參數：~
-	  {opts}  (table|nil) 首次建立預覽緩衝區時傳給 |MdPreview.toggle()|。
+	  {opts}  (table|nil) 從來源模式啟用自動切換時，傳給
+		  |MdPreview.toggle()|。
 
                                                         *MdPreview.auto_off()*
 MdPreview.auto_off() ~
@@ -929,8 +951,8 @@ MdPreview.split({opts}) ~
 	  {opts}  (table|nil) 選用設定：
 	    - {mods}       (table) 指令修飾詞，通常是使用者指令回呼中的
 	                           `args.smods`，例如 `{ vertical = true }`。
-	    - {max_width}  (integer) 最大渲染寬度，僅在首次建立預覽緩衝區時
-	                   使用。
+	    - {max_width}  (integer) 固定渲染寬度，重複使用預覽緩衝區時
+	                   也會套用。
 
 	範例： >lua
 	  require("md-render").preview.split({ mods = { vertical = true } })
@@ -1124,8 +1146,8 @@ display_utils.build_footer_chunks({info}, {width}) ~
 	佔用內容行。
 
 	配置為 `<name>  <line>/<total>  <bar>`。進度條寬十格，以框線字元組成：
-	`━` 表示已捲過的部分、`─` 表示其餘部分、`╾` 表示半格。未填滿的細線與
-	框線本身使用相同字元，看起來會像框線的延伸。
+	`━` 表示已捲過的部分，符號 `─` 表示其餘部分，符號 `╾` 表示半格。
+	未填滿的細線與框線本身使用相同字元，看起來會像框線的延伸。
 
 	行號以 {total} 的寬度靠右對齊，因此捲動時整體寬度固定。若超出 {width}
 	則進度條會縮短至最少四格，再從右側依序移除進度條、位置與檔名。寬度以
@@ -1201,8 +1223,9 @@ backend="snacks"。
 內建下載器支援 HTTP(S) 網址及重新導向，依網址原文請求，忽略 .curlrc；代理
 伺服器與 CA 環境設定仍有效。自訂認證請使用 |image.set_download_fn()|。
 
-使用 Snacks 時，自動配置會採用視窗可用寬度，除非明確設定 max_width；圖片高度
-則限制在視窗高度減去六行之內。圖片會維持長寬比，且不會放大至超過原始像素尺寸。
+使用 Snacks 時，自動配置會採用視窗可用寬度，並套用 |g:md_render_max_width|
+設定的上限；明確設定的 max_width 則優先。圖片高度限制在視窗高度減去六行之內，
+維持長寬比，且不會放大至超過原始像素尺寸。
 
                                                          *md-render-obsidian*
 Obsidian 附件 ~
@@ -1339,19 +1362,41 @@ image.supports_kitty() ~
 <
 
 ==============================================================================
+全域變數                                          *md-render-global-variables*
+
+                                                      *g:md_render_max_width*
+g:md_render_max_width ~
+	正文與表格自動排版的寬度上限，單位為欄，適用於兩個圖片後端。未指定
+	固定寬度時，預覽採用視窗可用寬度，不超過此上限，並隨視窗大小調整：
+>lua
+
+	  vim.g.md_render_max_width = 120
+<
+	未設定時，原生圖片後端的正文上限為 80 欄，Snacks 與表格則使用視窗可用
+	寬度。無效值會顯示警告，並對正文與表格套用 80 欄上限。
+
+	寬度包含縮排，接受大於等於 1 的有限數值，小數部分會無條件捨去。
+	每次決定預覽尺寸時會重新讀取設定，因此下一次預覽就會套用；已開啟的
+	預覽則在視窗大小改變時套用。
+
+	|:MdRender| 的 `width={N}` 或 Lua API (|md-render-preview|) 的
+	`max_width` 優先於全域設定，將單次預覽固定在指定寬度。
+
+==============================================================================
 緩衝區變數                                        *md-render-buffer-variables*
 
                                                        *md-render-b-md-render*
                                                                  *b:md_render*
 b:md_render ~
 	所有由 md-render 渲染的緩衝區都會設為 `true`，包括浮動預覽、分頁與分割
-	視窗、分頁閱讀模式、|:MdRender-toggle| 切入的緩衝區，以及
+	視窗、分頁閱讀模式，以及 |:MdRender-toggle| 切入的緩衝區與
 	|:MdRender-demo|。其他緩衝區不會設定此值，因此可據此辨識預覽，不必依賴
 	可能被使用者或其他外掛修改的緩衝區名稱或檔案類型。
 
-	此標記刻意設在緩衝區，而非視窗。|:MdRender-toggle| 會保留視窗並替換
-	其中的緩衝區；手動分割預覽也會產生外掛不知情的新視窗。標記必須隨著
-	緩衝區，才能涵蓋兩種情況。若要判斷畫面上是否有預覽，請巡覽視窗： >lua
+	此標記刻意設在緩衝區，而非視窗。執行 |:MdRender-toggle| 會保留視窗
+	並替換其中的緩衝區；手動分割預覽也會產生外掛不知情的新視窗。標記必須
+	隨著緩衝區，才能涵蓋兩種情況。若要判斷畫面上是否有預覽，請巡覽視窗：
+>lua
 
 	  local function preview_visible()
 	    for _, w in ipairs(vim.api.nvim_list_wins()) do
@@ -1369,8 +1414,8 @@ b:md_render ~
 
 行內格式 ~
 
-  *Bold*                粗體文字（備用設定：`bold = true`）。
-  *Italic*              斜體文字（備用設定：`italic = true`）。
+  *Bold*                粗體文字（備用設定為 `bold = true`）。
+  *Italic*              斜體文字（備用設定為 `italic = true`）。
   *MdRenderInlineCode*  行內程式碼（`` `code` `` 與 `<code>`）。
                         前景色沿用 `String`；背景色將 Comment 前景色與
                         Normal 背景色混合成淡中性色，使程式碼與標題易於區分。

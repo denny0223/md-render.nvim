@@ -49,7 +49,7 @@
 - **底部狀態列**：浮動預覽的下邊框會顯示檔名、原始文件中的位置與閱讀進度，不占用內容行，也不修改你的 statusline。
 - **程式庫 API**：可以在其他外掛中直接使用 Markdown 繪製引擎。
 
-表格預設使用視窗可用寬度，也可透過 `max_width` 指定寬度。表格超出視窗寬度時，可用 `zh`／`zl` 橫向捲動。
+表格預設使用視窗可用寬度；全域寬度上限或明確指定的 `max_width` 也會套用到表格，詳見[渲染寬度](#渲染寬度)。表格超出視窗寬度時，可用 `zh`／`zl` 橫向捲動。
 
 <figure align="center">
   <img src="assets/screenshot-rendering.png" width="672" height="751" alt="行內格式、表格、提示區塊、程式碼區塊與中日韓文字換行" />
@@ -241,7 +241,7 @@ require("md-render.image").setup({ backend = "snacks" })
 
 兩個後端都能播放 GIF 動畫與影片。Snacks 後端使用 Kitty 的動畫功能，也支援在 tmux 內播放；影片影格擷取需要 `ffmpeg`。Snacks 後端會準備整份文件的圖片，包括目前畫面外的圖片；所有預覽共用最多兩個圖表產生／下載／影格擷取工作，關閉預覽後，已經開始的工作仍可能繼續執行並寫入快取。因此，圖片較多的文件會有較多前置處理。
 
-自動排版會使用視窗可用寬度，不套用原生後端的 80 欄上限。圖片保持長寬比，放入可用寬度與「視窗高度減 6 行」的範圍內，且不會超過原始像素大小。若明確指定 `max_width`，仍會優先使用該值。操作方式請見[圖片分頁按鍵](#圖片分頁按鍵)。
+自動排版會使用視窗可用寬度，不套用原生後端預設的 80 欄上限。圖片保持長寬比，放入可用寬度與「視窗高度減 6 行」的範圍內，且不會超過原始像素大小。全域寬度上限也會套用到 Snacks；若明確指定 `max_width`，則優先使用該值。詳見[渲染寬度](#渲染寬度)與[圖片分頁按鍵](#圖片分頁按鍵)。
 
 ## 與其他外掛的比較
 
@@ -344,11 +344,25 @@ GIF 與影片分頁需要 Kitty 0.31 以上版本，除非設定 `autoplay = fal
 | `:MdRender pager` | 全螢幕分頁閱讀模式，隱藏介面裝飾，按 `q` 離開 Neovim |
 | `:MdRender demo` | 顯示內建 Markdown 語法展示 |
 
-輸入第一個參數時可用 Tab 補齊子指令；`auto` 與 `textsize` 後會提供 `on`、`off`、`toggle`，`textsize` 另有 `auto`、`image`、`native`、`status`。
+`float`、`tab`、`pager`、`toggle` 與 `split` 接受 `width=N`，將該次預覽固定為 `N` 欄，例如 `:MdRender float width=120`。詳見[渲染寬度](#渲染寬度)。
+
+輸入第一個參數時可用 Tab 補齊子指令；`auto` 與 `textsize` 後會提供 `on`、`off`、`toggle`，`textsize` 另有 `auto`、`image`、`native`、`status`；接受寬度的子指令則提供 `width=`。
 
 切換到其他分頁時，文件預覽會保留，包含開啟圖片分頁時；在圖片分頁按 `q` 可回到文件。`:MdRender tab` 會關閉目前文件的分頁預覽；從另一份 Markdown 原始檔執行時，則以新文件取代既有預覽。
 
 > **舊版相容性：** `:MdRenderTab`、`:MdRenderToggle`、`:MdRenderSplit`、`:MdRenderAuto`、`:MdRenderPager`、`:MdRenderDemo` 等舊指令仍可使用，會轉交給新的子指令。每次 Neovim 工作階段中，首次呼叫會顯示淘汰提示；未來主要版本將移除這些舊指令。
+
+### 渲染寬度
+
+自動排版會隨視窗可用寬度與大小變化調整。預設情況下，原生圖片後端的正文上限為 80 欄，Snacks 與表格則使用視窗可用寬度。若要對兩個後端的正文與表格設定共同上限：
+
+```lua
+vim.g.md_render_max_width = 120
+```
+
+設定全域上限後，預覽仍會隨視窗調整，但不超過指定寬度。每次決定預覽尺寸時會重新讀取設定，已開啟的預覽會在視窗大小改變時套用。無效值會顯示警告並使用 80 欄上限；取消設定則恢復各後端的預設行為。
+
+寬度指包含縮排的完整渲染行。`:MdRender` 的 `width=N` 或 Lua API 的 `max_width`（例如 `preview.show({ max_width = 120 })`）優先於全域設定，將單次預覽固定在指定寬度，不隨視窗大小改變。重新開啟快取中的切換或分割預覽時，也會套用這次指定的寬度。
 
 ### 在原視窗切換預覽
 
@@ -390,6 +404,8 @@ autocmd FileType markdown silent! MdRender auto on
 
 圖片與原生布局不顯示層級圖示，H1／H2 下方使用單線。純文字布局保留 `#` 到 `######`，六級都在所屬容器內靠左，H1 下方使用雙線、H2 使用單線。
 
+浮在預覽上方的視窗只要遮住標題的一部分，原生與圖片標題都會維持一般文字，直到遮擋移除後恢復原本的渲染方式。
+
 #### 試用圖片標題
 
 執行 `:MdRender textsize image`，再用 `:MdRender toggle` 開啟預覽。圖片需要 Neovim >= 0.12、Kitty >= 0.28、`termguicolors`、Python 3、PyGObject、Pycairo 與 Pango/PangoCairo。自動字級需要 [Pango 1.44 以上](https://docs.gtk.org/Pango/method.FontMetrics.get_height.html)。Python 套件與字型需安裝於 Neovim 所在主機；明確選擇 `image` 後，環境不足時會使用一般文字。
@@ -424,7 +440,7 @@ Kitty >= 0.40 可用 `:MdRender textsize native`，不需圖片依賴。原生�
 
 游標在標題留白處移動時會維持放大，啟用 `cursorline` 也相同；進入文字區域時則顯示一般文字，讓游標位置與鍵盤連結操作一致。
 
-原生標題換行後，每行占用兩列。捲動或視窗重疊時可能短暫顯示一般文字，重繪成本也較高；Telescope 與 Snacks 選取器預覽不使用原生縮放。疑難排解請見 `:help md-render-text-size`。
+原生標題換行後，每行占用兩列。捲動或重繪時可能短暫顯示一般文字，重繪成本也較高；Telescope 與 Snacks 選取器預覽不使用原生縮放。疑難排解請見 `:help md-render-text-size`。
 
 **Kitty 經過 tmux：** native 標題需要 tmux >= 3.6 提供 popup 焦點事件；舊版保留一般文字。支援單一 Kitty client，需設定 `set -g allow-passthrough on`（也支援 Snacks 使用的 `all`）及 `set -g focus-events on`；更改焦點回報設定後請重新 attach。外掛讀取 tmux 的終端辨識與 pane 座標，不改動 tmux 設定，也不向 pane 輸入通道發送版本查詢。只有聚焦的 pane 會放大：popup、copy mode 與失焦時保留一般文字，返回後自動恢復，不切換 backend。外部重繪沿用既有的 500 ms 補繪計時器。
 
@@ -434,7 +450,7 @@ Kitty >= 0.40 可用 `:MdRender textsize native`，不需圖片依賴。原生�
 
 已在 Linux、Kitty 0.48.2、tmux 3.7c、Neovim 0.12.5 驗證本機與 loopback SSH PTY。native 標題可與一般 Snacks 圖片共存。圖片標題使用上方說明的獨立 quiet 傳輸；不符圖片條件時，`auto` 會嘗試 native 後端。
 
-native 的分數字級可能在文字分段之間留下明顯空隙，包含漢字標題；直接使用 Kitty 也會發生，已由 [upstream #65](https://github.com/delphinus/md-render.nvim/issues/65) 追蹤。
+使用分數倍率的原生標題（`##` 到 `######`）會以整數格數指定每段文字的寬度，Kitty 則依字型的實際字距排列字形。兩者不一致時，漢字可能在文字分段之間留下空隙，拉丁字母也可能在分段末尾被裁切，尤其是字形不足兩格寬的 CJK 替代字型。直接使用 Kitty 也會發生，已由 [upstream #65](https://github.com/delphinus/md-render.nvim/issues/65) 追蹤；若使用的字型出現此限制，可執行 `:MdRender textsize off` 關閉縮放。
 
 使用 `:MdRender textsize off` 關閉縮放，或在設定中停用：
 

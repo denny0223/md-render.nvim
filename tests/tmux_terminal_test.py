@@ -80,6 +80,20 @@ def scaled_positions(screen):
             end = match.end()
 
 
+def partial_popup_intact(screen, width, height):
+    """Check the default-colored popup at (0, 0), including erased blank cells."""
+    rows = ["┌" + "─" * (width - 2) + "┐",
+            "│" + "PARTIAL POPUP".ljust(width - 2) + "│",
+            *["│" + " " * (width - 2) + "│"] * (height - 3),
+            "└" + "─" * (width - 2) + "┘"]
+    lines = screen.splitlines()
+    # Keep non-default SGR: an erase can leave correct text with the pane's background.
+    return len(lines) >= height and all(
+        re.sub(r"\x1b\[(?:0)?m", "", line).startswith(expected)
+        for line, expected in zip(lines, rows)
+    )
+
+
 def rich_frame(screen, geometry, snapshot):
     """Return a painted target and its origin only after resize has settled."""
     ctx = snapshot.get("context") or {}
@@ -264,6 +278,7 @@ end})
                 backend=s and s.content.heading_backend,
                 placements=s and #s.content.text_placements,
                 drawn=s and s.text_size_state and s.text_size_state.last_drawn,
+                mode=vim.api.nvim_get_mode().mode,
                 focus_events=_G.focus_events, eventignore=vim.o.eventignore, termsync=vim.o.termsync,
                 columns=vim.o.columns, rows=vim.o.lines, topline=vim.fn.line('w0'),
                 messages=vim.fn.execute('messages') })
@@ -277,11 +292,15 @@ end})
             return all("".join(text for meta, text in runs if level_of(meta) == level) == f"共同 H{level}"
                        for level in range(1, 7))
 
-        def stays_plain(label):
-            wait_for(lambda: not scaled(), label)
+        def stays_plain(label, popup_size=None):
+            def clear():
+                screen = kitty("get-text", "--ansi", "--add-wrap-markers")
+                return not OSC66.search(screen) and (popup_size is None or partial_popup_intact(screen, *popup_size))
+
+            wait_for(clear, label)
             deadline = time.monotonic() + 1.1
             while time.monotonic() < deadline:
-                assert not scaled(), label + ": delayed output escaped"
+                assert clear(), label + ": delayed output damaged the screen"
                 time.sleep(.1)
 
         def pane_geometry():
@@ -788,14 +807,28 @@ end})
                 vim.o.eventignore=ei
               end))
             end)()''')
-            for _ in range(3):
+            client_width, client_height = map(int, tmux("display-message", "-p", "#{client_width}|#{client_height}").split("|"))
+            popup_size = (client_width * 60 // 100, client_height * 50 // 100)
+            for command_line in (False, False, False, True):
+                if command_line:
+                    kitty("send-text", "--", ":")
+                    wait_for(lambda: state()["mode"] == "c" and state()["drawn"] == 0,
+                             "command-line feedback retires native headings before popup")
+                focus_count = len(state()["focus_events"])
                 popup = launch(["tmux", "-S", socket, "display-popup", "-E", "-x", "0", "-y", "0", "-w", "60%", "-h", "50%",
                                 "printf 'PARTIAL POPUP'; sleep 30"], log)
                 wait_for(lambda: "PARTIAL POPUP" in kitty("get-text"), "partial popup opens during plugin redraws")
-                stays_plain("partial popup suppresses all native heading output")
+                if command_line:
+                    wait_for(lambda: any(event["event"] == "FocusLost" and event["last_drawn"] == 0
+                                         for event in state()["focus_events"][focus_count:]),
+                             "popup delivers real FocusLost after headings retire")
+                stays_plain("partial popup suppresses all native heading output", popup_size)
                 capture("13-partial-popup")
                 tmux("display-popup", "-C")
                 popup.wait(timeout=10)
+                if command_line:
+                    wait_for(lambda: state()["mode"] == "c" and not scaled(), "popup closing preserves command-line feedback")
+                    kitty("send-text", "--", "\x1b")
                 wait_for(lambda: "".join(text for meta, text in scaled() if level_of(meta) == 2) == long_text,
                          "heading recovers after popup during plugin redraws")
             lua("(function() _G.refresh_timer:stop(); _G.refresh_timer:close() end)()")

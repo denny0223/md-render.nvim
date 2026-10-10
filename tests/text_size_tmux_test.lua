@@ -381,9 +381,23 @@ finish_redraw()
 local last = content.text_placements[#content.text_placements]
 assert(state.last_drawn == 0, "all headings yield to command-line feedback")
 assert(redraw_requests[#redraw_requests].range[2] == last.line + last.scale, "restore untouched retired headings too")
+local retired_writes, retired_redraws = #writes, redraws
+vim.api.nvim_exec_autocmds("WinScrolled", { modeline = false })
+vim.api.nvim_exec_autocmds("FocusLost", { modeline = false })
+assert(redraws == retired_redraws + 1 and ordered_restore, "retired headings still need ordered focus cleanup")
+provider.on_start()
+provider.on_range(nil, win, buf, p.line, 0, p.line + 1, 0)
+provider.on_end()
+vim.api.nvim_exec_autocmds("SafeState", { modeline = false })
+vim.wait(650, function()
+  return #writes > retired_writes
+end, 10)
+assert(#writes == retired_writes, "retired headings cannot draw or erase after focus loss, including queued callbacks")
 feedback.protected = protected
+vim.api.nvim_exec_autocmds("FocusGained", { modeline = false })
 vim.wait(10)
 size.paint(state)
+assert(state.last_drawn == 2, "focus recovery repaints headings retired before focus loss")
 
 vim.api.nvim_buf_set_extmark(buf, feedback_ns, p.line, p.col, {
   end_row = p.line + 1,

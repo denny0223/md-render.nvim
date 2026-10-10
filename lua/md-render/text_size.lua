@@ -835,7 +835,8 @@ local function transport(state)
   local ctx = tmux_context()
   local key = ctx.key .. ":" .. tostring(tmux_focused)
   if state.tmux and state.tmux_key ~= key then
-    if (state.last_drawn or 0) > 0 then tmux.redraw(state.tmux.client, not tmux_focused) end
+    -- Retired headings can still have paint or erase bytes queued on focus loss.
+    if not tmux_focused or (state.last_drawn or 0) > 0 then tmux.redraw(state.tmux.client, not tmux_focused) end
     state.drawn, state.erased, state.last_layout, state.last_drawn, state.owes_invalidate = nil, nil, nil, 0, false
     state.gesture, state.press, state.dragged = nil, nil, nil
   end

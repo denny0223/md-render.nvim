@@ -17,6 +17,19 @@ import tmux_terminal_test as driver
 
 
 class TmuxDiagnosticsTest(unittest.TestCase):
+    def test_partial_popup_checks_background_border_and_contents(self):
+        rows = ["┌────────────────┐", "│PARTIAL POPUP   │", "│                │", "└────────────────┘"]
+        screen = "\n".join("\x1b[m" + row + "\x1b[48:2:20:22:27m outside" for row in rows)
+        self.assertTrue(driver.partial_popup_intact(screen, 18, 4))
+        for damaged in (
+            screen.replace("POPUP", "     "),
+            screen.replace("│                │", "│                 "),
+            screen.replace("│                │", "│  \x1b[48:2:20:22:27m              │"),
+            screen.replace("┌", " "),
+        ):
+            self.assertFalse(driver.OSC66.search(damaged))
+            self.assertFalse(driver.partial_popup_intact(damaged, 18, 4))
+
     def test_rich_frame_rejects_stale_resize_context_and_paint(self):
         def paint(left, top):
             lines = [""] * (top + 28)

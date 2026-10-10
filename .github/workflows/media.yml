@@ -1,129 +1,258 @@
 name: Media tools
 
-# The unit tests check the bytes md-render emits. This job checks that the
-# commands it runs still work, against several FFmpeg majors.
-#
-# It exists because of a silent breakage: FFmpeg 9 removed `-vsync`, frame
-# extraction started failing for every video and animated GIF, and nothing
-# caught it — the emitted escape sequences were still correct, and no commit
-# had touched the code. Hence the schedule: the failure mode is the toolchain
-# moving, not the repo changing.
-#
-# The matrix must span majors rather than track one version. Ubuntu 24.04 still
-# ships FFmpeg 6.1, so a job that just runs `apt-get install ffmpeg` would have
-# stayed green through the entire incident.
-
+# Representative gates stay fixed; weekly observations track external drift.
 on:
   push:
+    branches: [main]
   pull_request:
   schedule:
-    # Mondays 03:00 UTC. Catches toolchain drift with no commit involved.
-    - cron: "0 3 * * 1"
+    - cron: "37 3 * * 1"
   workflow_dispatch:
+    inputs:
+      suite:
+        description: Fixed baseline or weekly toolchain observation
+        type: choice
+        options: [baseline, observation]
+        default: baseline
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SUITE: ${{ (github.event_name == 'schedule' || inputs.suite == 'observation') && 'observation' || 'baseline' }}
+
 jobs:
   ffmpeg-matrix:
-    name: ffmpeg ${{ matrix.ffmpeg.name }}
-    runs-on: ubuntu-latest
+    name: FFmpeg conversions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Prepare evidence directory
+        run: mkdir -p "$RUNNER_TEMP/md-render-media-results"
+      - name: Cache verified Neovim archive
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/md-render-cache/neovim
+          key: neovim-archives-v1-${{ runner.os }}-${{ runner.arch }}-v0.12.0-${{ hashFiles('.github/ci/neovim-archives.tsv') }}
+      - name: Install minimum Neovim
+        id: nvim
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/ci/install-neovim.sh v0.12.0
+      - name: Install ImageMagick
+        id: media_tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends imagemagick
+          nvim --version
+          convert -version
+      - name: Cache fixed archives
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/md-render-ffmpeg-archives
+          key: ffmpeg-linux-x64-${{ env.SUITE }}-${{ hashFiles('.github/ci/ffmpeg-archives.tsv') }}
+      - name: Install FFmpeg 6.1
+        id: install_6
+        if: ${{ !cancelled() && steps.nvim.outcome == 'success' && steps.media_tools.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 6
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/ci/install-ffmpeg.sh 6.1 "$SUITE"
+      - name: Test FFmpeg 6.1 from cold conversion cache
+        id: test_6
+        if: ${{ !cancelled() && steps.install_6.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 4
+        env:
+          MD_RENDER_REQUIRE_MEDIA_TOOLS: "1"
+        run: |
+          set -o pipefail
+          PATH="$RUNNER_TEMP/md-render-ffmpeg/6.1/bin:$PATH" nvim --headless -u NONE --noplugin -l tests/media_test.lua 2>&1 | tee "$RUNNER_TEMP/md-render-media-results/ffmpeg-6.1-test.log"
+      - name: Install FFmpeg 7.1
+        id: install_7
+        if: ${{ !cancelled() && env.SUITE == 'observation' && steps.nvim.outcome == 'success' && steps.media_tools.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 6
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/ci/install-ffmpeg.sh 7.1 "$SUITE"
+      - name: Test FFmpeg 7.1 from cold conversion cache
+        id: test_7
+        if: ${{ !cancelled() && steps.install_7.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 4
+        env:
+          MD_RENDER_REQUIRE_MEDIA_TOOLS: "1"
+        run: |
+          set -o pipefail
+          PATH="$RUNNER_TEMP/md-render-ffmpeg/7.1/bin:$PATH" nvim --headless -u NONE --noplugin -l tests/media_test.lua 2>&1 | tee "$RUNNER_TEMP/md-render-media-results/ffmpeg-7.1-test.log"
+      - name: Install FFmpeg 8.1
+        id: install_8
+        if: ${{ !cancelled() && env.SUITE == 'observation' && steps.nvim.outcome == 'success' && steps.media_tools.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 6
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/ci/install-ffmpeg.sh 8.1 "$SUITE"
+      - name: Test FFmpeg 8.1 from cold conversion cache
+        id: test_8
+        if: ${{ !cancelled() && steps.install_8.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 4
+        env:
+          MD_RENDER_REQUIRE_MEDIA_TOOLS: "1"
+        run: |
+          set -o pipefail
+          PATH="$RUNNER_TEMP/md-render-ffmpeg/8.1/bin:$PATH" nvim --headless -u NONE --noplugin -l tests/media_test.lua 2>&1 | tee "$RUNNER_TEMP/md-render-media-results/ffmpeg-8.1-test.log"
+      - name: Install FFmpeg 9.0
+        id: install_9
+        if: ${{ !cancelled() && steps.nvim.outcome == 'success' && steps.media_tools.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 6
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/ci/install-ffmpeg.sh 9.0 "$SUITE"
+      - name: Test FFmpeg 9.0 from cold conversion cache
+        id: test_9
+        if: ${{ !cancelled() && steps.install_9.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 4
+        env:
+          MD_RENDER_REQUIRE_MEDIA_TOOLS: "1"
+        run: |
+          set -o pipefail
+          PATH="$RUNNER_TEMP/md-render-ffmpeg/9.0/bin:$PATH" nvim --headless -u NONE --noplugin -l tests/media_test.lua 2>&1 | tee "$RUNNER_TEMP/md-render-media-results/ffmpeg-9.0-test.log"
+      - name: Install FFmpeg master
+        id: install_master
+        if: ${{ !cancelled() && env.SUITE == 'observation' && steps.nvim.outcome == 'success' && steps.media_tools.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 6
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/ci/install-ffmpeg.sh master "$SUITE"
+      - name: Test FFmpeg master from cold conversion cache
+        id: test_master
+        if: ${{ !cancelled() && steps.install_master.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 4
+        env:
+          MD_RENDER_REQUIRE_MEDIA_TOOLS: "1"
+        run: |
+          set -o pipefail
+          PATH="$RUNNER_TEMP/md-render-ffmpeg/master/bin:$PATH" nvim --headless -u NONE --noplugin -l tests/media_test.lua 2>&1 | tee "$RUNNER_TEMP/md-render-media-results/ffmpeg-master-test.log"
+      - name: Summarize every selected FFmpeg version
+        id: phases
+        if: always()
+        env:
+          STEPS_JSON: ${{ toJSON(steps) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+          steps = json.loads(os.environ['STEPS_JSON'])
+          versions = ['6', '7', '8', '9', 'master'] if os.environ['SUITE'] == 'observation' else ['6', '9']
+          required = ['nvim', 'media_tools'] + [f'{phase}_{v}' for v in versions for phase in ['install', 'test']]
+          rows = {name: steps.get(name, {}).get('outcome', 'not-run') for name in required}
+          text = '## FFmpeg ' + os.environ['SUITE'] + '\n\n' + '\n'.join(f'- {name}: {value}' for name, value in rows.items()) + '\n'
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+              out.write(text)
+          results = pathlib.Path(os.environ['RUNNER_TEMP']) / 'md-render-media-results'
+          results.mkdir(exist_ok=True)
+          (results / 'outcomes.json').write_text(json.dumps(rows, indent=2) + '\n')
+          failed = ','.join(name for name, value in rows.items() if value != 'success') or 'none'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('failed=' + failed + '\n')
+          PY
+      - name: Require original phases / ${{ steps.phases.outputs.failed || 'summary incomplete' }}
+        if: always()
+        env:
+          SUMMARY_OUTCOME: ${{ steps.phases.outcome }}
+          FAILED_PHASES: ${{ steps.phases.outputs.failed }}
+        run: |
+          test "$SUMMARY_OUTCOME" = success
+          test "$FAILED_PHASES" = none
+      - name: Retain FFmpeg evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ffmpeg-${{ env.SUITE }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/md-render-media-results
+            ${{ runner.temp }}/md-render-neovim-results
+          if-no-files-found: warn
+          retention-days: ${{ job.status != 'success' && (env.SUITE == 'observation' && 90 || 30) || 14 }}
+
+  mermaid:
+    name: Mermaid ${{ matrix.renderer }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        ffmpeg:
-          # 6.x and 7.x come from pinned old autobuilds: BtbN drops branches
-          # from its rolling `latest` release once they go EOL.
-          #
-          # These pins expire. BtbN deletes whole autobuild releases, assets
-          # and all, keeping roughly the last two weeks of dailies plus a
-          # monthly snapshot going back about two years — so an EOL branch
-          # survives only as long as the newest snapshot that still carries
-          # it. Each URL below is the newest one that does, which is not the
-          # same release for both. When one 404s, re-pin it to the newest
-          # snapshot whose assets still list that branch:
-          #
-          #   gh api "repos/BtbN/FFmpeg-Builds/releases?per_page=100" \
-          #     -q '.[] | .tag_name + " " +
-          #         ([.assets[].name | select(test("linux64-gpl-6\\."))] | join(" "))'
-          #
-          # The scheduled run is what surfaces the expiry.
-          - name: "6.1"
-            url: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2025-08-31-13-00/ffmpeg-n6.1.3-linux64-gpl-6.1.tar.xz
-            sha256: 400f9ca9d8ea3f812660cf7a00b9bfed944175cd9d6bd0c9b6257cf99376a75c
-          - name: "7.1"
-            url: https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-01-31-12-57/ffmpeg-n7.1.3-35-g419cdf9dcc-linux64-gpl-7.1.tar.xz
-            sha256: 80e7f0bb40711bb190790f548cb9808f4e4ccfd117a9121e2dbfd74f34368166
-          # 8.x, 9.x and master are rolling: the assets are rebuilt in place,
-          # so the scheduled run picks up new point releases automatically.
-          # This is the part that actually detects drift.
-          - name: "8.1"
-            url: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n8.1-latest-linux64-gpl-8.1.tar.xz
-          - name: "9.0"
-            url: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-n9.0-latest-linux64-gpl-9.0.tar.xz
-          - name: master
-            url: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-
-      - name: Install Neovim
-        uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1
-        with:
-          neovim: true
-          version: stable
-
-      - name: Install FFmpeg ${{ matrix.ffmpeg.name }}
-        run: |
-          set -euxo pipefail
-          curl -fsSL -o /tmp/ffmpeg.tar.xz "${{ matrix.ffmpeg.url }}"
-          checksum='${{ matrix.ffmpeg.sha256 }}'
-          if [ -n "$checksum" ]; then
-            printf '%s  /tmp/ffmpeg.tar.xz\n' "$checksum" | sha256sum --check -
-          fi
-          mkdir -p /tmp/ffmpeg && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp/ffmpeg --strip-components=1
-          echo "/tmp/ffmpeg/bin" >> "$GITHUB_PATH"
-
-      - name: Install ImageMagick
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends imagemagick
-
-      # MD_RENDER_REQUIRE_MEDIA_TOOLS turns "tool missing, skipping" into a
-      # failure. Without it a broken install step would look like a pass.
-      - name: Run media tests
-        env:
-          MD_RENDER_REQUIRE_MEDIA_TOOLS: "1"
-        run: nvim --headless -u NONE --noplugin -l tests/media_test.lua
-
-  mermaid:
-    name: Real Mermaid CLI and browser
-    runs-on: ubuntu-24.04
+        renderer: ${{ (github.event_name == 'schedule' || inputs.suite == 'observation') && fromJSON('["pinned", "latest"]') || fromJSON('["pinned"]') }}
+    defaults:
+      run:
+        shell: bash
     env:
       PUPPETEER_CACHE_DIR: /tmp/md-render-mermaid-browser
+      MD_RENDER_REQUIRE_MERMAID_TOOLS: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - name: Prepare evidence directory
+        run: mkdir -p "$RUNNER_TEMP/md-render-media-results"
+      - id: node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24"
-      - uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1
+      - name: Cache verified Neovim archive
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          neovim: true
-          version: v0.12.0
-      - name: Install pinned renderer and its pinned browser revision
+          path: ${{ runner.temp }}/md-render-cache/neovim
+          key: neovim-archives-v1-${{ runner.os }}-${{ runner.arch }}-v0.12.0-${{ hashFiles('.github/ci/neovim-archives.tsv') }}
+      - name: Install minimum Neovim
+        id: nvim
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/ci/install-neovim.sh v0.12.0
+      - name: Install browser libraries and PNG decoder
+        id: browser_tools
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libnss3 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
             libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 fonts-liberation imagemagick
+      - name: Resolve renderer and install its matching browser
+        id: renderer
+        if: ${{ !cancelled() && steps.node.outcome == 'success' && steps.browser_tools.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          RENDERER: ${{ matrix.renderer }}
+        run: |
           mkdir -p /tmp/md-render-mermaid
-          cp tests/fixtures/mermaid-cli/package*.json /tmp/md-render-mermaid/
+          if [ "$RENDERER" = pinned ]; then
+            cp tests/fixtures/mermaid-cli/package*.json /tmp/md-render-mermaid/
+          else
+            printf '%s\n' '{"name":"md-render-mermaid-observation","private":true}' > /tmp/md-render-mermaid/package.json
+            npm --prefix /tmp/md-render-mermaid install --package-lock-only --ignore-scripts --no-audit --no-fund @mermaid-js/mermaid-cli@latest
+          fi
+          cp /tmp/md-render-mermaid/package*.json "$RUNNER_TEMP/md-render-media-results/"
           npm --prefix /tmp/md-render-mermaid ci --ignore-scripts --no-audit --no-fund
-          # Only the locked Puppeteer browser installer needs to run a script.
-          node /tmp/md-render-mermaid/node_modules/puppeteer/install.mjs
-          # Only this isolated CI fixture needs the hosted runner sandbox override.
-          # The plugin's invocation and users' browser configuration stay unchanged.
+          # Resolve Puppeteer from the CLI, including a nested dependency when versions differ.
+          puppeteer_package=$(node -e "const req=require('node:module').createRequire('/tmp/md-render-mermaid/node_modules/@mermaid-js/mermaid-cli/package.json'); console.log(req.resolve('puppeteer/package.json'))")
+          node "$(dirname "$puppeteer_package")/install.mjs"
           mkdir -p /tmp/md-render-mermaid/bin
           printf '%s\n' '{"args":["--no-sandbox"]}' > /tmp/md-render-mermaid/puppeteer.json
           cat > /tmp/md-render-mermaid/bin/mmdc <<'SH'
@@ -133,40 +262,131 @@ jobs:
           SH
           chmod +x /tmp/md-render-mermaid/bin/mmdc
           echo /tmp/md-render-mermaid/bin >> "$GITHUB_PATH"
-      - name: Report tool versions
+      - name: Require and report actual tool identities
+        id: identities
+        if: ${{ !cancelled() && steps.renderer.outcome == 'success' && steps.nvim.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 2
         run: |
-          node --version
-          mmdc --version
-          node -e "console.log('puppeteer', require('/tmp/md-render-mermaid/node_modules/puppeteer/package.json').version)"
-          browser=$(node -e "require('/tmp/md-render-mermaid/node_modules/puppeteer').executablePath().then(console.log)")
-          "$browser" --version
-      - name: Render through the plugin and isolate Puppeteer configuration
+          set -o pipefail
+          {
+            for tool in node npm nvim mmdc convert; do command -v "$tool"; done
+            node --version
+            npm --version
+            nvim --version
+            mmdc --version
+            convert -version
+            node - <<'JS'
+          (async () => {
+            const req = require('node:module').createRequire('/tmp/md-render-mermaid/node_modules/@mermaid-js/mermaid-cli/package.json');
+            const browser = await req('puppeteer').executablePath();
+            console.log('puppeteer', req('puppeteer/package.json').version);
+            console.log('browser', browser);
+            const version = require('node:child_process').execFileSync(browser, ['--version'], { encoding: 'utf8' });
+            console.log(version.trim());
+          })().catch(error => { console.error(error); process.exitCode = 1; });
+          JS
+            sha256sum /tmp/md-render-mermaid/package-lock.json
+          } 2>&1 | tee "$RUNNER_TEMP/md-render-media-results/tool-identities.txt"
+      - name: Render real PNG from cold cache
+        id: png
+        if: ${{ !cancelled() && steps.identities.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 3
         run: |
-          nvim --headless -u NONE --noplugin -l tests/mermaid_integration.lua
-          nvim --headless -u NONE --noplugin -l tests/mermaid_security_integration.lua
+          set -o pipefail
+          nvim --headless -u NONE --noplugin -l tests/mermaid_integration.lua 2>&1 | tee "$RUNNER_TEMP/md-render-media-results/mermaid-png.log"
+      - name: Check Puppeteer configuration isolation
+        id: security
+        if: ${{ !cancelled() && steps.identities.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          set -o pipefail
+          nvim --headless -u NONE --noplugin -l tests/mermaid_security_integration.lua 2>&1 | tee "$RUNNER_TEMP/md-render-media-results/mermaid-security.log"
+      - name: Summarize both Mermaid checks
+        id: phases
+        if: always()
+        env:
+          STEPS_JSON: ${{ toJSON(steps) }}
+          RENDERER: ${{ matrix.renderer }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+          steps = json.loads(os.environ['STEPS_JSON'])
+          required = ['node', 'nvim', 'browser_tools', 'renderer', 'identities', 'png', 'security']
+          rows = {name: steps.get(name, {}).get('outcome', 'not-run') for name in required}
+          text = '## Mermaid ' + os.environ['RENDERER'] + '\n\n' + '\n'.join(f'- {name}: {value}' for name, value in rows.items()) + '\n'
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+              out.write(text)
+          results = pathlib.Path(os.environ['RUNNER_TEMP']) / 'md-render-media-results'
+          results.mkdir(exist_ok=True)
+          (results / 'outcomes.json').write_text(json.dumps(rows, indent=2) + '\n')
+          failed = ','.join(name for name, value in rows.items() if value != 'success') or 'none'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('failed=' + failed + '\n')
+          PY
+      - name: Require original phases / ${{ steps.phases.outputs.failed || 'summary incomplete' }}
+        if: always()
+        env:
+          SUMMARY_OUTCOME: ${{ steps.phases.outcome }}
+          FAILED_PHASES: ${{ steps.phases.outputs.failed }}
+        run: |
+          test "$SUMMARY_OUTCOME" = success
+          test "$FAILED_PHASES" = none
+      - name: Retain Mermaid evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mermaid-${{ matrix.renderer }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/md-render-media-results
+            ${{ runner.temp }}/md-render-neovim-results
+          if-no-files-found: warn
+          retention-days: ${{ job.status != 'success' && (env.SUITE == 'observation' && 90 || 30) || 14 }}
 
-  # The scheduled run is only meaningful if someone hears about it. A failing
-  # cron job on a repo nobody is watching is the same as no test at all.
   notify:
-    name: Open an issue on scheduled failure
+    name: Report weekly observation
     needs: [ffmpeg-matrix, mermaid]
-    if: failure() && github.event_name == 'schedule'
-    runs-on: ubuntu-latest
+    if: ${{ always() && github.ref == 'refs/heads/main' && github.run_attempt == 1 && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'observation')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
+      contents: read
+      actions: read
       issues: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
         with:
           script: |
-            const title = "Scheduled media-tool test failed";
-            const url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const { data: open } = await github.rest.issues.listForRepo({
-              ...context.repo, state: "open", labels: "toolchain",
+            await require('./.github/ci/notify.js')({
+              github, context, core, needs: JSON.parse(process.env.CI_NEEDS), dryRun: false,
             });
-            const existing = open.find(i => i.title === title);
-            const body = `The weekly media-tool checks failed. An external tool most likely changed under us.\n\n${url}`;
-            if (existing) {
-              await github.rest.issues.createComment({ ...context.repo, issue_number: existing.number, body });
-            } else {
-              await github.rest.issues.create({ ...context.repo, title, body, labels: ["toolchain"] });
-            }
+
+  preview:
+    name: Preview CI report
+    needs: [ffmpeg-matrix, mermaid]
+    if: ${{ always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        with:
+          script: |
+            await require('./.github/ci/notify.js')({
+              github, context, core, needs: JSON.parse(process.env.CI_NEEDS),
+            });

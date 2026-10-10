@@ -228,6 +228,52 @@ def run_kitty(kitty, enabled, workdir, mode="float"):
             bad(f"{mode}: no level icons remain in terminal text")
         else:
             ok(f"{mode}: no level icons remain in terminal text")
+        if mode == "float" and enabled:
+            underlay_lines = ["HIDDEN OWNER FIRST ROW STAYS READABLE",
+                              "HIDDEN OWNER SECOND ROW STAYS READABLE"]
+            windows = lua("(function() "
+                          "local win = vim.api.nvim_get_current_win(); "
+                          "local cfg = vim.api.nvim_win_get_config(win); "
+                          "assert(cfg.relative ~= '' and cfg.zindex > 1); "
+                          "local session = require('md-render.preview')._sessions[vim.api.nvim_get_current_buf()]; "
+                          "local p = session.content.text_placements[1]; "
+                          "local pos = vim.fn.screenpos(win, p.line+1, p.col+1); "
+                          "local buf = vim.api.nvim_create_buf(false, true); "
+                          "vim.bo[buf].bufhidden = 'wipe'; "
+                          "vim.api.nvim_buf_set_lines(buf, 0, -1, false, {"
+                          + ",".join(json.dumps(line) for line in underlay_lines) + "}); "
+                          "local under = vim.api.nvim_open_win(buf, false, {relative='editor', "
+                          f"row=pos.row-1, col=pos.col-1, width={max(map(len, underlay_lines))}, height=2, "
+                          "border='none', style='minimal', focusable=false, zindex=cfg.zindex-1}); "
+                          "vim.api.nvim_win_set_config(win, {hide=true}); "
+                          "return {owner=win, under=under} end)()")
+            try:
+                for context in ("after hiding the preview", "after another hidden-owner keepalive"):
+                    time.sleep(0.6)
+                    visible = screen().decode()
+                    if all(line in visible for line in underlay_lines):
+                        ok(f"underlying text stays readable {context}")
+                    else:
+                        bad(f"underlying text stays readable {context}", visible)
+                    if not OSC66.findall(screen(ansi=True)):
+                        ok(f"no native heading paint remains {context}")
+                    else:
+                        bad(f"no native heading paint remains {context}")
+                lua(f"(function() vim.api.nvim_win_set_config({windows['owner']}, {{hide=false}}); return true end)()")
+                time.sleep(0.6)
+                restored = {}
+                for meta, text in OSC66.findall(screen(ansi=True)):
+                    level = level_of(meta.decode())
+                    restored[level] = restored.get(level, "") + text.decode()
+                if all(title in restored.get(level, "") for level, title in LEVEL_TEXT.items()):
+                    ok("all six heading levels return after showing the preview")
+                else:
+                    bad("all six heading levels return after showing the preview", repr(restored))
+            finally:
+                lua(f"(function() if vim.api.nvim_win_is_valid({windows['owner']}) then "
+                    f"vim.api.nvim_win_set_config({windows['owner']}, {{hide=false}}) end; "
+                    f"if vim.api.nvim_win_is_valid({windows['under']}) then "
+                    f"vim.api.nvim_win_close({windows['under']}, true) end; return true end)()")
         if mode == "toggle" and enabled:
             def body_rows():
                 return [(row, line) for row, line in enumerate(screen().decode().splitlines())

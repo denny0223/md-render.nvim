@@ -1116,6 +1116,13 @@ do
     local d = state.drawn and state.drawn[1]
     assert_true(d ~= nil, "a heading in a float preview is drawn")
 
+    vim.api.nvim_win_set_config(pwin, { hide = true })
+    text_size.paint(state)
+    assert_eq(#state.drawn, 0, "hiding the preview withdraws its native headings")
+    vim.api.nvim_win_set_config(pwin, { hide = false })
+    text_size.paint(state)
+    assert_eq(#state.drawn, 1, "showing the preview restores its native headings")
+
     local fbuf = vim.api.nvim_create_buf(false, true)
     local low = vim.api.nvim_open_win(fbuf, false, {
       relative = "editor",

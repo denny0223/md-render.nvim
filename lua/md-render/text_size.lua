@@ -727,7 +727,13 @@ local function visible_placements(state)
   local left, right, top, bottom = M.text_area(win)
   if not left then return {} end
   local buf = vim.api.nvim_win_get_buf(win)
-  if buf ~= state.buf or vim.api.nvim_win_get_tabpage(win) ~= vim.api.nvim_get_current_tabpage() then return {} end
+  if
+    buf ~= state.buf
+    or vim.api.nvim_win_get_tabpage(win) ~= vim.api.nvim_get_current_tabpage()
+    or vim.api.nvim_win_get_config(win).hide
+  then
+    return {}
+  end
   if
     not vim.o.termguicolors
     or vim.wo[win].winblend > 0

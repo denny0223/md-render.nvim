@@ -145,6 +145,7 @@ local function paint(state)
   if
     vim.api.nvim_win_get_buf(state.win) ~= state.buf
     or vim.api.nvim_win_get_tabpage(state.win) ~= vim.api.nvim_get_current_tabpage()
+    or vim.api.nvim_win_get_config(state.win).hide
   then
     erase(state)
     return

@@ -419,6 +419,15 @@ assert(
   end),
   "minimal floats' EndOfBuffer mapping must not disable heading images"
 )
+vim.api.nvim_win_set_config(float, { hide = true })
+paint()
+assert(
+  floating.drawn == 0 and not floating.masked and not floating.linked,
+  "hidden previews withdraw images, masks and URLs"
+)
+vim.api.nvim_win_set_config(float, { hide = false })
+paint()
+assert(floating.drawn == 2 and floating.masked, "showing the preview restores its images and masks")
 vim.api.nvim_win_set_hl_ns(float, custom_ns)
 paint()
 assert(floating.drawn == 0 and not floating.masked, "actual window theme overrides still retain native text")

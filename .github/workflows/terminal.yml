@@ -1,172 +1,290 @@
 name: Terminal
 
-# Drives a real Kitty under Xvfb and asserts on what the terminal actually
-# holds, using `kitty @ get-text --ansi` — which round-trips OSC 66 verbatim,
-# so "is this heading drawn at double size" is an exact string match rather
-# than a screenshot comparison.
-#
-# This is the layer between the unit tests (the bytes md-render emits) and the
-# visual regression tests (pixels, macOS-local only). It explicitly selects
-# native OSC 66, checks all six sizes and plain Markdown ranks, and verifies
-# Heading margins retain scaling; text entry reveals accurate cursor feedback.
-# The driver clears inherited terminal/tmux hints and uses isolated configs.
-#
-# Same shape as the FFmpeg matrix: a pinned floor plus a version that follows
-# upstream, so both "we broke the oldest supported setup" and "upstream moved
-# under us" are visible. The schedule is for the second kind, which no push
-# would ever trigger.
-
 on:
   push:
+    branches: [main]
   pull_request:
   schedule:
-    # Mondays 03:30 UTC, half an hour after the media matrix.
-    - cron: "30 3 * * 1"
+    # Monday 11:57 in Taiwan, after the core and media observations.
+    - cron: "57 3 * * 1"
   workflow_dispatch:
+    inputs:
+      suite:
+        description: Verification suite
+        type: choice
+        options: [baseline, observation]
+        default: baseline
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   kitty-matrix:
-    name: kitty ${{ matrix.kitty }} / tmux ${{ matrix.tmux }} / nvim ${{ matrix.nvim }}
-    runs-on: ubuntu-latest
+    name: kitty ${{ matrix.kitty }} / nvim ${{ matrix.nvim }} (${{ matrix.lane }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     strategy:
       fail-fast: false
-      matrix:
-        # 0.40.0 introduced the text sizing protocol, so it is the floor this
-        # feature can possibly work on. `latest` is resolved at run time.
-        kitty: ["0.40.0", "latest"]
-        # 3.6 added popup focus events; older servers must keep ordinary text.
-        tmux: ["3.4", "3.6"]
-        # v0.12.0 is the declared minimum and differs from stable in ways that
-        # matter here; nightly is the early warning.
-        nvim: [v0.12.0, nightly]
-    continue-on-error: ${{ matrix.nvim == 'nightly' }}
+      # Share dependencies and direct-Kitty checks across the two weekly tmux
+      # versions. Each tmux still has independent installation and test outcomes.
+      matrix: ${{ fromJSON((github.event_name == 'schedule' || inputs.suite == 'observation') && '{"include":[{"lane":"minimum","kitty":"0.40.0","nvim":"v0.12.0"},{"lane":"stable","kitty":"0.40.0","nvim":"stable"},{"lane":"nightly","kitty":"0.40.0","nvim":"nightly"},{"lane":"minimum","kitty":"latest","nvim":"v0.12.0"},{"lane":"stable","kitty":"latest","nvim":"stable"},{"lane":"nightly","kitty":"latest","nvim":"nightly"}]}' || '{"include":[{"lane":"minimum","kitty":"0.40.0","nvim":"v0.12.0"},{"lane":"current","kitty":"0.49.2","nvim":"v0.12.5"}]}') }}
+    env:
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      OBSERVATION: ${{ github.event_name == 'schedule' || inputs.suite == 'observation' }}
+      IMAGES_REQUIRED: ${{ !(github.event_name == 'schedule' || inputs.suite == 'observation') || (matrix.kitty == 'latest' && matrix.nvim == 'v0.12.0') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        id: checkout
         with:
           persist-credentials: false
 
-      - name: Install Neovim
-        uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1
-        with:
-          neovim: true
-          version: ${{ matrix.nvim }}
+      - name: Prepare diagnostics
+        id: diagnostics
+        run: mkdir -p "$RUNNER_TEMP/md-terminal-results"
 
-      # Kitty is dynamically linked against the usual X client libraries and
-      # dlopens its GLFW backend, so a missing one is a startup failure rather
-      # than a link error: without libXcursor it dies with
-      #   Failed to dlopen .../kitty.glfw-x11.so: libXcursor.so.1: cannot open
-      # It also needs fontconfig and at least one font, and Noto CJK covers the
-      # CJK heading in the fixture. Ubuntu's own kitty package is 0.32, far
-      # below the 0.40 the text sizing protocol needs, so take the tarball.
-      - name: Install Kitty ${{ matrix.kitty }} and Xvfb
-        timeout-minutes: 15
+      - name: Restore fixed Neovim archives
+        if: matrix.nvim != 'stable' && matrix.nvim != 'nightly'
+        continue-on-error: true
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/md-render-cache/neovim
+          key: neovim-archives-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.nvim }}-${{ hashFiles('.github/ci/neovim-archives.tsv') }}
+
+      - name: Install verified Neovim
+        id: nvim
+        continue-on-error: true
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
+          NVIM_VERSION: ${{ matrix.nvim }}
+        run: bash .github/ci/install-neovim.sh "$NVIM_VERSION"
+
+      - name: Install Xvfb, graphics, image and build dependencies
+        id: dependencies
+        continue-on-error: true
+        timeout-minutes: 15
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            xvfb imagemagick libevent-dev libncurses-dev libgl1-mesa-dri xauth fontconfig fonts-dejavu-core fonts-noto-cjk \
-            libxcursor1 libxrandr2 libxi6 libxinerama1 libxkbcommon-x11-0 libdbus-1-3
-          version='${{ matrix.kitty }}'
-          if [ "$version" = latest ]; then
-            version="$(gh api repos/kovidgoyal/kitty/releases/latest --jq '.tag_name | ltrimstr("v")')"
-          fi
-          echo "Using kitty $version"
-          curl -fsSL -o /tmp/kitty.txz \
-            "https://github.com/kovidgoyal/kitty/releases/download/v${version}/kitty-${version}-x86_64.txz"
-          if [ '${{ matrix.kitty }}' != latest ]; then
-            echo '041c6fedd9be2f257d64eee41099a19f1ea525c69214ded5e930ff96ccb6b8a4  /tmp/kitty.txz' | sha256sum --check -
-          fi
-          sudo mkdir -p /opt/kitty
-          sudo tar -xJf /tmp/kitty.txz -C /opt/kitty
-          echo "/opt/kitty/bin" >> "$GITHUB_PATH"
+            xvfb xauth imagemagick libevent-dev libncurses-dev libgl1-mesa-dri \
+            fontconfig fonts-dejavu-core fonts-noto-cjk fonts-noto-mono \
+            libxcursor1 libxrandr2 libxi6 libxinerama1 libxkbcommon-x11-0 libdbus-1-3 \
+            python3-pil python3-gi python3-gi-cairo python3-cairo gir1.2-pango-1.0 \
+            2>&1 | tee "$RUNNER_TEMP/md-terminal-results/dependencies.log"
 
-      - name: Install tmux ${{ matrix.tmux }}
-        run: |
-          set -euxo pipefail
-          version='${{ matrix.tmux }}'
-          curl -fsSL -o /tmp/tmux.tar.gz \
-            "https://github.com/tmux/tmux/releases/download/${version}/tmux-${version}.tar.gz"
-          case "$version" in
-            3.4) checksum=551ab8dea0bf505c0ad6b7bb35ef567cdde0ccb84357df142c254f35a23e19aa ;;
-            3.6) checksum=136db80cfbfba617a103401f52874e7c64927986b65b1b700350b6058ad69607 ;;
-            *) echo "Missing tmux checksum for $version" >&2; exit 1 ;;
-          esac
-          printf '%s  /tmp/tmux.tar.gz\n' "$checksum" | sha256sum --check -
-          tar -xzf /tmp/tmux.tar.gz -C /tmp
-          cd "/tmp/tmux-${version}"
-          ./configure --prefix=/opt/tmux
-          make -j2
-          sudo make install
-          echo "/opt/tmux/bin" >> "$GITHUB_PATH"
+      - name: Restore verified fixed archives
+        continue-on-error: true
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/terminal-archives
+          key: terminal-archives-${{ runner.os }}-x64-${{ matrix.kitty }}-${{ env.OBSERVATION }}-${{ hashFiles('.github/ci/install-terminal.sh') }}
 
-      - name: Report versions
+      - name: Install Kitty ${{ matrix.kitty }}
+        id: kitty
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KITTY_VERSION: ${{ matrix.kitty }}
         run: |
+          set -euo pipefail
+          bash .github/ci/install-terminal.sh kitty "$KITTY_VERSION" \
+            2>&1 | tee "$RUNNER_TEMP/md-terminal-results/install-kitty.log"
+
+      - name: Install tmux 3.4 (weekly fallback)
+        id: tmux34
+        if: ${{ !cancelled() && env.OBSERVATION == 'true' && steps.dependencies.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          bash .github/ci/install-terminal.sh tmux 3.4 \
+            2>&1 | tee "$RUNNER_TEMP/md-terminal-results/install-tmux-3.4.log"
+
+      - name: Run direct Kitty checks once
+        id: direct
+        if: ${{ !cancelled() && steps.nvim.outcome == 'success' && steps.kitty.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          KITTY_BIN: ${{ steps.kitty.outputs.bin }}
+        run: |
+          set -euo pipefail
+          export PATH="$KITTY_BIN:$PATH"
+          test "$(command -v kitty)" = "$KITTY_BIN/kitty"
           kitty --version
-          tmux -V
           nvim --version | head -1
+          python3 tests/terminal_test.py 2>&1 | tee "$RUNNER_TEMP/md-terminal-results/direct.log"
 
-      - name: Run terminal tests
-        run: python3 tests/terminal_test.py
-
-      - name: Run native headings through tmux
+      - name: Run tmux 3.4 plain fallback (on and all)
+        id: native34
+        if: ${{ !cancelled() && env.OBSERVATION == 'true' && steps.nvim.outcome == 'success' && steps.kitty.outcome == 'success' && steps.tmux34.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 6
+        env:
+          KITTY_BIN: ${{ steps.kitty.outputs.bin }}
+          TMUX_BIN: ${{ steps.tmux34.outputs.bin }}
         run: |
-          args=()
-          if [ '${{ matrix.tmux }}' = 3.4 ]; then args+=(--expect-plain); fi
+          set -euo pipefail
+          export PATH="$TMUX_BIN:$KITTY_BIN:$PATH"
+          test "$(command -v tmux)" = "$TMUX_BIN/tmux"
+          test "$(tmux -V)" = 'tmux 3.4'
           result=0
           for passthrough in on all; do
             xvfb-run -a --server-args="-screen 0 2400x1800x24" \
-              python3 tests/tmux_terminal_test.py --passthrough "$passthrough" "${args[@]}" \
-              --output-on-failure "/tmp/md-terminal-results/native-$passthrough" || result=$?
+              python3 tests/tmux_terminal_test.py --expect-plain --passthrough "$passthrough" \
+              --output-on-failure "$RUNNER_TEMP/md-terminal-results/tmux-3.4/native-$passthrough" \
+              2>&1 | tee "$RUNNER_TEMP/md-terminal-results/native-3.4-$passthrough.log" || result=$?
           done
           exit "$result"
 
-      # One supported combination exercises the full raster-to-terminal path;
-      # the rest of the matrix retains its smaller native/fallback checks.
-      - name: Install image heading dependencies
-        if: matrix.kitty == 'latest' && matrix.tmux == '3.6' && matrix.nvim == 'v0.12.0'
-        run: >-
-          sudo apt-get install -y --no-install-recommends python3-pil
-          python3-gi python3-gi-cairo python3-cairo gir1.2-pango-1.0 fonts-noto-mono
+      - name: Install tmux 3.6
+        id: tmux36
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          bash .github/ci/install-terminal.sh tmux 3.6 \
+            2>&1 | tee "$RUNNER_TEMP/md-terminal-results/install-tmux-3.6.log"
 
-      - name: Check image heading pixels and interactions
-        if: matrix.kitty == 'latest' && matrix.tmux == '3.6' && matrix.nvim == 'v0.12.0'
-        run: >-
-          xvfb-run -a --server-args="-screen 0 2400x1800x24"
-          python3 tests/tmux_terminal_test.py --images --passthrough all
-          --output /tmp/md-terminal-results/images
+      - name: Run tmux 3.6 native headings (on and all)
+        id: native36
+        if: ${{ !cancelled() && steps.nvim.outcome == 'success' && steps.kitty.outcome == 'success' && steps.tmux36.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 6
+        env:
+          KITTY_BIN: ${{ steps.kitty.outputs.bin }}
+          TMUX_BIN: ${{ steps.tmux36.outputs.bin }}
+        run: |
+          set -euo pipefail
+          export PATH="$TMUX_BIN:$KITTY_BIN:$PATH"
+          test "$(command -v tmux)" = "$TMUX_BIN/tmux"
+          test "$(tmux -V)" = 'tmux 3.6'
+          result=0
+          for passthrough in on all; do
+            xvfb-run -a --server-args="-screen 0 2400x1800x24" \
+              python3 tests/tmux_terminal_test.py --passthrough "$passthrough" \
+              --output-on-failure "$RUNNER_TEMP/md-terminal-results/tmux-3.6/native-$passthrough" \
+              2>&1 | tee "$RUNNER_TEMP/md-terminal-results/native-3.6-$passthrough.log" || result=$?
+          done
+          exit "$result"
+
+      - name: Check image pixels and interactions independently of native results
+        id: images
+        if: ${{ !cancelled() && env.IMAGES_REQUIRED == 'true' && steps.nvim.outcome == 'success' && steps.kitty.outcome == 'success' && steps.tmux36.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 8
+        env:
+          KITTY_BIN: ${{ steps.kitty.outputs.bin }}
+          TMUX_BIN: ${{ steps.tmux36.outputs.bin }}
+        run: |
+          set -euo pipefail
+          export PATH="$TMUX_BIN:$KITTY_BIN:$PATH"
+          test "$(command -v tmux)" = "$TMUX_BIN/tmux"
+          test "$(tmux -V)" = 'tmux 3.6'
+          xvfb-run -a --server-args="-screen 0 2400x1800x24" \
+            python3 tests/tmux_terminal_test.py --images --passthrough all \
+            --output "$RUNNER_TEMP/md-terminal-results/tmux-3.6/images" \
+            2>&1 | tee "$RUNNER_TEMP/md-terminal-results/images.log"
+
+      - name: Summarize every required outcome and retain failure
+        id: phases
+        if: always()
+        env:
+          STEP_RESULTS: ${{ toJSON(steps) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+          steps = json.loads(os.environ["STEP_RESULTS"])
+          required = ["checkout", "diagnostics", "nvim", "dependencies", "kitty", "direct", "tmux36", "native36"]
+          if os.environ["OBSERVATION"] == "true":
+              required += ["tmux34", "native34"]
+          if os.environ["IMAGES_REQUIRED"] == "true":
+              required += ["images"]
+          outcomes = {name: steps.get(name, {}).get("outcome", "not run") for name in required}
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "md-terminal-results"
+          root.mkdir(parents=True, exist_ok=True)
+          (root / "outcomes.json").write_text(json.dumps(outcomes, indent=2) + "\n")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("| Required terminal phase | Original outcome |\n| --- | --- |\n")
+              for name, outcome in outcomes.items():
+                  summary.write(f"| {name} | {outcome} |\n")
+              if any(value not in ("success", "failure") for value in outcomes.values()):
+                  summary.write("\nIncomplete: at least one required phase did not finish. Artifact upload is best effort after cancellation or a job timeout.\n")
+          failed = ','.join(name for name, outcome in outcomes.items() if outcome != 'success') or 'none'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('failed=' + failed + '\n')
+          PY
+
+      - name: Require original phases / ${{ steps.phases.outputs.failed || 'summary incomplete' }}
+        id: result
+        if: always()
+        env:
+          SUMMARY_OUTCOME: ${{ steps.phases.outcome }}
+          FAILED_PHASES: ${{ steps.phases.outputs.failed }}
+        run: |
+          test "$SUMMARY_OUTCOME" = success
+          test "$FAILED_PHASES" = none
 
       - name: Keep terminal diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: terminal-kitty-${{ matrix.kitty }}-tmux-${{ matrix.tmux }}-nvim-${{ matrix.nvim }}-attempt-${{ github.run_attempt }}
-          path: /tmp/md-terminal-results
+          name: terminal-kitty-${{ matrix.kitty }}-nvim-${{ matrix.nvim }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/md-terminal-results
+            ${{ runner.temp }}/md-render-neovim-results
+          retention-days: ${{ steps.result.outcome == 'success' && 14 || ((github.event_name == 'schedule' || inputs.suite == 'observation') && 90 || 30) }}
 
   notify:
-    name: Open an issue on scheduled failure
-    needs: kitty-matrix
-    if: failure() && github.event_name == 'schedule'
-    runs-on: ubuntu-latest
+    name: Report weekly observation
+    needs: [kitty-matrix]
+    if: ${{ always() && github.ref == 'refs/heads/main' && github.run_attempt == 1 && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'observation')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
+      contents: read
+      actions: read
       issues: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
         with:
           script: |
-            const title = "Scheduled terminal test failed";
-            const url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const { data: open } = await github.rest.issues.listForRepo({
-              ...context.repo, state: "open", labels: "toolchain",
+            await require('./.github/ci/notify.js')({
+              github, context, core, needs: JSON.parse(process.env.CI_NEEDS), dryRun: false,
             });
-            const existing = open.find(i => i.title === title);
-            const body = `The weekly Kitty matrix failed. The terminal or Neovim most likely changed under us.\n\n${url}`;
-            if (existing) {
-              await github.rest.issues.createComment({ ...context.repo, issue_number: existing.number, body });
-            } else {
-              await github.rest.issues.create({ ...context.repo, title, body, labels: ["toolchain"] });
-            }
+
+  preview:
+    name: Preview CI report
+    needs: [kitty-matrix]
+    if: ${{ always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        with:
+          script: |
+            await require('./.github/ci/notify.js')({
+              github, context, core, needs: JSON.parse(process.env.CI_NEEDS),
+            });

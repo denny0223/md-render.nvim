@@ -372,6 +372,36 @@ for _, key in ipairs { "g]0<CR>", "<C-w>g]0<CR>" } do
   vim.cmd.edit(c.dir .. "/target file.md")
   eq(preview._sessions[vim.api.nvim_get_current_buf()], nil, "cancelled selector leaves no pending redirect")
 end
+
+-- Preparing a cached target must not reflow a preview in another window.
+for _, key in ipairs { "g]", "<C-w>g]" } do
+  local c = open("toggle", { "[target](target%20file.md#finish)" }, function(_, dir)
+    vim.fn.writefile({ "# Target", "", string.rep("word ", 40), "", "# Finish" }, dir .. "/target file.md")
+  end)
+  preview.toggle()
+  preview.toggle { max_width = 70 }
+  vim.cmd.vsplit()
+  vim.cmd.edit(c.dir .. "/target file.md")
+  vim.bo.filetype = "markdown"
+  preview.toggle { max_width = 30 }
+  local target, target_win = preview._sessions[vim.api.nvim_get_current_buf()], vim.api.nvim_get_current_win()
+  vim.api.nvim_set_current_win(c.win)
+  local before = vim.api.nvim_buf_get_lines(target.buf, 0, -1, false)
+  point(c, "target%20file.md#finish")
+  feed(key .. "0<CR>")
+  eq(vim.api.nvim_get_current_buf(), c.buf, "cancelled cached selector stays in the source preview")
+  eq(target.opts.max_width, 30, "cancelled cached selector preserves target text width")
+  eq(target.opts.table_max_width, 30, "cancelled cached selector preserves target table width")
+  eq(target._explicit_max_width, true, "cancelled cached selector preserves fixed sizing")
+  eq(target.win, target_win, "cancelled cached selector preserves target ownership")
+  eq(vim.api.nvim_buf_get_lines(target.buf, 0, -1, false), before, "cancelled cached selector preserves content")
+  feed(key .. "1<CR>")
+  eq(vim.api.nvim_get_current_buf(), target.buf, "completed cached selector opens the target")
+  eq(target.opts.max_width, 70, "completed cached selector adopts the reader's text width")
+  eq(target.opts.table_max_width, 70, "completed cached selector adopts the reader's table width")
+  eq(vim.api.nvim_win_get_cursor(0)[1], target.content.heading_anchors.finish + 1, "cached selector reflows its anchor")
+end
+
 for _, key in ipairs { "g]0<CR>", "<C-w>g]0<CR>" } do
   for _, repeated in ipairs { false, true } do
     local c = open "toggle"

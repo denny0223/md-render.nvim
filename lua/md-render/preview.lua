@@ -2466,6 +2466,10 @@ function Session:file_target(path, url)
       local opts = vim.tbl_extend("force", {}, self.opts)
       opts.buf_dir = nil
       opts.max_width = self._explicit_max_width and self.opts.max_width or nil
+      -- Selectors can be cancelled. Cached targets adopt the reader's layout
+      -- on entry, so resolving the href must preserve another window's layout.
+      local cached = (self.cache or _toggle_sessions)[source]
+      if cached and vim.api.nvim_buf_is_valid(cached.buf) then opts.max_width = nil end
       local session = get_or_create_session(source, opts, self.cache)
       session.pager, session.views = self.pager, session.views or {}
       enable_render_tags(session)

@@ -23,6 +23,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Install representative Node runtime
+        id: node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
       - name: Install Neovim
         uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1
         with:
@@ -32,6 +37,8 @@ jobs:
         run: nvim --version | head -1
       - name: Run tests
         run: make test
+      - name: Run notification policy unit tests
+        run: node tests/ci_notify_test.js
 
   snacks:
     name: Optional image backends / Fedora

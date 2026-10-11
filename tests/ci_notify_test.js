@@ -296,6 +296,19 @@ test("label creation only follows 404 and a 422 race must be verified", async ()
   }
 });
 
+test("baseline excludes Rawhide but observation cannot accept skipped or missing outcomes", async () => {
+  for (const result of ["skipped", undefined]) {
+    const needs = { core: { result: "success" }, rawhide: { result } };
+    const baseline = fixture({
+      needs, context: { eventName: "workflow_dispatch", payload: { inputs: { suite: "baseline" } } },
+    });
+    assert.equal((await report(baseline.args)).status, "success");
+    assert.deepEqual(baseline.writes, []);
+    const observation = fixture({ needs, dryRun: true });
+    assert.equal((await report(observation.args)).status, "incomplete");
+  }
+});
+
 test("scheduled Tests create an assigned monthly reminder with green or failed evidence", async () => {
   for (const result of ["success", "failure"]) {
     const { args, writes, reads } = fixture({ context: { workflow: "Tests" }, needs: { core: { result } } });

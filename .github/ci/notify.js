@@ -26,7 +26,7 @@ module.exports = async function report({ github, context, core, needs, dryRun = 
   const runNumber = Number(context.runNumber || process.env.GITHUB_RUN_NUMBER);
   const observation = context.eventName === "schedule" ||
     (context.eventName === "workflow_dispatch" && context.payload.inputs?.suite === "observation");
-  const required = Object.entries(needs);
+  const required = Object.entries(needs).filter(([id]) => observation || id !== "rawhide");
   let passed = required.length > 0 && required.every(([, job]) => job.result === "success");
   let incomplete = required.some(([, job]) => !["success", "failure"].includes(job.result));
   const url = context.serverUrl + "/" + context.repo.owner + "/" + context.repo.repo +

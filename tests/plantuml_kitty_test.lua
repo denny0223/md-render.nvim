@@ -154,7 +154,12 @@ end
 
 local diagram_source = "@startuml\nAlice -> Bob: kitty protocol test\n@enduml"
 
-if not image.has_plantuml() then
+local available, unavailable_reason = image.has_plantuml()
+if not available then
+  assert(
+    vim.env.MD_RENDER_REQUIRE_PLANTUML ~= "1",
+    "required PlantUML graphics integration unavailable: " .. unavailable_reason
+  )
   print "SKIP: no local PlantUML renderer or configured server"
   return
 end
@@ -192,6 +197,7 @@ if not rendered or not plantuml_png then
   vim.fn.stdpath = stdpath
   vim.fn.delete(cache, "rf")
   if not rendered then error(plantuml_png) end
+  assert(vim.env.MD_RENDER_REQUIRE_PLANTUML ~= "1", "required PlantUML PNG validation: " .. reason)
   print("SKIP PlantUML PNG validation: " .. reason)
   return
 end

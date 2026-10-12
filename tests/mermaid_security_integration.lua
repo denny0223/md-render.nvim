@@ -4,6 +4,7 @@ local repo = vim.fn.getcwd()
 package.path = repo .. "/lua/?.lua;" .. repo .. "/lua/?/init.lua;" .. package.path
 local mmdc = vim.fn.exepath "mmdc"
 if mmdc == "" then
+  assert(vim.env.MD_RENDER_REQUIRE_MERMAID_TOOLS ~= "1", "required Mermaid configuration isolation needs mmdc")
   print "SKIP Mermaid configuration isolation: mmdc unavailable"
   return
 end

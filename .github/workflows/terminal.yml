@@ -146,27 +146,3 @@ jobs:
         with:
           name: terminal-kitty-${{ matrix.kitty }}-tmux-${{ matrix.tmux }}-nvim-${{ matrix.nvim }}-attempt-${{ github.run_attempt }}
           path: /tmp/md-terminal-results
-
-  notify:
-    name: Open an issue on scheduled failure
-    needs: kitty-matrix
-    if: failure() && github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-    steps:
-      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        with:
-          script: |
-            const title = "Scheduled terminal test failed";
-            const url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const { data: open } = await github.rest.issues.listForRepo({
-              ...context.repo, state: "open", labels: "toolchain",
-            });
-            const existing = open.find(i => i.title === title);
-            const body = `The weekly Kitty matrix failed. The terminal or Neovim most likely changed under us.\n\n${url}`;
-            if (existing) {
-              await github.rest.issues.createComment({ ...context.repo, issue_number: existing.number, body });
-            } else {
-              await github.rest.issues.create({ ...context.repo, title, body, labels: ["toolchain"] });
-            }

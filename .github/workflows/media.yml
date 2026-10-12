@@ -144,29 +144,3 @@ jobs:
         run: |
           nvim --headless -u NONE --noplugin -l tests/mermaid_integration.lua
           nvim --headless -u NONE --noplugin -l tests/mermaid_security_integration.lua
-
-  # The scheduled run is only meaningful if someone hears about it. A failing
-  # cron job on a repo nobody is watching is the same as no test at all.
-  notify:
-    name: Open an issue on scheduled failure
-    needs: [ffmpeg-matrix, mermaid]
-    if: failure() && github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    permissions:
-      issues: write
-    steps:
-      - uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
-        with:
-          script: |
-            const title = "Scheduled media-tool test failed";
-            const url = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const { data: open } = await github.rest.issues.listForRepo({
-              ...context.repo, state: "open", labels: "toolchain",
-            });
-            const existing = open.find(i => i.title === title);
-            const body = `The weekly media-tool checks failed. An external tool most likely changed under us.\n\n${url}`;
-            if (existing) {
-              await github.rest.issues.createComment({ ...context.repo, issue_number: existing.number, body });
-            } else {
-              await github.rest.issues.create({ ...context.repo, title, body, labels: ["toolchain"] });
-            }

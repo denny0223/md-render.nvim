@@ -239,6 +239,10 @@ tests/screenshots/
 - The script **never falls back to a full-screen capture**. An earlier version did, and with PyObjC missing it silently photographed the whole desktop and wrote it out as a reference image.
 - Much of what a screenshot is reached for can be answered without pixels: `kitty @ get-text` reports the actual cell grid, which is enough to check things like whether a heading occupies a two-row multicell group. Reserve this layer for questions that genuinely need pixels.
 
+## CI policy and maintenance
+
+Failures use GitHub Actions' native run status, logs and notifications. Check your [Actions notification preferences](https://docs.github.com/en/subscriptions-and-notifications/how-tos/managing-github-actions-notifications) if you want failure notifications; delivery follows [GitHub's recipient rules](https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs).
+
 ## Adding new tests
 
 Follow the existing pattern:

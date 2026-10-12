@@ -21,7 +21,7 @@ async function ensureToolchainLabel(github, repo) {
   }
 }
 
-module.exports = async function report({ github, context, core, needs, dryRun = true, now = new Date() }) {
+module.exports = async function report({ github, context, core, needs, dryRun = true }) {
   const attempt = Number(context.runAttempt || process.env.GITHUB_RUN_ATTEMPT || 1);
   const runNumber = Number(context.runNumber || process.env.GITHUB_RUN_NUMBER);
   const observation = context.eventName === "schedule" ||
@@ -72,38 +72,6 @@ module.exports = async function report({ github, context, core, needs, dryRun = 
   }
   const title = titles[context.workflow];
   if (!title) throw new Error("Unknown observation workflow: " + context.workflow);
-  if (context.workflow === "Tests" && context.eventName === "schedule") {
-    try {
-      const month = now.toISOString().slice(0, 7);
-      const maintenanceTitle = "CI maintenance: " + month;
-      const history = await github.paginate(github.rest.issues.listForRepo, {
-        ...context.repo, state: "all", creator: "github-actions[bot]", per_page: 100,
-      });
-      if (!history.some(issue => !issue.pull_request && issue.title === maintenanceTitle)) {
-        const quarter = month.slice(0, 5) + String(Math.floor(now.getUTCMonth() / 3) * 3 + 1).padStart(2, "0");
-        const quarterly = !history.some(issue => !issue.pull_request &&
-          /^CI maintenance: \d{4}-\d{2}$/.test(issue.title) &&
-          issue.title >= "CI maintenance: " + quarter && issue.title < maintenanceTitle);
-        const repoUrl = context.serverUrl + "/" + context.repo.owner + "/" + context.repo.repo;
-        await ensureToolchainLabel(github, context.repo);
-        await github.rest.issues.create({
-          ...context.repo, title: maintenanceTitle, labels: ["toolchain"], assignees: [context.repo.owner],
-          body: "- [ ] Review fixed CI baselines using [Updating baselines](" + repoUrl +
-            "/blob/main/tests/README.md#updating-baselines).\n" +
-            (quarterly ? "- [ ] Review minimum supported versions for this quarter.\n" : "") +
-            "- [ ] Record **keep**, **update** or **defer**, with evidence and any upgrade PR.\n" +
-            "- [ ] Close this issue manually after recording the decisions.\n\n" +
-            "This scheduled Tests observation: **" + status + "**. [Evidence](" + url + ")\n\n" +
-            "Check [Tests](" + repoUrl + "/actions/workflows/test.yml), [Media](" + repoUrl +
-            "/actions/workflows/media.yml) and [Terminal](" + repoUrl + "/actions/workflows/terminal.yml). " +
-            "Media and Terminal may still be running; confirm their outcomes separately.\n\n" +
-            "Version changes and merges remain manual.\n",
-        });
-      }
-    } catch (error) {
-      core.setFailed("Monthly CI maintenance reminder failed: " + error.message);
-    }
-  }
   const issues = await github.paginate(github.rest.issues.listForRepo, {
     ...context.repo, state: "open", labels: "toolchain", per_page: 100,
   });

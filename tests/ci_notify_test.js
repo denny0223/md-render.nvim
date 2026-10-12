@@ -6,7 +6,6 @@ function fixture(overrides = {}) {
   const writes = [];
   const reads = [];
   const summaries = [];
-  const failures = [];
   const summary = {
     addHeading() { return this; }, addRaw(value) { summaries.push(value); return this; }, async write() {},
   };
@@ -32,17 +31,15 @@ function fixture(overrides = {}) {
       return method === actions.listJobsForWorkflowRun ?
         (overrides.jobs || Object.entries(needs).map(([name, job]) => ({
           name, status: "completed", conclusion: job.result, steps: [],
-        }))) : (overrides.issues || []).filter(issue =>
-          (!issue.state || value.state === "all" || issue.state === value.state) &&
-          (!value.creator || issue.user?.login === value.creator));
+        }))) : (overrides.issues || []).filter(issue => !issue.state || issue.state === value.state);
     },
   };
   const args = {
-    github, context, core: { summary, info() {}, warning() {}, setFailed(value) { failures.push(value); } },
-    needs, dryRun: false, now: new Date("2026-10-21T12:00:00Z"), ...overrides,
+    github, context, core: { summary, info() {}, warning() {} },
+    needs, dryRun: false, ...overrides,
   };
   args.context = context;
-  return { args, writes, reads, summaries, failures };
+  return { args, writes, reads, summaries };
 }
 
 function state(body) {
@@ -129,12 +126,6 @@ test("a manual green cannot replace scheduled recovery evidence", async () => {
   assert.deepEqual(writes, []);
   assert.match(summaries[0], /Notification: read-only preview/);
   assert.doesNotMatch(summaries[0], /Notification: main observation/);
-});
-
-test("green without an existing issue does not announce every weekly run", async () => {
-  const { args, writes } = fixture({ needs: { "kitty-matrix": { result: "success" } } });
-  await report(args);
-  assert.deepEqual(writes, []);
 });
 
 test("notifier jobs are excluded from the failure signature", async () => {
@@ -309,116 +300,28 @@ test("baseline excludes Rawhide but observation cannot accept skipped or missing
   }
 });
 
-test("scheduled Tests create an assigned monthly reminder with green or failed evidence", async () => {
-  for (const result of ["success", "failure"]) {
-    const { args, writes, reads } = fixture({ context: { workflow: "Tests" }, needs: { core: { result } } });
-    await report(args);
-    const reminders = writes.filter(([kind, value]) => kind === "create" && value.title === "CI maintenance: 2026-10");
-    assert.equal(reminders.length, 1);
-    const reminder = reminders[0][1];
-    assert.deepEqual(reminder.assignees, ["example"]);
-    assert.deepEqual(reminder.labels, ["toolchain"]);
-    assert.match(reminder.body, new RegExp("Tests observation: \\*\\*" + result));
-    assert.match(reminder.body, /actions\/runs\/20\/attempts\/1/);
-    assert.match(reminder.body, /tests\/README.md#updating-baselines/);
-    for (const workflow of ["test", "media", "terminal"]) {
-      assert.ok(reminder.body.includes("/actions/workflows/" + workflow + ".yml"));
-    }
-    assert.match(reminder.body, /Media and Terminal may still be running/);
-    assert.match(reminder.body, /\*\*keep\*\*.*\*\*update\*\*.*\*\*defer\*\*/);
-    assert.match(reminder.body, /Close this issue manually/);
-    assert.equal(writes.length, result === "failure" ? 2 : 1);
-    assert.ok(reads.some(([kind, value]) => kind === "issues" && value.state === "all" &&
-      value.creator === "github-actions[bot]" && !value.labels));
-  }
-});
-
-test("closed monthly reminders stay closed and the first reminder of each quarter includes support", async () => {
-  for (const [month, previous, create, quarterly] of [
-    ["2026-10", [], true, true],
-    ["2026-10", ["2026-10"], false, false],
-    ["2026-11", ["2026-10"], true, false],
-    ["2026-11", [], true, true],
-    ["2026-12", ["2026-11"], true, false],
-    ["2027-01", ["2026-12"], true, true],
+test("scheduled observations only manage workflow failure issues", async () => {
+  for (const [workflow, title] of [
+    ["Tests", "Scheduled tests failed"],
+    ["Terminal", "Scheduled terminal test failed"],
+    ["Media tools", "Scheduled media-tool test failed"],
   ]) {
-    const { args, writes } = fixture({
-      context: { workflow: "Tests" }, needs: { core: { result: "success" } },
-      now: new Date(month + "-21T12:00:00Z"),
-      issues: previous.map(value => ({
-        title: "CI maintenance: " + value, state: "closed", user: { login: "github-actions[bot]" },
-      })),
-    });
-    await report(args);
-    assert.equal(writes.length, create ? 1 : 0, month);
-    if (create) {
-      assert.equal(writes[0][1].title, "CI maintenance: " + month);
-      assert.equal(writes[0][1].body.includes("minimum supported versions"), quarterly, month);
-    }
-  }
-});
-
-test("only first-attempt scheduled Tests on main can create maintenance reminders", async () => {
-  for (const overrides of [
-    { context: { workflow: "Terminal" } },
-    { context: { workflow: "Media tools" } },
-    { context: { ref: "refs/heads/test/ci" } },
-    { context: { eventName: "pull_request", ref: "refs/pull/84/merge" } },
-    { context: { eventName: "workflow_dispatch", payload: { inputs: { suite: "observation" } } } },
-    { context: { eventName: "workflow_dispatch", payload: { inputs: { suite: "baseline" } } } },
-    { context: { runAttempt: 2 } },
-    { dryRun: true },
-  ]) {
-    const { args, writes, reads } = fixture({
-      ...overrides, context: { workflow: "Tests", ...overrides.context },
-    });
-    await report(args);
-    assert.ok(writes.every(([, value]) => !value.title?.startsWith("CI maintenance:")));
-    assert.ok(reads.every(([kind, value]) => kind !== "issues" || value.state !== "all"));
-  }
-});
-
-test("issues from other users cannot suppress monthly or quarterly reminders", async () => {
-  const { args, writes } = fixture({
-    context: { workflow: "Tests" }, needs: { core: { result: "success" } },
-    now: new Date("2026-11-21T12:00:00Z"),
-    issues: ["2026-10", "2026-11"].map(month => ({
-      title: "CI maintenance: " + month, state: "closed", user: { login: "contributor" },
-    })),
-  });
-  await report(args);
-  assert.equal(writes.length, 1);
-  assert.equal(writes[0][1].title, "CI maintenance: 2026-11");
-  assert.match(writes[0][1].body, /minimum supported versions/);
-});
-
-test("maintenance errors fail the reporter without blocking observation issues", async () => {
-  for (const point of ["history", "label", "create"]) {
-    for (const result of ["success", "failure"]) {
-      const { args, writes, failures } = fixture({ context: { workflow: "Tests" }, needs: { core: { result } } });
-      if (point === "history") {
-        const paginate = args.github.paginate;
-        args.github.paginate = async (method, value) => {
-          if (value.state === "all") throw new Error("history unavailable");
-          return paginate(method, value);
-        };
-      } else if (point === "label") {
-        const getLabel = args.github.rest.issues.getLabel;
-        args.github.rest.issues.getLabel = async value => {
-          args.github.rest.issues.getLabel = getLabel;
-          throw new Error("label unavailable");
-        };
+    for (const [result, status] of [["success", "success"], ["failure", "failure"], ["cancelled", "incomplete"]]) {
+      const { args, writes, reads } = fixture({
+        context: { workflow }, needs: { check: { result } },
+        issues: [{ number: 86, title: "CI maintenance: 2026-09", state: "open", body: "Prior maintainer decision." }],
+      });
+      assert.equal((await report(args)).status, status);
+      assert.ok(reads.every(([kind, value]) => kind !== "issues" ||
+        (value.state === "open" && value.labels === "toolchain")));
+      if (result === "success") {
+        assert.deepEqual(writes, []);
       } else {
-        const create = args.github.rest.issues.create;
-        args.github.rest.issues.create = async value => {
-          if (value.title.startsWith("CI maintenance:")) throw new Error("create unavailable");
-          return create(value);
-        };
+        assert.deepEqual(writes.map(([kind]) => kind), ["create"]);
+        assert.equal(writes[0][1].title, title);
+        assert.equal(state(writes[0][1].body).status, status);
+        assert.match(writes[0][1].body, /actions\/runs\/20\/attempts\/1/);
       }
-      assert.equal((await report(args)).status, result);
-      assert.deepEqual(failures, ["Monthly CI maintenance reminder failed: " + point + " unavailable"]);
-      assert.equal(writes.length, result === "failure" ? 1 : 0);
-      if (result === "failure") assert.equal(writes[0][1].title, "Scheduled tests failed");
     }
   }
 });

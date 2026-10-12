@@ -169,7 +169,9 @@ PRs and branch dispatches only preview reports. First-attempt main observations 
 
 ### Updating baselines
 
-The first available Tests scheduled observation each month opens a `CI maintenance: YYYY-MM` issue assigned to the repository owner, even when tests pass. The first reminder each quarter also requests a minimum-support review. Closing an issue does not trigger another reminder that month. Review the Tests, Media and Terminal observations, which may finish at different times; record a keep, update or defer decision and evidence in the issue. Version changes and merges are manual; link the decision and evidence from any upgrade PR.
+Weekly observations report compatibility failures and recovery; CI does not create calendar-based maintenance tasks. Propose a baseline change when there is a concrete reason, such as an observed regression, an unavailable download or a relevant security fix. Record the candidate, reason and exact validation evidence in its issue or upgrade PR. Version changes and merges remain manual; updating a representative baseline and changing minimum support are separate decisions.
+
+Automated version comparisons and consolidated upgrade evidence are tracked in [#86](https://github.com/denny0223/md-render.nvim/issues/86) and are not implemented yet. Green observations do not establish version freshness, security-advisory coverage or upstream support status.
 
 - Patch candidates need one relevant first-attempt successful observation. A new series or OS needs observations in two distinct weekly periods. Evidence must identify the same candidate version/digest/lockfile; different `latest` resolutions or successful retries cannot be combined into that evidence.
 - Candidates outside weekly coverage need their own installation/driver checks. The explicit candidate must then pass the complete baseline, with any relevant earlier failures accounted for.

@@ -4,7 +4,7 @@
 
 | Layer | What | Catches | Where | How |
 |-------|------|---------|-------|-----|
-| 1. Unit tests | The bytes md-render *emits* | Protocol regressions | CI (push/PR) | `make test` |
+| 1. Unit tests | The bytes md-render *emits* | Protocol regressions | CI (main/PR **and weekly**) | `make -k test` |
 | 2. Media tools | The commands md-render *runs* | An external tool changing under us | CI (push/PR **and weekly**) | `media_test.lua`, `mermaid_integration.lua` |
 | 3. Terminal | What the terminal actually *holds* | Scaled text drawn wrong, or not at all | CI (push/PR **and weekly**) | `tests/terminal_test.py` |
 | 4. Visual regression | What the terminal actually *draws* | Clipped glyphs, images that never paint | One CI image-heading lane; broader checks local | `tmux_terminal_test.py --images`, `./tests/run_visual_test.sh` |
@@ -26,10 +26,12 @@ Layer 2 exists because of a silent breakage: FFmpeg 9 removed `-vsync`, frame ex
 ## Running the default checks locally
 
 ```bash
-make test
+make -k test
 ```
 
-This needs Neovim and Python 3. In addition to the Lua checks, `tests/tooling_test.py` exercises capture failure, fresh baselines, process ownership, metric parsing and staged vendor updates with isolated command stubs. `tmux_diagnostics_test.py` checks readiness and failure diagnostics with command stubs. These checks launch no real terminal and download nothing. If ImageMagick 7 is installed, the tooling test also checks the actual normalized RMSE interface with identical, different and corrupt images. `make test-harness` also runs `download_integration_test.py` when curl is available: a temporary loopback HTTP server exercises the real plugin downloader, literal URLs, rejected redirect protocols and cleanup without contacting external services.
+`make test` stops at the first failed target; `make -k test` continues independent Lua and Python targets and still returns failure. Optional tools enable additional integrations; a reported skip is not evidence that an integration works.
+
+This needs Neovim and Python 3. In addition to the Lua checks, `tests/tooling_test.py` exercises capture failure, fresh baselines, process ownership, metric parsing and staged vendor updates with isolated command stubs. `tmux_diagnostics_test.py` checks readiness and failure diagnostics with command stubs. These checks launch no real terminal and download nothing. If ImageMagick 7 is installed, the tooling test also checks the actual normalized RMSE interface with identical, different and corrupt images. `make test-harness` also runs `download_integration_test.py` when curl is available: a temporary loopback HTTP server exercises the real plugin downloader, literal URLs, rejected redirect protocols and cleanup without contacting external services. `tests/ci_results_test.py` verifies that failed, skipped or missing required CI phases cannot pass; it is included in `make test`.
 
 ### Optional Snacks integration tests
 
@@ -41,7 +43,7 @@ MD_RENDER_SNACKS_PATH=/path/to/snacks.nvim make test
 
 Without this optional dependency, those integration tests report a skip. They check placement rebuilding, inactive-tab completion, and rapid zoom cleanup; they do not establish terminal visual correctness.
 
-The Fedora CI job installs the latest Snacks default branch, ImageMagick and `ffmpeg-free`, then runs these tests with the dependency enabled. Its version checks require `magick` and `ffmpeg`, so the GIF/MP4 branch cannot silently skip because FFmpeg is absent. Its log records the Neovim, ImageMagick, FFmpeg and Snacks versions.
+The released Fedora CI job follows the latest stable Fedora image and updated official RPMs. Its representative baseline uses a fixed Snacks checkout; weekly observation follows the latest Snacks default branch. It installs ImageMagick and `ffmpeg-free` and runs the image integrations with the required tools. Logs record the root filesystem, RPM packages and tool versions.
 
 ## Layer 1: Unit tests
 
@@ -69,7 +71,11 @@ Two details make it meaningful rather than decorative:
 
 The test prints the version of each tool it found; when the matrix goes red the first useful question is which toolchain it went red on.
 
-`plantuml_kitty_test.lua` skips when no renderer is installed or configured. Once a renderer is available, a cold render must succeed; command failure and timeout fail even if a PNG was written. ImageMagick (`magick` or `convert`) or macOS `sips` then decodes the PNG before the protocol checks run. If no decoder is installed, the test explicitly skips PNG validation without reporting those checks as passed. Its cache is temporary; CI installs ImageMagick and exercises truncated-image and failed-command controls.
+[plantuml_kitty_test.lua](plantuml_kitty_test.lua) needs a configured or installed PlantUML renderer and ImageMagick or macOS `sips` to decode the resulting PNG. Renderer errors and timeouts fail even if a file was written; missing optional dependencies are reported as skips. The security check also needs Java and the PlantUML JAR; set `PLANTUML_JAR` when it is not at `/usr/share/java/plantuml.jar`. Require the tools when running both checks:
+
+```sh
+MD_RENDER_REQUIRE_PLANTUML=1 make -k tests/plantuml_kitty_test.lua tests/plantuml_security_test.lua
+```
 
 ### FFmpeg matrix
 
@@ -243,9 +249,32 @@ tests/screenshots/
 
 CI uses major-version Action tags to follow updates within the selected major. These tags can move, so rerunning the same repository commit can execute newer Action code.
 
+Tests and Lint run representative baselines on PRs and pushes to `main`; development-branch pushes do not duplicate their PR runs. The Tests workflow runs broader toolchain observation weekly. Exact versions, schedules and installation inputs live in the linked workflows and [archive manifests](../.github/ci/).
+
+In public repositories, [GitHub disables scheduled workflows after 60 days without repository activity](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule); re-enable a disabled workflow before relying on weekly observation again.
+
+| Workflow | PR/main baseline | Weekly observation |
+| --- | --- | --- |
+| [Lint](../.github/workflows/lint.yml) | Formatting and Lua lint | — |
+| [Tests](../.github/workflows/test.yml) | Fixed minimum/reference Neovim on Ubuntu/macOS; released Fedora image integrations | Minimum/stable/nightly Neovim and latest Snacks |
+
+Released Fedora follows `registry.fedoraproject.org/fedora:latest` and updated official RPMs; `ffmpeg-free` does not imply full-codec support. Representative CI runtimes, including Node, do not add plugin requirements.
+
+The Tests workflow accepts `suite=baseline` or `suite=observation` on a chosen ref:
+
+```sh
+gh workflow run test.yml --ref YOUR_BRANCH -f suite=baseline
+```
+
+### Investigating failures
+
+For Tests, start with the failed job's summary, find the failed or missing phase, then read that step's log and download artifacts from the same attempt. Independent checks continue where possible, but a required phase that fails or does not run cannot pass. Cancellation, a job timeout or missing execution metadata cannot establish successful verification. Later phases and artifact uploads are best effort.
+
+Inspect the first failure before retrying. A successful retry is additional evidence, not a diagnosis. These workflows cancel only superseded PR executions automatically. Artifacts from successful Tests runs are kept for 14 days, failed baselines for 30 and failed observations for 90, subject to the repository retention cap; logs have a separate retention setting.
+
 Failures use GitHub Actions' native run status, logs and notifications. Check your [Actions notification preferences](https://docs.github.com/en/subscriptions-and-notifications/how-tos/managing-github-actions-notifications) if you want failure notifications; delivery follows [GitHub's recipient rules](https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs).
 
-[Dependabot](../.github/dependabot.yml) checks Action references monthly and opens ordinary version-update PRs only for new major versions, with at most two open at a time. These PRs require review and manual merging; the schedule is not a monthly response deadline. Review applicable release notes, changed runtime requirements, permissions and default behavior, then run the affected checks. GitHub's security alerts are separate; [security-update PRs are not subject to this ordinary-update limit](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#open-pull-requests-limit).
+[Dependabot](../.github/dependabot.yml) checks Action references monthly and opens ordinary version-update PRs only for new major versions, with at most two open at a time. These PRs require review and manual merging; the schedule is not a monthly response deadline. Review applicable release notes, changed runtime requirements, permissions and default behavior, then run the affected checks. A PR baseline does not exercise every weekly observation path. GitHub's security alerts are separate; [security-update PRs are not subject to this ordinary-update limit](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#open-pull-requests-limit).
 
 ## Adding new tests
 

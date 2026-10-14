@@ -1,76 +1,234 @@
 name: Tests
-on: [push, pull_request]
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Baseline gates or weekly toolchain observation
+        type: choice
+        options: [baseline, observation]
+        default: baseline
+
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
-    name: nvim ${{ matrix.nvim }} / ${{ matrix.os }}
+    name: Core / nvim ${{ matrix.nvim }} / ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        # v0.12.0 is the minimum this plugin claims to support and is not the
-        # same as stable: `vim.tty.request` only appeared in 0.13, and a probe
-        # that depended on it silently disabled scaled headings on every 0.12.
-        # Testing only `stable` hid that for an entire release.
-        nvim: [v0.12.0, stable, nightly]
+        # Keep the supported floor and reference fixed; observe stable/nightly weekly.
+        nvim: ${{ fromJSON((github.event_name == 'schedule' || inputs.suite == 'observation') && '["v0.12.0", "stable", "nightly"]' || '["v0.12.0", "v0.12.5"]') }}
     runs-on: ${{ matrix.os }}
-    # A broken nightly is Neovim's problem, not this repo's; keep it visible
-    # without blocking merges.
-    continue-on-error: ${{ matrix.nvim == 'nightly' }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      MD_RENDER_REQUIRE_NPM_PROBES: "1"
+      MD_RENDER_CI_RESULTS: /tmp/md-core-results
     steps:
       - uses: actions/checkout@v7
+        id: checkout
         with:
           persist-credentials: false
-      - name: Install Neovim
-        uses: rhysd/action-setup-vim@v1
+      - name: Install representative Node runtime
+        id: node
+        uses: actions/setup-node@v7
         with:
-          neovim: true
-          version: ${{ matrix.nvim }}
-      - name: Report version
-        run: nvim --version | head -1
-      - name: Run tests
-        run: make test
+          node-version: "24"
+      - name: Cache verified fixed Neovim archives
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && matrix.nvim != 'stable' && matrix.nvim != 'nightly' }}
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/md-render-cache/neovim
+          key: neovim-archives-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.nvim }}-${{ hashFiles('.github/ci/neovim-archives.tsv') }}
+      - name: Install verified Neovim
+        id: neovim
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/ci/install-neovim.sh '${{ matrix.nvim }}'
+      - name: Record and verify runtime
+        id: runtime
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          mkdir -p "$MD_RENDER_CI_RESULTS"
+          {
+            uname -a
+            for tool in nvim node npm python3 make; do command -v "$tool"; done
+            nvim --version
+            node --version
+            npm --version
+            python3 --version
+          } 2>&1 | tee "$MD_RENDER_CI_RESULTS/runtime.log"
+      - name: Run all independent core tests
+        id: core
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          mkdir -p "$MD_RENDER_CI_RESULTS"
+          make -k test 2>&1 | tee "$MD_RENDER_CI_RESULTS/core.log"
+      - name: Require every planned check
+        id: result
+        if: always()
+        env:
+          STEP_RESULTS: ${{ toJSON(steps) }}
+        run: python3 .github/ci/check-results.py checkout node neovim runtime core
+      - name: Keep core diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: core-${{ matrix.os }}-${{ matrix.nvim }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ env.MD_RENDER_CI_RESULTS }}
+            ${{ runner.temp }}/md-render-neovim-results
+          retention-days: ${{ job.status != 'success' && ((github.event_name == 'schedule' || inputs.suite == 'observation') && 90 || 30) || 14 }}
 
   snacks:
-    name: Optional image backends / Fedora
+    name: Released Fedora / image integrations
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Follow the latest stable Fedora release and its official RPM updates.
     container: registry.fedoraproject.org/fedora:latest
+    defaults:
+      run:
+        shell: bash
     env:
       MD_RENDER_SNACKS_PATH: /tmp/snacks.nvim
+      MD_RENDER_REQUIRE_PLANTUML: "1"
+      MD_RENDER_CI_RESULTS: /tmp/md-fedora-results
     steps:
-      - name: Install runtime
-        run: >-
-          dnf install -y git neovim ImageMagick ffmpeg-free plantuml python3-gobject python3-cairo pango gobject-introspection
-          google-noto-sans-mono-vf-fonts google-noto-sans-cjk-vf-fonts
+      - name: Install image runtime from official RPM repositories
+        id: install
+        continue-on-error: true
+        timeout-minutes: 10
+        run: |
+          mkdir -p "$MD_RENDER_CI_RESULTS"
+          dnf install -y git neovim perl ImageMagick ffmpeg-free plantuml python3-gobject python3-cairo pango gobject-introspection \
+            google-noto-sans-mono-vf-fonts google-noto-sans-cjk-vf-fonts 2>&1 | tee "$MD_RENDER_CI_RESULTS/install.log"
       - uses: actions/checkout@v7
+        id: checkout
+        if: ${{ !cancelled() }}
         with:
           persist-credentials: false
-      - name: Install latest Snacks
-        run: git clone --depth=1 https://github.com/folke/snacks.nvim.git "$MD_RENDER_SNACKS_PATH"
-      - name: Verify runtime
-        run: |
-          nvim --version
-          magick --version
-          ffmpeg -version
-          git -C "$MD_RENDER_SNACKS_PATH" rev-parse HEAD
-          rpm -q plantuml python3-gobject python3-cairo pango gobject-introspection google-noto-sans-mono-vf-fonts google-noto-sans-cjk-vf-fonts
-      - name: Run heading integration tests
-        run: |
-          python3 tests/heading_raster_test.py
-          nvim --headless -u NONE --noplugin -l tests/heading_typography_integration.lua
-      - name: Run tooling integration tests with ImageMagick
-        run: python3 tests/tooling_test.py
-      - name: Run media resource and PlantUML integration tests
+      - name: Install baseline or observed Snacks
+        id: snacks
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        continue-on-error: true
         env:
-          MD_RENDER_REQUIRE_PLANTUML: "1"
+          OBSERVATION: ${{ github.event_name == 'schedule' || inputs.suite == 'observation' }}
         run: |
-          nvim --headless -u NONE --noplugin -l tests/media_resources_test.lua
-          nvim --headless -u NONE --noplugin -l tests/plantuml_security_test.lua
-          nvim --headless -u NONE --noplugin -l tests/plantuml_kitty_test.lua
-      - name: Run Snacks integration tests
+          {
+            git init "$MD_RENDER_SNACKS_PATH"
+            git -C "$MD_RENDER_SNACKS_PATH" remote add origin https://github.com/folke/snacks.nvim.git
+            revision=882c996cf28183f4d63640de0b4c02ec886d01f2
+            if [ "$OBSERVATION" = true ]; then revision=HEAD; fi
+            git -C "$MD_RENDER_SNACKS_PATH" fetch --depth=1 origin "$revision"
+            git -C "$MD_RENDER_SNACKS_PATH" checkout --detach FETCH_HEAD
+            git -C "$MD_RENDER_SNACKS_PATH" rev-parse HEAD
+            test -f "$MD_RENDER_SNACKS_PATH/lua/snacks/init.lua"
+          } 2>&1 | tee "$MD_RENDER_CI_RESULTS/snacks.log"
+      - name: Record and verify image runtime
+        id: runtime
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        continue-on-error: true
         run: |
-          for test in tests/snacks_*_test.lua tests/image_view_lifecycle_test.lua tests/picker_integration_test.lua; do
-            nvim --headless -u NONE --noplugin -l "$test"
+          cp /etc/os-release "$MD_RENDER_CI_RESULTS/os-release"
+          rpm -qa --qf '%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' | sort > "$MD_RENDER_CI_RESULTS/rpms.txt"
+          {
+            echo 'Image: registry.fedoraproject.org/fedora:latest'
+            echo 'The actual pulled digest is in this job Initialize containers log.'
+            echo "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            dnf repo info --enabled
+            for tool in nvim python3 magick ffmpeg ffprobe plantuml; do
+              binary=$(command -v "$tool")
+              printf '%s: %s\n' "$tool" "$binary"
+              rpm -qf "$binary" "$(readlink -f "$binary")"
+            done
+            nvim --version
+            python3 --version
+            magick --version
+            ffmpeg -version
+            ffmpeg -buildconf
+            ffmpeg -codecs
+            ffprobe -version
+            plantuml -version
+            python3 -c 'import gi, cairo; gi.require_version("Pango", "1.0"); gi.require_version("PangoCairo", "1.0"); from gi.repository import Pango, PangoCairo; print(Pango.version_string(), cairo.cairo_version_string())'
+          } 2>&1 | tee "$MD_RENDER_CI_RESULTS/runtime.log"
+          # Fedora 45 moved packaged definitions to /usr; retain local overrides too.
+          repo_count=0
+          for repo in /etc/yum.repos.d/*.repo /etc/distro.repos.d/*.repo /etc/dnf/repos.d/*.repo /usr/share/dnf5/repos.d/*.repo; do
+            if [ -f "$repo" ]; then
+              mkdir -p "$MD_RENDER_CI_RESULTS/repos$(dirname "$repo")"
+              cp "$repo" "$MD_RENDER_CI_RESULTS/repos$repo"
+              repo_count=$((repo_count + 1))
+            fi
           done
+          test "$repo_count" -gt 0
+      - name: Run heading raster integration
+        id: raster
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        continue-on-error: true
+        run: python3 tests/heading_raster_test.py 2>&1 | tee "$MD_RENDER_CI_RESULTS/raster.log"
+      - name: Run heading typography integration
+        id: typography
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        continue-on-error: true
+        run: nvim --headless -u NONE --noplugin -l tests/heading_typography_integration.lua 2>&1 | tee "$MD_RENDER_CI_RESULTS/typography.log"
+      - name: Run tooling integration with ImageMagick
+        id: tooling
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        continue-on-error: true
+        run: python3 tests/tooling_test.py 2>&1 | tee "$MD_RENDER_CI_RESULTS/tooling.log"
+      - name: Run media resource integration
+        id: resources
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        continue-on-error: true
+        run: nvim --headless -u NONE --noplugin -l tests/media_resources_test.lua 2>&1 | tee "$MD_RENDER_CI_RESULTS/resources.log"
+      - name: Run PlantUML security integration
+        id: plantuml_security
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        continue-on-error: true
+        run: nvim --headless -u NONE --noplugin -l tests/plantuml_security_test.lua 2>&1 | tee "$MD_RENDER_CI_RESULTS/plantuml-security.log"
+      - name: Run PlantUML graphics integration
+        id: plantuml_graphics
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        continue-on-error: true
+        run: nvim --headless -u NONE --noplugin -l tests/plantuml_kitty_test.lua 2>&1 | tee "$MD_RENDER_CI_RESULTS/plantuml-graphics.log"
+      - name: Run all independent Snacks integrations
+        id: integrations
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.snacks.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          result=0
+          for test in tests/snacks_*_test.lua tests/image_view_lifecycle_test.lua tests/picker_integration_test.lua; do
+            nvim --headless -u NONE --noplugin -l "$test" 2>&1 | tee "$MD_RENDER_CI_RESULTS/$(basename "$test").log" || result=1
+          done
+          exit "$result"
+      - name: Require every planned check
+        id: result
+        if: always()
+        env:
+          STEP_RESULTS: ${{ toJSON(steps) }}
+        run: python3 .github/ci/check-results.py install checkout snacks runtime raster typography tooling resources plantuml_security plantuml_graphics integrations
+      - name: Keep Fedora diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: released-fedora-attempt-${{ github.run_attempt }}
+          path: ${{ env.MD_RENDER_CI_RESULTS }}
+          retention-days: ${{ job.status != 'success' && ((github.event_name == 'schedule' || inputs.suite == 'observation') && 90 || 30) || 14 }}

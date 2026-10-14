@@ -565,7 +565,13 @@ do
   eq(split_session.image_state, split_images, "float never replaces split image attachment")
   vim.api.nvim_buf_set_lines(shared_source, -1, -1, false, { "", "UPDATED SOURCE" })
   vim.api.nvim_exec_autocmds("TextChanged", { buffer = shared_source })
-  vim.wait(200)
+  vim.wait(1000, function()
+    for _, buf in ipairs { shared_render, float_render } do
+      local session = preview._sessions[buf]
+      if session.source_lines[#session.source_lines] ~= "UPDATED SOURCE" then return false end
+    end
+    return true
+  end, 10)
   for _, buf in ipairs { shared_render, float_render } do
     eq(
       preview._sessions[buf].source_lines[#preview._sessions[buf].source_lines],
@@ -782,7 +788,9 @@ do
   eq(vim.api.nvim_buf_is_valid(b_render), true, "source wipe retains other navigated documents")
   vim.api.nvim_buf_set_lines(b_source, -1, -1, false, { "UPDATED B" })
   vim.api.nvim_exec_autocmds("TextChanged", { buffer = b_source })
-  vim.wait(200)
+  vim.wait(1000, function()
+    return table.concat(vim.api.nvim_buf_get_lines(b_render, 0, -1, false), "\n"):find("UPDATED B", 1, true) ~= nil
+  end, 10)
   local text = table.concat(vim.api.nvim_buf_get_lines(b_render, 0, -1, false), "\n")
   eq(text:find("UPDATED B", 1, true) ~= nil, true, "remaining document still live-updates")
 end

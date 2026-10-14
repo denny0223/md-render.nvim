@@ -29,6 +29,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         # Keep the supported floor and reference fixed; observe stable/nightly weekly.
+        # renovate: neovim-reference
         nvim: ${{ fromJSON((github.event_name == 'schedule' || inputs.suite == 'observation') && '["v0.12.0", "stable", "nightly"]' || '["v0.12.0", "v0.12.5"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
@@ -135,6 +136,7 @@ jobs:
           {
             git init "$MD_RENDER_SNACKS_PATH"
             git -C "$MD_RENDER_SNACKS_PATH" remote add origin https://github.com/folke/snacks.nvim.git
+            # renovate: datasource=git-refs depName=folke/snacks.nvim branch=main
             revision=882c996cf28183f4d63640de0b4c02ec886d01f2
             if [ "$OBSERVATION" = true ]; then revision=HEAD; fi
             git -C "$MD_RENDER_SNACKS_PATH" fetch --depth=1 origin "$revision"
@@ -285,7 +287,9 @@ jobs:
           {
             git init "$MD_RENDER_SNACKS_PATH"
             git -C "$MD_RENDER_SNACKS_PATH" remote add origin https://github.com/folke/snacks.nvim.git
-            git -C "$MD_RENDER_SNACKS_PATH" fetch --depth=1 origin 882c996cf28183f4d63640de0b4c02ec886d01f2
+            # renovate: datasource=git-refs depName=folke/snacks.nvim branch=main
+            revision=882c996cf28183f4d63640de0b4c02ec886d01f2
+            git -C "$MD_RENDER_SNACKS_PATH" fetch --depth=1 origin "$revision"
             git -C "$MD_RENDER_SNACKS_PATH" checkout --detach FETCH_HEAD
             git -C "$MD_RENDER_SNACKS_PATH" rev-parse HEAD
             test -f "$MD_RENDER_SNACKS_PATH/lua/snacks/init.lua"

@@ -177,11 +177,32 @@ Failures use GitHub Actions' native run status, logs and notifications. Check yo
 
 Weekly observations check compatibility with the selected upstream tools. Propose a baseline change when there is a concrete benefit, an observed regression, an unavailable download, a relevant security fix or an upstream support deadline. Record the candidate, its effect on this repository and the relevant validation evidence in the upgrade PR. Updating a representative baseline and changing minimum support are separate decisions.
 
-[Dependabot](../.github/dependabot.yml) checks Action references monthly and opens ordinary version-update PRs only for new major versions, with at most two open at a time. These PRs require review and manual merging; the schedule is not a monthly response deadline. Review applicable release notes, changed runtime requirements, permissions and default behavior, then run the affected checks. A PR baseline does not exercise every weekly observation path. GitHub's security alerts are separate; [security-update PRs are not subject to this ordinary-update limit](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#open-pull-requests-limit).
+[Renovate](../renovate.json) prepares ordinary update PRs before 04:00 Monday in Taiwan, with at most two open at a time and no automatic merging. This controls when candidates are proposed, not when maintainers must respond or which updates must be accepted. Dependabot's separate version updater is removed to avoid duplicate PRs; GitHub's security alerts remain separate. Security-remediation PRs can bypass Renovate's ordinary schedule and limits.
 
-The Action updater does not update fixed Neovim/Kitty/FFmpeg archives, `node-version` or tool versions passed as Action inputs; those require explicit upgrade changes. `setup-node` and `stylua-action` updates are distinct from the Node and StyLua versions they install. Green observations and version-update PRs do not establish complete security-advisory coverage or upstream support status.
+| Tracked input | Update boundary |
+| --- | --- |
+| GitHub Actions and `setup-node`'s Node version | Action tags and the installed Node runtime are tracked separately. |
+| Mermaid CLI and Puppeteer | The test fixture's package versions and lockfile are updated together; `tests/` is included explicitly. |
+| StyLua | The pre-commit frozen SHA/tag and CI formatter version share one update PR. |
+| Neovim reference | Both platform archives, installer allowlist and workflow references share one PR. A release must have valid SHA256 digests for both platforms before it is eligible. |
+| Kitty reference | The installer version/digest and terminal matrix share one PR. |
+| Snacks | Both fixed integration checkouts move together, with ordinary proposals limited to the first day of the month; the weekly `HEAD` observation is unchanged. |
+| FFmpeg 9.0 archive | The URL and SHA256 move together to the last available build of a completed UTC month, retaining the 9.0 series and linux64 GPL variant. |
+
+The custom archive datasources read GitHub release metadata and use the upstream asset SHA256; they do not run extra update scripts or require a self-hosted Renovate service. The custom datasource API is experimental, so validate configuration changes with the installed Renovate engine and inspect the hosted onboarding preview or Dependency Dashboard for lookup warnings. FFmpeg's retained monthly snapshots still have finite upstream availability.
+
+Neovim and Kitty minimums, tmux's native minimum and older fallback witness remain deliberately fixed. Floating runner/image labels and stable/nightly/latest observations keep their existing meaning. Vendored source, Unicode tables and specification fixtures retain their explicit sync/generation procedures: changing only their provenance version would not update the payload. Product documentation's previously validated versions are historical evidence, not updater targets.
+
+Review applicable release notes, changed runtime requirements, permissions and default behavior, then run the affected checks. A PR baseline does not exercise every weekly observation path. Green observations and version-update PRs do not establish complete security-advisory coverage or upstream support status.
 
 Validate a specific candidate version/digest/lockfile against the relevant integration and baseline checks, including cold installation when changing a download source or archive. An archive-cache hit does not verify that its download URL remains available. Investigate earlier failures rather than treating a successful retry as their explanation. Choose additional observation according to the change. Find a trusted replacement source before dropping supported coverage.
+
+When changing Renovate rules, install Renovate in a disposable environment and run the validator plus the offline extraction/replacement regression. These checks exercise Renovate itself without modifying the checkout or contacting upstream services:
+
+```sh
+renovate-config-validator --strict renovate.json
+node tests/renovate_test.mjs "$(command -v renovate)"
+```
 
 ## Adding tests
 

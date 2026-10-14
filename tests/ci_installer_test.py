@@ -4,17 +4,19 @@
 import io
 import os
 from pathlib import Path
+import re
 import subprocess
 import tarfile
 import tempfile
 import unittest
 
 INSTALLER = Path(__file__).resolve().parents[1] / ".github/ci/install-terminal.sh"
+REFERENCE = re.search(r"# renovate: kitty-reference\n\s+kitty:([0-9.]+)\)", INSTALLER.read_text()).group(1)
 
 
 class KittyInstallerTest(unittest.TestCase):
     def test_output_requires_matching_executable_version(self):
-        for actual_version in ("0.49.2", "0.40.0", "0.49.20"):
+        for actual_version in (REFERENCE, "0.40.0", REFERENCE + "0"):
             with self.subTest(actual_version=actual_version), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 stubs = root / "stubs"
@@ -35,14 +37,14 @@ class KittyInstallerTest(unittest.TestCase):
                     f'#!/bin/sh\ntest "$1" = --version || exit 1\n'
                     f'touch "{checked}"\nprintf "kitty {actual_version} created by Kovid Goyal\\n"\n'
                 ).encode()
-                with tarfile.open(archives / "kitty-0.49.2-x86_64.txz", "w:xz") as archive:
+                with tarfile.open(archives / f"kitty-{REFERENCE}-x86_64.txz", "w:xz") as archive:
                     entry = tarfile.TarInfo("bin/kitty")
                     entry.mode = 0o755
                     entry.size = len(executable)
                     archive.addfile(entry, io.BytesIO(executable))
                 output = root / "output"
                 result = subprocess.run(
-                    ["/bin/bash", str(INSTALLER), "kitty", "0.49.2"],
+                    ["/bin/bash", str(INSTALLER), "kitty", REFERENCE],
                     env=os.environ | {
                         "PATH": str(stubs) + os.pathsep + os.environ["PATH"],
                         "RUNNER_TEMP": str(root),
@@ -52,10 +54,10 @@ class KittyInstallerTest(unittest.TestCase):
                     capture_output=True, text=True, timeout=10,
                 )
                 self.assertTrue(checked.exists(), result.stdout + result.stderr)
-                if actual_version == "0.49.2":
+                if actual_version == REFERENCE:
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertEqual(output.read_text(),
-                                     f"bin={root}/md-terminal/kitty-0.49.2/bin\nversion=0.49.2\n")
+                                     f"bin={root}/md-terminal/kitty-{REFERENCE}/bin\nversion={REFERENCE}\n")
                 else:
                     self.assertNotEqual(result.returncode, 0)
                     self.assertFalse(output.exists())

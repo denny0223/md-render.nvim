@@ -22,7 +22,7 @@ jobs:
         uses: JohnnyMorganz/stylua-action@v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          # Keep in sync with the rev in .pre-commit-config.yaml.
+          # renovate: datasource=github-tags depName=JohnnyMorganz/StyLua
           version: 2.5.2
           args: --check .
 

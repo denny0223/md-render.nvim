@@ -1,0 +1,189 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended"
+  ],
+  "enabledManagers": [
+    "github-actions",
+    "npm",
+    "pre-commit",
+    "custom.regex"
+  ],
+  "ignorePaths": [
+    "**/node_modules/**",
+    "**/bower_components/**",
+    "**/vendor/**"
+  ],
+  "npm": {
+    "managerFilePatterns": [
+      "/^tests/fixtures/mermaid-cli/package\\.json$/"
+    ]
+  },
+  "timezone": "Asia/Taipei",
+  "schedule": [
+    "before 4am on Monday"
+  ],
+  "prConcurrentLimit": 2,
+  "automerge": false,
+  "packageRules": [
+    {
+      "matchDatasources": [
+        "github-runners",
+        "docker"
+      ],
+      "enabled": false
+    },
+    {
+      "matchFileNames": [
+        "tests/fixtures/mermaid-cli/**"
+      ],
+      "groupName": "Mermaid test tools"
+    },
+    {
+      "matchDatasources": [
+        "custom.neovim-archives"
+      ],
+      "groupName": "Neovim reference"
+    },
+    {
+      "matchDatasources": [
+        "custom.kitty-archives"
+      ],
+      "groupName": "Kitty reference"
+    },
+    {
+      "matchPackageNames": [
+        "https://github.com/folke/snacks.nvim.git"
+      ],
+      "schedule": [
+        "before 4am on the first day of the month"
+      ],
+      "updateNotScheduled": false
+    },
+    {
+      "matchPackageNames": [
+        "JohnnyMorganz/StyLua"
+      ],
+      "groupName": "StyLua"
+    },
+    {
+      "matchDatasources": [
+        "custom.ffmpeg-archives"
+      ],
+      "separateMajorMinor": false,
+      "rollbackPrs": false,
+      "commitMessageTopic": "FFmpeg 9.0 monthly archive",
+      "commitMessageExtra": "to {{newMajor}}-{{newMinor}}-{{newPatch}}",
+      "prBodyNotes": [
+        "Updates the last available build of a completed UTC month. The FFmpeg 9.0 series and linux64 GPL variant remain fixed; the pinned URL and SHA256 are updated together."
+      ]
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/ci/neovim-archives\\.tsv$/"
+      ],
+      "matchStrings": [
+        "# renovate: neovim-reference\\s+(?<currentValue>v\\d+\\.\\d+\\.\\d+)\\t(?<packageName>linux-x86_64|macos-arm64)\\t[^\\t\\n]+\\t(?<currentDigest>[a-f0-9]{64})"
+      ],
+      "depNameTemplate": "neovim/neovim",
+      "datasourceTemplate": "custom.neovim-archives",
+      "versioningTemplate": "semver-coerced",
+      "autoReplaceStringTemplate": "# renovate: neovim-reference\n{{{newValue}}}\t{{{packageName}}}\thttps://github.com/neovim/neovim/releases/download/{{{newValue}}}/nvim-{{{packageName}}}.tar.gz\t{{{newDigest}}}"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/ci/install-neovim\\.sh$/",
+        "/^\\.github/workflows/(test|terminal)\\.yml$/"
+      ],
+      "matchStrings": [
+        "# renovate: neovim-reference\\s+(?<currentValue>v\\d+\\.\\d+\\.\\d+)\\) fixed=true",
+        "# renovate: neovim-reference\\s+nvim: [^\\n]+\\|\\| '\\[\"[^\"]+\", \"(?<currentValue>v\\d+\\.\\d+\\.\\d+)\"\\]'",
+        "\"lane\":\"reference\",\"kitty\":\"[^\"]+\",\"nvim\":\"(?<currentValue>v\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "neovim/neovim",
+      "packageNameTemplate": "linux-x86_64",
+      "datasourceTemplate": "custom.neovim-archives",
+      "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/ci/install-terminal\\.sh$/",
+        "/^\\.github/workflows/terminal\\.yml$/"
+      ],
+      "matchStrings": [
+        "# renovate: kitty-reference\\s+kitty:(?<currentValue>\\d+\\.\\d+\\.\\d+)\\) checksum=(?<currentDigest>[a-f0-9]{64})",
+        "\"lane\":\"reference\",\"kitty\":\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "kovidgoyal/kitty",
+      "datasourceTemplate": "custom.kitty-archives",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/lint\\.yml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=github-tags depName=(?<depName>JohnnyMorganz/StyLua)\\s+version: (?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "datasourceTemplate": "github-tags",
+      "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/test\\.yml$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=git-refs depName=(?<depName>folke/snacks\\.nvim) branch=(?<currentValue>main)\\s+revision=(?<currentDigest>[a-f0-9]{40})"
+      ],
+      "datasourceTemplate": "git-refs",
+      "packageNameTemplate": "https://github.com/{{{depName}}}.git",
+      "versioningTemplate": "git"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/ci/ffmpeg-archives\\.tsv$/"
+      ],
+      "matchStrings": [
+        "(?:^|\\n)9\\.0\\t(?<currentValue>https://github\\.com/BtbN/FFmpeg-Builds/releases/download/autobuild-[^\\t\\n]+)\\t(?<currentDigest>[a-f0-9]{64})(?:\\n|$)"
+      ],
+      "depNameTemplate": "BtbN/FFmpeg-Builds 9.0 linux64-gpl",
+      "packageNameTemplate": "BtbN/FFmpeg-Builds",
+      "datasourceTemplate": "custom.ffmpeg-archives",
+      "versioningTemplate": "regex:^https://github\\.com/BtbN/FFmpeg-Builds/releases/download/autobuild-(?<major>[0-9]{4})-(?<minor>[0-9]{2})-(?<patch>[0-9]{2})-(?<build>[0-9]{2})-(?<revision>[0-9]{2})/ffmpeg-n[^/]+-linux64-gpl-(?<compatibility>9\\.0)\\.tar\\.xz$"
+    }
+  ],
+  "pre-commit": {
+    "enabled": true
+  },
+  "customDatasources": {
+    "ffmpeg-archives": {
+      "defaultRegistryUrlTemplate": "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=100",
+      "format": "json",
+      "transformTemplates": [
+        "(\n  $completed := $[$not(draft) and $not(prerelease) and $match(tag_name, /^autobuild-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}$/) and $substring(tag_name, 10, 7) < $substring($now(), 0, 7)];\n  $months := $distinct($completed.$substring(tag_name, 10, 7));\n  $monthly := $map($months, function($month) { ($completed[$substring(tag_name, 10, 7) = $month]^(>tag_name))[0] });\n  {\n    \"releases\": [$monthly.($release := $; assets[$match(name, /^ffmpeg-n[^/]+-linux64-gpl-9\\.0\\.tar\\.xz$/) and $type(digest) = \"string\" and $match(digest, /^sha256:[a-f0-9]{64}$/)].{\n      \"version\": browser_download_url,\n      \"digest\": $substringAfter(digest, \"sha256:\"),\n      \"releaseTimestamp\": $release.published_at,\n      \"changelogUrl\": \"https://github.com/BtbN/FFmpeg-Builds/releases/tag/\" & $release.tag_name\n    })],\n    \"sourceUrl\": \"https://github.com/BtbN/FFmpeg-Builds\"\n  }\n)"
+      ]
+    },
+    "neovim-archives": {
+      "defaultRegistryUrlTemplate": "https://api.github.com/repos/neovim/neovim/releases?per_page=100",
+      "format": "json",
+      "transformTemplates": [
+        "{\n  \"releases\": [$[$not(draft) and $not(prerelease) and $match(tag_name, /^v[0-9]+\\.[0-9]+\\.[0-9]+$/) and $count(assets[name = \"nvim-linux-x86_64.tar.gz\" and $type(digest) = \"string\" and $match(digest, /^sha256:[a-f0-9]{64}$/)]) = 1 and $count(assets[name = \"nvim-macos-arm64.tar.gz\" and $type(digest) = \"string\" and $match(digest, /^sha256:[a-f0-9]{64}$/)]) = 1].(\n    $release := $;\n    assets[name = \"nvim-{{{packageName}}}.tar.gz\" and $type(digest) = \"string\" and $match(digest, /^sha256:[a-f0-9]{64}$/)].{\n      \"version\": $release.tag_name,\n      \"digest\": $substringAfter(digest, \"sha256:\"),\n      \"releaseTimestamp\": $release.published_at,\n      \"changelogUrl\": \"https://github.com/neovim/neovim/releases/tag/\" & $release.tag_name\n    }\n  )],\n  \"sourceUrl\": \"https://github.com/neovim/neovim\"\n}"
+      ]
+    },
+    "kitty-archives": {
+      "defaultRegistryUrlTemplate": "https://api.github.com/repos/kovidgoyal/kitty/releases?per_page=100",
+      "format": "json",
+      "transformTemplates": [
+        "{\n  \"releases\": [$[$not(draft) and $not(prerelease) and $match(tag_name, /^v[0-9]+\\.[0-9]+\\.[0-9]+$/)].(\n    $release := $;\n    $version := $substring(tag_name, 1);\n    assets[name = \"kitty-\" & $version & \"-x86_64.txz\" and $type(digest) = \"string\" and $match(digest, /^sha256:[a-f0-9]{64}$/)].{\n      \"version\": $version,\n      \"digest\": $substringAfter(digest, \"sha256:\"),\n      \"releaseTimestamp\": $release.published_at,\n      \"changelogUrl\": \"https://github.com/kovidgoyal/kitty/releases/tag/\" & $release.tag_name\n    }\n  )],\n  \"sourceUrl\": \"https://github.com/kovidgoyal/kitty\"\n}"
+      ]
+    }
+  }
+}

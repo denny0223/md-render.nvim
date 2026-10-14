@@ -6,8 +6,8 @@
 |-------|------|---------|-------|-----|
 | 1. Unit tests | The bytes md-render *emits* | Protocol regressions | CI (main/PR **and weekly**) | `make -k test` |
 | 2. Media tools | The commands md-render *runs* | An external tool changing under us | CI (main/PR **and weekly**) | `media_test.lua`, `mermaid_integration.lua` |
-| 3. Terminal | What the terminal actually *holds* | Scaled text drawn wrong, or not at all | CI (push/PR **and weekly**) | `tests/terminal_test.py` |
-| 4. Visual regression | What the terminal actually *draws* | Clipped glyphs, images that never paint | One CI image-heading lane; broader checks local | `tmux_terminal_test.py --images`, `./tests/run_visual_test.sh` |
+| 3. Terminal | What the terminal actually *holds* | Scaled text drawn wrong, or not at all | CI (main/PR **and weekly**) | `tests/terminal_test.py` |
+| 4. Visual regression | What the terminal actually *draws* | Clipped glyphs, images that never paint | CI image-heading lanes; broader checks local | `tmux_terminal_test.py --images`, `./tests/run_visual_test.sh` |
 
 ### Offline CommonMark/GFM corpus
 
@@ -126,7 +126,7 @@ Capture input in an isolated receiver while switching pane or opening a popup du
 
 Repeat over SSH before claiming remote tmux support. A loopback SSH PTY verifies byte transport without a shared image path, but does not establish a separate remote-host/local-client configuration. Linux acceptance does not establish other OS/client support.
 
-The `--images` path reuses the isolated Kitty/tmux terminal harness and requires the image-heading Python dependencies, Pillow and ImageMagick (either the `magick` commands or ImageMagick 6's `import`/`convert`). Its native-fallback check requires tmux >= 3.6. It compares foreground glyph pixels for all six levels against their PNGs, verifies reference/angle-link destinations in painted OSC 8 cells, and checks source toggle/reopening plus auto recovery through native and plain fallback. One CI lane runs it with latest Kitty, tmux 3.6 and Neovim 0.12.0, retaining screenshots and diagnostics. Use an isolated X display; `--ssh` repeats the same checks over the temporary loopback server. This compact regression does not replace the broader interaction procedure above.
+The `--images` path reuses the isolated Kitty/tmux terminal harness and requires the image-heading Python dependencies, Pillow and ImageMagick (either the `magick` commands or ImageMagick 6's `import`/`convert`). Its native-fallback check requires tmux >= 3.6. It compares foreground glyph pixels for all six levels against their PNGs, verifies reference/angle-link destinations in painted OSC 8 cells, and checks source toggle/reopening plus auto recovery through native and plain fallback. Baseline terminal jobs run it with tmux 3.6; weekly terminal observation runs it in the latest-Kitty/minimum-Neovim lane, retaining screenshots and diagnostics. Use an isolated X display; `--ssh` repeats the same checks over the temporary loopback server. This compact regression does not replace the broader interaction procedure above.
 
 ```sh
 xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_test.py --images --passthrough all --output /tmp/md-image-tmux-results
@@ -148,11 +148,11 @@ The tests explicitly select native sizing and check all six scales, complete CJK
 
 A fractionally scaled heading goes out as several runs — `n=` / `d=` shrink the font but not the cells, so each run states its own width — which is why the assertions join a level's payloads back together before matching.
 
-`.github/workflows/terminal.yml` runs it against Kitty **0.40.0** (the version that introduced the protocol, so the floor this can work on) and **latest**, crossed with Neovim **v0.12.0** and **nightly**, plus a weekly schedule.
+The [terminal workflow](../.github/workflows/terminal.yml) runs minimum/reference Kitty and Neovim baselines on PRs and pushes to `main`. Weekly observation crosses minimum/latest Kitty with minimum/stable/nightly Neovim. Exact versions and verified archive inputs live in the workflow and [terminal installer](../.github/ci/install-terminal.sh).
 
 ### Native headings through tmux
 
-`tests/tmux_terminal_test.py` creates its own tmux server and Kitty window with focus reporting enabled. It checks six heading levels, wrapped CJK text, pane borders, status rows, resize/zoom, scrolling, copy mode, search, Visual/yank, passthrough changes, policy switching, detach/reattach, multiple-client fallback and teardown. Fullscreen and partial popups must keep their keyboard input and remain clear across redraws and keepalive; repeated popup recovery also runs during synchronous plugin-style refreshes with `eventignore=all`. It never uses your existing tmux server. CI builds tmux 3.6, the minimum with popup focus events, and tmux 3.4 to verify readable fallback with `--expect-plain`. Both versions run with both passthrough modes under Xvfb:
+`tests/tmux_terminal_test.py` creates its own tmux server and Kitty window with focus reporting enabled. It checks six heading levels, wrapped CJK text, pane borders, status rows, resize/zoom, scrolling, copy mode, search, Visual/yank, passthrough changes, policy switching, detach/reattach, multiple-client fallback and teardown. Fullscreen and partial popups must keep their keyboard input and remain clear across redraws and keepalive; repeated popup recovery also runs during synchronous plugin-style refreshes with `eventignore=all`. It never uses your existing tmux server. CI builds tmux 3.6, the minimum with popup focus events, for the baselines and weekly observation. Weekly observation also builds tmux 3.4 for the minimum Kitty/Neovim and latest Kitty/nightly Neovim combinations to verify readable fallback with `--expect-plain`. Both versions run with both passthrough modes under Xvfb:
 
 ```sh
 xvfb-run -a --server-args="-screen 0 2400x1800x24" python3 tests/tmux_terminal_test.py
@@ -169,7 +169,7 @@ Use `--output-on-failure /tmp/md-native-tmux-results` to retain failure diagnost
 
 The isolated driver also caches spawn attempts and process completion for the renderer's exact `tmux -S SOCKET refresh-client -t CLIENT` command using the same monotonic clock as focus events; this adds Lua observer work without extra commands or waits, and a successful completion does not prove terminal dispatch or pixel clearing.
 
-CI installs ImageMagick before the native tests, runs both passthrough modes even if the first fails, and uploads `/tmp/md-terminal-results` with `always()` under a unique matrix/attempt artifact name. Native results are separated into `native-on` and `native-all`; the image lane uses `images`. A diagnostic artifact does not establish a reproducible trigger or a cause for an intermittent failure. Existing deadlines, assertions and the required Neovim 0.12.0 lanes remain unchanged.
+CI installs ImageMagick before the native tests, runs both passthrough modes even if the first fails, and uploads `$RUNNER_TEMP/md-terminal-results` with `always()` under a unique Kitty/Neovim/attempt artifact name. Tmux-specific native diagnostics use `tmux-VERSION/native-on` and `tmux-VERSION/native-all`; image screenshots use `tmux-3.6/images`. A diagnostic artifact does not establish a reproducible trigger or a cause for an intermittent failure.
 
 `--snacks /path/to/snacks.nvim` loads the real optional backend and adds an image beside the wrapped heading; Snacks sets passthrough to `all`. Inspect the captured image as well as the placeholder assertion, since placeholders alone do not prove PNG visibility. Use an isolated X display: desktop focus changes intentionally pause native output and can otherwise interfere with the checks. The temporary suppression test does not establish support for plugins that yield to the event loop while discarding focus events.
 
@@ -249,7 +249,7 @@ tests/screenshots/
 
 CI follows the `ubuntu-latest` and `macos-latest` runner labels and major-version Action tags. Runner releases follow GitHub's rollout schedule; rerunning the same repository commit can use newer OS images, packages or Action code.
 
-Tests, Media and Lint run representative baselines on PRs and pushes to `main`; development-branch pushes do not duplicate their PR runs. Tests and Media run broader toolchain observation weekly. Exact versions, schedules and installation inputs live in the linked workflows and [archive manifests](../.github/ci/).
+PRs and pushes to `main` run representative baselines, which maintainers require to pass before merging. Broader toolchain observation runs weekly, including changes in upstream tools when this repository has not changed. Development-branch pushes do not duplicate PR runs. Exact versions, schedules and installation inputs live in the linked workflows, [archive manifests](../.github/ci/) and [Mermaid fixture](fixtures/mermaid-cli/package.json).
 
 In public repositories, [GitHub disables scheduled workflows after 60 days without repository activity](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule); re-enable a disabled workflow before relying on weekly observation again.
 
@@ -257,22 +257,24 @@ In public repositories, [GitHub disables scheduled workflows after 60 days witho
 | --- | --- | --- |
 | [Lint](../.github/workflows/lint.yml) | Formatting and Lua lint | — |
 | [Tests](../.github/workflows/test.yml) | Fixed minimum/reference Neovim on Ubuntu/macOS; released Fedora image integrations | Minimum/stable/nightly Neovim and latest Snacks |
+| [Terminal](../.github/workflows/terminal.yml) | Fixed minimum/reference Kitty and Neovim; native on/all and image headings through tmux | Broader Kitty/Neovim combinations; tmux 3.4 plain fallback on minimum Kitty/Neovim and latest Kitty/nightly Neovim |
 | [Media](../.github/workflows/media.yml) | Ubuntu's FFmpeg package, fixed FFmpeg 9.0 and locked Mermaid | Baseline FFmpeg checks plus master; locked/latest Mermaid |
 
 Released Fedora follows `registry.fedoraproject.org/fedora:latest` and updated official RPMs; `ffmpeg-free` does not imply full-codec support. Representative CI runtimes, including Node, do not add plugin requirements.
 
-Tests and Media accept `suite=baseline` or `suite=observation` on a chosen ref:
+Tests, Media and Terminal accept `suite=baseline` or `suite=observation` on a chosen ref:
 
 ```sh
 gh workflow run test.yml --ref YOUR_BRANCH -f suite=baseline
 gh workflow run media.yml --ref YOUR_BRANCH -f suite=observation
+gh workflow run terminal.yml --ref YOUR_BRANCH -f suite=observation
 ```
 
 ### Investigating failures
 
-For Tests and Media, start with the failed job's summary, find the failed or missing phase, then read that step's log and download artifacts from the same attempt. Independent checks continue where possible, but a required phase that fails or does not run cannot pass. Cancellation, a job timeout or missing execution metadata cannot establish successful verification. Later phases and artifact uploads are best effort.
+Start with the failed job's summary, find the failed or missing phase, then read that step's log and download artifacts from the same attempt. Independent checks continue where possible, but a required phase that fails or does not run cannot pass. Cancellation, a job timeout or missing execution metadata cannot establish successful verification. Later phases and artifact uploads are best effort.
 
-Inspect the first failure before retrying. A successful retry is additional evidence, not a diagnosis. These workflows cancel only superseded PR executions automatically. Artifacts from successful Tests and Media runs are kept for 14 days, failed baselines for 30 and failed observations for 90, subject to the repository retention cap; logs have a separate retention setting.
+Inspect the first failure before retrying. A successful retry is additional evidence, not a diagnosis. Only superseded PR executions are cancelled automatically. Successful artifacts are kept for 14 days, failed baselines for 30 and failed observations for 90, subject to the repository retention cap; logs have a separate retention setting.
 
 Failures use GitHub Actions' native run status, logs and notifications. Check your [Actions notification preferences](https://docs.github.com/en/subscriptions-and-notifications/how-tos/managing-github-actions-notifications) if you want failure notifications; delivery follows [GitHub's recipient rules](https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs).
 

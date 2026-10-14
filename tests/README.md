@@ -103,7 +103,7 @@ python3 tests/heading_raster_test.py
 nvim --headless -u NONE --noplugin -l tests/heading_typography_integration.lua
 ```
 
-The mock tests cover layout ownership, highlights, mouse targets, selection, transport and asynchronous fallback. The integration checks verify real raster pixels, six image sizes, wrapping, background coverage and click targets. Both integration checks run in the Fedora CI job with the required packages installed.
+The mock tests cover layout ownership, highlights, mouse targets, selection, transport and asynchronous fallback. The integration checks verify real raster pixels, six image sizes, wrapping, background coverage and click targets. Both integration checks run in the Fedora CI jobs with the required packages installed.
 
 For a visual check, load this checkout in Kitty and open [image_headings.md](fixtures/image_headings.md). Run `:MdRender textsize auto`, then `:MdRender toggle`, and keep the cursor on the first body line:
 
@@ -256,11 +256,13 @@ In public repositories, [GitHub disables scheduled workflows after 60 days witho
 | Workflow | PR/main baseline | Weekly observation |
 | --- | --- | --- |
 | [Lint](../.github/workflows/lint.yml) | Formatting and Lua lint | — |
-| [Tests](../.github/workflows/test.yml) | Fixed minimum/reference Neovim on Ubuntu/macOS; released Fedora image integrations | Minimum/stable/nightly Neovim and latest Snacks |
+| [Tests](../.github/workflows/test.yml) | Fixed minimum/reference Neovim on Ubuntu/macOS; released Fedora image integrations | Minimum/stable/nightly Neovim, latest Snacks and Rawhide |
 | [Terminal](../.github/workflows/terminal.yml) | Fixed minimum/reference Kitty and Neovim; native on/all and image headings through tmux | Broader Kitty/Neovim combinations; tmux 3.4 plain fallback on minimum Kitty/Neovim and latest Kitty/nightly Neovim |
 | [Media](../.github/workflows/media.yml) | Ubuntu's FFmpeg package, fixed FFmpeg 9.0 and locked Mermaid | Baseline FFmpeg checks plus master; locked/latest Mermaid |
 
-Released Fedora follows `registry.fedoraproject.org/fedora:latest` and updated official RPMs; `ffmpeg-free` does not imply full-codec support. Representative CI runtimes, including Node, do not add plugin requirements.
+Released Fedora follows `registry.fedoraproject.org/fedora:latest` and updated official RPMs. Rawhide follows official RPMs with a fixed Snacks checkout to isolate RPM changes. Its `all` passthrough check verifies Snacks image placeholders alongside native headings and saves screenshots for inspection; it does not check Snacks image pixels.
+
+Rawhide's Xvfb/X11/software-GL checks establish userspace behavior, not Wayland, hardware GPU, kernel, SELinux or personal desktop behavior; `ffmpeg-free` does not imply full-codec support. Representative CI runtimes, including Node, do not add plugin requirements.
 
 Tests, Media and Terminal accept `suite=baseline` or `suite=observation` on a chosen ref:
 

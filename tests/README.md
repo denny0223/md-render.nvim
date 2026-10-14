@@ -5,7 +5,7 @@
 | Layer | What | Catches | Where | How |
 |-------|------|---------|-------|-----|
 | 1. Unit tests | The bytes md-render *emits* | Protocol regressions | CI (main/PR **and weekly**) | `make -k test` |
-| 2. Media tools | The commands md-render *runs* | An external tool changing under us | CI (push/PR **and weekly**) | `media_test.lua`, `mermaid_integration.lua` |
+| 2. Media tools | The commands md-render *runs* | An external tool changing under us | CI (main/PR **and weekly**) | `media_test.lua`, `mermaid_integration.lua` |
 | 3. Terminal | What the terminal actually *holds* | Scaled text drawn wrong, or not at all | CI (push/PR **and weekly**) | `tests/terminal_test.py` |
 | 4. Visual regression | What the terminal actually *draws* | Clipped glyphs, images that never paint | One CI image-heading lane; broader checks local | `tmux_terminal_test.py --images`, `./tests/run_visual_test.sh` |
 
@@ -79,17 +79,17 @@ MD_RENDER_REQUIRE_PLANTUML=1 make -k tests/plantuml_kitty_test.lua tests/plantum
 
 ### FFmpeg matrix
 
-`.github/workflows/media.yml` runs the suite against FFmpeg 6.1, 7.1, 8.1, 9.0 and master, plus a weekly `schedule`.
+The [media workflow](../.github/workflows/media.yml) tests Ubuntu's FFmpeg package and a fixed FFmpeg 9.0 archive for PR/main baselines. Weekly observation repeats those checks and adds master. Each selection has separate installation and cold-conversion results while sharing the job environment.
 
-Spanning majors is the point. Ubuntu 24.04 still ships FFmpeg 6.1, so a job that ran `apt-get install ffmpeg` would have stayed green through the entire `-vsync` incident. The 8.x/9.x/master entries point at BtbN's rolling `latest` release, so the scheduled run picks up new point releases and reports drift; 6.1 and 7.1 come from a pinned older autobuild, because BtbN drops EOL branches from `latest` while keeping the release assets reachable.
+The distro lane verifies the actual `/usr/bin` FFmpeg/ffprobe paths and package ownership. The [fixed-archive manifest](../.github/ci/ffmpeg-archives.tsv) records the 9.0 URL and SHA-256; both suites use that same archive, while master follows BtbN's rolling release. Installation verifies archives and executable versions and records build configuration. An archive-cache hit does not verify that its download URL remains available.
 
 ### Real Mermaid renderer
 
-The media workflow has one Mermaid lane using CLI 12.0.0 and Puppeteer 25.12.0, which selects its own fixed browser revision. The fixture in `tests/fixtures/mermaid-cli/` locks its npm dependencies; CI runs `npm ci --ignore-scripts`, then explicitly runs the locked Puppeteer browser installer. It prints the CLI, Puppeteer and browser versions, then renders a small diagram through the plugin from an empty temporary cache. The output must pass real PNG decoding with positive dimensions. A second real-process regression proves that executable Puppeteer configuration in the document and temporary ancestor directories runs in the controls but not through the plugin. Missing tools and a broken browser fail these explicit integration checks:
+The media workflow uses the [locked fixture](fixtures/mermaid-cli/package.json) for PR/main baselines and adds the latest Mermaid CLI in weekly observation. Each renderer installs its matching Puppeteer browser. CI runs `npm ci --ignore-scripts`, then explicitly runs that browser installer. It prints the CLI, Puppeteer and browser versions, then renders a small diagram through the plugin from an empty temporary cache. The output must pass real PNG decoding with positive dimensions. A second real-process regression proves that executable Puppeteer configuration in the document and temporary ancestor directories runs in the controls but not through the plugin. Missing tools and a broken browser fail these explicit integration checks:
 
 ```sh
 nvim --headless -u NONE --noplugin -l tests/mermaid_integration.lua
-nvim --headless -u NONE --noplugin -l tests/mermaid_security_integration.lua
+MD_RENDER_REQUIRE_MERMAID_TOOLS=1 nvim --headless -u NONE --noplugin -l tests/mermaid_security_integration.lua
 ```
 
 Install `mmdc`, its browser and a PNG decoder (ImageMagick or macOS `sips`) before running it locally. The ordinary `make test` target does not invoke this check or install a browser. The CI-only wrapper supplies `--no-sandbox` to the browser for its fixed fixture on the hosted runner; plugin configuration and ordinary local runs do not use that override.
@@ -247,9 +247,9 @@ tests/screenshots/
 
 ## CI policy and maintenance
 
-CI uses major-version Action tags to follow updates within the selected major. These tags can move, so rerunning the same repository commit can execute newer Action code.
+CI follows the `ubuntu-latest` and `macos-latest` runner labels and major-version Action tags. Runner releases follow GitHub's rollout schedule; rerunning the same repository commit can use newer OS images, packages or Action code.
 
-Tests and Lint run representative baselines on PRs and pushes to `main`; development-branch pushes do not duplicate their PR runs. The Tests workflow runs broader toolchain observation weekly. Exact versions, schedules and installation inputs live in the linked workflows and [archive manifests](../.github/ci/).
+Tests, Media and Lint run representative baselines on PRs and pushes to `main`; development-branch pushes do not duplicate their PR runs. Tests and Media run broader toolchain observation weekly. Exact versions, schedules and installation inputs live in the linked workflows and [archive manifests](../.github/ci/).
 
 In public repositories, [GitHub disables scheduled workflows after 60 days without repository activity](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule); re-enable a disabled workflow before relying on weekly observation again.
 
@@ -257,20 +257,22 @@ In public repositories, [GitHub disables scheduled workflows after 60 days witho
 | --- | --- | --- |
 | [Lint](../.github/workflows/lint.yml) | Formatting and Lua lint | — |
 | [Tests](../.github/workflows/test.yml) | Fixed minimum/reference Neovim on Ubuntu/macOS; released Fedora image integrations | Minimum/stable/nightly Neovim and latest Snacks |
+| [Media](../.github/workflows/media.yml) | Ubuntu's FFmpeg package, fixed FFmpeg 9.0 and locked Mermaid | Baseline FFmpeg checks plus master; locked/latest Mermaid |
 
 Released Fedora follows `registry.fedoraproject.org/fedora:latest` and updated official RPMs; `ffmpeg-free` does not imply full-codec support. Representative CI runtimes, including Node, do not add plugin requirements.
 
-The Tests workflow accepts `suite=baseline` or `suite=observation` on a chosen ref:
+Tests and Media accept `suite=baseline` or `suite=observation` on a chosen ref:
 
 ```sh
 gh workflow run test.yml --ref YOUR_BRANCH -f suite=baseline
+gh workflow run media.yml --ref YOUR_BRANCH -f suite=observation
 ```
 
 ### Investigating failures
 
-For Tests, start with the failed job's summary, find the failed or missing phase, then read that step's log and download artifacts from the same attempt. Independent checks continue where possible, but a required phase that fails or does not run cannot pass. Cancellation, a job timeout or missing execution metadata cannot establish successful verification. Later phases and artifact uploads are best effort.
+For Tests and Media, start with the failed job's summary, find the failed or missing phase, then read that step's log and download artifacts from the same attempt. Independent checks continue where possible, but a required phase that fails or does not run cannot pass. Cancellation, a job timeout or missing execution metadata cannot establish successful verification. Later phases and artifact uploads are best effort.
 
-Inspect the first failure before retrying. A successful retry is additional evidence, not a diagnosis. These workflows cancel only superseded PR executions automatically. Artifacts from successful Tests runs are kept for 14 days, failed baselines for 30 and failed observations for 90, subject to the repository retention cap; logs have a separate retention setting.
+Inspect the first failure before retrying. A successful retry is additional evidence, not a diagnosis. These workflows cancel only superseded PR executions automatically. Artifacts from successful Tests and Media runs are kept for 14 days, failed baselines for 30 and failed observations for 90, subject to the repository retention cap; logs have a separate retention setting.
 
 Failures use GitHub Actions' native run status, logs and notifications. Check your [Actions notification preferences](https://docs.github.com/en/subscriptions-and-notifications/how-tos/managing-github-actions-notifications) if you want failure notifications; delivery follows [GitHub's recipient rules](https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs).
 

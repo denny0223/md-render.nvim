@@ -64,12 +64,12 @@ jobs:
           - name: master
             url: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Install Neovim
-        uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1
+        uses: rhysd/action-setup-vim@v1
         with:
           neovim: true
           version: stable
@@ -101,13 +101,13 @@ jobs:
     env:
       PUPPETEER_CACHE_DIR: /tmp/md-render-mermaid-browser
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "24"
-      - uses: rhysd/action-setup-vim@febef33995d6649302e9d88dda81e071b68f16a7 # v1
+      - uses: rhysd/action-setup-vim@v1
         with:
           neovim: true
           version: v0.12.0

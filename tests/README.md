@@ -241,7 +241,11 @@ tests/screenshots/
 
 ## CI policy and maintenance
 
+CI uses major-version Action tags to follow updates within the selected major. These tags can move, so rerunning the same repository commit can execute newer Action code.
+
 Failures use GitHub Actions' native run status, logs and notifications. Check your [Actions notification preferences](https://docs.github.com/en/subscriptions-and-notifications/how-tos/managing-github-actions-notifications) if you want failure notifications; delivery follows [GitHub's recipient rules](https://docs.github.com/en/actions/concepts/workflows-and-actions/notifications-for-workflow-runs).
+
+[Dependabot](../.github/dependabot.yml) checks Action references monthly and opens ordinary version-update PRs only for new major versions, with at most two open at a time. These PRs require review and manual merging; the schedule is not a monthly response deadline. Review applicable release notes, changed runtime requirements, permissions and default behavior, then run the affected checks. GitHub's security alerts are separate; [security-update PRs are not subject to this ordinary-update limit](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference#open-pull-requests-limit).
 
 ## Adding new tests
 

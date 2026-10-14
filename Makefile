@@ -1,7 +1,7 @@
 NVIM := nvim --headless -u NONE --noplugin
 
 TEST_FILES := $(sort $(wildcard tests/*_test.lua))
-HARNESS_FILES := tests/tooling_test.py tests/tmux_diagnostics_test.py tests/download_integration_test.py
+HARNESS_FILES := tests/tooling_test.py tests/tmux_diagnostics_test.py tests/download_integration_test.py tests/ci_results_test.py
 
 .PHONY: test test-harness $(HARNESS_FILES) $(TEST_FILES) lint format check
 

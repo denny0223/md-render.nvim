@@ -1,0 +1,5 @@
+# version<TAB>platform<TAB>url<TAB>sha256; official neovim/neovim release assets.
+v0.12.0	linux-x86_64	https://github.com/neovim/neovim/releases/download/v0.12.0/nvim-linux-x86_64.tar.gz	160b69125defb16e60b283b69be112fd4850d67ac8f9a752328c20ad43ec34af
+v0.12.0	macos-arm64	https://github.com/neovim/neovim/releases/download/v0.12.0/nvim-macos-arm64.tar.gz	cf0137d6961785c34926f879b7a5b5fa0371ab0d6e2959e390e2f00b46165ce9
+v0.12.5	linux-x86_64	https://github.com/neovim/neovim/releases/download/v0.12.5/nvim-linux-x86_64.tar.gz	bce0f56eda1f1b1db6eee8f4133d7a38813ea07933837dd1777411ca384c6875
+v0.12.5	macos-arm64	https://github.com/neovim/neovim/releases/download/v0.12.5/nvim-macos-arm64.tar.gz	65fb000099e47ca1b762584c484cc833f40e30851a0ec450d4174e16317c1f9b

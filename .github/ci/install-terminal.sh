@@ -9,6 +9,7 @@ archives=${MD_RENDER_TERMINAL_ARCHIVES:-$RUNNER_TEMP/terminal-archives}
 
 case "$tool:$requested" in
   kitty:0.40.0) checksum=041c6fedd9be2f257d64eee41099a19f1ea525c69214ded5e930ff96ccb6b8a4 ;;
+  # renovate: kitty-reference
   kitty:0.49.2) checksum=d573618b911e9c461bd421b96c13c74c7f1cb2f1ac9c327818d4ff84366cf5c6 ;;
   kitty:latest)
     release=$(gh api repos/kovidgoyal/kitty/releases/latest)

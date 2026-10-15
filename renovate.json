@@ -16,7 +16,7 @@
   ],
   "npm": {
     "managerFilePatterns": [
-      "/^tests/fixtures/mermaid-cli/package\\.json$/"
+      "/^tests/tools/mermaid-cli/package\\.json$/"
     ]
   },
   "timezone": "Asia/Taipei",
@@ -35,7 +35,7 @@
     },
     {
       "matchFileNames": [
-        "tests/fixtures/mermaid-cli/**"
+        "tests/tools/mermaid-cli/**"
       ],
       "groupName": "Mermaid test tools"
     },

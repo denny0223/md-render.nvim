@@ -205,7 +205,7 @@ jobs:
         run: |
           mkdir -p /tmp/md-render-mermaid
           if [ "$RENDERER" = pinned ]; then
-            cp tests/fixtures/mermaid-cli/package*.json /tmp/md-render-mermaid/
+            cp tests/tools/mermaid-cli/package*.json /tmp/md-render-mermaid/
           else
             printf '%s\n' '{"name":"md-render-mermaid-observation","private":true}' > /tmp/md-render-mermaid/package.json
             npm --prefix /tmp/md-render-mermaid install --package-lock-only --ignore-scripts --no-audit --no-fund @mermaid-js/mermaid-cli@latest

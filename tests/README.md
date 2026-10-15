@@ -52,7 +52,7 @@ nvim --headless -u NONE --noplugin -l tests/mermaid_integration.lua
 MD_RENDER_REQUIRE_MERMAID_TOOLS=1 nvim --headless -u NONE --noplugin -l tests/mermaid_security_integration.lua
 ```
 
-These checks require a real cold PNG render and verify that executable Puppeteer configuration from document/ancestor directories runs in the controls but not through the plugin. They are separate from `make test`. The [locked fixture](fixtures/mermaid-cli/package.json) and [media workflow](../.github/workflows/media.yml) define the pinned setup and browser installation; the hosted-runner browser wrapper is CI-only.
+These checks require a real cold PNG render and verify that executable Puppeteer configuration from document/ancestor directories runs in the controls but not through the plugin. They are separate from `make test`. The [locked tool dependencies](tools/mermaid-cli/package.json) and [media workflow](../.github/workflows/media.yml) define the pinned setup and browser installation; the hosted-runner browser wrapper is CI-only.
 
 ### Snacks
 
@@ -142,7 +142,7 @@ Normalized RMSE is a distance: identical images score zero, and lower is better.
 
 CI follows the `ubuntu-latest` and `macos-latest` runner labels and major-version Action tags. Runner releases follow GitHub's rollout schedule; rerunning the same repository commit can use newer OS images, packages or Action code.
 
-PRs and pushes to `main` run representative baselines, which maintainers require to pass before merging. Broader toolchain observation runs weekly, including changes in upstream tools when this repository has not changed. Development-branch pushes do not duplicate PR runs. Exact versions, schedules and installation inputs live in the linked workflows, [archive manifests](../.github/ci/) and [Mermaid fixture](fixtures/mermaid-cli/package.json).
+PRs and pushes to `main` run representative baselines, which maintainers require to pass before merging. Broader toolchain observation runs weekly, including changes in upstream tools when this repository has not changed. Development-branch pushes do not duplicate PR runs. Exact versions, schedules and installation inputs live in the linked workflows, [archive manifests](../.github/ci/) and [Mermaid tool dependencies](tools/mermaid-cli/package.json).
 
 In public repositories, [GitHub disables scheduled workflows after 60 days without repository activity](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule); re-enable a disabled workflow before relying on weekly observation again.
 
@@ -182,7 +182,7 @@ Weekly observations check compatibility with the selected upstream tools. Propos
 | Tracked input | Update boundary |
 | --- | --- |
 | GitHub Actions and `setup-node`'s Node version | Action tags and the installed Node runtime are tracked separately. |
-| Mermaid CLI and Puppeteer | The test fixture's package versions and lockfile are updated together; `tests/` is included explicitly. |
+| Mermaid CLI and Puppeteer | The test tools' package versions and lockfile are updated together; `tests/` is included explicitly. |
 | StyLua | The pre-commit frozen SHA/tag and CI formatter version share one update PR. |
 | Neovim reference | Both platform archives, installer allowlist and workflow references share one PR. A release must have valid SHA256 digests for both platforms before it is eligible. |
 | Kitty reference | The installer version/digest and terminal matrix share one PR. |

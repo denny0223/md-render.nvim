@@ -293,7 +293,7 @@ Inside a rendered preview (floating, tab, split, in-place toggle, or pager), the
 | `[[` / `]]` | Previous / next heading; counts work without wrapping |
 | `gO` | Show headings in a native location list; Enter jumps to the selected heading |
 | `<CR>` | Follow a heading or footnote link within the document, open an image (Snacks backend), or toggle a fold / expandable region |
-| `gf` / `gF` | Follow the exact local link; `gF` also reads a following source line number |
+| `gf` / `gF` | Open local links; `gF` also jumps to the specified source line |
 | `<C-w>f` / `<C-w>F` | Follow the local link in a split; `<C-w>gf` / `<C-w>gF` use a new tab |
 | `<C-]>` / `g]` / `g<C-]>` | Follow a heading, footnote, or file link through native tag navigation |
 | `<C-w>]` / `<C-w>g]` / `<C-w>g<C-]>` | Follow a link with native split-tag navigation |

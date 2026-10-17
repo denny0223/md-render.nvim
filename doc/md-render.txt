@@ -349,8 +349,8 @@ Inside the preview window, the following Normal-mode keys are available.
 	`gO`		Show a native heading location list; Enter jumps
 	`<CR>`		Follow a heading/footnote link within the document, open
 			an image (Snacks), or toggle a fold / expandable region
-	`gf` / `gF`	Follow the exact local link; gF also reads a following
-			source line number. Markdown targets stay rendered
+	`gf` / `gF`	Open local links; gF also jumps to a source line,
+			including destinations such as ./guide.md:10
 	`<C-w>f` / `<C-w>F` Follow a local link in a split
 	`<C-w>gf` / `<C-w>gF` Follow a local link in a new tab
 	`<C-]>` / `g]` / `g<C-]>` Follow heading, footnote, or file links

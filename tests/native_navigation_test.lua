@@ -507,6 +507,31 @@ do
 end
 
 -- All gF variants retain the native filename-followed-by-line-number meaning.
+for _, key in ipairs { "gF", "<C-w>F", "<C-w>gF" } do
+  local href = "docs/target%20file.md:4"
+  local c = open("toggle", { "| Document |", "| --- |", "| [decoy.txt:2](" .. href .. ") |" }, function(_, dir)
+    vim.fn.mkdir(dir .. "/docs", "p")
+    vim.fn.writefile(
+      { "[hidden]: /unused", "# Heading", "", "Requested line", "", "Last line" },
+      dir .. "/docs/target file.md"
+    )
+  end)
+  local origin = point(c, href)
+  local before = #warnings
+  feed(key)
+  eq(#warnings, before, key .. " accepts a line number in the href")
+  local target = assert(preview._sessions[vim.api.nvim_get_current_buf()])
+  eq(vim.api.nvim_buf_get_name(target.source_bufnr), c.dir .. "/docs/target file.md", key .. " opens the href file")
+  eq(
+    vim.api.nvim_win_get_cursor(0)[1],
+    target:source_to_rendered(4),
+    key .. " maps the href line instead of the label line"
+  )
+  feed "<C-o>"
+  eq(vim.api.nvim_get_current_buf(), c.buf, key .. " returns to the rendered origin")
+  eq(vim.api.nvim_win_get_cursor(0), origin, key .. " restores the link position")
+end
+
 for _, suffix in ipairs { ":4", " @ 4", " (4)", " 4", " line 4" } do
   for _, key in ipairs { "gF", "<C-w>F", "<C-w>gF" } do
     local c = open("toggle", { "[decoy.txt" .. suffix .. "](target.txt)" })
@@ -515,6 +540,58 @@ for _, suffix in ipairs { ":4", " @ 4", " (4)", " 4", " line 4" } do
     eq(vim.api.nvim_buf_get_name(0), c.dir .. "/target.txt", "gF uses href despite label filename")
     eq(vim.api.nvim_win_get_cursor(0)[1], 4, "gF retains line suffix " .. suffix)
   end
+end
+
+-- Href line suffixes preserve exact filenames, URI boundaries and anchors.
+for _, case in ipairs {
+  { "./target.txt:4", "target.txt", 4 },
+  { "ROOT/target.txt:4", "target.txt", 4 },
+  { "file://ROOT/target.txt:4", "target.txt", 4 },
+  { "./target.txt:0", "target.txt", 1 },
+  { "./target.txt:999999999999999999999999", "target.txt", 5 },
+  { "./target%20file.md:2?query#finish", "target file.md", "finish" },
+  { "./literal.txt:4", "literal.txt:4", 1 },
+  { "./literal.txt%3A4", "literal.txt:4", 1 },
+  { "./target.txt%3A4" },
+  { "./target.txt:%34" },
+  { "./broken.txt:4" },
+  { "./absent.md:4" },
+  { "vnd.foo:4" },
+} do
+  local href
+  local c = open("toggle", {}, function(source, dir)
+    href = case[1]:gsub("ROOT", dir)
+    vim.api.nvim_buf_set_lines(source, 0, -1, false, { "[target](" .. href .. ")" })
+    vim.fn.writefile({ "literal filename" }, dir .. "/literal.txt:4")
+    vim.fn.writefile({ "decoy" }, dir .. "/literal.txt")
+    vim.fn.writefile({ "URI decoy" }, dir .. "/vnd.foo")
+    vim.fn.writefile({ "symlink decoy" }, dir .. "/broken.txt")
+    assert(vim.uv.fs_symlink(dir .. "/absent.txt", dir .. "/broken.txt:4"))
+  end)
+  point(c, href)
+  local before, jumps = #warnings, vim.fn.getjumplist()
+  feed "gF"
+  if case[2] then
+    local target = preview._sessions[vim.api.nvim_get_current_buf()]
+    eq(vim.api.nvim_buf_get_name(target and target.source_bufnr or 0), c.dir .. "/" .. case[2], href .. " target")
+    local row = case[3] == "finish" and target.content.heading_anchors.finish + 1 or case[3]
+    eq(vim.api.nvim_win_get_cursor(0)[1], row, href .. " position")
+    eq(#warnings, before, href .. " opens without warning")
+  else
+    eq(vim.api.nvim_get_current_buf(), c.buf, href .. " retains render")
+    eq(vim.fn.getjumplist(), jumps, href .. " retains history")
+    eq(#warnings, before + 1, href .. " reports unavailable destination")
+  end
+end
+
+-- Other link commands keep interpreting the exact href, without gF line syntax.
+for _, key in ipairs { "gf", "<C-]>" } do
+  local c = open("toggle", { "[target](./target.txt:4)" })
+  point(c, "./target.txt:4")
+  local before = #warnings
+  feed(key)
+  eq(vim.api.nvim_get_current_buf(), c.buf, key .. " keeps the exact href")
+  eq(#warnings, before + 1, key .. " reports a missing literal filename")
 end
 
 -- Native fallback still searches 'path' and honors counts, without using extmarks.

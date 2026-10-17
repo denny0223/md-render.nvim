@@ -2435,17 +2435,26 @@ local function enable_render_tags(session)
   })
 end
 
--- Prepare the exact href before creating a window or touching native history.
-function Session:link_target(url)
+-- Resolve the href before creating a window or touching native history.
+function Session:link_target(url, line_number)
   local links = require "md-render.links"
   if url:match "^#" then
     local row = links.anchor_row(url, self.content)
     if row == nil then error("anchor not found: " .. url) end
     return { source = self.source_bufnr, session = self, row = row, url = url }
   end
-  local path = links.file_path(url, self:source_directory())
+  local directory = self:source_directory()
+  local path = links.file_path(url, directory)
   if not path then return nil end
-  return self:file_target(path, url)
+  local source_line
+  if line_number and not vim.uv.fs_lstat(path) then
+    -- Only raw :N on local hrefs denotes a line; existing filenames stay exact.
+    local filename, line = url:match("^[^?#]*"):match "^(.+):(%d+)$"
+    if filename then
+      path, source_line = links.file_path(filename, directory), tonumber(line)
+    end
+  end
+  return self:file_target(path, url), source_line
 end
 
 -- Concrete paths have already been decoded; do not interpret their # or %.
@@ -2740,7 +2749,7 @@ function Session:install_navigation(source_win, close_handle, source_wo)
         end
         return
       end
-      local target = reader:link_target(url)
+      local target, source_line = reader:link_target(url, line_number)
       if not target then
         if tag then
           vim.ui.open(url)
@@ -2795,8 +2804,8 @@ function Session:install_navigation(source_win, close_handle, source_wo)
         return
       end
       local row = target.row
-      local source_line
-      if line_number and row == nil then source_line = file_line_number() end
+      if line_number and row == nil then source_line = source_line or file_line_number() end
+      if source_line == 0 then source_line = nil end
       if split then
         vim.cmd.split()
       elseif tab then

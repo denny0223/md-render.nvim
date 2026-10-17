@@ -641,6 +641,7 @@ end
 -- Fresh destinations must not inherit a previous selection endpoint's cursor.
 for _, case in ipairs {
   { name = "native gF", key = "gF" },
+  { name = "href gF", key = "gF", href = "./source.md:1" },
   { name = "Ctrl-]", key = "<C-]>", href = "source.md" },
   { name = "BufLeave", leaving = true },
 } do

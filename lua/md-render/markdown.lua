@@ -7,6 +7,7 @@
 ---@field col integer 0-indexed start column
 ---@field end_col integer 0-indexed end column
 ---@field hl string highlight group name
+---@field code_clipped? boolean this row contains only part of an inline code span
 
 ---@class MdRender.Markdown.Link
 ---@field col_start integer 0-indexed start column

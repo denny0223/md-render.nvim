@@ -526,6 +526,52 @@ assert(
 )
 assert(callout_heading.heading_anchors.doc and callout_heading.link_metadata[1].url == "/quoted")
 
+local code_batch = #callbacks + 1
+local code_source = { "## `FIRST SECOND` `THIRD`" }
+local code_heading = build(code_source)
+assert(vim.wait(1000, function()
+  return #callbacks == code_batch
+end))
+local code_lines, offset = {}, 0
+for _, text in ipairs { "FIRST ", "SECOND THIRD" } do
+  code_lines[#code_lines + 1] = {
+    start = offset,
+    ["end"] = offset + #text,
+    text = text,
+    cols = #text,
+    width = #text * 19,
+    height = 88,
+    data = "png",
+    columns = vim.fn.range(0, #text - 1),
+    transparent = true,
+  }
+  offset = offset + #text
+end
+callbacks[code_batch] { code = 0, stdout = vim.json.encode { { lines = code_lines } } }
+assert(vim.wait(1000, function()
+  for _, entry in pairs(code_heading.heading_layouts) do
+    if not entry.ready then return false end
+  end
+  return true
+end))
+code_heading = build(code_source)
+assert(#code_heading.text_placements == 2, "wrapped code heading uses image layout")
+local code_spans = {}
+for _, row in ipairs(code_heading.highlights) do
+  for _, span in ipairs(row.groups) do
+    if span.hl == "MdRenderInlineCode" then
+      code_spans[#code_spans + 1] = {
+        code_heading.lines[row.line + 1]:sub(span.col + 1, span.end_col),
+        span.code_clipped,
+      }
+    end
+  end
+end
+assert(
+  vim.deep_equal(code_spans, { { "FIRST ", true }, { "SECOND", true }, { "THIRD" } }),
+  "image wrapping marks split code spans while preserving complete spans"
+)
+
 -- Unsupported custom effects keep Neovim's real highlighting and operable text.
 vim.api.nvim_set_hl(0, "MdRenderH2", { reverse = true })
 assert(#build().text_placements == 1)

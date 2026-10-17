@@ -2320,11 +2320,11 @@ local function view_key(line, col)
   return line .. ":" .. col
 end
 
-local function remember_view(session, win, view)
+local function remember_view(session, win, view, position)
   session.views[win] = view
   session.jump_views = session.jump_views or {}
   local views = session.jump_views[win] or {}
-  views[view_key(view.lnum, view.col)] = view
+  views[view_key(position and position[1] or view.lnum, position and position[2] or view.col)] = view
   session.jump_views[win] = views
   -- getjumplist() normalizes pending entries: calling it inside BufLeave
   -- would remove the jump currently being recorded. Prune after it settles.
@@ -2344,13 +2344,21 @@ local function remember_view(session, win, view)
   end)
 end
 
-local function restore_view(session, win)
+local function restore_view(session, win, leaving)
   if pending_views[win] ~= session then return end
   pending_views[win] = nil
   if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= session.buf then return end
   local saved = session.jump_views and session.jump_views[win]
   local cursor = vim.api.nvim_win_get_cursor(win)
   local view = saved and saved[view_key(cursor[1], cursor[2])]
+  if view and (view.lnum ~= cursor[1] or view.col ~= cursor[2]) then
+    -- Selection endpoints are aliases only while traversing native history.
+    -- Querying the jumplist during BufLeave would consume its pending jump.
+    if leaving then return end
+    local tab = vim.fn.win_id2tabwin(win)[1]
+    local jumps = vim.fn.getjumplist(win, tab)
+    if jumps[2] >= #jumps[1] then return end
+  end
   if view then vim.api.nvim_win_call(win, function()
     vim.fn.winrestview(view)
   end) end
@@ -2533,23 +2541,122 @@ function MdPreview._link_tagfunc(pattern, flags, info)
   }
 end
 
-local function file_line_number()
+local function file_line_number(end_col)
   local line, col = vim.api.nvim_get_current_line(), vim.api.nvim_win_get_cursor(0)[2]
   local start = 0
-  while true do
+  while not end_col do
     local token = vim.fn.matchstrpos(line, [[\f\+]], start)
     if token[2] < 0 then return nil end
-    if token[3] > col then
-      local tail = line:sub(token[3] + 1)
-      local match = vim.fn.matchlist(tail, [[^\s*\%(line\s\+\|\%(\f\|\d\)\@!.\s*\)\?\(\d\+\)]])
-      return tonumber(match[2])
-    end
+    if token[3] > col then end_col = token[3] end
     start = token[3]
   end
+  local tail = line:sub(end_col + 1)
+  local match = vim.fn.matchlist(tail, [[^\s*\%(line\s\+\|\%(\f\|\d\)\@!.\s*\)\?\(\d\+\)]])
+  return tonumber(match[2])
 end
 
 local function native_link_key(key, count)
   vim.api.nvim_feedkeys((count > 0 and tostring(count) or "") .. vim.keycode(key), "in", false)
+end
+
+-- Removed code delimiters must not let native filename lookup absorb adjacent prose.
+local function bounded_code_file(session, cursor)
+  for _, row in ipairs(session.content.highlights) do
+    if row.line == cursor[1] - 1 then
+      for _, group in ipairs(row.groups) do
+        if group.hl == "MdRenderInlineCode" and group.col <= cursor[2] and cursor[2] < group.end_col then
+          -- shortcut: wrapped code paths retain native lookup until cross-line filenames are supported.
+          if group.code_clipped then return end
+          local line, name = vim.api.nvim_get_current_line(), vim.fn.expand "<cfile>"
+          if name == "" then return end
+          local first, last = line:find(name, 1, true)
+          while first and last <= cursor[2] do
+            first, last = line:find(name, last + 1, true)
+          end
+          if first then
+            local left, right = math.max(first - 1, group.col), math.min(last, group.end_col)
+            if left < right and (left > first - 1 or right < last) then return left, right end
+          end
+          return
+        end
+      end
+    end
+  end
+end
+
+local function enter_visual(key)
+  vim.cmd.normal { args = { key }, bang = true }
+  if vim.fn.mode():match "[sS\019]" then vim.cmd.normal { args = { vim.keycode "<C-g>" }, bang = true } end
+end
+
+local function native_file_key(session, key, count, line_number)
+  local command = (count > 0 and tostring(count) or "") .. vim.keycode(key)
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local first, last = bounded_code_file(session, cursor)
+  if not first then
+    vim.cmd.normal { args = { command }, bang = true }
+    return
+  end
+  local win, view = vim.api.nvim_get_current_win(), vim.fn.winsaveview()
+  local visual, selection = vim.fn.visualmode(), vim.o.selection
+  local marks = { vim.fn.getpos "'<", vim.fn.getpos "'>" }
+  local visual_start, visual_cursor, visual_type
+  if marks[1][2] > 0 and marks[2][2] > 0 then
+    without_events(function()
+      -- Marks alone lose selection direction, virtual columns and blockwise $.
+      enter_visual "gv"
+      visual_start, visual_cursor, visual_type = vim.fn.getpos "v", vim.fn.getcurpos(), vim.fn.mode()
+      vim.cmd.normal { args = { vim.keycode "<Esc>" }, bang = true }
+      vim.fn.winrestview(view)
+    end)
+  end
+  local source_line = line_number and file_line_number(last)
+  local jump = { cursor[1], first }
+  local ok, err = pcall(function()
+    vim.o.selection = "inclusive"
+    local line = vim.api.nvim_get_current_line()
+    vim.api.nvim_win_set_cursor(0, { cursor[1], vim.fn.byteidx(line, vim.fn.charidx(line, last - 1)) })
+    enter_visual "v"
+    vim.api.nvim_win_set_cursor(0, jump)
+    vim.cmd.normal { args = { command }, bang = true }
+  end)
+  vim.o.selection = selection
+  if vim.api.nvim_buf_is_valid(session.buf) then
+    without_events(function()
+      vim.api.nvim_buf_call(session.buf, function()
+        local current_view = vim.fn.winsaveview()
+        if visual_type or visual ~= "" then
+          enter_visual(visual_type or visual)
+          if visual_start then
+            -- Virtual columns require Visual mode before placing either endpoint.
+            vim.fn.setpos(".", visual_start)
+            vim.cmd.normal { args = { "o" }, bang = true }
+            vim.fn.setpos(".", visual_cursor)
+          end
+          vim.cmd.normal { args = { vim.keycode "<Esc>" }, bang = true }
+        end
+        if not visual_start then
+          for i, mark in ipairs { "'<", "'>" } do
+            marks[i][1] = session.buf
+            vim.fn.setpos(mark, marks[i])
+          end
+        end
+        if visual == "" then vim.fn.visualmode(true) end
+        vim.fn.winrestview(current_view)
+      end)
+    end)
+    if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == session.buf then
+      vim.api.nvim_win_call(win, function()
+        vim.fn.winrestview(view)
+      end)
+    end
+    remember_view(session, vim.api.nvim_get_current_win(), view, jump)
+  end
+  -- Rethrow after cleanup so missing files still stop queued input and macros.
+  if not ok then error(err, 0) end
+  if source_line and source_line > 0 then
+    vim.api.nvim_win_set_cursor(0, { math.min(source_line, vim.api.nvim_buf_line_count(0)), 0 })
+  end
 end
 
 local link_tag_commands = {
@@ -2607,8 +2714,7 @@ function Session:install_navigation(source_win, close_handle, source_wo)
         native_link_key(key, count)
         return
       end
-      local command = (count > 0 and tostring(count) or "") .. vim.keycode(key)
-      vim.cmd.normal { args = { command }, bang = true }
+      native_file_key(reader, key, count, line_number)
     end
     if key == "g<LeftMouse>" then vim.w.md_render_tag_mouse_release = true end
     local ok, err = pcall(function()
@@ -2859,6 +2965,17 @@ vim.on_key(function(key, typed)
   local win = vim.api.nvim_get_current_win()
   local session = pending_views[win]
   if session then restore_view(session, win) end
+  if key == vim.keycode "<C-o>" or key == vim.keycode "<C-i>" then
+    session = MdPreview._sessions[vim.api.nvim_get_current_buf()]
+    if session and session.jump_views and session.jump_views[win] then
+      -- Same-buffer jumps do not fire BufEnter, but still need their saved view.
+      remember_view(session, win, vim.fn.winsaveview())
+      pending_views[win] = session
+      vim.schedule(function()
+        restore_view(session, win)
+      end)
+    end
+  end
 end, vim.api.nvim_create_namespace "md_render_navigation")
 vim.api.nvim_create_autocmd("BufLeave", {
   group = navigation_group,
@@ -2869,7 +2986,7 @@ vim.api.nvim_create_autocmd("BufLeave", {
     local session = MdPreview._sessions[vim.api.nvim_get_current_buf()]
     if session and session.views then
       -- A macro can leave again before the scheduled return-view restoration.
-      restore_view(session, win)
+      restore_view(session, win, true)
       remember_view(session, win, vim.fn.winsaveview())
     end
   end,

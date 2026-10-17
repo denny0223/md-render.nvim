@@ -553,6 +553,9 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
                 col = cell_start + local_start,
                 end_col = cell_start + local_end,
                 hl = hl.hl,
+                code_clipped = hl.code_clipped
+                  or hl.hl == "MdRenderInlineCode" and (hl.col < wrap_byte_start or hl.end_col > wrap_byte_end)
+                  or nil,
               })
             end
           end

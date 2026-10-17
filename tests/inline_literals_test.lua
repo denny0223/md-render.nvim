@@ -651,6 +651,37 @@ test("soft breaks preserve the visible gap between adjacent CJK spans", function
   }, "both CJK style spans remain exact")
 end)
 
+test("split code spans retain their incomplete boundaries across display layouts", function()
+  local code = "docs/long-file-name.md"
+  for _, lines in ipairs {
+    { "請看 `" .. code .. "`。" },
+    { "| File |", "| --- |", "| `" .. code .. "`。 |" },
+    { "<figure>", "<figcaption><code>" .. code .. "</code>。</figcaption>", "</figure>" },
+    { "See [^1]", "", "[^1]: `" .. code .. "`。" },
+    { "<div><code>docs/", "long-file-name.md</code>。</div>" },
+  } do
+    local content = build(lines, { max_width = 15, table_max_width = 15 })
+    local fragments = 0
+    for _, row in ipairs(content.highlights) do
+      for _, group in ipairs(row.groups) do
+        if group.hl == "MdRenderInlineCode" then
+          fragments = fragments + 1
+          assert_eq(group.code_clipped, true, "wrapped code fragment cannot supply a complete filename boundary")
+        end
+      end
+    end
+    assert_eq(fragments > 1, true, "fixture exercises a code span split across rows")
+  end
+  local content = build { "`whole.md`。" }
+  for _, row in ipairs(content.highlights) do
+    for _, group in ipairs(row.groups) do
+      if group.hl == "MdRenderInlineCode" then
+        assert_eq(group.code_clipped, nil, "whole code span retains its boundary")
+      end
+    end
+  end
+end)
+
 image.supports_kitty = supports_kitty
 print(string.format("inline_literals_test: %d passed, %d failed", pass_count, fail_count))
 if fail_count > 0 then os.exit(1) end

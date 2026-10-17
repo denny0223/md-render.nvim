@@ -3,6 +3,7 @@
 ---@field end_col integer 0-indexed end column (-1 means end of line)
 ---@field hl string highlight group name
 ---@field hl_eol? boolean extend highlight to end of line
+---@field code_clipped? boolean this row contains only part of an inline code span
 
 ---@class MdRender.LineHighlight
 ---@field line integer 0-indexed line number
@@ -303,6 +304,7 @@ local function distribute_highlights(
           col = #indent + hl.col,
           end_col = #indent + hl.end_col,
           hl = hl.hl,
+          code_clipped = hl.code_clipped,
         })
       end
     else
@@ -321,6 +323,9 @@ local function distribute_highlights(
             col = local_start + prefix_len + lm_len,
             end_col = local_end + prefix_len + lm_len,
             hl = hl.hl,
+            code_clipped = hl.code_clipped
+              or hl.hl == "MdRenderInlineCode" and (hl_start < line_start_pos or hl_end > wline_end)
+              or nil,
           })
         end
       end
@@ -530,6 +535,7 @@ function ContentBuilder:add_simple_markdown(rendered_text, md_highlights, md_lin
       col = hl.col + #indent,
       end_col = hl.end_col + #indent,
       hl = hl.hl,
+      code_clipped = hl.code_clipped,
     })
   end
 
@@ -905,6 +911,9 @@ function ContentBuilder:add_image_heading(text, highlights, links, indent, max_w
           col = index == 1 and span.col == 0 and #indent or #line_indent + a - first,
           end_col = #line_indent + b - first,
           hl = span.hl,
+          code_clipped = span.code_clipped
+            or span.hl == "MdRenderInlineCode" and (span.col < first or span.end_col > last)
+            or nil,
         }
       end
     end
@@ -3524,6 +3533,9 @@ function ContentBuilder:render_document(lines, opts)
               col = prefix_len + local_start,
               end_col = prefix_len + local_end,
               hl = hl.hl,
+              code_clipped = hl.code_clipped
+                or hl.hl == "MdRenderInlineCode" and (hl.col < line_start or hl.end_col > line_end_pos)
+                or nil,
             })
           end
         end
@@ -5441,6 +5453,7 @@ function ContentBuilder:render_document(lines, opts)
               col = hl.col + #actual_prefix,
               end_col = hl.end_col + #actual_prefix,
               hl = hl.hl,
+              code_clipped = hl.code_clipped,
             })
           end
           if idx == 1 then table.insert(line_hls, { col = #base_indent, end_col = #prefix, hl = "Special" }) end

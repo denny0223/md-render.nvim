@@ -489,6 +489,257 @@ for _, mode in ipairs { "toggle", "split", "float", "tab", "pager" } do
   vim.cmd.cd(cwd)
 end
 
+-- Code boundaries exclude adjacent prose, without trimming literal filename punctuation.
+for _, case in ipairs {
+  { "請看 `docs/photo-fields-reference.md`。", "docs/photo-fields-reference.md" },
+  { "流程請看 `docs/data-entry-guide.md`。", "docs/data-entry-guide.md" },
+  { "請看`目標.md。`。後文", "目標.md。" },
+  { "執行`cat target.md`。", "target.md" },
+  { "請看`space\\ name.md`。", "space name.md", "space\\ name.md" },
+} do
+  local dir, source, _, _, render = open("toggle", { "# Source", "", case[1], "", "Tail" }, { text_scale = false })
+  vim.fn.mkdir(dir .. "/docs", "p")
+  vim.fn.writefile({ "# Correct target" }, dir .. "/" .. case[2])
+  vim.fn.writefile({ "# Wrong punctuation target" }, dir .. "/" .. case[2] .. "。")
+  vim.bo[render].path = dir
+  feed "ggVj<Esc>"
+  local marks, visual = { vim.fn.getpos "'<", vim.fn.getpos "'>" }, vim.fn.visualmode()
+  local needle = case[3] or case[2]
+  for row, line in ipairs(vim.api.nvim_buf_get_lines(render, 0, -1, false)) do
+    local col = line:find(needle, 1, true)
+    if col then vim.api.nvim_win_set_cursor(0, { row, col + 1 }) end
+  end
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  local tick, source_tick = vim.api.nvim_buf_get_changedtick(render), vim.api.nvim_buf_get_changedtick(source)
+  local selection, selectmode = vim.o.selection, vim.o.selectmode
+  vim.o.selection, vim.o.selectmode = "exclusive", "cmd"
+  feed "gf"
+  local target = preview._sessions[vim.api.nvim_get_current_buf()]
+  eq(not not target, case[2]:match "%.md$" ~= nil, "bounded gf renders Markdown destinations")
+  eq(
+    vim.api.nvim_buf_get_name(target and target.source_bufnr or 0),
+    dir .. "/" .. case[2],
+    "bounded gf uses the exact code token"
+  )
+  eq(vim.o.selection, "exclusive", "bounded gf restores selection option")
+  eq(vim.o.selectmode, "cmd", "bounded gf retains selectmode option")
+  feed "<C-o>"
+  eq(vim.api.nvim_get_current_buf(), render, "bounded gf returns to the rendered source")
+  eq(vim.api.nvim_win_get_cursor(0), cursor, "bounded gf returns to the original token column")
+  eq({ vim.fn.getpos "'<", vim.fn.getpos "'>" }, marks, "bounded gf preserves previous selection marks")
+  eq(vim.fn.visualmode(), visual, "bounded gf preserves previous selection mode")
+  eq(vim.api.nvim_buf_get_changedtick(render), tick, "bounded gf does not edit rendered text")
+  eq(vim.api.nvim_buf_get_changedtick(source), source_tick, "bounded gf does not edit source text")
+  vim.o.selection, vim.o.selectmode = selection, selectmode
+end
+
+-- Restoring gv needs selection direction, virtual columns and blockwise $ too.
+for _, case in ipairs {
+  { "short", "0<C-v>2j$<Esc>", other_window = true },
+  { "tiny", "v2k0<Esc>" },
+  { "tiny", "$<C-v>2k0<Esc>" },
+  { "tiny", "V2k<Esc>" },
+  { "short", "0<C-v>20|o2j22|<Esc>", "block" },
+  { "tiny", "V2k<Esc>", clear_flag = true },
+  { "tiny", "V2k<Esc>", clear_marks = true },
+} do
+  local dir, _, _, render_win, render = open(
+    "toggle",
+    { "```", "short", "very looooooooooong", "tiny", "```", "", "請看`target.md`。" },
+    { text_scale = false }
+  )
+  vim.fn.writefile({ "# Target" }, dir .. "/target.md")
+  vim.bo[render].path = dir
+  local selection, selectmode, virtualedit = vim.o.selection, vim.o.selectmode, vim.o.virtualedit
+  vim.o.selection, vim.o.selectmode, vim.o.virtualedit = "inclusive", "", case[3] or ""
+  vim.fn.search(case[1], "w")
+  feed(case[2])
+  feed "gv"
+  local expected = { vim.fn.getpos "v", vim.fn.getcurpos(), vim.fn.mode() }
+  feed "<Esc>"
+  if case.clear_flag then vim.fn.visualmode(true) end
+  if case.clear_marks then vim.cmd "delmarks <>" end
+  local visual = vim.fn.visualmode()
+  local other_win, other_view
+  if case.other_window then
+    vim.cmd.split()
+    other_win = vim.api.nvim_get_current_win()
+    vim.api.nvim_win_set_cursor(other_win, { 2, 12 })
+    other_view = vim.fn.winsaveview()
+    vim.api.nvim_set_current_win(render_win)
+  end
+  vim.o.selection, vim.o.selectmode = "exclusive", "cmd"
+  vim.fn.search("target.md", "w")
+  vim.v.errmsg = ""
+  feed "gf"
+  local target = preview._sessions[vim.api.nvim_get_current_buf()]
+  eq(target and vim.api.nvim_buf_get_name(target.source_bufnr), dir .. "/target.md", "selection fixture reaches target")
+  eq(vim.v.errmsg, "", "selection cleanup does not report an error")
+  if other_win then
+    eq(
+      vim.api.nvim_win_call(other_win, vim.fn.winsaveview),
+      other_view,
+      "selection cleanup preserves another source view"
+    )
+  end
+  feed "<C-o>"
+  eq(vim.fn.visualmode(), visual, "bounded gf preserves the visual mode query flag")
+  if case.clear_marks then
+    eq(
+      { vim.fn.getpos "'<", vim.fn.getpos "'>" },
+      { { 0, 0, 0, 0 }, { 0, 0, 0, 0 } },
+      "deleted visual marks stay unset"
+    )
+  else
+    vim.o.selectmode = ""
+    feed "gv"
+    eq({ vim.fn.getpos "v", vim.fn.getcurpos(), vim.fn.mode() }, expected, "bounded gf preserves the full gv selection")
+    feed "<Esc>"
+  end
+  vim.o.selection, vim.o.selectmode, vim.o.virtualedit = selection, selectmode, virtualedit
+end
+
+-- A wrapped code fragment must not become an unrelated, existing destination.
+do
+  local dir, _, _, _, render = open(
+    "toggle",
+    { "請看 `docs/long-file-name.md`。" },
+    { text_scale = false, max_width = 15 }
+  )
+  vim.fn.mkdir(dir .. "/docs", "p")
+  vim.fn.writefile({ "# Correct target" }, dir .. "/docs/long-file-name.md")
+  vim.fn.writefile({ "# Unrelated fragment" }, dir .. "/name.md")
+  vim.bo[render].path = dir
+  vim.fn.search("name.md", "w")
+  vim.v.errmsg = ""
+  feed "gf"
+  eq(vim.api.nvim_get_current_buf(), render, "wrapped code does not promote a filename fragment into a destination")
+  eq(vim.v.errmsg:find("E447", 1, true) ~= nil, true, "incomplete code paths retain native lookup")
+end
+
+-- Same-buffer history also restores the position before an internal filename selection.
+do
+  local dir, _, _, _, render = open(
+    "toggle",
+    { "# Source", "", "請看`source.md`。", "", "Tail" },
+    { text_scale = false }
+  )
+  vim.bo[render].path = dir
+  vim.fn.search("source.md", "w")
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  cursor[2] = cursor[2] + 3
+  vim.api.nvim_win_set_cursor(0, cursor)
+  feed "gf"
+  eq(vim.api.nvim_get_current_buf(), render, "bounded self-reference stays rendered")
+  local destination = vim.api.nvim_win_get_cursor(0)
+  feed "<C-o>"
+  eq(vim.api.nvim_win_get_cursor(0), cursor, "self-reference history restores the original token column")
+  feed "<C-i>"
+  eq(vim.api.nvim_win_get_cursor(0), destination, "self-reference history retains the forward position")
+end
+
+-- Fresh destinations must not inherit a previous selection endpoint's cursor.
+for _, case in ipairs {
+  { name = "native gF", key = "gF" },
+  { name = "Ctrl-]", key = "<C-]>", href = "source.md" },
+  { name = "BufLeave", leaving = true },
+} do
+  local dir, _, _, _, render = open("split", { "`third.md`。", "", "[next](next.md)" }, { text_scale = false })
+  vim.fn.writefile({ "[source](source.md)" }, dir .. "/third.md")
+  vim.fn.writefile({ case.href and "[source](" .. case.href .. ")" or "source.md:1" }, dir .. "/next.md")
+  vim.bo[render].path = dir
+  vim.api.nvim_win_set_cursor(0, { 1, 2 })
+  feed "gf"
+  local third = vim.api.nvim_get_current_buf()
+  local target = assert(preview._sessions[third])
+  eq(vim.api.nvim_buf_get_name(target.source_bufnr), dir .. "/third.md", case.name .. " starts with bounded gf")
+  follow "source.md"
+  follow "next.md"
+
+  if case.leaving then
+    -- No event-loop turn between entry and departure: BufLeave owns a pending jump.
+    vim.cmd.buffer(render)
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    vim.cmd.buffer(third)
+    local jumps = vim.fn.getjumplist()[1]
+    eq(jumps[#jumps].bufnr, render, "BufLeave keeps the departing render in native history")
+    eq(jumps[#jumps].lnum, 1, "BufLeave keeps the newly selected position")
+    feed "<C-o>"
+    eq(vim.api.nvim_get_current_buf(), render, "BufLeave return does not skip the departing render")
+    eq(vim.api.nvim_win_get_cursor(0), { 1, 0 }, "fresh departure replaces the old selection endpoint")
+  else
+    if case.href then
+      follow(case.href, false, case.key)
+    else
+      vim.bo.path = dir
+      vim.fn.search("source.md", "w")
+      feed(case.key)
+    end
+    eq(vim.api.nvim_get_current_buf(), render, case.name .. " reuses the rendered destination")
+    eq(vim.api.nvim_win_get_cursor(0), { 1, 0 }, case.name .. " retains its explicit destination cursor")
+  end
+end
+
+-- A history return must not overwrite scrolling performed since the preceding visit.
+do
+  local dir, _, _, _, render = open("toggle", { "`target.md`。" }, { text_scale = false })
+  local lines = {}
+  for i = 1, 80 do
+    lines[#lines + 1] = "Paragraph " .. i
+    lines[#lines + 1] = ""
+  end
+  vim.fn.writefile(lines, dir .. "/target.md")
+  vim.bo[render].path = dir
+  vim.fn.search("target.md", "w")
+  feed "gf"
+  vim.fn.winrestview { lnum = 50, col = 2, topline = 40 }
+  feed "<C-o><C-i><C-e>"
+  local view = vim.fn.winsaveview()
+  feed "<C-o><C-i>"
+  eq(vim.fn.winsaveview().topline, view.topline, "history preserves scrolling since the previous return")
+end
+
+-- Native gF ignores line zero rather than trying to place an invalid cursor.
+do
+  local dir, _, _, _, render = open("toggle", { "請看`target.md` line 0" }, { text_scale = false })
+  vim.fn.writefile({ "# Target" }, dir .. "/target.md")
+  vim.bo[render].path = dir
+  vim.fn.search("target.md", "w")
+  vim.v.errmsg = ""
+  feed "gF"
+  eq(preview._sessions[vim.api.nvim_get_current_buf()] ~= nil, true, "bounded gF line zero stays rendered")
+  eq(vim.v.errmsg, "", "bounded gF line zero does not report an error")
+end
+
+-- Lookup can succeed before an entry autocmd fails; its native jump still needs the original view.
+do
+  local dir, _, _, _, render = open("toggle", { "請看`target.md`。" }, { text_scale = false })
+  local path = dir .. "/target.md"
+  vim.fn.writefile({ "# Target" }, path)
+  vim.bo[render].path = dir
+  vim.fn.search("target.md", "w")
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  cursor[2] = cursor[2] + 3
+  vim.api.nvim_win_set_cursor(0, cursor)
+  local failure = vim.api.nvim_create_autocmd("BufEnter", {
+    pattern = path,
+    callback = function()
+      error "forced bounded gf source entry failure"
+    end,
+  })
+  vim.v.errmsg = ""
+  feed "gf"
+  vim.api.nvim_del_autocmd(failure)
+  eq(
+    vim.v.errmsg:find("forced bounded gf source entry failure", 1, true) ~= nil,
+    true,
+    "source entry failure was exercised"
+  )
+  feed "<C-o>"
+  eq(vim.api.nvim_get_current_buf(), render, "failed source entry can return to render")
+  eq(vim.api.nvim_win_get_cursor(0), cursor, "failed source entry retains the original token column")
+end
+
 -- Rendering must retain the native destination, even when leaving it would unload or wipe it.
 for _, case in ipairs {
   { mode = "split", bufhidden = "", modified = false },
@@ -568,7 +819,7 @@ end
 
 -- Native lookup errors must stop a macro before its next motion.
 do
-  local dir, _, _, render_win, render = open("toggle", { "missing.md", "", "Next paragraph" })
+  local dir, _, _, render_win, render = open("toggle", { "`missing.md`。", "", "Next paragraph" })
   vim.bo[render].path = dir
   vim.fn.search("missing.md", "w")
   local cursor = vim.api.nvim_win_get_cursor(0)
@@ -582,13 +833,13 @@ do
   eq(vim.api.nvim_get_current_win(), render_win, "failed native gf retains its window")
   eq(vim.api.nvim_get_current_buf(), render, "failed native gf retains its buffer")
   eq(vim.api.nvim_win_get_cursor(0), cursor, "failed native gf stops the remaining macro")
-  eq(vim.fn.getjumplist(), jumps, "failed native gf preserves forward history")
+  eq(vim.fn.getjumplist(), jumps, "failed bounded gf preserves forward history")
 end
 
 -- Native gf and count handling, using native path/suffix search on plain text.
 for _, extension in ipairs { ".txt", ".md" } do
   for count = 1, 2 do
-    local native_dir, _, _, _, native_render = open("toggle", { "needle" })
+    local native_dir, _, _, _, native_render = open("toggle", { extension == ".md" and "看`needle`。" or "needle" })
     for i = 1, 2 do
       vim.fn.mkdir(native_dir .. "/" .. i, "p")
       vim.fn.writefile({ tostring(i) }, native_dir .. "/" .. i .. "/needle" .. extension)
@@ -611,7 +862,7 @@ end
 
 -- Native file aliases preserve includeexpr, source line numbers and queued input.
 for _, key in ipairs { "gf", "gF", "<C-w>f", "<C-w><C-f>", "<C-w>F", "<C-w>gf", "<C-w>gF" } do
-  local dir, _, _, render_win, render = open("toggle", { "alias/needle line 5" }, { text_scale = false })
+  local dir, _, _, render_win, render = open("toggle", { "請看`alias/needle` line 5" }, { text_scale = false })
   vim.fn.writefile(
     { "[hidden]: https://example.com", "", "# Target", "", "Requested line", "", "Last line" },
     dir .. "/needle.md"

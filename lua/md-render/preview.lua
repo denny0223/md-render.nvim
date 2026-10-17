@@ -2603,11 +2603,37 @@ function Session:install_navigation(source_win, close_handle, source_wo)
     local links = require "md-render.links"
     local url = links.at(reader.buf, reader.ns, cursor[1] - 1, cursor[2])
     if not url then
-      native_link_key(key, count)
-      return
+      if tag then
+        native_link_key(key, count)
+        return
+      end
+      local command = (count > 0 and tostring(count) or "") .. vim.keycode(key)
+      vim.cmd.normal { args = { command }, bang = true }
     end
     if key == "g<LeftMouse>" then vim.w.md_render_tag_mouse_release = true end
     local ok, err = pcall(function()
+      if not url then
+        local source = vim.api.nvim_get_current_buf()
+        if source ~= reader.buf and check_markdown_buffer(source) then
+          local source_line = vim.api.nvim_win_get_cursor(0)[1]
+          local target = reader:file_target(vim.api.nvim_buf_get_name(source))
+          if target.session then
+            -- This display-only switch must retain the source and native file history.
+            local bufhidden = vim.bo[source].bufhidden
+            vim.bo[source].bufhidden = "hide"
+            local switched, switch_err = pcall(vim.cmd, {
+              cmd = "buffer",
+              args = { tostring(target.session.buf) },
+              mods = { keepjumps = true, keepalt = true },
+            })
+            if vim.api.nvim_buf_is_valid(source) then vim.bo[source].bufhidden = bufhidden end
+            if not switched then error(switch_err, 0) end
+            local row = math.min(target.session:source_to_rendered(source_line), vim.api.nvim_buf_line_count(0))
+            vim.api.nvim_win_set_cursor(0, { row, 0 })
+          end
+        end
+        return
+      end
       local target = reader:link_target(url)
       if not target then
         if tag then
@@ -2679,7 +2705,9 @@ function Session:install_navigation(source_win, close_handle, source_wo)
         )
       end
     end)
-    if not ok then vim.notify("md-render: cannot follow " .. url .. ": " .. tostring(err), vim.log.levels.WARN) end
+    if not ok then
+      vim.notify("md-render: cannot follow " .. (url or key) .. ": " .. tostring(err), vim.log.levels.WARN)
+    end
   end
   for _, entry in ipairs {
     { "gf" },

@@ -462,20 +462,179 @@ do
   eq(vim.api.nvim_buf_get_changedtick(source), tick, "raw HTML navigation preserves source changedtick")
 end
 
--- Native gf and count handling, using native path/suffix search on plain text.
-for count = 1, 2 do
-  local native_dir, _, _, _, native_render = open("toggle", { "needle" })
-  for i = 1, 2 do
-    vim.fn.mkdir(native_dir .. "/" .. i, "p")
-    vim.fn.writefile({ tostring(i) }, native_dir .. "/" .. i .. "/needle.txt")
-  end
-  vim.bo[native_render].path = native_dir .. "/1," .. native_dir .. "/2"
-  vim.bo[native_render].suffixesadd = ".txt"
-  vim.cmd "normal! gg0w"
-  feed((count == 1 and "" or tostring(count)) .. "gf")
-  eq(vim.api.nvim_buf_get_name(0), native_dir .. "/" .. count .. "/needle.txt", "native counted gf")
+-- Repository-relative paths in inline code still use native lookup, then render.
+for _, mode in ipairs { "toggle", "split", "float", "tab", "pager" } do
+  local lines = { "| Task | Entry |", "| --- | --- |", "| Frontend | `docs/public-frontend-architecture.md` |" }
+  local dir, source, _, render_win, render = open(mode, lines, { text_scale = false })
+  vim.fn.mkdir(dir .. "/docs", "p")
+  local path = dir .. "/docs/public-frontend-architecture.md"
+  vim.fn.writefile({ "# Frontend", "", "Architecture details." }, path)
+  local cwd = vim.fn.getcwd()
+  vim.cmd.cd(dir)
+  vim.fn.search("docs/public-frontend-architecture.md", "w")
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  eq(links.at(render, preview._sessions[render].ns, cursor[1] - 1, cursor[2]), nil, "inline code has no link")
+  feed "gf"
+  local target_render = vim.api.nvim_get_current_buf()
+  local target = assert(preview._sessions[target_render], mode .. " native gf must retain rendering")
+  eq(vim.api.nvim_buf_get_name(target.source_bufnr), path, mode .. " native gf opens the exact file")
+  eq(vim.api.nvim_get_current_win(), render_win, mode .. " native gf retains the preview window")
+  eq(not not target.pager, mode == "pager", mode .. " native gf retains pager mode")
   feed "<C-o>"
-  eq(vim.api.nvim_get_current_buf(), native_render, "native gf can return to render")
+  eq(vim.api.nvim_get_current_buf(), render, mode .. " native gf returns directly to the render")
+  eq(vim.api.nvim_win_get_cursor(0), cursor, mode .. " native gf returns to the path")
+  feed "<C-i>"
+  eq(vim.api.nvim_get_current_buf(), target_render, mode .. " native gf goes forward to the render")
+  eq(vim.api.nvim_buf_get_lines(source, 0, -1, false), lines, mode .. " native gf preserves source")
+  vim.cmd.cd(cwd)
+end
+
+-- Rendering must retain the native destination, even when leaving it would unload or wipe it.
+for _, case in ipairs {
+  { mode = "split", bufhidden = "", modified = false },
+  { mode = "float", bufhidden = "wipe", modified = true },
+} do
+  vim.o.hidden = false
+  local dir, _, _, _, render = open(case.mode, { "`target.md`" }, { text_scale = false })
+  local lines = { "# Target", "", "Visible target" }
+  vim.fn.writefile(lines, dir .. "/target.md")
+  local source = vim.fn.bufadd(dir .. "/target.md")
+  vim.fn.bufload(source)
+  if case.modified then
+    lines[#lines + 1] = "UNSAVED"
+    vim.api.nvim_buf_set_lines(source, 0, -1, false, lines)
+  end
+  vim.bo[source].bufhidden = case.bufhidden
+  vim.bo[render].path = dir
+  vim.fn.search("target.md", "w")
+  feed "gf"
+  local target_render = vim.api.nvim_get_current_buf()
+  local target = assert(preview._sessions[target_render], "nohidden native gf must retain rendering")
+  eq(target.source_bufnr, source, "native gf reuses the destination source")
+  eq(vim.api.nvim_buf_is_loaded(source), true, "native gf keeps the source loaded")
+  eq(vim.api.nvim_buf_get_lines(source, 0, -1, false), lines, "native gf preserves destination contents")
+  eq(vim.bo[source].modified, case.modified, "native gf preserves destination edits")
+  eq(vim.bo[source].bufhidden, case.bufhidden, "native gf restores destination hiding policy")
+  eq(vim.o.hidden, false, "native gf preserves global hidden option")
+  eq(
+    vim.fn.search(case.modified and "UNSAVED" or "Visible target", "wn") > 0,
+    true,
+    "native gf displays target contents"
+  )
+  feed "<C-^>"
+  eq(vim.api.nvim_get_current_buf(), render, "native gf preserves the previous rendered file")
+  feed "<C-^>"
+  eq(vim.api.nvim_get_current_buf(), target_render, "alternate navigation returns to the destination render")
+  vim.o.hidden = true
+end
+
+-- A failed render entry must also restore the destination's hiding policy.
+do
+  local dir, _, _, _, render = open("toggle", { "`target.md`" }, { text_scale = false })
+  local lines = { "# Target", "", "Visible target" }
+  vim.fn.writefile(lines, dir .. "/target.md")
+  local source = vim.fn.bufadd(dir .. "/target.md")
+  vim.fn.bufload(source)
+  vim.bo[source].bufhidden = "wipe"
+  vim.bo[render].path = dir
+  local sentinel = "forced native gf render entry failure"
+  local failure = vim.api.nvim_create_autocmd("BufEnter", {
+    callback = function(ev)
+      local session = preview._sessions[ev.buf]
+      if session and session.source_bufnr == source then error(sentinel) end
+    end,
+  })
+  local before = #warnings
+  vim.fn.search("target.md", "w")
+  feed "gf"
+  vim.api.nvim_del_autocmd(failure)
+  eq(#warnings, before + 1, "failed render entry reports one error")
+  eq(warnings[#warnings]:find(sentinel, 1, true) ~= nil, true, "render entry failure was exercised")
+  eq(vim.bo[source].bufhidden, "wipe", "failed render entry restores the hiding policy")
+  eq(vim.api.nvim_buf_get_lines(source, 0, -1, false), lines, "failed render entry preserves source contents")
+end
+
+-- Hidden trailing source lines must resolve to the last valid rendered row.
+do
+  local dir, _, _, _, render = open("toggle", { "`target.md` line 3" }, { text_scale = false })
+  vim.fn.writefile({ "# Target", "", "[hidden]: https://example.com" }, dir .. "/target.md")
+  vim.bo[render].path = dir
+  vim.fn.search("target.md", "w")
+  local before = #warnings
+  feed "gF"
+  eq(#warnings, before, "native gF to a hidden trailing line does not warn")
+  eq(vim.api.nvim_win_get_cursor(0)[1], vim.api.nvim_buf_line_count(0), "native gF clamps to the last rendered line")
+end
+
+-- Native lookup errors must stop a macro before its next motion.
+do
+  local dir, _, _, render_win, render = open("toggle", { "missing.md", "", "Next paragraph" })
+  vim.bo[render].path = dir
+  vim.fn.search("missing.md", "w")
+  local cursor = vim.api.nvim_win_get_cursor(0)
+  vim.cmd.normal { args = { "G" }, bang = true }
+  feed "<C-o>"
+  local jumps = vim.fn.getjumplist()
+  vim.fn.setreg("a", "gfj")
+  vim.v.errmsg = ""
+  feed "@a"
+  eq(vim.v.errmsg:find("E447", 1, true) ~= nil, true, "native gf reports the missing-file error")
+  eq(vim.api.nvim_get_current_win(), render_win, "failed native gf retains its window")
+  eq(vim.api.nvim_get_current_buf(), render, "failed native gf retains its buffer")
+  eq(vim.api.nvim_win_get_cursor(0), cursor, "failed native gf stops the remaining macro")
+  eq(vim.fn.getjumplist(), jumps, "failed native gf preserves forward history")
+end
+
+-- Native gf and count handling, using native path/suffix search on plain text.
+for _, extension in ipairs { ".txt", ".md" } do
+  for count = 1, 2 do
+    local native_dir, _, _, _, native_render = open("toggle", { "needle" })
+    for i = 1, 2 do
+      vim.fn.mkdir(native_dir .. "/" .. i, "p")
+      vim.fn.writefile({ tostring(i) }, native_dir .. "/" .. i .. "/needle" .. extension)
+    end
+    vim.bo[native_render].path = native_dir .. "/1," .. native_dir .. "/2"
+    vim.bo[native_render].suffixesadd = extension
+    vim.fn.search("needle", "w")
+    feed((count == 1 and "" or tostring(count)) .. "gf")
+    local target = preview._sessions[vim.api.nvim_get_current_buf()]
+    eq(not not target, extension == ".md", "native counted gf renders only Markdown")
+    eq(
+      vim.api.nvim_buf_get_name(target and target.source_bufnr or 0),
+      native_dir .. "/" .. count .. "/needle" .. extension,
+      "native counted gf"
+    )
+    feed "<C-o>"
+    eq(vim.api.nvim_get_current_buf(), native_render, "native gf can return to render")
+  end
+end
+
+-- Native file aliases preserve includeexpr, source line numbers and queued input.
+for _, key in ipairs { "gf", "gF", "<C-w>f", "<C-w><C-f>", "<C-w>F", "<C-w>gf", "<C-w>gF" } do
+  local dir, _, _, render_win, render = open("toggle", { "alias/needle line 5" }, { text_scale = false })
+  vim.fn.writefile(
+    { "[hidden]: https://example.com", "", "# Target", "", "Requested line", "", "Last line" },
+    dir .. "/needle.md"
+  )
+  vim.bo[render].path = dir
+  vim.bo[render].suffixesadd = ".md"
+  vim.bo[render].includeexpr = "substitute(v:fname, '^alias/', '', '')"
+  vim.fn.search("alias/needle", "w")
+  feed(key .. "j")
+  local target = assert(preview._sessions[vim.api.nvim_get_current_buf()], key .. " must retain rendering")
+  eq(vim.api.nvim_buf_get_name(target.source_bufnr), dir .. "/needle.md", key .. " preserves native includeexpr")
+  eq(
+    vim.api.nvim_get_current_win() ~= render_win,
+    key:find("<C-w>", 1, true) ~= nil,
+    key .. " preserves window behavior"
+  )
+  eq(
+    vim.api.nvim_win_get_cursor(0)[1],
+    target:source_to_rendered(key:find("F", 1, true) and 5 or 1) + 1,
+    key .. " maps the native source line before queued motion"
+  )
+  feed "<C-o>"
+  eq(vim.api.nvim_get_current_buf(), render, key .. " returns directly to render")
 end
 
 -- Outside links, Ctrl-] retains native tag lookup, including counts.

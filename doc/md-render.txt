@@ -388,8 +388,8 @@ independently of the working directory. Markdown targets keep the current
 preview window. Other files open for editing in the original source window;
 floating/tab previews close first. `Ctrl-O` returns to the preceding rendered
 document with its reading position and folds. After editing another file,
-the rendered return uses the source window. Outside links, native `gf` and
-counts such as `2gf` retain their usual behavior.
+the rendered return uses the source window. Outside links, native `gf` still
+works; Markdown targets stay rendered.
 
 Outside pager mode, directories open in the original source window through
 the configured directory browser (such as netrw), closing floating/tab previews. The browser

@@ -307,7 +307,7 @@ Use Enter on links such as `#heading` or a footnote reference to jump within the
 
 `Ctrl-]` and its tag aliases record a real native tag stack: return with `Ctrl-T` / `:pop`, and move forward with `:tag`. File targets stay in the operated window. Outside links, file and tag commands retain native lookup and counts. `<C-w><C-f>` and `<C-w><C-]>` are also supported. Native window restrictions still apply to floating previews.
 
-`gf` resolves the link destination relative to its source Markdown file, independently of the working directory. Markdown targets keep the current preview window; other files open for editing in the original source window, closing floating/tab previews. Pager opens other files and directories in the currently operated window. `Ctrl-O` returns to the preceding rendered document with its reading position and folds; after editing another file, that rendered return uses the source window. Outside a link, native `gf` and counts such as `2gf` still work.
+`gf` resolves the link destination relative to its source Markdown file, independently of the working directory. Markdown targets keep the current preview window; other files open for editing in the original source window, closing floating/tab previews. Pager opens other files and directories in the currently operated window. `Ctrl-O` returns to the preceding rendered document with its reading position and folds; after editing another file, that rendered return uses the source window. Outside links, native `gf` still works; Markdown targets stay rendered.
 
 Outside pager mode, directories open in the original source window through the configured directory browser (such as netrw), closing floating/tab previews. The browser retains its own navigation and buffer lifecycle.
 

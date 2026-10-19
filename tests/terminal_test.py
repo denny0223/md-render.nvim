@@ -473,8 +473,15 @@ def run_kitty(kitty, enabled, workdir, mode="float"):
             assert not blocked["pager"] and blocked["ui"] == [2, 2, 1, True, True], blocked
             assert expr("expand('%:p')") == str(notes), "unsaved-change refusal did not reveal the editor"
             ok("pager q refuses to discard unsaved editor changes")
-            send(":write\r\x0f")
-            assert notes.read_text() == "UNSAVED NOTES EDITOR CONTENT\n", "editor changes were not saved"
+            send(":write\r")
+            # Kitty accepting input does not mean Neovim has finished writing.
+            deadline = time.monotonic() + 10
+            while notes.read_text() != "UNSAVED NOTES EDITOR CONTENT\n":
+                assert time.monotonic() < deadline, (
+                    f"editor changes were not saved: {notes.read_text()!r}\n{screen().decode()}"
+                )
+                time.sleep(0.1)
+            send("\x0f")
             saved_return = state()
             assert saved_return["pager"] and saved_return["buf"] == destination["buf"], saved_return
             ok("saving the revealed editor and Ctrl-O returns to the pager")

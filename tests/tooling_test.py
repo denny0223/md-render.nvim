@@ -298,24 +298,58 @@ else:
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("npm configuration/PATH integration skipped", result.stdout + result.stderr)
         self.executable("node", "")
-        self.executable("npm", "import sys\nprint('undefined')\nprint('controlled npm evidence', file=sys.stderr)\n")
-        for name in ("node", "npm", "python3"):
+        self.executable("npm", "")
+        for name in ("node", "npm"):
             tool = self.bin / name
             hidden = self.bin / (name + ".hidden")
             tool.rename(hidden)
             try:
                 result = self.run_lua(test, MD_RENDER_REQUIRE_NPM_PROBES="1")
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("needs npm, Python, and Node", result.stdout + result.stderr)
+                self.assertIn("needs npm and Node", result.stdout + result.stderr)
             finally:
                 hidden.rename(tool)
-        result = self.run_lua(test, MD_RENDER_REQUIRE_NPM_PROBES="1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("fixture must expose ancestor npm configuration", result.stderr)
-        self.assertIn("controlled npm evidence", result.stderr)
-        self.assertIn("code = 0", result.stderr)
-        self.assertIn("signal = 0", result.stderr)
-        self.assertIn("undefined", result.stderr)
+        (self.bin / "python3").unlink()
+        for code in (0, 23):
+            with self.subTest(code=code):
+                self.executable("npm", f"import sys\nprint('undefined')\n"
+                                f"print('controlled npm evidence', file=sys.stderr)\nsys.exit({code})\n")
+                result = self.run_lua(test, MD_RENDER_REQUIRE_NPM_PROBES="1")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("fixture must expose ancestor npm configuration", result.stderr)
+                self.assertIn("controlled npm evidence", result.stderr)
+                self.assertIn(f"code = {code}", result.stderr)
+                self.assertIn("signal = 0", result.stderr)
+                self.assertIn("undefined", result.stderr)
+
+    def test_npm_probes_reject_signal_termination(self):
+        self.executable("node", "")
+        (self.bin / "python3").unlink()
+        self.executable("npm", """import os, signal, sys
+from pathlib import Path
+if sys.argv[1] == 'config':
+    print('https://document-project.invalid')
+elif sys.argv[1] == '--prefix':
+    if os.environ.get('TOOL_NPM_SIGNAL'):
+        os.kill(os.getpid(), signal.SIGTERM)
+    print('undefined')
+else:
+    directory = Path.cwd()
+    if directory.name == 'control':
+        directory = directory.parent
+    print(directory / 'node_modules/.bin/node')
+""")
+        for terminated in ("", "1"):
+            with self.subTest(terminated=terminated):
+                result = self.run_lua("tests/execution_policy_test.lua",
+                                      MD_RENDER_REQUIRE_NPM_PROBES="1", TOOL_NPM_SIGNAL=terminated)
+                if not terminated:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("npm inherited document configuration", result.stderr)
+                    self.assertIn("code = 0", result.stderr)
+                    self.assertIn("signal = 15", result.stderr)
 
     def test_required_mermaid_tools_preserve_local_skip(self):
         test = "tests/mermaid_security_integration.lua"

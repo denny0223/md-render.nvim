@@ -39,15 +39,15 @@ end
 local calls, jobs = 0, {}
 local fail = false
 local npm = vim.fn.exepath "npm"
-local python = vim.fn.exepath "python3"
 local require_npm_probes = vim.env.MD_RENDER_REQUIRE_NPM_PROBES == "1"
 local probe_timeout = 30000 -- Allow slow CI process startup without skipping the isolation assertions.
 assert(
-  not require_npm_probes or (npm ~= "" and python ~= "" and node ~= ""),
-  "required npm configuration/PATH integration needs npm, Python, and Node"
+  not require_npm_probes or (npm ~= "" and node ~= ""),
+  "required npm configuration/PATH integration needs npm and Node"
 )
 local diagnosed = false
 local function assert_probe(ok, message, result)
+  ok = ok and result.signal == 0
   -- Renderer errors are caught and truncated; preserve the complete test evidence.
   if not ok then io.stderr:write(message .. ": " .. vim.inspect(result) .. "\n") end
   assert(ok, message)
@@ -70,25 +70,17 @@ vim.system = function(cmd, opts, callback)
     assert(cmd[2] == "--prefix" and cmd[3] == opts.cwd)
     assert(vim.tbl_contains(cmd, "@mermaid-js/mermaid-cli@12.0.0"))
     assert(uv.fs_readlink(opts.cwd .. "/node_modules/.bin/node") == trusted_node, "npm must use the user's Node")
-    if not diagnosed and npm ~= "" and python ~= "" and node ~= "" then
+    if not diagnosed and npm ~= "" and node ~= "" then
       local control = root .. "/project/control"
-      local query = {
-        python,
-        "-c",
-        "import subprocess,sys; sys.stdout.buffer.write(subprocess.check_output(sys.argv[1:]))",
-        npm,
-        "config",
-        "get",
-        "@mermaid-js:registry",
-      }
+      local query = { npm, "config", "get", "@mermaid-js:registry" }
       local inherited = original.system(query, { cwd = control, text = true, timeout = probe_timeout }):wait()
       assert_probe(
         inherited.code == 0 and inherited.stdout:find("document-project.invalid", 1, true),
         "fixture must expose ancestor npm configuration",
         inherited
       )
-      table.insert(query, 5, opts.cwd)
-      table.insert(query, 5, "--prefix")
+      table.insert(query, 2, opts.cwd)
+      table.insert(query, 2, "--prefix")
       local isolated = original.system(query, { cwd = opts.cwd, text = true, timeout = probe_timeout }):wait()
       assert_probe(
         isolated.code == 0 and not isolated.stdout:find("document-project.invalid", 1, true),
@@ -96,9 +88,6 @@ vim.system = function(cmd, opts, callback)
         isolated
       )
       query = {
-        python,
-        "-c",
-        "import subprocess,sys; sys.stdout.buffer.write(subprocess.check_output(sys.argv[1:]))",
         npm,
         "exec",
         "--offline",
@@ -114,7 +103,7 @@ vim.system = function(cmd, opts, callback)
         "fixture must expose ancestor npm binary lookup",
         inherited
       )
-      query[9] = opts.cwd
+      query[6] = opts.cwd
       isolated = original.system(query, { cwd = opts.cwd, text = true, timeout = probe_timeout }):wait()
       assert_probe(
         isolated.code == 0 and vim.trim(isolated.stdout) == opts.cwd .. "/node_modules/.bin/node",
@@ -233,5 +222,5 @@ vim.fn.delete(root, "rf")
 assert(not require_npm_probes or diagnosed, "required npm configuration/PATH probes did not complete")
 print(
   "Execution policy: npm opt-in, local precedence, isolated project context, and cleanup passed"
-    .. (not diagnosed and " (npm configuration/PATH integration skipped: npm, Python, or Node unavailable)" or "")
+    .. (not diagnosed and " (npm configuration/PATH integration skipped: npm or Node unavailable)" or "")
 )

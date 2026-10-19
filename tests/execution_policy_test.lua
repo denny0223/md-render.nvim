@@ -41,6 +41,7 @@ local fail = false
 local npm = vim.fn.exepath "npm"
 local python = vim.fn.exepath "python3"
 local require_npm_probes = vim.env.MD_RENDER_REQUIRE_NPM_PROBES == "1"
+local probe_timeout = 30000 -- Allow slow CI process startup without skipping the isolation assertions.
 assert(
   not require_npm_probes or (npm ~= "" and python ~= "" and node ~= ""),
   "required npm configuration/PATH integration needs npm, Python, and Node"
@@ -80,7 +81,7 @@ vim.system = function(cmd, opts, callback)
         "get",
         "@mermaid-js:registry",
       }
-      local inherited = original.system(query, { cwd = control, text = true, timeout = 5000 }):wait()
+      local inherited = original.system(query, { cwd = control, text = true, timeout = probe_timeout }):wait()
       assert_probe(
         inherited.code == 0 and inherited.stdout:find("document-project.invalid", 1, true),
         "fixture must expose ancestor npm configuration",
@@ -88,7 +89,7 @@ vim.system = function(cmd, opts, callback)
       )
       table.insert(query, 5, opts.cwd)
       table.insert(query, 5, "--prefix")
-      local isolated = original.system(query, { cwd = opts.cwd, text = true, timeout = 5000 }):wait()
+      local isolated = original.system(query, { cwd = opts.cwd, text = true, timeout = probe_timeout }):wait()
       assert_probe(
         isolated.code == 0 and not isolated.stdout:find("document-project.invalid", 1, true),
         "npm inherited document configuration",
@@ -107,14 +108,14 @@ vim.system = function(cmd, opts, callback)
         "--call",
         "command -v node",
       }
-      inherited = original.system(query, { cwd = control, text = true, timeout = 5000 }):wait()
+      inherited = original.system(query, { cwd = control, text = true, timeout = probe_timeout }):wait()
       assert_probe(
         inherited.code == 0 and vim.trim(inherited.stdout) == root .. "/project/node_modules/.bin/node",
         "fixture must expose ancestor npm binary lookup",
         inherited
       )
       query[9] = opts.cwd
-      isolated = original.system(query, { cwd = opts.cwd, text = true, timeout = 5000 }):wait()
+      isolated = original.system(query, { cwd = opts.cwd, text = true, timeout = probe_timeout }):wait()
       assert_probe(
         isolated.code == 0 and vim.trim(isolated.stdout) == opts.cwd .. "/node_modules/.bin/node",
         "npm's Node lookup escaped the private job directory",

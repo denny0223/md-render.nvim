@@ -211,6 +211,9 @@ def main():
         config.write_text(f'set -g default-terminal tmux-256color\nset -g allow-passthrough {options.passthrough}\nset -g focus-events on\nset -g status 2\nset -g status-position top\nset -g status-interval 0\nset -g status-format[0] "Native headings | #{{window_name}}"\nset -g status-format[1] "pane #{{pane_index}}"\n')
         with config.open("a") as stream:
             stream.write('set -as terminal-features ",xterm-kitty:RGB:hyperlinks"\n')
+            # Popup integrity checks require terminal-default colors, independent of tmux's theme.
+            stream.write('set -g popup-style "fg=default,bg=default"\n'
+                         'set -g popup-border-style "fg=default,bg=default"\n')
         init = root / "init.lua"
         snacks_setup = ""
         if options.snacks:

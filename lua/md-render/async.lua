@@ -65,13 +65,15 @@ function M.start_system(cmd, opts, callback)
       timer:close()
     end
   end
+  local function expire()
+    if not finished and job then
+      expired = true
+      pcall(job.kill, job, 9)
+    end
+  end
   if timed then
-    timer = vim.defer_fn(function()
-      if not finished and job then
-        expired = true
-        pcall(job.kill, job, 9)
-      end
-    end, opts.timeout + 1000)
+    timer = vim.uv.new_timer()
+    timer:start(opts.timeout + 1000, 0, expire)
   end
   local ok, result = pcall(vim.system, cmd, opts, function(completed)
     if finished then return end
@@ -88,6 +90,16 @@ function M.start_system(cmd, opts, callback)
   if group and job.pid then
     job.kill = function(_, signal)
       if not finished then return vim.uv.kill(-job.pid, signal) end
+    end
+  end
+  if timed then
+    local wait = job.wait
+    job.wait = function(self, timeout)
+      if not finished then
+        -- Native wait pumps only fast events and may skip killing an exited parent's pipe holders.
+        timer:start(math.min(timeout or opts.timeout, timer:get_due_in()), 0, expire)
+      end
+      return wait(self, timeout)
     end
   end
   return job

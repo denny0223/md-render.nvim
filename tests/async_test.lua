@@ -341,8 +341,8 @@ test("system reads vim.system at call time so tests can stand in for it", functi
   assert_eq(code, 7, "and its result reaches the task")
 end)
 
-test("system force-kills a process that ignores its TERM deadline", function()
-  local system, child, result = vim.system
+test("system force-kills a TERM-ignoring process during another synchronous wait", function()
+  local system, child, result, exited = vim.system
   local ready = vim.fn.tempname()
   local probe = vim.uv.new_timer()
   local methods = getmetatable(probe).__index
@@ -359,8 +359,11 @@ test("system force-kills a process that ignores its TERM deadline", function()
         return start(timer, delay, repeat_ms, callback)
       end
     end
-    vim.system = function(...)
-      child = system(...)
+    vim.system = function(cmd, opts, on_exit)
+      child = system(cmd, opts, function(done)
+        exited = done
+        on_exit(done)
+      end)
       return child
     end
     task = async.run(function()
@@ -383,9 +386,11 @@ test("system force-kills a process that ignores its TERM deadline", function()
     for _, timer in ipairs(timers) do
       if not timer[1]:is_closing() then start(unpack(timer)) end
     end
-    bounded = vim.wait(2000, function()
-      return result ~= nil
-    end, 5)
+    -- Native wait pumps only fast events; the child must exit before the task can resume on the main loop.
+    local blocker = system({ "sleep", "2" }):wait(5000)
+    assert(blocker and blocker.code == 0 and blocker.signal == 0, "blocking fixture did not finish")
+    bounded = exited ~= nil
+    assert_eq(result, nil, "system still awaits the main loop after its child exits during another wait")
     if not bounded and child then child:kill(9) end -- Clean the failing control up too.
     task:wait(2000)
   end)
@@ -403,7 +408,7 @@ test("system force-kills a process that ignores its TERM deadline", function()
   end
   vim.fn.delete(ready)
   if not ok then error(err, 0) end
-  assert_true(bounded, "an ignored SIGTERM must not hold an async waiter indefinitely")
+  assert_true(bounded, "another synchronous wait must not postpone an async job's SIGKILL deadline")
   assert_eq(
     result and { result.code, result.signal, result.stdout },
     { 124, 9, "ready" },
@@ -429,19 +434,40 @@ test("system bounds inherited pipes after its launcher exits", function()
 end)
 
 test("start_system also bounds inherited pipes for synchronous waiters", function()
-  local exited
+  for _, timeouts in ipairs { { 250 }, { 5000, 250 }, { 250, 5000 } } do
+    local exited, calls = nil, 0
+    local started = vim.uv.hrtime()
+    local job = async.start_system(
+      { "sh", "-c", "printf ready; sleep 3 & exit 0" },
+      { text = true, timeout = timeouts[1] },
+      function(done)
+        exited, calls = done, calls + 1
+      end
+    )
+    local result = job:wait(timeouts[2])
+    local elapsed = (vim.uv.hrtime() - started) / 1e6
+    vim.wait(4000, function()
+      return exited ~= nil
+    end, 5) -- The failing control's pipe holder exits naturally too.
+    assert_true(elapsed < 2000, "wait must finish before the inherited pipe closes naturally")
+    assert_eq(
+      result and { result.code, result.signal, result.stdout },
+      { 124, 0, "ready" },
+      "wait must return the timed-out result within its deadline"
+    )
+    assert_true(result == exited and calls == 1, "wait and callback receive the same result exactly once")
+    assert_eq(job:wait(0), result, "repeated wait preserves the completed result")
+  end
+end)
+
+test("start_system preserves synchronous results before the deadline", function()
   local result = async
-    .start_system({ "sh", "-c", "sleep 3 & exit 0" }, { text = true, timeout = 250 }, function(done)
-      exited = done
-    end)
+    .start_system({ "sh", "-c", "printf output; printf error >&2; exit 7" }, { text = true, timeout = 1000 })
     :wait()
-  vim.wait(4000, function()
-    return exited ~= nil
-  end, 5)
   assert_eq(
-    result and { result.code, result.signal },
-    { 124, 0 },
-    "wait must return the timed-out result within its deadline"
+    { result.code, result.signal, result.stdout, result.stderr },
+    { 7, 0, "output", "error" },
+    "wait preserves exit status and both output streams"
   )
 end)
 
@@ -467,10 +493,10 @@ test("start_system preserves caller options and refuses completed-group signals"
 end)
 
 test("start_system closes its watchdog on synchronous completion and spawn errors", function()
-  local system, defer = vim.system, vim.defer_fn
+  local system, new_timer = vim.system, vim.uv.new_timer
   local timer, calls, job = nil, 0, {}
-  vim.defer_fn = function(...)
-    timer = defer(...)
+  vim.uv.new_timer = function(...)
+    timer = new_timer(...)
     return timer
   end
   vim.system = function(_, _, callback)
@@ -497,15 +523,15 @@ test("start_system closes its watchdog on synchronous completion and spawn error
   )
   assert_eq(calls, 1, "spawn failure does not deliver an exit callback")
   assert_true(timer and timer:is_closing(), "spawn failure closes its watchdog")
-  vim.system, vim.defer_fn = system, defer
+  vim.system, vim.uv.new_timer = system, new_timer
 end)
 
 test("start_system leaves nil and zero timeouts to the native runner", function()
-  local system, defer = vim.system, vim.defer_fn
+  local system, new_timer = vim.system, vim.uv.new_timer
   local timers, calls = 0, 0
-  vim.defer_fn = function(...)
+  vim.uv.new_timer = function(...)
     timers = timers + 1
-    return defer(...)
+    return new_timer(...)
   end
   vim.system = function(_, _, callback)
     callback { code = 0 }
@@ -515,19 +541,22 @@ test("start_system leaves nil and zero timeouts to the native runner", function(
       calls = calls + 1
     end)
   end
-  vim.system, vim.defer_fn = system, defer
+  vim.system, vim.uv.new_timer = system, new_timer
   assert_eq(calls, 2, "native completion remains unchanged without a positive deadline")
   assert_eq(timers, 0, "untimed commands do not allocate watchdog timers")
 end)
 
 test("start_system tolerates a process that retired before its exit callback", function()
-  local system, defer = vim.system, vim.defer_fn
+  local system = vim.system
+  local probe = vim.uv.new_timer()
+  local methods = getmetatable(probe).__index
+  probe:close()
+  local start = methods.start
   local expire, exit, timer, calls
   calls = 0
-  vim.defer_fn = function(callback, delay)
-    expire = callback
-    timer = defer(callback, delay)
-    return timer
+  methods.start = function(handle, delay, repeat_ms, callback)
+    timer, expire = handle, callback
+    return start(handle, delay, repeat_ms, callback)
   end
   vim.system = function(_, _, callback)
     exit = callback
@@ -542,7 +571,7 @@ test("start_system tolerates a process that retired before its exit callback", f
   end)
   local ok = pcall(expire)
   exit { code = 0 }
-  vim.system, vim.defer_fn = system, defer
+  vim.system, methods.start = system, start
   assert_true(ok, "a stale kill must not raise in the event loop")
   assert_eq(calls, 1, "late exit still completes once")
   assert_true(timer:is_closing(), "late exit closes the watchdog")

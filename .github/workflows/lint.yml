@@ -23,7 +23,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           # renovate: datasource=github-tags depName=JohnnyMorganz/StyLua
-          version: 2.5.2
+          version: 2.6.0
           args: --check .
 
   luacheck:

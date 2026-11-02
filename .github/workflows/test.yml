@@ -30,7 +30,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         # Keep the supported floor and reference fixed; observe stable/nightly weekly.
         # renovate: neovim-reference
-        nvim: ${{ fromJSON((github.event_name == 'schedule' || inputs.suite == 'observation') && '["v0.12.0", "stable", "nightly"]' || '["v0.12.0", "v0.12.5"]') }}
+        nvim: ${{ fromJSON((github.event_name == 'schedule' || inputs.suite == 'observation') && '["v0.12.0", "stable", "nightly"]' || '["v0.12.0", "v0.12.6"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     defaults:
@@ -48,7 +48,7 @@ jobs:
         id: node
         uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "26"
       - name: Cache verified fixed Neovim archives
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' && matrix.nvim != 'stable' && matrix.nvim != 'nightly' }}
         uses: actions/cache@v6

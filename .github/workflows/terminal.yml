@@ -31,7 +31,7 @@ jobs:
       fail-fast: false
       # Share dependencies and direct-Kitty checks across selected tmux versions.
       # Each tmux still has independent installation and test outcomes.
-      matrix: ${{ fromJSON((github.event_name == 'schedule' || inputs.suite == 'observation') && '{"include":[{"lane":"minimum","kitty":"0.40.0","nvim":"v0.12.0"},{"lane":"stable","kitty":"0.40.0","nvim":"stable"},{"lane":"nightly","kitty":"0.40.0","nvim":"nightly"},{"lane":"minimum","kitty":"latest","nvim":"v0.12.0"},{"lane":"stable","kitty":"latest","nvim":"stable"},{"lane":"nightly","kitty":"latest","nvim":"nightly"}]}' || '{"include":[{"lane":"minimum","kitty":"0.40.0","nvim":"v0.12.0"},{"lane":"reference","kitty":"0.49.2","nvim":"v0.12.5"}]}') }}
+      matrix: ${{ fromJSON((github.event_name == 'schedule' || inputs.suite == 'observation') && '{"include":[{"lane":"minimum","kitty":"0.40.0","nvim":"v0.12.0"},{"lane":"stable","kitty":"0.40.0","nvim":"stable"},{"lane":"nightly","kitty":"0.40.0","nvim":"nightly"},{"lane":"minimum","kitty":"latest","nvim":"v0.12.0"},{"lane":"stable","kitty":"latest","nvim":"stable"},{"lane":"nightly","kitty":"latest","nvim":"nightly"}]}' || '{"include":[{"lane":"minimum","kitty":"0.40.0","nvim":"v0.12.0"},{"lane":"reference","kitty":"0.49.2","nvim":"v0.12.6"}]}') }}
     env:
       LIBGL_ALWAYS_SOFTWARE: "1"
       OBSERVATION: ${{ github.event_name == 'schedule' || inputs.suite == 'observation' }}

@@ -5,7 +5,7 @@ version=${1:?Neovim version required}
 case "$version" in
   v0.12.0) fixed=true ;;
   # renovate: neovim-reference
-  v0.12.5) fixed=true ;;
+  v0.12.6) fixed=true ;;
   stable|nightly) fixed=false ;;
   *) echo "Unsupported Neovim version: $version" >&2; exit 1 ;;
 esac

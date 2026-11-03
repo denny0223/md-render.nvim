@@ -416,47 +416,114 @@ test("system force-kills a TERM-ignoring process during another synchronous wait
   )
 end)
 
+-- Start the original deadlines only once the launcher has exited and its child still holds the pipes.
+-- start_job returns an async task, if any, so failed fixtures can cancel it too.
+local function with_inherited_pipes(timeout, start_job, check)
+  local system, job, completed, task = vim.system
+  local probe = vim.uv.new_timer()
+  local methods = getmetatable(probe).__index
+  local start, timers = methods.start, {}
+  probe:close()
+  local ok, err = pcall(function()
+    methods.start = function(timer, delay, repeat_ms, callback)
+      if delay == timeout or delay == timeout + 1000 then
+        timers[#timers + 1] = { timer, delay, repeat_ms, callback }
+      else
+        return start(timer, delay, repeat_ms, callback)
+      end
+    end
+    vim.system = function(cmd, opts, callback)
+      job = system(cmd, opts, function(done)
+        completed = done
+        callback(done)
+      end)
+      return job
+    end
+    -- Delay startup past the short deadlines; keep the pipe holder alive beyond setup and failure waits.
+    task = start_job({ "sh", "-c", "sleep 0.4; printf ready; sleep 30 & exit 0" }, { text = true, timeout = timeout })
+    vim.system, methods.start = system, start
+    assert(
+      vim.wait(5000, function()
+        return job and job:is_closing()
+      end, 5),
+      "inherited-pipe launcher did not exit during fixture setup"
+    )
+    assert(completed == nil, "native completion must still await inherited pipes")
+    assert(
+      #timers == 2
+        and (timers[1][2] == timeout or timers[2][2] == timeout)
+        and (timers[1][2] == timeout + 1000 or timers[2][2] == timeout + 1000),
+      "fixture must gate both the native TERM deadline and wrapper watchdog"
+    )
+    local armed = 0
+    for _, timer in ipairs(timers) do
+      if not timer[1]:is_closing() then
+        start(unpack(timer))
+        armed = armed + 1
+      end
+    end
+    assert(armed == 1, "only the watchdog should survive the launcher's exit")
+    check(job)
+  end)
+  vim.system, methods.start = system, start
+  if job and not completed then
+    pcall(vim.uv.kill, -job.pid, 9)
+    assert_true(
+      vim.wait(2000, function()
+        return completed ~= nil
+      end, 5),
+      "inherited-pipe fixture must finish cleanup"
+    )
+  end
+  if task and task:status() ~= "completed" then pcall(task.close, task) end
+  for _, timer in ipairs(timers) do
+    if not timer[1]:is_closing() then
+      timer[1]:stop()
+      timer[1]:close()
+    end
+  end
+  if not ok then error(err, 0) end
+end
+
 test("system bounds inherited pipes after its launcher exits", function()
   local result
-  local task = async.run(function()
-    result = async.system({ "sh", "-c", "sleep 3 & exit 0" }, { text = true, timeout = 100 })
+  with_inherited_pipes(100, function(cmd, opts)
+    return async.run(function()
+      result = async.system(cmd, opts)
+    end)
+  end, function()
+    local bounded = vim.wait(2000, function()
+      return result ~= nil
+    end, 5)
+    assert_true(bounded, "an exited launcher must not leave its async waiter awaiting child pipes")
+    assert_eq(
+      result and { result.code, result.signal },
+      { 124, 0 },
+      "pipe timeout overrides success and retains parent signal"
+    )
   end)
-  local bounded = vim.wait(2000, function()
-    return result ~= nil
-  end, 5)
-  task:wait(4000) -- The failing control's pipe holder exits naturally too.
-  assert_true(bounded, "an exited launcher must not leave its async waiter awaiting child pipes")
-  assert_eq(
-    result and { result.code, result.signal },
-    { 124, 0 },
-    "pipe timeout overrides success and retains parent signal"
-  )
 end)
 
 test("start_system also bounds inherited pipes for synchronous waiters", function()
   for _, timeouts in ipairs { { 250 }, { 5000, 250 }, { 250, 5000 } } do
     local exited, calls = nil, 0
-    local started = vim.uv.hrtime()
-    local job = async.start_system(
-      { "sh", "-c", "printf ready; sleep 3 & exit 0" },
-      { text = true, timeout = timeouts[1] },
-      function(done)
+    with_inherited_pipes(timeouts[1], function(cmd, opts)
+      async.start_system(cmd, opts, function(done)
         exited, calls = done, calls + 1
-      end
-    )
-    local result = job:wait(timeouts[2])
-    local elapsed = (vim.uv.hrtime() - started) / 1e6
-    vim.wait(4000, function()
-      return exited ~= nil
-    end, 5) -- The failing control's pipe holder exits naturally too.
-    assert_true(elapsed < 2000, "wait must finish before the inherited pipe closes naturally")
-    assert_eq(
-      result and { result.code, result.signal, result.stdout },
-      { 124, 0, "ready" },
-      "wait must return the timed-out result within its deadline"
-    )
-    assert_true(result == exited and calls == 1, "wait and callback receive the same result exactly once")
-    assert_eq(job:wait(0), result, "repeated wait preserves the completed result")
+      end)
+    end, function(job)
+      local started = vim.uv.hrtime()
+      local result = job:wait(timeouts[2])
+      local elapsed = (vim.uv.hrtime() - started) / 1e6
+      assert_true(elapsed < 2000, "wait must finish before the inherited pipe closes naturally")
+      assert_eq(
+        result and { result.code, result.signal, result.stdout },
+        { 124, 0, "ready" },
+        "wait must return the timed-out result within its deadline"
+      )
+      assert_true(result == exited and calls == 1, "wait and callback receive the same result exactly once")
+      assert_eq(job:wait(0), result, "repeated wait preserves the completed result")
+    end)
   end
 end)
 

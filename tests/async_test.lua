@@ -527,6 +527,39 @@ test("start_system also bounds inherited pipes for synchronous waiters", functio
   end
 end)
 
+test("start_system waits for completion after a native exit snapshot", function()
+  local exited, calls = nil, 0
+  with_inherited_pipes(5000, function(cmd, opts)
+    local system = vim.system
+    vim.system = function(command, options, callback)
+      local job = system(command, options, callback)
+      local wait, pending = job.wait, true
+      job.wait = function(self, timeout)
+        if pending then
+          pending = false
+          return { code = 0, signal = 0, stdout = "ready", stderr = "" }
+        end
+        return wait(self, timeout)
+      end
+      return job
+    end
+    async.start_system(cmd, opts, function(done)
+      exited, calls = done, calls + 1
+    end)
+  end, function(job)
+    local started = vim.uv.hrtime()
+    local result = job:wait(0)
+    assert_true((vim.uv.hrtime() - started) / 1e6 < 2000, "an early native result must not delay pipe cleanup")
+    assert_eq(
+      result and { result.code, result.signal, result.stdout },
+      { 124, 0, "ready" },
+      "an exited parent is still timed out while its child holds the pipes"
+    )
+    assert_true(result == exited and calls == 1, "an early native result must await the final callback")
+    assert_eq(job:wait(0), result, "the finalized result remains stable across waits")
+  end)
+end)
+
 test("start_system preserves synchronous results before the deadline", function()
   local result = async
     .start_system({ "sh", "-c", "printf output; printf error >&2; exit 7" }, { text = true, timeout = 1000 })

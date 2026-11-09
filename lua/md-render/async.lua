@@ -99,7 +99,14 @@ function M.start_system(cmd, opts, callback)
         -- Native wait pumps only fast events and may skip killing an exited parent's pipe holders.
         timer:start(math.min(timeout or opts.timeout, timer:get_due_in()), 0, expire)
       end
-      return wait(self, timeout)
+      local completed = wait(self, timeout)
+      if not finished then
+        -- Newer native waits may return an exit snapshot before the pipes and callback finish.
+        expire()
+        if self.close then self:close() end
+        completed = wait(self, 1000)
+      end
+      return completed
     end
   end
   return job

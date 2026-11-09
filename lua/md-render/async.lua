@@ -55,7 +55,7 @@ end
 ---@param callback? fun(result: vim.SystemCompleted)
 ---@return vim.SystemObj
 function M.start_system(cmd, opts, callback)
-  local job, timer, finished, expired
+  local job, timer, finished, expired, term_sent
   local timed = opts and opts.timeout and opts.timeout > 0
   local group = timed and vim.fn.has "win32" == 0
   if group then opts = vim.tbl_extend("force", {}, opts, { detach = true }) end
@@ -77,6 +77,8 @@ function M.start_system(cmd, opts, callback)
   end
   local ok, result = pcall(vim.system, cmd, opts, function(completed)
     if finished then return end
+    -- Native completion may close pipes while TERM-ignoring children still run.
+    if term_sent then pcall(job.kill, job, 9) end
     finished = true
     close_timer()
     if expired then completed.code = 124 end
@@ -89,7 +91,16 @@ function M.start_system(cmd, opts, callback)
   job = result
   if group and job.pid then
     job.kill = function(_, signal)
-      if not finished then return vim.uv.kill(-job.pid, signal) end
+      if finished then return end
+      local status, err, name = vim.uv.kill(-job.pid, signal)
+      if status then
+        if signal == nil or signal == "sigterm" or tonumber(signal) == 15 then
+          term_sent = true
+        elseif signal == "sigkill" or tonumber(signal) == 9 then
+          term_sent = false
+        end
+      end
+      return status, err, name
     end
   end
   if timed then

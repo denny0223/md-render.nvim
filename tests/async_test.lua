@@ -527,6 +527,39 @@ test("start_system also bounds inherited pipes for synchronous waiters", functio
   end
 end)
 
+test("start_system waits for completion after a native exit snapshot", function()
+  local exited, calls = nil, 0
+  with_inherited_pipes(5000, function(cmd, opts)
+    local system = vim.system
+    vim.system = function(command, options, callback)
+      local job = system(command, options, callback)
+      local wait, pending = job.wait, true
+      job.wait = function(self, timeout)
+        if pending then
+          pending = false
+          return { code = 0, signal = 0, stdout = "ready", stderr = "" }
+        end
+        return wait(self, timeout)
+      end
+      return job
+    end
+    async.start_system(cmd, opts, function(done)
+      exited, calls = done, calls + 1
+    end)
+  end, function(job)
+    local started = vim.uv.hrtime()
+    local result = job:wait(0)
+    assert_true((vim.uv.hrtime() - started) / 1e6 < 2000, "an early native result must not delay pipe cleanup")
+    assert_eq(
+      result and { result.code, result.signal, result.stdout },
+      { 124, 0, "ready" },
+      "an exited parent is still timed out while its child holds the pipes"
+    )
+    assert_true(result == exited and calls == 1, "an early native result must await the final callback")
+    assert_eq(job:wait(0), result, "the finalized result remains stable across waits")
+  end)
+end)
+
 test("start_system preserves synchronous results before the deadline", function()
   local result = async
     .start_system({ "sh", "-c", "printf output; printf error >&2; exit 7" }, { text = true, timeout = 1000 })
@@ -536,6 +569,186 @@ test("start_system preserves synchronous results before the deadline", function(
     { 7, 0, "output", "error" },
     "wait preserves exit status and both output streams"
   )
+end)
+
+test("system stops TERM-ignoring children after their parent exits", function()
+  for _, mode in ipairs { "wait", "task" } do
+    local system, kill = vim.system, vim.uv.kill
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    local ready, lock = root .. "/ready", root .. "/lock"
+    local probe = vim.uv.new_timer()
+    local methods = getmetatable(probe).__index
+    local start, timers = methods.start, {}
+    probe:close()
+    local job, task, completed
+    local calls = 0
+    local function released(wait)
+      local result = system({
+        "perl",
+        "-MFcntl=:flock",
+        "-e",
+        [[
+open my $file, '+<', $ARGV[0] or die "open: $!";
+$SIG{ALRM} = sub { exit 1 }; alarm 2;
+exit 0 if flock($file, LOCK_EX | ($ARGV[1] ? 0 : LOCK_NB));
+die "flock: $!" unless $!{EWOULDBLOCK} || $!{EAGAIN};
+exit 1;
+]],
+        lock,
+        wait and "1" or "0",
+      }, { text = true }):wait(3000)
+      assert(result and (result.code == 0 or result.code == 1), vim.inspect(result))
+      return result.code == 0
+    end
+    local ok, err = pcall(function()
+      methods.start = function(timer, delay, repeat_ms, callback)
+        if delay == 100 or delay == 1100 then
+          timers[#timers + 1] = { timer, delay, repeat_ms, callback }
+        else
+          return start(timer, delay, repeat_ms, callback)
+        end
+      end
+      vim.system = function(cmd, opts, callback)
+        job = system(cmd, opts, function(done)
+          completed, calls = done, calls + 1
+          callback(done)
+        end)
+        return job
+      end
+      local cmd = {
+        "perl",
+        "-MFcntl=:flock",
+        "-e",
+        [[
+$SIG{TERM} = sub { exit 0 };
+my $child = fork(); die "fork: $!" unless defined $child;
+if ($child == 0) {
+  $SIG{TERM} = 'IGNORE';
+  open my $held, '>', $ARGV[1] or die "open: $!";
+  flock($held, LOCK_EX) or die "flock: $!";
+  $| = 1; print 'ready';
+  open my $signal, '>', $ARGV[0] or die "ready: $!";
+  print $signal getpgrp(), "\n"; close $signal;
+  sleep 30; exit 0;
+}
+waitpid($child, 0);
+]],
+        ready,
+        lock,
+      }
+      local opts = { text = true, timeout = 100 }
+      if mode == "task" then
+        task = async.run(function()
+          return async.system(cmd, opts)
+        end)
+      else
+        async.start_system(cmd, opts)
+      end
+      vim.system, methods.start = system, start
+      assert(
+        vim.wait(5000, function()
+          local stat = vim.uv.fs_stat(ready)
+          return stat and stat.size > 0
+        end, 5),
+        "TERM-ignoring child did not become ready"
+      )
+      assert(
+        tonumber(vim.fn.readfile(ready)[1]) == job.pid and not released(false),
+        "child must own its group's lifetime lock"
+      )
+      assert(#timers == 2, "fixture must gate both timeout deadlines")
+      for _, timer in ipairs(timers) do
+        start(unpack(timer))
+      end
+      local result
+      if task then
+        assert(system({ "sleep", "2" }):wait(5000).code == 0, "blocking fixture did not finish")
+        result = task:wait(2000)
+      else
+        result = job:wait(5000)
+      end
+      assert_eq(
+        result and { result.code, result.signal, result.stdout },
+        { 124, 0, "ready" },
+        mode .. " retains the parent's timeout result"
+      )
+      assert_true(result == completed and calls == 1, mode .. " completes exactly once with the final result")
+      -- The child never closes its lock; release proves termination even before a zombie is reaped.
+      assert_true(released(true), mode .. " must terminate the child, not only close its output pipes")
+    end)
+    vim.system, methods.start = system, start
+    local held = vim.uv.fs_stat(lock) and not released(false)
+    if job and (held or not job:is_closing()) then pcall(kill, -job.pid, 9) end
+    if held then assert_true(released(true), mode .. " fixture must release its child during cleanup") end
+    if job and not completed then vim.wait(2000, function()
+      return completed ~= nil
+    end, 5) end
+    if task and task:status() ~= "completed" then pcall(task.close, task) end
+    for _, timer in ipairs(timers) do
+      if not timer[1]:is_closing() then
+        timer[1]:stop()
+        timer[1]:close()
+      end
+    end
+    vim.fn.delete(root, "rf")
+    if not ok then error(err, 0) end
+  end
+end)
+
+test("start_system finishes only successfully signalled TERM groups", function()
+  local system, kill = vim.system, vim.uv.kill
+  local exit
+  local ok, err = pcall(function()
+    for _, case in ipairs {
+      { name = "numeric TERM", send = { 15 }, expected = { 15, 9 } },
+      { name = "named TERM", send = { "sigterm" }, expected = { "sigterm", 9 } },
+      { name = "default TERM", send = { false }, expected = { "default", 9 } },
+      { name = "numeric string TERM", send = { " 15 " }, expected = { " 15 ", 9 } },
+      { name = "ordinary exit 124", send = {}, expected = {}, code = 124 },
+      { name = "failed TERM", send = { 15 }, expected = { 15 }, fail = 1 },
+      { name = "failed KILL", send = { 15, 9 }, expected = { 15, 9, 9 }, fail = 2 },
+      { name = "successful KILL", send = { 15, "sigkill" }, expected = { 15, "sigkill" } },
+      { name = "numeric string KILL", send = { 15, "0x09" }, expected = { 15, "0x09" } },
+      { name = "process probe", send = { 15, 0 }, expected = { 15, 0, 9 } },
+    } do
+      local signals, calls = {}, 0
+      vim.system = function(_, _, callback)
+        exit = callback
+        return { pid = 12345 }
+      end
+      vim.uv.kill = function(pid, signal)
+        assert(pid == -12345, "signals must address the owned process group")
+        signals[#signals + 1] = signal == nil and "default" or signal
+        if #signals == case.fail then return nil, "denied", "EPERM" end
+        return 0
+      end
+      local job = async.start_system({ "stub" }, { timeout = 5000 }, function()
+        calls = calls + 1
+      end)
+      for i, signal in ipairs(case.send) do
+        local result
+        if signal == false then
+          result = { job:kill() }
+        else
+          result = { job:kill(signal) }
+        end
+        assert_eq(
+          result,
+          i == case.fail and { nil, "denied", "EPERM" } or { 0 },
+          case.name .. " preserves signal results"
+        )
+      end
+      exit { code = case.code or 0 }
+      exit { code = case.code or 0 }
+      job:kill(15)
+      assert_eq(signals, case.expected, case.name .. " sends no late or duplicate group signals")
+      assert_eq(calls, 1, case.name .. " delivers one completion")
+    end
+  end)
+  if exit then pcall(exit, { code = 0 }) end
+  vim.system, vim.uv.kill = system, kill
+  if not ok then error(err, 0) end
 end)
 
 test("start_system preserves caller options and refuses completed-group signals", function()

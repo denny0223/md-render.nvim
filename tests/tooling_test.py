@@ -237,6 +237,24 @@ os.execv({real_mv!r}, [{real_mv!r}, *sys.argv[1:]])
         self.assertIn("required PlantUML graphics integration unavailable", result.stdout + result.stderr)
         self.assertNotIn("SKIP", result.stdout + result.stderr)
 
+    def test_required_telescope_preserves_local_skip(self):
+        test = "tests/picker_integration_test.lua"
+        paths = dict(MD_RENDER_TELESCOPE_PATH="", MD_RENDER_PLENARY_PATH="", MD_RENDER_SNACKS_PATH="")
+        result = self.run_lua(test, **paths, MD_RENDER_REQUIRE_TELESCOPE="")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("SKIP real Telescope", result.stdout + result.stderr)
+        for present in (None, "MD_RENDER_TELESCOPE_PATH", "MD_RENDER_PLENARY_PATH"):
+            with self.subTest(present=present):
+                available = paths | ({present: str(self.root)} if present else {})
+                result = self.run_lua(test, **available, MD_RENDER_REQUIRE_TELESCOPE="1")
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("required Telescope integration needs", result.stdout + result.stderr)
+                self.assertNotIn("SKIP real Telescope", result.stdout + result.stderr)
+        result = self.run_lua(test, MD_RENDER_REQUIRE_TELESCOPE="1", MD_RENDER_SNACKS_PATH="",
+                              MD_RENDER_TELESCOPE_PATH=str(self.root), MD_RENDER_PLENARY_PATH=str(self.root))
+        self.assertNotEqual(result.returncode, 0, "invalid checkouts must not use the mocked previewer")
+        self.assertNotIn("SKIP real Telescope", result.stdout + result.stderr)
+
     def test_plantuml_rejects_old_unknown_and_unresponsive_tools_before_source(self):
         runner = self.root / "plantuml-version.lua"
         runner.write_text('''package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. package.path

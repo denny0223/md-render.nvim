@@ -55,6 +55,8 @@ try {
     'kovidgoyal/kitty': ['.github/ci/install-terminal.sh', '.github/workflows/terminal.yml'],
     'JohnnyMorganz/StyLua': [preFile, '.github/workflows/lint.yml'],
     'folke/snacks.nvim': ['.github/workflows/test.yml', '.github/workflows/test.yml'],
+    'nvim-telescope/telescope.nvim': ['.github/workflows/test.yml'],
+    'nvim-lua/plenary.nvim': ['.github/workflows/test.yml'],
     'BtbN/FFmpeg-Builds 9.0 linux64-gpl': ['.github/ci/ffmpeg-archives.tsv'],
   };
   for (const [name, expected] of Object.entries(expectedFiles)) {
@@ -70,7 +72,7 @@ try {
   const updated = new Map(originals);
   const replacements = [];
   for (const dep of extracted) {
-    const newValue = dep.depName === 'folke/snacks.nvim' ? dep.currentValue
+    const newValue = dep.datasource === 'git-refs' ? dep.currentValue
       : dep.depName.startsWith('BtbN/') ? dep.currentValue.replace(/autobuild-(\d{4})-/, (_, year) => `autobuild-${Number(year) + 1}-`)
       : nextVersion(dep.currentValue);
     const upgrade = { ...dep, newValue, ...(dep.currentDigest && { newDigest: digest(dep) }) };

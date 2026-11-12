@@ -110,6 +110,8 @@ jobs:
         shell: bash
     env:
       MD_RENDER_SNACKS_PATH: /tmp/snacks.nvim
+      MD_RENDER_TELESCOPE_PATH: /tmp/telescope.nvim
+      MD_RENDER_PLENARY_PATH: /tmp/plenary.nvim
       MD_RENDER_REQUIRE_PLANTUML: "1"
       MD_RENDER_CI_RESULTS: /tmp/md-fedora-results
     steps:
@@ -144,6 +146,29 @@ jobs:
             git -C "$MD_RENDER_SNACKS_PATH" rev-parse HEAD
             test -f "$MD_RENDER_SNACKS_PATH/lua/snacks/init.lua"
           } 2>&1 | tee "$MD_RENDER_CI_RESULTS/snacks.log"
+      - name: Install fixed Telescope and Plenary
+        id: telescope
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          {
+            git init "$MD_RENDER_TELESCOPE_PATH"
+            git -C "$MD_RENDER_TELESCOPE_PATH" remote add origin https://github.com/nvim-telescope/telescope.nvim.git
+            # renovate: datasource=github-tags depName=nvim-telescope/telescope.nvim
+            revision=v0.2.1
+            git -C "$MD_RENDER_TELESCOPE_PATH" fetch --depth=1 origin "$revision"
+            git -C "$MD_RENDER_TELESCOPE_PATH" checkout --detach FETCH_HEAD
+            git -C "$MD_RENDER_TELESCOPE_PATH" rev-parse HEAD
+            test -f "$MD_RENDER_TELESCOPE_PATH/lua/telescope/init.lua"
+            git init "$MD_RENDER_PLENARY_PATH"
+            git -C "$MD_RENDER_PLENARY_PATH" remote add origin https://github.com/nvim-lua/plenary.nvim.git
+            # renovate: datasource=git-refs depName=nvim-lua/plenary.nvim branch=master
+            revision=74b06c6c75e4eeb3108ec01852001636d85a932b
+            git -C "$MD_RENDER_PLENARY_PATH" fetch --depth=1 origin "$revision"
+            git -C "$MD_RENDER_PLENARY_PATH" checkout --detach FETCH_HEAD
+            git -C "$MD_RENDER_PLENARY_PATH" rev-parse HEAD
+            test -f "$MD_RENDER_PLENARY_PATH/lua/plenary/init.lua"
+          } 2>&1 | tee "$MD_RENDER_CI_RESULTS/telescope.log"
       - name: Record and verify image runtime
         id: runtime
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
@@ -215,18 +240,29 @@ jobs:
         id: integrations
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.snacks.outcome == 'success' }}
         continue-on-error: true
+        env:
+          MD_RENDER_TELESCOPE_PATH: ""
+          MD_RENDER_PLENARY_PATH: ""
         run: |
           result=0
           for test in tests/snacks_*_test.lua tests/image_view_lifecycle_test.lua tests/picker_integration_test.lua; do
             nvim --headless -u NONE --noplugin -l "$test" 2>&1 | tee "$MD_RENDER_CI_RESULTS/$(basename "$test").log" || result=1
           done
           exit "$result"
+      - name: Run real Telescope integration
+        id: telescope_integration
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.telescope.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          MD_RENDER_REQUIRE_TELESCOPE: "1"
+          MD_RENDER_SNACKS_PATH: ""
+        run: nvim --headless -u NONE --noplugin -l tests/picker_integration_test.lua 2>&1 | tee "$MD_RENDER_CI_RESULTS/telescope-integration.log"
       - name: Require every planned check
         id: result
         if: always()
         env:
           STEP_RESULTS: ${{ toJSON(steps) }}
-        run: python3 .github/ci/check-results.py install checkout snacks runtime raster typography tooling resources plantuml_security plantuml_graphics integrations
+        run: python3 .github/ci/check-results.py install checkout snacks telescope runtime raster typography tooling resources plantuml_security plantuml_graphics integrations telescope_integration
       - name: Keep Fedora diagnostics
         if: always()
         uses: actions/upload-artifact@v7

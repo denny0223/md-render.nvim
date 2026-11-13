@@ -17,6 +17,7 @@ make lint                          # Check formatting; requires StyLua
 | Image-heading layout or rasterization | [Image headings](#image-headings) |
 | Kitty/tmux output, focus or interaction | [Terminal checks](#terminal-checks) |
 | Visual appearance | [Manual image checks](#manual-image-checks) or [visual comparisons](#visual-comparisons) |
+| Picker integration | [Telescope](#telescope) and [Snacks](#snacks) with real dependency checkouts |
 | CI required-step results | `python3 tests/ci_results_test.py` (also included in `make test`) |
 
 ## CommonMark/GFM corpus
@@ -63,6 +64,19 @@ MD_RENDER_SNACKS_PATH=/path/to/snacks.nvim make -k test
 ```
 
 Missing optional dependencies produce skips. These checks intercept terminal output and control conversion timing to test placement rebuilding, inactive-tab completion and zoom cleanup. Use the terminal/image checks below to verify actual display.
+
+### Telescope
+
+Use real Telescope and Plenary checkouts to test preview-buffer replacement, same-file grep navigation, debounce, empty results, the 500-line rendered limit, raw fallback and teardown:
+
+```sh
+MD_RENDER_REQUIRE_TELESCOPE=1 \
+MD_RENDER_TELESCOPE_PATH=/path/to/telescope.nvim \
+MD_RENDER_PLENARY_PATH=/path/to/plenary.nvim \
+make tests/picker_integration_test.lua
+```
+
+Without the required flag, missing dependency paths produce a local skip. The released Fedora CI job installs a fixed Telescope release and Plenary commit and requires this check; missing dependencies or a skipped/failed required step cannot pass. Telescope and Snacks run in separate steps, so an installation or test failure in one does not prevent checking the other. The test uses real previewer APIs, buffers and parsing while intercepting image setup; it does not verify terminal pixels or the full interactive picker UI.
 
 ## Image headings
 
@@ -149,7 +163,7 @@ In public repositories, [GitHub disables scheduled workflows after 60 days witho
 | Workflow | PR/main baseline | Weekly observation |
 | --- | --- | --- |
 | [Lint](../.github/workflows/lint.yml) | Formatting and Lua lint | — |
-| [Tests](../.github/workflows/test.yml) | Fixed minimum/reference Neovim on Ubuntu/macOS; released Fedora image integrations | Minimum/stable/nightly Neovim, latest Snacks and Rawhide |
+| [Tests](../.github/workflows/test.yml) | Fixed minimum/reference Neovim on Ubuntu/macOS; released Fedora image and picker integrations | Minimum/stable/nightly Neovim, latest Snacks and Rawhide |
 | [Terminal](../.github/workflows/terminal.yml) | Fixed minimum/reference Kitty and Neovim; native on/all and image headings through tmux | Broader Kitty/Neovim combinations; tmux 3.4 plain fallback on minimum Kitty/Neovim and latest Kitty/nightly Neovim |
 | [Media](../.github/workflows/media.yml) | Ubuntu's FFmpeg package, fixed FFmpeg 9.0 and locked Mermaid | Baseline FFmpeg checks plus master; locked/latest Mermaid |
 
@@ -187,6 +201,7 @@ Weekly observations check compatibility with the selected upstream tools. Propos
 | Neovim reference | Both platform archives, installer allowlist and workflow references share one PR. A release must have valid SHA256 digests for both platforms before it is eligible. |
 | Kitty reference | The installer version/digest and terminal matrix share one PR. |
 | Snacks | Both fixed integration checkouts move together, with ordinary proposals limited to the first day of the month; the weekly `HEAD` observation is unchanged. |
+| Telescope and Plenary | The required picker check tracks Telescope release tags and a fixed Plenary `master` commit. |
 | FFmpeg 9.0 archive | The URL and SHA256 move together to the last available build of a completed UTC month, retaining the 9.0 series and linux64 GPL variant. |
 
 The custom archive datasources read GitHub release metadata and use the upstream asset SHA256; they do not run extra update scripts or require a self-hosted Renovate service. The custom datasource API is experimental, so validate configuration changes with the installed Renovate engine and inspect the hosted onboarding preview or Dependency Dashboard for lookup warnings. FFmpeg's retained monthly snapshots still have finite upstream availability.

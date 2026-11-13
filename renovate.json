@@ -126,10 +126,11 @@
     {
       "customType": "regex",
       "managerFilePatterns": [
-        "/^\\.github/workflows/lint\\.yml$/"
+        "/^\\.github/workflows/(lint|test)\\.yml$/"
       ],
       "matchStrings": [
-        "# renovate: datasource=github-tags depName=(?<depName>JohnnyMorganz/StyLua)\\s+version: (?<currentValue>\\d+\\.\\d+\\.\\d+)"
+        "# renovate: datasource=github-tags depName=(?<depName>JohnnyMorganz/StyLua)\\s+version: (?<currentValue>\\d+\\.\\d+\\.\\d+)",
+        "# renovate: datasource=github-tags depName=(?<depName>nvim-telescope/telescope\\.nvim)\\s+revision=v(?<currentValue>\\d+\\.\\d+\\.\\d+)"
       ],
       "datasourceTemplate": "github-tags",
       "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)$"
@@ -140,7 +141,7 @@
         "/^\\.github/workflows/test\\.yml$/"
       ],
       "matchStrings": [
-        "# renovate: datasource=git-refs depName=(?<depName>folke/snacks\\.nvim) branch=(?<currentValue>main)\\s+revision=(?<currentDigest>[a-f0-9]{40})"
+        "# renovate: datasource=git-refs depName=(?<depName>folke/snacks\\.nvim|nvim-lua/plenary\\.nvim) branch=(?<currentValue>main|master)\\s+revision=(?<currentDigest>[a-f0-9]{40})"
       ],
       "datasourceTemplate": "git-refs",
       "packageNameTemplate": "https://github.com/{{{depName}}}.git",

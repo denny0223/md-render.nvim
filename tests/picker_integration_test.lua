@@ -93,7 +93,12 @@ assert(#rendered == count + 1 and cleaned >= 3, "teardown left a pending render 
 
 -- The real API can replace the preview buffer without calling define_preview.
 local telescope_path, plenary_path = vim.env.MD_RENDER_TELESCOPE_PATH, vim.env.MD_RENDER_PLENARY_PATH
-if telescope_path and telescope_path ~= "" and plenary_path and plenary_path ~= "" then
+local has_telescope = telescope_path and telescope_path ~= "" and plenary_path and plenary_path ~= ""
+assert(
+  vim.env.MD_RENDER_REQUIRE_TELESCOPE ~= "1" or has_telescope,
+  "required Telescope integration needs MD_RENDER_TELESCOPE_PATH and MD_RENDER_PLENARY_PATH"
+)
+if has_telescope then
   vim.opt.rtp:prepend(plenary_path)
   vim.opt.rtp:prepend(telescope_path)
   package.loaded["telescope.previewers"], package.preload["telescope.previewers"] = nil, nil
@@ -130,9 +135,12 @@ if telescope_path and telescope_path ~= "" and plenary_path and plenary_path ~= 
   assert(source_map[#source_map] <= 500, "Telescope exceeded its rendered line limit")
   real:preview({ path = long_path, lnum = 550 }, status)
   wait_for(function()
-    return vim.api.nvim_buf_line_count(real.state.bufnr) == 600 and vim.api.nvim_win_get_cursor(win)[1] == 550
+    return vim.api.nvim_win_get_buf(win) == real.state.bufnr and vim.api.nvim_win_get_cursor(win)[1] == 550
   end)
-  assert(vim.api.nvim_buf_get_lines(real.state.bufnr, 599, 600, false)[1] == "line 600", "raw fallback lost content")
+  local raw = vim.api.nvim_buf_get_lines(real.state.bufnr, 0, -1, false)
+  -- Telescope may retain the file's final newline as an empty preview row.
+  if raw[#raw] == "" then table.remove(raw) end
+  assert(vim.deep_equal(raw, lines), "raw fallback changed source content")
 
   local caller_buf, saved_tabstop = vim.api.nvim_get_current_buf(), vim.bo.tabstop
   vim.bo[caller_buf].tabstop = 4

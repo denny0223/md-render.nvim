@@ -867,7 +867,8 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
   map_default("gO", function()
     local current, items = get_content(), {}
     for _, row in ipairs(heading_rows()) do
-      items[#items + 1] = { bufnr = buf, lnum = row + 1, text = vim.trim(current.lines[row + 1] or "") }
+      local label = current.heading_labels and current.heading_labels[row]
+      items[#items + 1] = { bufnr = buf, lnum = row + 1, text = label or vim.trim(current.lines[row + 1] or "") }
     end
     if #items == 0 then return end
     vim.fn.setloclist(0, {}, " ", { title = "Markdown headings", items = items })

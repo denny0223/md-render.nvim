@@ -70,6 +70,7 @@
 ---@field heading_fallback? string document-level reason for ordinary headings
 ---@field heading_lines table<integer, boolean> heading rows with ordered styles (0-indexed)
 ---@field heading_starts table<integer, boolean> first rendered row of every heading (0-indexed)
+---@field heading_labels? table<integer, string> complete outline labels keyed by first rendered row (0-indexed)
 ---@field heading_positions table<integer, {byte: integer, col: integer, length: integer}> heading byte ranges (1-indexed rows)
 ---@field footnote_anchors table<string, integer> anchor name → 0-indexed line number
 ---@field heading_anchors table<string, integer> heading slug → 0-indexed line number
@@ -109,6 +110,7 @@ function ContentBuilder.new()
     heading_highlights = {},
     heading_lines = {},
     heading_starts = {},
+    heading_labels = {},
     heading_positions = {},
     footnote_anchors = {},
     heading_anchors = {},
@@ -161,6 +163,7 @@ function ContentBuilder:result()
     heading_backend = self.heading_backend,
     heading_lines = self.heading_lines,
     heading_starts = self.heading_starts,
+    heading_labels = self.heading_labels,
     heading_positions = self.heading_positions,
     footnote_anchors = self.footnote_anchors,
     heading_anchors = heading_anchors,
@@ -1104,6 +1107,7 @@ function ContentBuilder:add_markdown_line(
   -- Register heading anchor (slug → rendered line)
   if heading_content then
     self.heading_starts[lines_before_fn] = true
+    self.heading_labels[lines_before_fn] = vim.trim(string.rep("#", level) .. " " .. heading_text)
     local heading_source = block_context and block_context.heading_source or heading_content
     local base_slug = markdown.heading_slug(heading_source, ref_links, footnote_map, block_context)
     if base_slug ~= "" then

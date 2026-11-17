@@ -346,7 +346,8 @@ Inside the preview window, the following Normal-mode keys are available.
 	`zR` / `zM`	Open / close all foldable and expandable blocks
 	`zj` / `zk`	Next fold start / previous fold end; counts work
 	`[[` / `]]`	Previous / next heading; counts work without wrapping
-	`gO`		Show a native heading location list; Enter jumps
+	`gO`		List full heading titles with their Markdown level in a
+			native location list; Enter jumps
 	`<CR>`		Follow a heading/footnote link within the document, open
 			an image (Snacks), or toggle a fold / expandable region
 	`gf` / `gF`	Open local links; gF also jumps to a source line,

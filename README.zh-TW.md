@@ -290,7 +290,7 @@ vim.keymap.set("n", "<leader>md", "<Plug>(md-render-demo)",        { desc = "Mar
 | `zR` / `zM` | 展開／收合全部可摺疊與可展開區塊 |
 | `zj` / `zk` | 下一個摺疊起點／上一個摺疊終點；支援數字前綴 |
 | `[[` / `]]` | 上一個／下一個標題；支援數字前綴，不循環跳轉 |
-| `gO` | 在原生 location list 列出標題，按 Enter 跳到所選標題 |
+| `gO` | 在原生 location list 列出完整標題與 Markdown 層級，按 Enter 跳到所選標題 |
 | `<CR>` | 跟隨文件內的標題或註腳連結、開啟圖片（Snacks 後端），或切換區塊的摺疊／展開 |
 | `gf` / `gF` | 開啟本機連結；`gF` 另跳到指定的來源行號 |
 | `<C-w>f` / `<C-w>F` | 在分割視窗開啟本機連結；`<C-w>gf`／`<C-w>gF` 則用新分頁 |

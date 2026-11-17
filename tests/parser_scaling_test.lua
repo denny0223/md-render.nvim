@@ -323,6 +323,22 @@ require("md-render.image").supports_kitty = function()
   return false
 end
 require("md-render").setup_highlights()
+
+-- An ordinary link-rich prefix must not increase the cost of indexing later footnotes.
+do
+  local b = ContentBuilder.new()
+  local links = { { url = "/earlier", col_start = 0, col_end = 1 } }
+  for _ = 1, 6000 do
+    b:add_simple_markdown("x", {}, links, "")
+  end
+  measured(function()
+    b:add_markdown_line("AA BB[^x]", "", 5, nil, nil, nil, { x = 1 })
+    b:add_markdown_line("again[^x]", "", 80, nil, nil, nil, { x = 1 })
+  end, 30000)
+  local row = assert(b.footnote_anchors["footnote-ref-x"])
+  assert(b.lines[row + 1] == "BB¹", "the backlink must target the first reference on its wrapped row")
+end
+
 local function document(source)
   local original = vim.deepcopy(source)
   local _, content = measured(function()

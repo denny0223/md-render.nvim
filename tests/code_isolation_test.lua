@@ -682,6 +682,32 @@ for _, marker in ipairs { "```", "~~~" } do
   assert_eq(c.link_metadata[1] and c.link_metadata[1].url, "/x", "outside definition retains its target")
 end
 
+-- Trailing spaces and tabs are allowed independently on either fence. All
+-- document passes must agree on which lines belong to the formula.
+for _, padding in ipairs { { "  ", "" }, { "", "\t" }, { "\t", " \t" } } do
+  local c, marks = build {
+    "Before",
+    "$$" .. padding[1],
+    "[inside]: /hidden",
+    "```",
+    "x",
+    "$$" .. padding[2],
+    "[after]: /outside",
+    "",
+    "[inside] [after]",
+  }
+  assert_eq(c.lines, { "Before", "[inside]: /hidden", "```", "x", "", "[inside] after" }, "root math owns its body")
+  assert_eq(c.source_line_map, { 1, 3, 4, 5, 8, 9 }, "padded math fences preserve source rows")
+  assert_eq(c.code_blocks, {}, "a fence inside padded math stays literal")
+  assert_eq(#c.link_metadata, 1, "the formula does not contribute link definitions")
+  assert_eq(c.link_metadata[1] and c.link_metadata[1].url, "/outside", "references after a padded closer resolve")
+  local math_rows = {}
+  for _, mark in ipairs(marks) do
+    if mark[4].hl_group == "MdRenderMath" then math_rows[#math_rows + 1] = mark[2] + 1 end
+  end
+  assert_eq(math_rows, { 2, 3, 4 }, "only the math body gets formula highlights")
+end
+
 do
   local c = build { "> $$", "> ```lua", "> local a = 1", "> ```", "> $$" }
   assert_eq(c.lines, { "│ $$", "│ local a = 1", "│ $$" }, "quoted math delimiters remain ordinary quote text")

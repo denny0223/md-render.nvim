@@ -1892,7 +1892,7 @@ local function strip_container_indent(lines)
         goto next_source
       end
     end
-    if not open_fence and not comment_state and line:match "^%$%$$" then
+    if not open_fence and not comment_state and Markdown.is_math_fence(line) then
       in_math = not in_math
       in_root_code, code_blanks = false, {}
       result[i] = line
@@ -2451,7 +2451,7 @@ local function join_paragraph_continuations(
         and not quote_prefix
         and not open_fence
         and not comment_state
-        and line:match "^%$%$$"
+        and Markdown.is_math_fence(line)
       if math_boundary then in_math = not in_math end
       if in_math or math_boundary then
         flush_para()
@@ -2634,7 +2634,7 @@ local function preprocess_multiline_html(lines, src_indices, container_indents, 
     if comment_state == "html" and comment_owner ~= origin.html then comment_state = nil end
     if origin.code then goto next_row end
     if idx <= reference_end then goto next_row end
-    local math_boundary = not origin.html and not open_fence and not comment_state and line:match "^%$%$$"
+    local math_boundary = not origin.html and not open_fence and not comment_state and Markdown.is_math_fence(line)
     if math_boundary then in_math = not in_math end
     if in_math or math_boundary or table_rows[src] then goto next_row end
     if not origin.html and not open_fence and not comment_state then
@@ -2696,7 +2696,7 @@ local function fenced_code_lines(
       and not quote_prefix
       and not open_fence
       and not comment_state
-      and line:match "^%$%$$"
+      and Markdown.is_math_fence(line)
     if origin.code then
       code_lines[src] = true
       goto next_line
@@ -3842,7 +3842,7 @@ function ContentBuilder:render_document(lines, opts)
 
     if skip_callout_body then goto continue end
 
-    if in_math_block and not line:match "^%$%$$" then
+    if in_math_block and not Markdown.is_math_fence(line) then
       self:add_line(indent .. line, { { col = 0, end_col = -1, hl = "MdRenderMath" } })
       lines_shown = lines_shown + 1
       goto continue
@@ -4829,7 +4829,7 @@ function ContentBuilder:render_document(lines, opts)
       end
     end
 
-    if not in_code_block and line:match "^%$%$$" then
+    if not in_code_block and Markdown.is_math_fence(line) then
       if not in_math_block then
         in_math_block = true
       else

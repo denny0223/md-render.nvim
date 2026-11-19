@@ -17,7 +17,7 @@ mkdir -p "$install_dir"
 
 if "$floating"; then
   asset_name=ffmpeg-master-latest-linux64-gpl.tar.xz
-  gh api repos/BtbN/FFmpeg-Builds/releases/tags/latest > "$results/ffmpeg-$series-release.json"
+  gh api repos/FFmpeg-Builds/FFmpeg-Builds/releases/tags/latest > "$results/ffmpeg-$series-release.json"
   read -r url checksum < <(python3 - "$results/ffmpeg-$series-release.json" "$asset_name" <<'PY'
 import json, sys
 release = json.load(open(sys.argv[1]))

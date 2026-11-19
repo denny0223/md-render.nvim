@@ -93,7 +93,8 @@ local function adjust_positions(highlights, links, removals, hl_count, link_coun
       sources:removals(removals)
     end
   end
-  if #removals == 0 or hl_count + link_count == 0 then return end
+  local math_dollars = highlights._math_dollars
+  if #removals == 0 or (hl_count + link_count == 0 and not math_dollars) then return end
   -- Each removal contributes a ramp over its source bytes. Token expansion
   -- contributes a negative jump instead. Prefix sums make each endpoint lookup
   -- logarithmic even when thousands of tags create thousands of highlights.
@@ -128,39 +129,49 @@ local function adjust_positions(highlights, links, removals, hl_count, link_coun
     local change = changes[last]
     return change and pos - change[2] * pos - change[3] or pos
   end
-  for i = 1, hl_count do
-    highlights[i].col = adjust(highlights[i].col)
-    highlights[i].end_col = adjust(highlights[i].end_col)
+  local function adjust_ranges(ranges, count)
+    for i = 1, count do
+      ranges[i].col = adjust(ranges[i].col)
+      ranges[i].end_col = adjust(ranges[i].end_col)
+    end
   end
+  adjust_ranges(highlights, hl_count)
+  if math_dollars then adjust_ranges(math_dollars, #math_dollars) end
   for i = 1, link_count do
     links[i].col_start = adjust(links[i].col_start)
     links[i].col_end = adjust(links[i].col_end)
   end
 end
 
+-- Every protected token embeds its index in the batch. Capture it directly so
+-- decoding a short link does work proportional to the link, even in a long paragraph.
+local function indexed_token_pattern(spans)
+  return "(" .. spans[1].placeholder:gsub("%d+", "(%%d+)") .. ")"
+end
+
+local function token_span(spans, token, index)
+  local span = spans[tonumber(index)]
+  if span and span.placeholder == token then return span end
+end
+
 --- Restore only tokens created by this render, keeping all ranges in byte coordinates.
 ---@param text string
----@param spans {placeholder: string, content: string}[]
+---@param spans {placeholder: string, content: string, dollar_digit?: boolean}[]
 ---@param hl_group string?
 ---@param highlights? MdRender.Markdown.Highlight[]
 ---@param links? MdRender.Markdown.Link[]
+---@param dollar_ranges? {col: integer, end_col: integer}[] restore only source dollars before digits and record their ranges
 ---@return string
-local function restore_spans(text, spans, hl_group, highlights, links)
+local function restore_spans(text, spans, hl_group, highlights, links, dollar_ranges)
   if #spans == 0 then return text end
   highlights, links = highlights or {}, links or {}
   local hl_count, link_count = #highlights, #links
-  local by_token, removals, shift = {}, {}, 0
+  local removals, shift = {}, 0
   local sources = highlights._source_map
   if sources then removals.source_edits = {} end
-  for _, span in ipairs(spans) do
-    by_token[span.placeholder] = span
-  end
-  -- Every token in a batch shares a PUA prefix/suffix and a decimal index.
-  -- gsub scans only the input: decoded Unicode can never become another token.
-  local pattern = spans[1].placeholder:gsub("%d+", "%%d+")
-  local rendered = text:gsub("()(" .. pattern .. ")", function(first, token)
-    local span = by_token[token]
-    if not span then return token end
+  local rendered = text:gsub("()" .. indexed_token_pattern(spans), function(first, token, index)
+    local span = token_span(spans, token, index)
+    if not span or (dollar_ranges and not span.dollar_digit) then return token end
     local col = first - 1 + shift
     span.col = col
     local count = #token - #span.content
@@ -173,6 +184,7 @@ local function restore_spans(text, spans, hl_group, highlights, links)
       }
     end
     if hl_group then highlights[#highlights + 1] = { col = col, end_col = col + #span.content, hl = hl_group } end
+    if dollar_ranges then dollar_ranges[#dollar_ranges + 1] = { col = col, end_col = col + #span.content } end
     shift = shift - count
     return span.content
   end)
@@ -183,23 +195,14 @@ end
 --- Reference identifiers use their source spelling, not decoded display text.
 local function restore_source(text, spans, sources)
   if #spans == 0 then return text end
-  local originals = {}
-  for _, span in ipairs(spans) do
-    originals[span.placeholder] = span.raw
-  end
-  local pattern = spans[1].placeholder:gsub("%d+", "%%d+")
-  if not sources then return (text:gsub(pattern, originals)) end
-  local edits, by_token = {}, {}
-  for _, span in ipairs(spans) do
-    by_token[span.placeholder] = span
-  end
-  text = text:gsub("()(" .. pattern .. ")", function(first, token)
-    local span = by_token[token]
+  local edits = sources and {}
+  text = text:gsub("()" .. indexed_token_pattern(spans), function(first, token, index)
+    local span = token_span(spans, token, index)
     if not span then return token end
-    edits[#edits + 1] = { first = first - 1, last = first - 1 + #token, value = span.raw_sources }
+    if edits then edits[#edits + 1] = { first = first - 1, last = first - 1 + #token, value = span.raw_sources } end
     return span.raw
   end)
-  sources:replace(edits)
+  if sources then sources:replace(edits) end
   return text
 end
 
@@ -242,32 +245,40 @@ local function extension_owned(inner, standard_spans, code_spans, autolink_spans
   return false
 end
 
---- Hide escaped punctuation until syntax recognition is finished.
-local function escape_backslashes(text, source, literal_autolinks, sources)
-  local escapes, result = {}, {}
+--- Hide escaped punctuation and mark dollars adjacent to a source digit.
+--- A digit exposed later by stripping markup has different math semantics.
+local function protect_inline_literals(text, source, literal_autolinks, sources)
+  local spans, result, has_dollars = {}, {}, false
   local edits = sources and {}
   local prefix = inline.token_prefix((source or "") .. text, 0xF1002)
   local i = 1
   while i <= #text do
-    local next_ch = text:sub(i + 1, i + 1)
-    local autolink_end = literal_autolinks and text:sub(i, i) == "<" and inline.autolink_end(text, i)
+    local char, next_ch = text:sub(i, i), text:sub(i + 1, i + 1)
+    local escaped = char == "\\" and next_ch ~= "" and ESCAPABLE_CHARS:find(next_ch, 1, true)
+    local dollar_digit = char == "$" and next_ch:match "%d" ~= nil
+    local autolink_end = literal_autolinks and char == "<" and inline.autolink_end(text, i)
     if autolink_end then
       result[#result + 1] = text:sub(i, autolink_end)
       i = autolink_end + 1
-    elseif text:sub(i, i) == "\\" and next_ch ~= "" and ESCAPABLE_CHARS:find(next_ch, 1, true) then
-      local placeholder = prefix .. (#escapes + 1) .. "\u{F1003}"
-      local span = { placeholder = placeholder, content = next_ch, raw = "\\" .. next_ch }
-      escapes[#escapes + 1] = span
-      if sources then sources:protect(edits, span, i - 1, i + 1, sources:slice(i, i + 1)) end
+    elseif escaped or dollar_digit then
+      local placeholder = prefix .. (#spans + 1) .. "\u{F1003}"
+      local last = escaped and i + 1 or i
+      local span = { placeholder = placeholder, raw = text:sub(i, last), content = escaped and next_ch or "$" }
+      spans[#spans + 1] = span
+      if dollar_digit then
+        span.dollar_digit = true
+        has_dollars = true
+      end
+      if sources then sources:protect(edits, span, i - 1, last, sources:slice(last - 1, last)) end
       result[#result + 1] = placeholder
-      i = i + 2
+      i = last + 1
     else
-      result[#result + 1] = text:sub(i, i)
+      result[#result + 1] = char
       i = i + 1
     end
   end
   if sources then sources:replace(edits) end
-  return table.concat(result), escapes
+  return table.concat(result), spans, has_dollars
 end
 
 --- Recognize references in the source, before removing any Markdown syntax.
@@ -903,12 +914,8 @@ local function truncate_url(url, max_width, literals)
   local tokens = {}
   for _, spans in ipairs(literals) do
     if #spans > 0 then
-      local by_token = {}
-      for _, span in ipairs(spans) do
-        by_token[span.placeholder] = span
-      end
-      url:gsub("()(" .. spans[1].placeholder:gsub("%d+", "%%d+") .. ")", function(pos, token)
-        tokens[pos] = by_token[token]
+      url:gsub("()" .. indexed_token_pattern(spans), function(pos, token, index)
+        tokens[pos] = token_span(spans, token, index)
       end)
     end
   end
@@ -1316,7 +1323,7 @@ local function process_issue_refs(text, repo_base_url, highlights, links)
       local start_col = #processed
       processed = processed .. issue_text
       add_link_highlight(highlights, start_col, start_col + #issue_text, url)
-      table.insert(links, { col_start = start_col, col_end = start_col + #issue_text, url = url })
+      table.insert(links, { col_start = start_col, col_end = start_col + #issue_text, url = url, _decoded = true })
       i = e + 1
     else
       processed = processed .. text:sub(i, i)
@@ -1355,7 +1362,7 @@ local function process_autolink_refs(text, autolinks, highlights, links)
           local start_col = #processed
           processed = processed .. ref_text
           add_link_highlight(highlights, start_col, start_col + #ref_text, url)
-          table.insert(links, { col_start = start_col, col_end = start_col + #ref_text, url = url })
+          table.insert(links, { col_start = start_col, col_end = start_col + #ref_text, url = url, _decoded = true })
           i = i + #ref_text
           matched = true
           break
@@ -1756,43 +1763,46 @@ end
 --- Process inline math $...$ by removing dollar signs and adding highlights.
 --- Skips $$ (display math) and content inside backticks.
 ---@param text string
----@param hl_group string
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
 ---@return string processed
-local function process_inline_math(text, hl_group, highlights, links)
-  local pre_hl_count = #highlights
-  local pre_link_count = #links
-  local removals = {}
-  local processed = ""
-  local i = 1
-  while i <= #text do
-    if text:sub(i, i) == "$" and text:sub(i, i + 1) ~= "$$" then
-      local e = text:find("%$", i + 1)
-      if e and e > i + 1 then
-        local content = text:sub(i + 1, e - 1)
-        if not content:match "^%s" and not content:match "%s$" then
-          table.insert(removals, { start = i - 1, count = 1 })
-          table.insert(removals, { start = e - 1, count = 1 })
-          local start_col = #processed
-          processed = processed .. content
-          table.insert(highlights, { col = start_col, end_col = start_col + #content, hl = hl_group })
-          i = e + 1
-        else
-          processed = processed .. "$"
-          i = i + 1
-        end
-      else
-        processed = processed .. "$"
-        i = i + 1
-      end
+local function process_inline_math(text, highlights, links)
+  local dollar_ranges = highlights._math_dollars
+  highlights._math_dollars = nil
+  local first = text:find("$", 1, true)
+  if not first then return text end
+  local cannot_close = {}
+  for _, range in ipairs(dollar_ranges or {}) do
+    -- A URL may since have taken ownership of the whole range.
+    if range.end_col == range.col + 1 then cannot_close[range.col + 1] = true end
+  end
+  local hl_count, link_count = #highlights, #links
+  local parts, removals, start = {}, {}, 1
+  while first do
+    local last = text:find("$", first + 1, true)
+    if not last then break end
+    if
+      last > first + 1
+      and not cannot_close[last]
+      and not text:sub(first + 1, first + 1):match "%s"
+      and not text:sub(last - 1, last - 1):match "%s"
+    then
+      local col = first - 1 - #removals
+      parts[#parts + 1] = text:sub(start, first - 1)
+      parts[#parts + 1] = text:sub(first + 1, last - 1)
+      removals[#removals + 1] = { start = first - 1, count = 1 }
+      removals[#removals + 1] = { start = last - 1, count = 1 }
+      highlights[#highlights + 1] = { col = col, end_col = col + last - first - 1, hl = "MdRenderMath" }
+      start = last + 1
+      first = text:find("$", start, true)
     else
-      processed = processed .. text:sub(i, i)
-      i = i + 1
+      first = last
     end
   end
-  adjust_positions(highlights, links, removals, pre_hl_count, pre_link_count)
-  return processed
+  if #removals == 0 then return text end
+  parts[#parts + 1] = text:sub(start)
+  adjust_positions(highlights, links, removals, hl_count, link_count)
+  return table.concat(parts)
 end
 
 --- Keep remaining HTML tags with a dim highlight (tags not handled by process_html_tags)
@@ -2213,7 +2223,7 @@ Markdown.render = function(
     or (autolinks and #autolinks > 0)
     or (footnote_map and next(footnote_map) and rendered_text:find "%[%^")
   -- Declare locals before the fast-path goto so they are in scope at ::finalize::
-  local backslash_escapes, entity_spans, autolink_spans, emphasis_spans, emphasis_pairs, comment_spans
+  local literal_spans, has_dollars, entity_spans, autolink_spans, emphasis_spans, emphasis_pairs, comment_spans
   local standard_spans, html_ranges, html_spans, html_pos, nested_html, failed_html
   local decode_url, source_label
 
@@ -2262,17 +2272,17 @@ Markdown.render = function(
   end, sources)
   rendered_text, entity_spans = protect_entities(rendered_text, text, nil, sources)
   rendered_text, comment_spans = protect_comments(rendered_text, text, sources)
-  rendered_text, backslash_escapes = escape_backslashes(rendered_text, text, true, sources)
+  rendered_text, literal_spans, has_dollars = protect_inline_literals(rendered_text, text, true, sources)
 
   decode_url = function(url)
-    return restore_spans(restore_spans(restore_spans(url, comment_spans), backslash_escapes), entity_spans)
+    return restore_spans(restore_spans(restore_spans(url, comment_spans), literal_spans), entity_spans)
   end
   source_label = function(label)
     label = restore_source(label, comment_spans)
     label = restore_source(label, hard_break_spans)
     label = restore_source(restore_source(label, emphasis_spans), autolink_spans)
     return restore_source(
-      restore_source(restore_source(restore_source(label, entity_spans), backslash_escapes), code_spans),
+      restore_source(restore_source(restore_source(label, entity_spans), literal_spans), code_spans),
       invalid_destinations
     )
   end
@@ -2329,12 +2339,19 @@ Markdown.render = function(
     html_pos = (html_end or html_pos) + 1
   end
   rendered_text, html_spans = protect_ranges(rendered_text, text, html_ranges, highlights, links)
+  -- URLs and custom prefixes match the original dollar and digit. Keep the
+  -- visible dollar ranges through the remaining presentation-only edits.
+  if has_dollars then
+    local ranges = {}
+    rendered_text = restore_spans(rendered_text, literal_spans, nil, highlights, links, ranges)
+    if #ranges > 0 then highlights._math_dollars = ranges end
+  end
   rendered_text = process_bare_urls(
     rendered_text,
     semantic and math.huge or MAX_URL_DISPLAY_WIDTH,
     highlights,
     links,
-    { backslash_escapes, entity_spans },
+    { literal_spans, entity_spans },
     code_spans,
     autolink_spans,
     emphasis_spans,
@@ -2347,11 +2364,11 @@ Markdown.render = function(
   rendered_text = process_tags(rendered_text, highlights)
   rendered_text = restore_emphasis(rendered_text, emphasis_spans, emphasis_pairs, highlights, links)
   rendered_text = process_paired_markers(rendered_text, "==([^=]+)==", "MdRenderHighlight", 2, highlights, links)
-  rendered_text = process_inline_math(rendered_text, "MdRenderMath", highlights, links)
+  rendered_text = process_inline_math(rendered_text, highlights, links)
   rendered_text = restore_spans(rendered_text, html_spans, nil, highlights, links)
 
   -- Restore each source token once. Decoded destinations from reference
-  -- definitions already crossed this boundary and must not be interpreted again.
+  -- definitions and configured URLs are already literal and bypass decoding.
   for _, link in ipairs(links) do
     if not link._decoded then link.url = decode_url(link.url) end
     link._decoded = nil
@@ -2364,7 +2381,7 @@ Markdown.render = function(
   end
   rendered_text = restore_spans(rendered_text, nested_html, "Comment", highlights, links)
   rendered_text = restore_spans(rendered_text, autolink_spans, nil, highlights, links)
-  rendered_text = restore_spans(rendered_text, backslash_escapes, nil, highlights, links)
+  rendered_text = restore_spans(rendered_text, literal_spans, nil, highlights, links)
   rendered_text = restore_spans(rendered_text, code_spans, "MdRenderInlineCode", highlights, links)
   rendered_text = restore_spans(rendered_text, entity_spans, nil, highlights, links)
   -- Entity line endings are inline whitespace, never additional buffer rows.

@@ -67,6 +67,7 @@ vim.system = function(cmd, opts, callback)
     "Puppeteer config search is not bounded"
   )
   if cmd[1] == "npx" then
+    assert(opts.timeout == 600000, "allow ten minutes for npm to install Mermaid and its browser")
     assert(cmd[2] == "--prefix" and cmd[3] == opts.cwd)
     assert(vim.tbl_contains(cmd, "@mermaid-js/mermaid-cli@12.0.0"))
     assert(uv.fs_readlink(opts.cwd .. "/node_modules/.bin/node") == trusted_node, "npm must use the user's Node")
@@ -113,6 +114,7 @@ vim.system = function(cmd, opts, callback)
       diagnosed = true
     end
   else
+    assert(opts.timeout == 30000, "an installed Mermaid CLI should keep the 30-second render timeout")
     assert(
       cmd[1] == "mmdc" and not vim.tbl_contains(cmd, "--prefix"),
       "npm options must not reach the installed renderer"

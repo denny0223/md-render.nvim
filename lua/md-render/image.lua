@@ -742,6 +742,7 @@ local function render_mermaid_file(source, cmd_prefix, cache_path, run)
     local cmd = build_mmdc_cmd(cmd_prefix, input, output)
     local opts = { text = true, timeout = 30000, cwd = tmp_dir }
     if cmd_prefix[1] == "npx" then
+      opts.timeout = 600000 -- A first install of the CLI and its browser can take minutes.
       -- cwd alone still lets npm discover a package.json/.npmrc in an ancestor.
       table.insert(cmd, 2, tmp_dir)
       table.insert(cmd, 2, "--prefix")

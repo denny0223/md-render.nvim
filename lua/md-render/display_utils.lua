@@ -224,7 +224,13 @@ M._LANG_ALIASES = LANG_ALIASES
 ---@param buf integer
 ---@param ns integer
 ---@param content MdRender.Content
-function M.apply_treesitter_highlights(buf, ns, content)
+---@param previous? integer[] Syntax extmarks to replace within the shared render namespace
+---@return integer[] marks
+function M.apply_treesitter_highlights(buf, ns, content, previous)
+  for _, id in ipairs(previous or {}) do
+    vim.api.nvim_buf_del_extmark(buf, ns, id)
+  end
+  local marks = {}
   for _, block in ipairs(content.code_blocks or {}) do
     local prefix_len = block.prefix_len or 0
     local code_lines
@@ -270,17 +276,19 @@ function M.apply_treesitter_highlights(buf, ns, content)
       local end_line_text = content.lines[buf_er + 1]
       if end_line_text and buf_ec > #end_line_text then buf_ec = #end_line_text end
 
-      pcall(vim.api.nvim_buf_set_extmark, buf, ns, buf_sr, buf_sc, {
+      local placed, mark = pcall(vim.api.nvim_buf_set_extmark, buf, ns, buf_sr, buf_sc, {
         end_row = buf_er,
         end_col = buf_ec,
         hl_group = "@" .. name .. "." .. lang,
         priority = 4200,
       })
+      if placed then marks[#marks + 1] = mark end
       ::skip_capture::
     end
 
     ::continue::
   end
+  return marks
 end
 
 --- Keep the same source passage and heading character when reflow changes rows.
@@ -349,11 +357,55 @@ local function apply_heading_highlights(buf, ns, row, groups, length)
   end
 end
 
+-- Both full rebuilds and single-row edits install the same extmarks.
+function M.apply_inline_marks(buf, ns, content, offset, only)
+  for _, hl_info in ipairs(content.highlights) do
+    local line_text = content.lines[hl_info.line + 1]
+    if line_text and (not only or only == hl_info.line) then
+      if content.heading_lines and content.heading_lines[hl_info.line] then
+        apply_heading_highlights(buf, ns, hl_info.line + offset, hl_info.groups, #line_text)
+        goto next_highlight
+      end
+      for _, group in ipairs(hl_info.groups) do
+        local end_col = group.end_col
+        if end_col == -1 or end_col > #line_text then end_col = #line_text end
+        local extmark_opts = {
+          end_col = end_col,
+          hl_group = group.hl,
+        }
+        if group.hl_eol then extmark_opts.hl_eol = true end
+        vim.api.nvim_buf_set_extmark(buf, ns, hl_info.line + offset, group.col, extmark_opts)
+      end
+    end
+    ::next_highlight::
+  end
+
+  for _, link in ipairs(content.link_metadata) do
+    local line_text = content.lines[link.line + 1]
+    if line_text and (not only or only == link.line) then
+      local col_start = link.col_start
+      local col_end = link.col_end
+      if col_start > #line_text then goto next_link end
+      if col_end > #line_text then col_end = #line_text end
+      vim.api.nvim_buf_set_extmark(buf, ns, link.line + offset, col_start, {
+        end_col = col_end,
+        -- Heading links already belong to the ordered style stack.
+        hl_group = not (content.heading_lines and content.heading_lines[link.line])
+            and require("md-render.links").highlight(link.url)
+          or nil,
+        url = link.url,
+      })
+    end
+    ::next_link::
+  end
+end
+
 --- Apply highlights, link extmarks, and optional title extmark to a buffer
 ---@param buf integer
 ---@param ns integer
 ---@param content MdRender.Content
 ---@param opts? { title_url?: string }
+---@return integer[] syntax_marks
 function M.apply_content_to_buffer(buf, ns, content, opts)
   opts = opts or {}
   local was_modified = vim.bo[buf].modified
@@ -379,45 +431,7 @@ function M.apply_content_to_buffer(buf, ns, content, opts)
   -- preview buffer.
   vim.bo[buf].modified = was_modified
 
-  for _, hl_info in ipairs(content.highlights) do
-    local line_text = content.lines[hl_info.line + 1]
-    if line_text then
-      if content.heading_lines and content.heading_lines[hl_info.line] then
-        apply_heading_highlights(buf, ns, hl_info.line, hl_info.groups, #line_text)
-        goto next_highlight
-      end
-      for _, group in ipairs(hl_info.groups) do
-        local end_col = group.end_col
-        if end_col == -1 or end_col > #line_text then end_col = #line_text end
-        local extmark_opts = {
-          end_col = end_col,
-          hl_group = group.hl,
-        }
-        if group.hl_eol then extmark_opts.hl_eol = true end
-        vim.api.nvim_buf_set_extmark(buf, ns, hl_info.line, group.col, extmark_opts)
-      end
-    end
-    ::next_highlight::
-  end
-
-  for _, link in ipairs(content.link_metadata) do
-    local line_text = content.lines[link.line + 1]
-    if line_text then
-      local col_start = link.col_start
-      local col_end = link.col_end
-      if col_start > #line_text then goto next_link end
-      if col_end > #line_text then col_end = #line_text end
-      vim.api.nvim_buf_set_extmark(buf, ns, link.line, col_start, {
-        end_col = col_end,
-        -- Heading links already belong to the ordered style stack.
-        hl_group = not (content.heading_lines and content.heading_lines[link.line])
-            and require("md-render.links").highlight(link.url)
-          or nil,
-        url = link.url,
-      })
-    end
-    ::next_link::
-  end
+  M.apply_inline_marks(buf, ns, content, 0)
 
   if opts.title_url and content.title_line and content.title_text then
     vim.api.nvim_buf_set_extmark(buf, ns, content.title_line, 0, {
@@ -426,7 +440,7 @@ function M.apply_content_to_buffer(buf, ns, content, opts)
     })
   end
 
-  M.apply_treesitter_highlights(buf, ns, content)
+  return M.apply_treesitter_highlights(buf, ns, content)
 end
 
 --- Separator placed between footer segments.  Two spaces rather than a

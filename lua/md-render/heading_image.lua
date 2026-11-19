@@ -140,6 +140,14 @@ local function paint_links(state, visible)
   return true
 end
 
+-- :highlight has no change event. Compare only groups used when shaping.
+function M.highlights_changed(content)
+  for name, style in pairs(content.heading_highlights or {}) do
+    if not vim.deep_equal(style, vim.api.nvim_get_hl(0, { name = name, link = false })) then return true end
+  end
+  return false
+end
+
 local function paint(state)
   if state.closed or not vim.api.nvim_win_is_valid(state.win) then return end
   if
@@ -150,20 +158,13 @@ local function paint(state)
     erase(state)
     return
   end
-  -- :highlight has no change event. Compare the groups used when shaping,
-  -- withdraw stale pixels now, and let the existing cache rebuild once.
   local custom_highlights = require("md-render.heading_feedback").custom_highlights(state.win)
-  if not state.force_text and not custom_highlights then
-    for name, style in pairs(state.content.heading_highlights or {}) do
-      if not vim.deep_equal(style, vim.api.nvim_get_hl(0, { name = name, link = false })) then
-        state.force_text = true
-        vim.schedule(function()
-          local preview = package.loaded["md-render.preview"]
-          if not state.closed and preview then preview.rebuild_visible() end
-        end)
-        break
-      end
-    end
+  if not state.force_text and not custom_highlights and M.highlights_changed(state.content) then
+    state.force_text = true
+    vim.schedule(function()
+      local preview = package.loaded["md-render.preview"]
+      if not state.closed and preview then preview.rebuild_visible() end
+    end)
   end
   local active = vim.api.nvim_get_current_win() == state.win
   local feedback, interacting = require("md-render.heading_feedback").protected(state, state.content.text_placements)

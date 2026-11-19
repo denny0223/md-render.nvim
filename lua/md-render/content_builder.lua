@@ -68,11 +68,14 @@
 ---@field heading_highlights table<string, table> resolved groups used by image layouts
 ---@field heading_backend? "image"|"native"|"plain" renderer used to build this content
 ---@field heading_fallback? string document-level reason for ordinary headings
+---@field image_heading_fallback? boolean at least one image heading used ordinary text
 ---@field heading_lines table<integer, boolean> heading rows with ordered styles (0-indexed)
 ---@field heading_starts table<integer, boolean> first rendered row of every heading (0-indexed)
 ---@field heading_positions table<integer, {byte: integer, col: integer, length: integer}> heading byte ranges (1-indexed rows)
 ---@field footnote_anchors table<string, integer> anchor name → 0-indexed line number
 ---@field heading_anchors table<string, integer> heading slug → 0-indexed line number
+---@field dynamic_media? boolean graphics support when media layout consulted it
+---@field paragraph_rows table<integer, integer> first rendered row of each independently renderable paragraph, indexed by source row
 ---@field source_line_map integer[] rendered line index (1-based) → source line number (1-based)
 ---@field title_line? integer
 ---@field title_text? string
@@ -89,6 +92,8 @@
 ---@field image_placements MdRender.ImagePlacement[]
 ---@field text_placements MdRender.TextPlacement[]
 ---@field footnote_anchors table<string, integer>
+---@field dynamic_media? boolean graphics support when media layout consulted it
+---@field paragraph_rows table<integer, integer> first rendered row of each independently renderable paragraph, indexed by source row
 ---@field source_line_map integer[]
 ---@field private _current_source_line integer
 local ContentBuilder = {}
@@ -113,6 +118,7 @@ function ContentBuilder.new()
     footnote_anchors = {},
     heading_anchors = {},
     heading_duplicates = {},
+    paragraph_rows = {},
     source_line_map = {},
     text_scale = true,
     _current_source_line = 0,
@@ -122,6 +128,13 @@ end
 ---@param source_line integer 1-indexed source line number
 function ContentBuilder:set_source_line(source_line)
   self._current_source_line = source_line
+end
+
+-- Once a block uses graphics, later blocks cannot make the document's
+-- layout independent of them. Nil means no capability check was needed.
+local function record_media_support(builder, supported)
+  if supported ~= nil then builder.dynamic_media = builder.dynamic_media or supported end
+  return supported
 end
 
 ---@param text string
@@ -159,11 +172,14 @@ function ContentBuilder:result()
     heading_layouts = self.heading_layouts,
     heading_highlights = self.heading_highlights,
     heading_backend = self.heading_backend,
+    image_heading_fallback = self.image_heading_fallback,
     heading_lines = self.heading_lines,
     heading_starts = self.heading_starts,
     heading_positions = self.heading_positions,
     footnote_anchors = self.footnote_anchors,
     heading_anchors = heading_anchors,
+    paragraph_rows = self.paragraph_rows,
+    dynamic_media = self.dynamic_media,
     source_line_map = self.source_line_map,
   }
 end
@@ -594,8 +610,9 @@ function ContentBuilder:add_table(
     end
     return
   end
-  local lines, per_line_hls, per_line_links, tbl_image_placements, src_offsets =
+  local lines, per_line_hls, per_line_links, tbl_image_placements, src_offsets, dynamic_media =
     markdown_table.render(parsed, indent, max_width, buf_dir)
+  record_media_support(self, dynamic_media)
   local base_line = #self.lines
   -- For pipe tables, table_lines[i] corresponds to source line
   -- (caller's _current_source_line + i - 1). Use the offset returned by
@@ -1070,6 +1087,7 @@ function ContentBuilder:add_markdown_line(
     and self.text_scale
     and image_heading
     and self:add_image_heading(rendered_text, md_highlights, md_links, indent, max_width, level)
+  if self.text_scale and image_heading and not image_added then self.image_heading_fallback = true end
   if spec then
     self:add_native_heading(rendered_text, md_highlights, md_links, indent, spec, level, max_width)
   elseif not image_added then
@@ -2888,6 +2906,7 @@ function ContentBuilder:render_document(lines, opts)
   opts = opts or {}
   self._details_prefix_width, self._details_indent = nil, nil
   local markdown = require "md-render.markdown"
+  local original_lines = lines
   lines = vim.tbl_map(require("md-render.character_references").normalize_nul, lines)
 
   -- Track each transformed line back to its original buffer line so
@@ -3591,7 +3610,8 @@ function ContentBuilder:render_document(lines, opts)
         has_renderer, get_cached = image.has_plantuml, image.get_plantuml_cached
         title, loading_name = "PlantUML", "PlantUML"
       end
-      if image.supports_kitty() and has_renderer(true) then
+      local graphics = record_media_support(self, image.supports_kitty())
+      if graphics and has_renderer(true) then
         local source = table.concat(code_source_lines, "\n")
         discard_code_rows()
 
@@ -5135,7 +5155,7 @@ function ContentBuilder:render_document(lines, opts)
           local orig_img_w, orig_img_h
           local image_width, indent_width = image_columns(indent)
 
-          local graphics = img_entry.path ~= "" and image.supports_kitty()
+          local graphics = img_entry.path ~= "" and record_media_support(self, image.supports_kitty())
           if graphics and is_video then
             -- Video files: skip image_dimensions validation
             src_url = image.is_url(img_entry.path) and img_entry.path or nil
@@ -5310,6 +5330,7 @@ function ContentBuilder:render_document(lines, opts)
           if in_details and details_summary_rendered and not skip_details_body then
             text_width = math.max(1, text_width - vim.fn.strdisplaywidth "│ ")
           end
+          local paragraph = paragraph_sources[src_indices[src_idx]]
           local alert_type, fold_mod = self:add_markdown_line(
             line,
             indent,
@@ -5318,11 +5339,32 @@ function ContentBuilder:render_document(lines, opts)
             autolinks,
             ref_links,
             footnote_map,
-            paragraph_sources[src_indices[src_idx]],
+            paragraph,
             { heading_level = setext_rank, list_marker = leaf_marker, quote_prefix = quote_prefix }
           )
           self.text_scale = text_scale
           local lines_after = #self.lines
+          -- A whole physical paragraph can also be laid out independently.
+          -- Exclude brackets and HTML, whose ownership can depend on reference
+          -- definitions or tags elsewhere in the document.
+          local src = src_indices[src_idx]
+          if
+            paragraph
+            and #paragraph == 1
+            and lines_after > lines_before
+            and not in_details
+            and not current_alert_type
+            and not is_heading
+            and not origin.html
+            and not origin.list_column
+            and #origin.quote_columns == 0
+            and (not original_lines[src - 1] or original_lines[src - 1] == "")
+            and (not original_lines[src + 1] or original_lines[src + 1] == "")
+            and original_lines[src]:match "^[%a\128-\255]"
+            and not original_lines[src]:find "[<%[]"
+          then
+            self.paragraph_rows[src + source_line_offset] = lines_before + 1
+          end
           if alert_type then
             for index = #callout_ranges, 1, -1 do
               local range = callout_ranges[index]

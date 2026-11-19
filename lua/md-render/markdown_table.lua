@@ -267,6 +267,7 @@ end
 ---@return {line: integer, col_start: integer, col_end: integer, url: string}[][] per_line_links
 ---@return table[] image_placements
 ---@return integer[] per_line_source_offsets 0-based offset into the original table source rows for each output line: 0=header, 1=separator, 2+N=Nth data row
+---@return boolean? dynamic_media graphics support when media layout consulted it
 function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
   local out_lines = {}
   local out_highlights = {}
@@ -352,11 +353,15 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
   end
 
   -- Pre-detect images and calculate display sizes for column width fitting
+  local dynamic_media
   local row_images_cache = {} -- row_idx -> col -> {alt, url, resolved, src_url, img_w, img_h}
   local col_image_widths = {} -- col -> max display_cols across all image rows
   do
     local image_mod = require "md-render.image"
-    if image_mod.supports_kitty() then
+    if not image_mod.supports_kitty() then
+      -- Image cell detection is skipped until graphics support is available.
+      dynamic_media = false
+    else
       buf_dir = buf_dir or vim.fn.expand "%:p:h"
       local indent_width = vim.api.nvim_strwidth(indent)
       local overhead = indent_width + num_cols * (sep_width + 2) + sep_width
@@ -371,6 +376,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
             if raw then
               local alt, url, is_video, href = cell_image(row[col], raw)
               if alt and url and url ~= "" and not image_mod.is_badge_url(url) then
+                dynamic_media = true
                 local resolved, src_url, img_w, img_h
                 if is_video then
                   src_url = image_mod.is_url(url) and url or nil
@@ -844,7 +850,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
     end
   end
 
-  return out_lines, out_highlights, out_links, out_image_placements, out_source_offsets
+  return out_lines, out_highlights, out_links, out_image_placements, out_source_offsets, dynamic_media
 end
 
 return MarkdownTable

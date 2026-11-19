@@ -172,7 +172,7 @@ function M.pad_icon(icon)
   return icon
 end
 
-local function resolve_file(filename)
+local function lookup_file(filename)
   -- Try nvim-web-devicons
   local ok, devicons = pcall(require, "nvim-web-devicons")
   if ok then
@@ -207,6 +207,35 @@ local function resolve_file(filename)
 
   -- Default file icon
   return "", nil, "generic"
+end
+
+-- A provider may load or change its glyphs between edits. Record the actual
+-- lookups, including embedded media, while rendering this document.
+local collectors = {}
+function M.collect_file_icons(render, ...)
+  local thread = coroutine.running() or false
+  local previous, used = collectors[thread], {}
+  collectors[thread] = used
+  local ok, content = pcall(render, ...)
+  collectors[thread] = previous
+  if not ok then error(content, 0) end
+  return content, used
+end
+
+local function resolve_file(filename)
+  local icon, hl, source = lookup_file(filename)
+  local used = collectors[coroutine.running() or false]
+  if used then used[filename] = { icon = icon, hl = hl, source = source } end
+  return icon, hl, source
+end
+
+function M.file_icons_changed(used)
+  for name, previous in pairs(used) do
+    local icon, hl, source = lookup_file(name)
+    -- Unicode media treats built-in icons differently from provider icons.
+    if icon ~= previous.icon or hl ~= previous.hl or source ~= previous.source then return true end
+  end
+  return false
 end
 
 local function resolve_media(path, kind)

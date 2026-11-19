@@ -175,7 +175,69 @@ if has_telescope then
   real:teardown()
   vim.wait(100)
   assert(#rendered == count, "Telescope teardown left a pending render")
-  print "Real Telescope dependency: same-file hits, debounce, empty results, line limit and teardown OK"
+
+  -- The jumplist picker captures positions inside the Insert mapping, before its prompt opens.
+  local child = vim.fn.jobstart(
+    { vim.v.progpath, "--embed", "--headless", "-n", "-u", "NONE", "--noplugin", "-i", "NONE" },
+    { rpc = true, env = { NVIM_LOG_FILE = root .. "/jumplist.log" } }
+  )
+  local function lua(code)
+    return vim.rpcrequest(child, "nvim_exec_lua", code, {})
+  end
+  local function input(keys, condition, message)
+    vim.rpcrequest(child, "nvim_input", keys)
+    assert(
+      vim.wait(2000, function()
+        return lua(condition)
+      end),
+      message
+    )
+  end
+  local ok, err = pcall(function()
+    lua [[
+      vim.opt.rtp:prepend(vim.env.MD_RENDER_PLENARY_PATH)
+      vim.opt.rtp:prepend(vim.env.MD_RENDER_TELESCOPE_PATH)
+      vim.opt.rtp:prepend(vim.fn.getcwd())
+      require("telescope").setup { defaults = { history = false } }
+      require("md-render.text_size").setup { enabled = false }
+      local preview = require "md-render.preview"
+      vim.api.nvim_buf_set_name(0, vim.fn.tempname() .. ".md")
+      vim.bo.filetype = "markdown"
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, { "# Prefix", "", "body", "", "# Target" })
+      preview.toggle()
+      render = vim.api.nvim_get_current_buf()
+      original_row = vim.fn.search("Target")
+      assert(original_row > 0)
+      vim.cmd.clearjumps()
+      vim.cmd("normal! m'")
+      preview.toggle()
+      vim.api.nvim_win_set_cursor(0, { 1, 0 })
+      vim.api.nvim_create_autocmd("TextChangedI", { buffer = 0, once = true, callback = function() edited = true end })
+      vim.keymap.set("i", "<F8>", function()
+        require("telescope.builtin").jumplist { default_text = "Target", previewer = false }
+      end, { buffer = 0 })
+    ]]
+    input("O# New", "return edited == true", "missing Insert edit")
+    input(
+      "<F8>",
+      [[
+        local entry = require("telescope.actions.state").get_selected_entry()
+        return vim.bo.filetype == "TelescopePrompt" and entry ~= nil and entry.bufnr == render
+          and entry.text:find("Target") ~= nil
+      ]],
+      "missing rendered Target in the jumplist picker"
+    )
+    local selected_row = lua [[return require("telescope.actions.state").get_selected_entry().lnum]]
+    input("<CR>", "return vim.api.nvim_get_current_buf() == render", "jumplist selection did not open the render")
+    local landed = lua [[return { row = vim.fn.line("."), text = vim.fn.getline("."), original = original_row }]]
+    assert(
+      landed.row == selected_row and landed.row > landed.original and landed.text:find("Target", 1, true),
+      "jumplist selected row " .. selected_row .. " and landed at " .. vim.inspect(landed)
+    )
+  end)
+  vim.fn.jobstop(child)
+  assert(ok, err)
+  print "Real Telescope dependency: previews, teardown and rendered jumplist selection OK"
 else
   print "SKIP real Telescope picker contract: set MD_RENDER_TELESCOPE_PATH and MD_RENDER_PLENARY_PATH"
 end

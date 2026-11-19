@@ -51,6 +51,18 @@ local callouts = {
 }
 
 providers()
+do
+  local _, outer = icons.collect_file_icons(function()
+    icons.get_file_icon "outer.lua"
+    local ok = pcall(icons.collect_file_icons, function()
+      icons.get_image_icon "inner.png"
+      error "render interrupted"
+    end)
+    assert(not ok)
+    icons.get_image_icon "last.png"
+  end)
+  eq(vim.fn.sort(vim.tbl_keys(outer)), { "last.png", "outer.lua" }, "failed nested renders restore the outer collector")
+end
 local captured_lookup = icons.get_file_icon
 for _, style in ipairs { "nerd", "unicode", "nerd" } do
   icons.setup { style = style }

@@ -201,7 +201,29 @@ assert(
   "Node directory creation error launched npm or leaked its partial directory"
 )
 vim.fn.mkdir = original.mkdir
-fail, local_mmdc = false, true
+fail = false
+
+local notify_once, timeout_message = vim.notify_once
+vim.notify_once = function(message)
+  timeout_message = message
+end
+local next_job = #jobs + 1
+done = false
+image.render_mermaid_async("graph LR; slow-->install", function(path)
+  done, answer = true, path
+end)
+assert(vim.wait(2000, function()
+  return jobs[next_job] ~= nil
+end))
+jobs[next_job].callback { code = 124, stderr = "npm warn deprecated dependency\n" }
+assert(vim.wait(2000, function()
+  return done
+end) and not answer)
+local expected = "exited with code 124 (configured timeout: 600 seconds): npm warn deprecated dependency"
+assert(timeout_message and timeout_message:find(expected, 1, true), timeout_message)
+vim.notify_once = notify_once
+
+local_mmdc = true
 vim.fn.exepath = function(name)
   return name == "node" and "" or original.exepath(name)
 end

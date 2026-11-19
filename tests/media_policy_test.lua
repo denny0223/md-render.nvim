@@ -315,11 +315,18 @@ image.setup { plantuml_server = "" }
 -- Keep renderer failures distinct from missing/invalid output and cache errors.
 do
   local system, notify, rename = vim.system, vim.notify_once, uv.fs_rename
+  local wrapper = file(
+    "exit-124.lua",
+    [[
+io.stderr:write("Error: wrapper stopped before rendering\n")
+os.exit(124)
+]]
+  )
   local outcome, output, message
   vim.notify_once = function(value)
     message = value
   end
-  vim.system = function(cmd, _, callback)
+  vim.system = function(cmd, opts, callback)
     assert(cmd[1] == "mmdc")
     for i, arg in ipairs(cmd) do
       if arg == "-o" then output = cmd[i + 1] end
@@ -331,10 +338,23 @@ do
     elseif outcome ~= "missing" then
       assert(uv.fs_copyfile("tests/fixtures/test_4x4.png", output))
     end
-    local result = {
-      code = outcome == "stderr" and 2 or 0,
-      stderr = outcome == "stderr" and "Error: \27[31m\0\t" .. string.rep("測試", 300) .. "\n" or "",
-    }
+    local result = { code = 0 }
+    if outcome == "wrapper-124" then
+      return original.system(
+        { vim.v.progpath, "--headless", "-u", "NONE", "--noplugin", "-l", wrapper },
+        opts,
+        callback
+      )
+    elseif outcome == "silent-124" then
+      result = { code = 124 }
+    elseif outcome == "stderr" then
+      result = {
+        code = 2,
+        stderr = "npm warn deprecated dependency\nError: Parse error on line 2: \27[31m\0\t"
+          .. string.rep("測試", 300)
+          .. "\n",
+      }
+    end
     return {
       wait = function()
         if callback then callback(result) end
@@ -347,7 +367,9 @@ do
     { "empty", "produced no PNG output" },
     { "invalid", "produced invalid PNG output" },
     { "rename", "could not publish mmdc (Mermaid) output to the media cache: EACCES" },
-    { "stderr", "failed (exit 2)" },
+    { "stderr", "failed (exit 2): Error: Parse error on line 2:" },
+    { "wrapper-124", "exited with code 124 (configured timeout: 30 seconds): Error: wrapper stopped before rendering" },
+    { "silent-124", "exited with code 124 (configured timeout: 30 seconds); run :checkhealth" },
   } do
     outcome, message = case[1], nil
     local source = "graph LR\nA-->B: " .. outcome

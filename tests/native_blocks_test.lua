@@ -182,7 +182,12 @@ local document = {
   "",
   "## <em>?!</em>",
   "",
-  "## A long heading that wraps onto several rendered rows",
+  "A long **heading** that wraps onto several rendered rows",
+  "---",
+  "",
+  "> ###### Nested heading",
+  "",
+  "######",
 }
 for _, mode in ipairs { "toggle", "split", "float", "tab", "pager" } do
   for _, w in ipairs(vim.api.nvim_list_wins()) do
@@ -251,7 +256,23 @@ for _, mode in ipairs { "toggle", "split", "float", "tab", "pager" } do
   feed "gO"
   local list_win = vim.api.nvim_get_current_win()
   local outline_items = vim.fn.getloclist(render_win)
-  eq(#outline_items, 6, mode .. " outline includes empty-slug headings and one entry per wrapped heading")
+  eq(
+    vim.tbl_map(function(item)
+      return item.text
+    end, outline_items),
+    {
+      "# Start",
+      "# End",
+      "## !!!",
+      "## 😀",
+      "## ?!",
+      "## A long heading that wraps onto several rendered rows",
+      "###### Nested heading",
+      "######",
+    },
+    mode .. " outline shows one full ranked title per heading"
+  )
+  eq(session.content.source_line_map[outline_items[6].lnum], 24, mode .. " wrapped Setext title targets its source row")
   local outline_end = 2
   vim.api.nvim_set_current_win(render_win)
   feed "zC"

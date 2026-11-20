@@ -278,6 +278,7 @@ test("native layout uses the same parsed levels and excludes empty placements", 
     "native text and empty rows"
   )
   local styled = build({ rich }, { text_scale = true, max_width = 40 })
+  eq(styled.heading_labels[0], "### 粗體 連結 #", "native outline keeps the rank without changing displayed text")
   eq(style_text(styled, "Bold"), "粗體", "native bold span")
   local labels = {}
   for _, placement in ipairs(styled.text_placements) do
@@ -336,6 +337,7 @@ test("direct and tmux image layouts receive only parsed nonempty content", funct
       eq(#content.text_placements, 1, "only nonempty valid heading has an image")
       eq(#requests, 1, "empty and invalid headings do not request images")
       eq(requests[1].text, "粗體 連結 #", "raster content excludes ATX syntax")
+      eq(content.heading_labels[0], "### 粗體 連結 #", "image outline keeps the rank without changing raster text")
       eq(style_text(content, "Bold"), "粗體", "image uses the same style bytes")
       local placement = content.text_placements[1]
       eq(placement.hl, "MdRenderH3", "image rank")

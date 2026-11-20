@@ -291,7 +291,7 @@ Inside a rendered preview (floating, tab, split, in-place toggle, or pager), the
 | `zR` / `zM` | Open / close all foldable and expandable blocks |
 | `zj` / `zk` | Next fold start / previous fold end; counts work |
 | `[[` / `]]` | Previous / next heading; counts work without wrapping |
-| `gO` | Show headings in a native location list; Enter jumps to the selected heading |
+| `gO` | List full heading titles with their Markdown level in a native location list; Enter jumps to the selected heading |
 | `<CR>` | Follow a heading or footnote link within the document, open an image (Snacks backend), or toggle a fold / expandable region |
 | `gf` / `gF` | Open local links; `gF` also jumps to the specified source line |
 | `<C-w>f` / `<C-w>F` | Follow the local link in a split; `<C-w>gf` / `<C-w>gF` use a new tab |

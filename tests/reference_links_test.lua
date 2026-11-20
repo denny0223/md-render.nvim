@@ -726,6 +726,24 @@ do
       end
     end
   end)
+  test("Pandoc image attributes preserve captions, links, geometry and source rows", function()
+    local first = "[![修正前](same.png)](/before)"
+    local second = "[![修正後](same.png)](/after)"
+    graphics, available = true, true
+    local function compare(plain_source, annotated_source)
+      local plain, annotated = build(plain_source), build(annotated_source)
+      assert(#plain.image_placements > 0)
+      for _, key in ipairs { "lines", "image_placements", "link_metadata", "source_line_map" } do
+        eq(annotated[key], plain[key], key .. " matches the same source without attributes")
+      end
+    end
+    for _, case in ipairs { { "![圖](same.png)", "{width=16cm}" }, { first, "{.wide}" } } do
+      local plain, annotated = case[1], case[1] .. case[2]
+      compare({ plain }, { annotated })
+      compare({ "| Image |", "| --- |", "| " .. plain .. " |" }, { "| Image |", "| --- |", "| " .. annotated .. " |" })
+    end
+    compare({ first .. " " .. second }, { first .. "{#id .wide} " .. second })
+  end)
   test("each source image retains its caption and href in order, including failed media", function()
     local source = {
       "![first](same.png) [![第二長 caption words END](same.png)](/second) [![third](same.png)][outer]",

@@ -21,7 +21,7 @@ vim.bo.filetype = "markdown"
 vim.api.nvim_buf_set_lines(0, 0, -1, false, {
   "| A quite long left cell header needing width | Cat in Space (http.cat) |",
   "|---|---|",
-  "| ![" .. left_caption .. "](" .. paths[1] .. ") | ![HTTP 200](" .. paths[2] .. ") |",
+  "| ![" .. left_caption .. "](" .. paths[1] .. "){width=16cm} | ![HTTP 200](" .. paths[2] .. "){.wide} |",
   "| Plain text with a long explanation that must remain readable through the final keyword TEXT73 | ![Mixed]("
     .. paths[1]
     .. ") |",

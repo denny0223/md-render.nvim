@@ -30,6 +30,31 @@ local function bounded(source, expected, expected_link, budget)
   return instructions
 end
 
+-- Decoding each product link must not revisit the other products' dollar tokens.
+local function price_list_work(count)
+  local items = {}
+  for i = 1, count do
+    items[i] = ("Product $%d [plain](/%d) [price](/$%d) https://shop.tld/$%d"):format(i, i, i, i)
+  end
+  local instructions, text, _, links = measured(function()
+    return markdown.render(table.concat(items, ". "))
+  end)
+  assert(text:find("Product $" .. count .. " plain price", 1, true), "price list retains its amounts")
+  assert(#links == 3 * count, "all explicit and bare product links remain active")
+  for _, link in ipairs(links) do
+    local label = text:sub(link.col_start + 1, link.col_end)
+    assert(
+      (label == "plain" and link.url:match "^/%d+$")
+        or (label == "price" and link.url:match "^/%$%d+$")
+        or (label == link.url and label:match "^https://shop%.tld/%$%d+$"),
+      "price list link labels and destinations must agree"
+    )
+  end
+  return instructions
+end
+local small_prices = price_list_work(64)
+assert(price_list_work(256) < small_prices * 5.5, "price list decoding rescanned the paragraph's tokens")
+
 -- Lua instruction hooks cannot see C string searches or suffix copies. Count their byte ranges,
 -- including failed comment candidates and redundant quantifier backtracking.
 local function native_measured(render, source_bytes)

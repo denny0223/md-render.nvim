@@ -682,6 +682,65 @@ test("split code spans retain their incomplete boundaries across display layouts
   end
 end)
 
+test("currency and math use source dollar boundaries", function()
+  local content = build { [=[Price is $5 ($10 retail); range $5-$10; $2+x$**2** $x$[2](/two) $y + \$1$ and `$3-$4`]=] }
+  assert_eq(content.lines, { "Price is $5 ($10 retail); range $5-$10; 2+x2 x2 y + $1 and $3-$4" }, "visible dollars")
+  assert_eq(spans(content, "MdRenderMath"), {
+    { 0, 40, 43, "2+x" },
+    { 0, 45, 46, "x" },
+    { 0, 48, 54, "y + $1" },
+  }, "only formulas gain math highlights")
+  assert_eq(link_spans(content), { { 0, 46, 47, "2", "/two" } }, "adjacent linked number remains clickable")
+
+  for _, fixture in ipairs {
+    { "Price $5, press **$** to start", "Price $5, press $ to start" },
+    { "Shell $VAR and <code>$HOME</code>.", "Shell $VAR and $HOME." },
+  } do
+    content = build { fixture[1] }
+    assert_eq(content.lines, { fixture[2] }, "styled dollar keeps its visible whitespace boundary")
+    assert_eq(spans(content, "MdRenderMath"), {}, "literal dollars have no math highlight")
+  end
+
+  content = build { "[fee]: /ref/$5", "", "[fee] [label](/link/$4) https://host/$3 [[fee$2|wiki]]" }
+  assert_eq(content.lines[#content.lines], "fee label https://host/$3 wiki", "dollar digits survive URL rendering")
+  local targets = {}
+  for _, link in ipairs(link_spans(content)) do
+    targets[#targets + 1] = link[5]
+  end
+  table.sort(targets)
+  assert_eq(
+    targets,
+    { "/link/$4", "/ref/$5", "https://host/$3", "obsidian://advanced-uri?filepath=fee%242" },
+    "link targets keep source dollar digits"
+  )
+  content = build({ [=[\! $5-$10  ]=], [=[金額 $x + \$1$**2**]=] }, { source_line_offset = 7 })
+  assert_eq(content.lines, { "! $5-$10", "金額 x + $12" }, "escapes and prices retain their respective boundaries")
+  assert_eq(spans(content, "MdRenderMath"), { { 1, 7, 13, "x + $1" } }, "multibyte prefixes preserve byte offsets")
+  assert_eq(content.source_line_map, { 8, 9 }, "both sides of a hard break retain the source line")
+
+  content = build { "$1foo@bar.example" }
+  assert_eq(
+    link_spans(content),
+    { { 0, 1, 17, "1foo@bar.example", "mailto:1foo@bar.example" } },
+    "a digit after a dollar may start an email address"
+  )
+
+  -- Configured destinations are external text and can contain the exact active token.
+  local lookalikes = "\u{F1002}1\u{F1003}\u{F1002}01\u{F1003}\u{F1002}999\u{F1003}"
+  content = build({ "**TASK$123** and $456; $x$**2**" }, {
+    autolinks = {
+      { key_prefix = "TASK$", url_template = "/task/" .. lookalikes .. "/<num>" },
+      { key_prefix = "$", url_template = "/number/<num>" },
+    },
+  })
+  assert_eq(content.lines, { "TASK$123 and $456; x2" }, "custom prefixes share dollar text with formulas")
+  assert_eq(link_spans(content), {
+    { 0, 0, 8, "TASK$123", "/task/" .. lookalikes .. "/123" },
+    { 0, 13, 17, "$456", "/number/456" },
+  }, "links retain the complete dollar prefix, value, and destination")
+  assert_eq(spans(content, "MdRenderMath"), { { 0, 19, 20, "x" } }, "only the source formula receives math styling")
+end)
+
 image.supports_kitty = supports_kitty
 print(string.format("inline_literals_test: %d passed, %d failed", pass_count, fail_count))
 if fail_count > 0 then os.exit(1) end

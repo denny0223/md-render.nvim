@@ -8,8 +8,10 @@ function M.geometry(iw, ih, cols, rows, cell, zoom, cx, cy)
   local scale = math.min(cols * cell.cell_w / iw, rows * cell.cell_h / ih, 1) * zoom
   local w = math.max(1, math.min(iw, math.floor(cols * cell.cell_w / scale)))
   local h = math.max(1, math.min(ih, math.floor(rows * cell.cell_h / scale)))
-  local x = math.max(0, math.min(iw - w, math.floor(cx * iw - w / 2)))
-  local y = math.max(0, math.min(ih - h, math.floor(cy * ih - h / 2)))
+  -- A center reconstructed from a pixel crop can land one floating-point step below its origin.
+  local epsilon = 2 ^ -52
+  local x = math.max(0, math.min(iw - w, math.floor((cx + epsilon) * iw - w / 2)))
+  local y = math.max(0, math.min(ih - h, math.floor((cy + epsilon) * ih - h / 2)))
   return {
     x = x,
     y = y,

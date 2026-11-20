@@ -15,6 +15,14 @@ for _, size in ipairs { { 1502, 3420 }, { 1568, 1658 }, { 9000, 800 } } do
     end
   end
 end
+-- A normalized center recovered from an integer crop must round-trip on repaint.
+local function fractional_center(cx)
+  return geometry(1502, 120, 250, 120, { cell_w = 1, cell_h = 1 }, 6, cx, 0.5)
+end
+local crop = fractional_center(208.1 / 1502)
+assert(crop.x == 83 and crop.w == 250)
+assert(vim.deep_equal(crop, fractional_center(crop.cx)), "repainting the same center shifted a source pixel")
+assert(fractional_center(207.9 / 1502).x == 82, "a fractional origin must still round down")
 print "Image overview, zoom and pan boundaries OK"
 
 -- Exercise the real tab/window lifecycle without invoking image converters.

@@ -9,7 +9,7 @@ A Markdown rendering engine for Neovim. Transforms raw Markdown into richly high
 ## Getting started
 
 1. Check the [requirements](#requirements), then choose one [installation method](#installation).
-2. To use this fork's Kitty/tmux support, viewport fitting, and image zoom/pan, follow the [Snacks image setup](#optional-snacks-image-backend). The basic installation keeps the native backend, which also supports animation and video.
+2. The default native backend displays images and plays GIFs and videos in Kitty. For images inside tmux or for zoom and pan, follow the [Snacks image setup](#optional-snacks-image-backend).
 3. Restart Neovim after installing and configuring the plugins, then open a Markdown file. Choose a workflow from its source window:
 
 | Task | Command | Close the preview |
@@ -19,7 +19,7 @@ A Markdown rendering engine for Neovim. Transforms raw Markdown into richly high
 
 The split keeps focus in the source window so you can keep editing; the preview updates without saving. In Normal mode, `<C-w>p` (Ctrl-w then p) selects the previous window; immediately after opening the split, that is the preview. The [keymap examples](#keymaps) include an optional `<leader>ms` shortcut.
 
-With Snacks and `magick` configured, press Enter on an image in the preview to open its [image tab](#image-tab-keys) for zoom and pan.
+With the default backend in Kitty outside tmux, press Enter on a displayed PNG to fit the whole image in an [image tab](#image-tab-keys). Press `q` to return to the document.
 
 For the full [key reference](#keymaps), [commands](#commands), and [troubleshooting](#faq--troubleshooting), see below.
 
@@ -83,9 +83,9 @@ These dependencies are optional for basic Markdown rendering, but required for t
 | Dependency | Purpose | Fallback |
 |---|---|---|
 | [curl](https://curl.se/) | Download web images and video | Custom function via `set_download_fn()` |
-| [snacks.nvim](https://github.com/folke/snacks.nvim) | Optional image backend, viewport fitting, and focused image tabs | Default native backend remains available; it does not provide these fork features |
+| [snacks.nvim](https://github.com/folke/snacks.nvim) | Optional image backend, viewport fitting, and focused image tabs | The default backend also opens displayed PNGs in a fitted tab in direct Kitty |
 | [FFmpeg](https://ffmpeg.org/) (`ffmpeg` / `ffprobe`) | Native JPEG/WebP → PNG conversion; GIF / video frame extraction for both backends | Falls back to ImageMagick (images only; video requires ffmpeg) |
-| [ImageMagick](https://imagemagick.org/) (`magick`) | Snacks image conversion and image-tab zoom/pan; native image conversion and shared GIF frame extraction | Native conversion can use the tools below. The image tab requires `magick`, including for PNG; `ffmpeg`, `sips`, or an installation providing only `convert` cannot replace it |
+| [ImageMagick](https://imagemagick.org/) (`magick`) | Snacks image conversion and image-tab zoom/pan; native image conversion and shared GIF frame extraction | Native conversion can use the tools below. The Snacks image tab requires `magick`, including for PNG; `ffmpeg`, `sips`, or an installation providing only `convert` cannot replace it |
 | [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) and its headless browser | Render Mermaid diagrams with either backend | Retains the code block if unavailable. Optional npm fallback requires `mermaid_allow_npx = true`, Node.js/npm and the browser |
 | [PlantUML](https://plantuml.com/) 1.2020.11+ (`plantuml`, or `java` with `$PLANTUML_JAR`) | Render PlantUML diagrams as images | A PlantUML server, if you name one (needs curl); otherwise the fence stays a code block |
 | [budoux.lua](https://github.com/delphinus/budoux.lua) | CJK phrase-level line breaking (BudouX) | Character-level splitting (kinsoku rules still apply) |
@@ -104,7 +104,7 @@ Static conversion in the **native backend** and frame extraction in both backend
 
 ## Installation
 
-The examples below use the default native backend (`kitty`). For Kitty/tmux images, viewport fitting, and zoom/pan, follow [Optional Snacks image backend](#optional-snacks-image-backend) as well. Use this fork's default branch: its inherited upstream release tags do not include those features, so the lazy.nvim examples use `version = false`.
+The examples below use the default native backend (`kitty`). For images inside tmux or for zoom and pan, follow [Optional Snacks image backend](#optional-snacks-image-backend) as well. Use this fork's default branch: its inherited upstream release tags do not include those features, so the lazy.nvim examples use `version = false`.
 
 After installation, restart Neovim, run `:MdRender demo` to load the plugin (including lazy-loaded setups), then `:checkhealth md-render`. Install only the tools needed by your chosen features; for Snacks, also run `:checkhealth snacks`.
 
@@ -173,7 +173,7 @@ require("md-render.image").setup {
 }
 ```
 
-With `autoplay = false`, both backends show the first frame; image tabs start paused and Space still starts playback. Frame preparation still requires FFmpeg for videos; GIFs can use FFmpeg or ImageMagick. With `mermaid_allow_npx = false`, only an installed `mmdc` is used; without it, Mermaid stays a code block. Merge these options into your existing image setup, including `backend = "snacks"` if selected. For ordinary text headings, use `:MdRender textsize off`.
+With `autoplay = false`, both backends show the first frame inline. In a Snacks GIF or video tab, press Space to start playback. Frame preparation still requires FFmpeg for videos; GIFs can use FFmpeg or ImageMagick. With `mermaid_allow_npx = false`, only an installed `mmdc` is used; without it, Mermaid stays a code block. Merge these options into your existing image setup, including `backend = "snacks"` if selected. For ordinary text headings, use `:MdRender textsize off`.
 
 Remote images and videos load automatically in document previews and configured Telescope/Snacks picker previews. Changing a picker selection can start requests without `:MdRender toggle`. The built-in downloader supports HTTP(S) and HTTP(S) redirects, treats URLs literally, and ignores `.curlrc`; proxy and CA environment settings still apply. Use `set_download_fn()` for custom authentication.
 
@@ -292,7 +292,7 @@ Inside a rendered preview (floating, tab, split, in-place toggle, or pager), the
 | `zj` / `zk` | Next fold start / previous fold end; counts work |
 | `[[` / `]]` | Previous / next heading; counts work without wrapping |
 | `gO` | List full heading titles with their Markdown level in a native location list; Enter jumps to the selected heading |
-| `<CR>` | Follow a heading or footnote link within the document, open an image (Snacks backend), or toggle a fold / expandable region |
+| `<CR>` | Follow a heading or footnote link within the document, open a supported image in an [image tab](#image-tab-keys), or toggle a fold / expandable region |
 | `gf` / `gF` | Open local links; `gF` also jumps to the specified source line |
 | `<C-w>f` / `<C-w>F` | Follow the local link in a split; `<C-w>gf` / `<C-w>gF` use a new tab |
 | `<C-]>` / `g]` / `g<C-]>` | Follow a heading, footnote, or file link through native tag navigation |
@@ -321,11 +321,13 @@ Reference links use the first valid definition, match labels with Unicode case f
 
 ### Image tab keys
 
+On the default backend in direct Kitty, press Enter on a displayed PNG or its caption to fit the full image in a tab. This includes rendered Mermaid PNGs. Enter, `q`, and Esc return to the same reading position.
+
 With the [Snacks backend](#optional-snacks-image-backend) configured and ImageMagick (`magick`) installed, press Enter on an image or its title to open a focused image tab. Use arrows or `hjkl` to move, `+/-` to zoom, `f` to see the whole image, `F` to restore the zoom and position you left with `f`, and Enter, `q`, or Esc to return. These keys are set automatically in the image tab. Look below the loading message or the image for the selected caption or source filename. Diagrams show their source location.
 
 While a local file is decoding or a Mermaid diagram is rendering, press Enter to wait for the first frame in its own tab. When space is tight, the preview shortens or omits the `Enter: open and wait` hint. Press Enter, q or Esc to return while waiting or after an error. Remote images can open once the preview picks up the downloaded file.
 
-GIF and video tabs require Kitty 0.31 or newer and play automatically unless `autoplay = false`. Press Space to start, pause, or resume; zooming and panning preserve the playback state. Playback controls affect only the image tab.
+Snacks GIF and video tabs require Kitty 0.31 or newer and play automatically unless `autoplay = false`. Press Space to start, pause, or resume; zooming and panning preserve the playback state. Playback controls affect only the image tab.
 
 Scroll the mouse wheel to zoom, or hold the left mouse button and drag to move the image. Vim-style navigation, Page Up/Down, Home/End, and counts are also supported. Press `?` or use `:help md-render-image-view` for the [complete reference](doc/md-render.txt).
 
@@ -382,7 +384,7 @@ Behavior:
 - When the same source is shown in multiple windows, only the invoking window swaps. Edits from other windows update the preview automatically.
 - Cursor position round-trips between source and render via the source-line mapping.
 - `number`, `relativenumber`, and `list` are turned off on render-mode windows. The originals are stashed on the window and restored when toggling back to source.
-- Inside render mode, `q` / `<Esc>` / `<C-c>` are **not** bound to close — call `:MdRender toggle` again to return to source mode. `<LeftMouse>`, `za`, and `<CR>` still toggle folds and expand regions (and `<LeftMouse>` opens links). With the Snacks backend, `<CR>` also opens images.
+- Inside render mode, `q` / `<Esc>` / `<C-c>` are **not** bound to close — call `:MdRender toggle` again to return to source mode. `<LeftMouse>`, `za`, and `<CR>` still toggle folds and expand regions (and `<LeftMouse>` opens links). Use `<CR>` on a supported image to open its [image tab](#image-tab-keys).
 
 ### Auto-toggle on Insert mode (experimental)
 
@@ -615,7 +617,7 @@ Check that `autoplay` is enabled in your image setup. With `autoplay = false`, a
 <details>
 <summary><strong>Enter does not open an image tab</strong></summary>
 
-Use a document preview such as `:MdRender tab`, select the [Snacks backend](#optional-snacks-image-backend), and check that `:echo executable('magick')` returns `1`. Place the cursor on the image or its title and press Enter. For a remote image, wait until the download finishes. The built-in `:MdRender demo` window does not provide this image-opening action.
+Use a document preview such as `:MdRender tab`. For the native backend, use a loaded PNG in direct Kitty. For the [Snacks backend](#optional-snacks-image-backend), check that `:echo executable('magick')` returns `1`. Place the cursor on the image or its title and press Enter. For a remote image, wait until the download finishes. The built-in `:MdRender demo` window does not provide this image-opening action.
 
 </details>
 

@@ -1,6 +1,5 @@
 -- Image tabs return to the specific window and reading position that opened them.
 local M = {}
-
 local owners = {}
 -- :noautocmd close skips WinClosed, and a second split can keep the buffer alive.
 vim.api.nvim_set_decoration_provider(vim.api.nvim_create_namespace "md_render_image_tab_owner", {
@@ -71,7 +70,6 @@ function M.open()
     if state.on_close then state.on_close() end
     pcall(vim.api.nvim_del_augroup_by_id, group)
   end
-  owners[state] = cleanup
   local function origin_valid()
     return vim.api.nvim_win_is_valid(origin_win) and vim.api.nvim_win_get_buf(origin_win) == origin_buf
   end
@@ -91,6 +89,18 @@ function M.open()
   end
   for _, key in ipairs { "<CR>", "q", "<Esc>" } do
     vim.keymap.set("n", key, go_back, { buffer = buf, silent = true, desc = "Return from image" })
+  end
+  owners[state] = function()
+    if state.closed then return end
+    cleanup()
+    if not origin_valid() or vim.api.nvim_win_get_tabpage(origin_win) ~= vim.api.nvim_get_current_tabpage() then
+      return
+    end
+    -- The tabline can disappear when the viewer closes and scroll the source
+    -- one row. A silent background close must not move the reader's view.
+    local returned = viewer_active and vim.api.nvim_get_current_win() == origin_win
+    if state.on_silent_return then state.on_silent_return(origin_win, returned) end
+    if returned then restore_view() end
   end
   vim.api.nvim_create_autocmd("BufWipeout", {
     buffer = buf,

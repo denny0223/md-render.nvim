@@ -369,6 +369,7 @@ end
 ---@field cache? table<integer, MdRender.Session> -- documents within this preview presentation
 ---@field pager? boolean             -- full-screen reading presentation
 local Session = {}
+local update_pager_ui
 Session.__index = Session
 
 --- Every live session, keyed by render buffer. Weak values so a session that
@@ -946,6 +947,10 @@ end
 --- placement keeps its shared frame task even after its first frame is visible.
 function Session:image_view_source(placement, index)
   local state = self.image_state
+  if require("md-render.image").config().backend ~= "snacks" then
+    local path, native_source = require("md-render.native_image_view").path(state, placement)
+    return path, path ~= nil, native_source
+  end
   if not state or state.closed then return end
   local object = state.objects and state.objects[index]
   local ready = object and object:ready()
@@ -965,19 +970,32 @@ function Session:image_view_name(placement)
 end
 
 function Session:image_view_hint(placement, index)
-  if require("md-render.image").config().backend ~= "snacks" or vim.fn.executable "magick" ~= 1 then return end
+  local snacks = require("md-render.image").config().backend == "snacks"
+  if snacks and vim.fn.executable "magick" ~= 1 then return end
   local source, ready = self:image_view_source(placement, index)
-  if ready and source then return "Enter: open image" end
+  if ready and source then return "Enter: open image", source end
   if source then return "Enter: open and wait" end
 end
 
 function Session:open_image_at(row, col)
-  if require("md-render.image").config().backend ~= "snacks" then return false end
   local placement, index = self:image_at(row, col)
   if not placement then return false end
-  local source = self:image_view_source(placement, index)
-  if source then require("md-render.image_view").open(source, self:image_view_name(placement)) end
-  return true
+  local source, _, native_source = self:image_view_source(placement, index)
+  if require("md-render.image").config().backend == "snacks" then
+    if source then require("md-render.image_view").open(source, self:image_view_name(placement)) end
+    return true
+  end
+  if not source then return false end
+  local view = require("md-render.native_image_view").open(source, native_source)
+  if view then
+    view.on_silent_return = function(origin_win, returned)
+      -- :noautocmd close also skipped the source renderer's TabEnter.
+      if self.pager and returned then update_pager_ui(self) end
+      local images = self.image_state
+      if images and images.win == origin_win and images.schedule_redraw then images.schedule_redraw() end
+    end
+  end
+  return view ~= nil
 end
 
 --- Install the standard click/keymap handlers on a window-managed close handle
@@ -2504,7 +2522,7 @@ local saved_pager_options
 
 -- Global chrome belongs to the focused presentation, including native window
 -- and tab switches. Capture editor changes again on each new pager entry.
-local function update_pager_ui(session)
+update_pager_ui = function(session)
   if session and session.pager then
     if not saved_pager_options then
       saved_pager_options = {}

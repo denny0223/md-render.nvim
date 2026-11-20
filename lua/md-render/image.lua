@@ -637,8 +637,9 @@ end
 ---@param tool string
 ---@param result vim.SystemCompleted
 ---@param purpose string
+---@param timeout_ms? integer configured timeout for this invocation
 ---@return string
-local function tool_failure(tool, result, purpose)
+local function tool_failure(tool, result, purpose, timeout_ms)
   -- Keep the last couple of non-empty stderr lines. FFmpeg prints its banner
   -- and build configuration first, and splits the reason across two lines
   -- ("Unrecognized option 'vsync'." / "Error splitting the argument list: ..."),
@@ -651,23 +652,29 @@ local function tool_failure(tool, result, purpose)
   end
   local detail = (result.stderr or ""):match "([^\r\n]*[Ee]rror:[^\r\n]*)"
     or table.concat(vim.list_slice(lines, math.max(1, #lines - 1)), " / ")
-  if detail == "" then detail = result.code == 124 and "timed out" or "no error details" end
   detail = vim.fn.strcharpart(detail:gsub("%c", " "), 0, 240)
+  if result.code == 124 and timeout_ms then
+    -- A renderer wrapper can also exit 124 before the deadline.
+    local status = string.format("%s exited with code 124 (configured timeout: %d seconds)", tool, timeout_ms / 1000)
+    return detail == "" and status or status .. ": " .. detail
+  end
+  if detail == "" then detail = result.code == 124 and "timed out" or "no error details" end
   return string.format("%s %s (exit %s): %s", tool, purpose, tostring(result.code), detail)
 end
 
 --- Publish only completed diagram output; cache readers must never see a partial file.
+---@param render fun(output: string): vim.SystemCompleted, integer? # result and optional timeout in milliseconds
 ---@param quiet? boolean defer notification until the caller knows the final outcome
 ---@return string? path, string? reason
 local function render_diagram_file(cache_path, render, tool, quiet)
   -- Keep the temporary output on the cache filesystem, with a name unique to this run.
   local tmp_output = cache_path .. "." .. vim.fn.sha256(vim.fn.tempname()):sub(1, 16) .. ".png"
-  local ok, result = pcall(render, tmp_output)
+  local ok, result, timeout_ms = pcall(render, tmp_output)
   local installed, reason
   if not ok then
     reason = tool .. " could not complete: " .. tostring(result)
   elseif result.code ~= 0 then
-    reason = tool_failure(tool, result, "failed")
+    reason = tool_failure(tool, result, "failed", timeout_ms)
   else
     local stat = uv.fs_stat(tmp_output)
     if not stat or stat.type ~= "file" or stat.size == 0 then
@@ -742,11 +749,12 @@ local function render_mermaid_file(source, cmd_prefix, cache_path, run)
     local cmd = build_mmdc_cmd(cmd_prefix, input, output)
     local opts = { text = true, timeout = 30000, cwd = tmp_dir }
     if cmd_prefix[1] == "npx" then
+      opts.timeout = 600000 -- A first install of the CLI and its browser can take minutes.
       -- cwd alone still lets npm discover a package.json/.npmrc in an ancestor.
       table.insert(cmd, 2, tmp_dir)
       table.insert(cmd, 2, "--prefix")
     end
-    return run(cmd, opts)
+    return run(cmd, opts), opts.timeout
   end, "mmdc (Mermaid)")
   vim.fn.delete(tmp_dir, "rf")
   return path

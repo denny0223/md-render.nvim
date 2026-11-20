@@ -67,6 +67,7 @@ vim.system = function(cmd, opts, callback)
     "Puppeteer config search is not bounded"
   )
   if cmd[1] == "npx" then
+    assert(opts.timeout == 600000, "allow ten minutes for npm to install Mermaid and its browser")
     assert(cmd[2] == "--prefix" and cmd[3] == opts.cwd)
     assert(vim.tbl_contains(cmd, "@mermaid-js/mermaid-cli@12.0.0"))
     assert(uv.fs_readlink(opts.cwd .. "/node_modules/.bin/node") == trusted_node, "npm must use the user's Node")
@@ -113,6 +114,7 @@ vim.system = function(cmd, opts, callback)
       diagnosed = true
     end
   else
+    assert(opts.timeout == 30000, "an installed Mermaid CLI should keep the 30-second render timeout")
     assert(
       cmd[1] == "mmdc" and not vim.tbl_contains(cmd, "--prefix"),
       "npm options must not reach the installed renderer"
@@ -199,7 +201,29 @@ assert(
   "Node directory creation error launched npm or leaked its partial directory"
 )
 vim.fn.mkdir = original.mkdir
-fail, local_mmdc = false, true
+fail = false
+
+local notify_once, timeout_message = vim.notify_once
+vim.notify_once = function(message)
+  timeout_message = message
+end
+local next_job = #jobs + 1
+done = false
+image.render_mermaid_async("graph LR; slow-->install", function(path)
+  done, answer = true, path
+end)
+assert(vim.wait(2000, function()
+  return jobs[next_job] ~= nil
+end))
+jobs[next_job].callback { code = 124, stderr = "npm warn deprecated dependency\n" }
+assert(vim.wait(2000, function()
+  return done
+end) and not answer)
+local expected = "exited with code 124 (configured timeout: 600 seconds): npm warn deprecated dependency"
+assert(timeout_message and timeout_message:find(expected, 1, true), timeout_message)
+vim.notify_once = notify_once
+
+local_mmdc = true
 vim.fn.exepath = function(name)
   return name == "node" and "" or original.exepath(name)
 end

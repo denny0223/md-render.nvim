@@ -903,10 +903,12 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
   opts.image_enter = on_enter
   map_default("<CR>", on_enter, "Follow anchor, open image or toggle block")
 
-  vim.keymap.set("n", "<LeftRelease>", function()
+  local function on_click()
     local mouse, projected = M.getmousepos(true)
     if mouse.winid == win and mouse.line > 0 then
       if projected then vim.api.nvim_win_set_cursor(win, { mouse.line, mouse.column - 1 }) end
+      -- A captured image press owns its release, even if focusing this split reflowed a link under it.
+      if UrlHover.finish_image_click(mouse) then return end
       if opts.close_line_idx and close_handle and mouse.line == opts.close_line_idx + 1 then
         close_handle:close_if_valid()
         return
@@ -940,7 +942,13 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
         return
       end
     end
-  end, { buffer = buf, noremap = true, silent = true })
+  end
+  opts.image_click = on_click
+  if vim.api.nvim_buf_call(buf, function()
+    return vim.fn.maparg("<LeftRelease>", "n") == ""
+  end) then
+    vim.keymap.set("n", "<LeftRelease>", on_click, { buffer = buf, noremap = true, silent = true })
+  end
 
   return function(new_win, new_close_handle, new_opts)
     win = new_win

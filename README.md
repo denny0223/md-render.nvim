@@ -299,7 +299,7 @@ Inside a rendered preview (floating, tab, split, in-place toggle, or pager), the
 | `<C-w>]` / `<C-w>g]` / `<C-w>g<C-]>` | Follow a link with native split-tag navigation |
 | `gx` | Jump to an internal anchor or open the exact external URL / absolute local path with the system handler |
 | `<C-LeftMouse>` / `g<LeftMouse>` | Follow the clicked link through tag navigation |
-| `<LeftMouse>` | Toggle folds, expand regions, and open links by clicking |
+| `<LeftMouse>` | Follow a link, open a displayed image, or toggle a fold / expandable region |
 | `q` / `<Esc>` / `<C-c>` | Close the window (floating / tab mode only) |
 | `q` | Quit Neovim with unsaved-buffer protection (pager only) |
 
@@ -321,7 +321,7 @@ Reference links use the first valid definition, match labels with Unicode case f
 
 ### Image tab keys
 
-On the default backend in direct Kitty, press Enter on a displayed PNG or its caption to fit the full image in a tab. This includes rendered Mermaid PNGs. Enter, `q`, and Esc return to the same reading position.
+On the default backend in direct Kitty, click a displayed PNG or press Enter on it or its caption to fit the full image in a tab. This includes rendered Mermaid PNGs. Click `[Back]` or press Enter, `q`, or Esc to return to the same reading position.
 
 With the [Snacks backend](#optional-snacks-image-backend) configured and ImageMagick (`magick`) installed, press Enter on an image or its title to open a focused image tab. Use arrows or `hjkl` to move, `+/-` to zoom, `f` to see the whole image, `F` to restore the zoom and position you left with `f`, and Enter, `q`, or Esc to return. These keys are set automatically in the image tab. Look below the loading message or the image for the selected caption or source filename. Diagrams show their source location.
 
@@ -329,7 +329,7 @@ While a local file is decoding or a Mermaid diagram is rendering, press Enter to
 
 Snacks GIF and video tabs require Kitty 0.31 or newer and play automatically unless `autoplay = false`. Press Space to start, pause, or resume; zooming and panning preserve the playback state. Playback controls affect only the image tab.
 
-Click `[Back]` in the image header to return to your reading position. Scroll the mouse wheel to zoom, or hold the left mouse button and drag to move the image. Vim-style navigation, Page Up/Down, Home/End, and counts are also supported. Press `?` or use `:help md-render-image-view` for the [complete reference](doc/md-render.txt).
+Click a ready image in the preview to open it. When there is room, hovering over the image shows a click hint. Click a heading link in a caption to jump to that heading. For external OSC 8 links, use the terminal's link shortcut (Ctrl+Shift+click in Kitty). Click `[Back]` in the image header to return to your reading position. Scroll the mouse wheel to zoom, or hold the left mouse button and drag to move the image. Vim-style navigation, Page Up/Down, Home/End, and counts are also supported. Press `?` or use `:help md-render-image-view` for the [complete reference](doc/md-render.txt).
 
 Zoom uses the converted image's existing pixels; it does not regenerate a higher-resolution diagram.
 

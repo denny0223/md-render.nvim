@@ -88,4 +88,13 @@ assert(type(mapped("<Esc>").callback) == "function", "float context did not rest
 vim.keymap.del("n", "<Esc>", { buffer = buf })
 rebind(win, nil, opts)
 assert(vim.tbl_isempty(mapped "<Esc>"), "rebind recreated a user-deleted close map")
+
+vim.cmd.enew()
+local fresh = vim.api.nvim_get_current_buf()
+for _, scope in ipairs { {}, { buffer = fresh } } do
+  vim.keymap.set("n", "<LeftRelease>", custom, scope)
+  display.setup_float_keymaps(fresh, ns, win, current)
+  assert(mapped("<LeftRelease>").callback == custom, "creating a preview replaced an existing release mapping")
+  vim.keymap.del("n", "<LeftRelease>", scope)
+end
 print "Render interaction: float occlusion, recovery, decoded keyboard/mouse anchors and user mappings OK"

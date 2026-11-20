@@ -2485,6 +2485,11 @@ Markdown.is_footnote_def = function(line)
   return line:match "^%[%^[^%]]+%]:%s+" ~= nil
 end
 
+--- A display math fence occupies its own line at the root.
+function Markdown.is_math_fence(line)
+  return line:match "^%$%$[ \t]*$" ~= nil
+end
+
 --- Check if a line starts a block-level construct (not a paragraph continuation)
 ---@param line string
 ---@param in_paragraph boolean whether a paragraph is currently open
@@ -2504,7 +2509,7 @@ function Markdown.is_block_start(line, in_paragraph)
   if line:match "^%[!%a+%]" then return true end -- callout header (marker already stripped)
   if require("md-render.html_block").start(line, in_paragraph) then return true end
   if line:match "^%s*!%[" then return true end
-  if line:match "^%$%$$" then return true end
+  if Markdown.is_math_fence(line) then return true end
   if line:match "^%%%%" then return true end
   if line:match "^:::" then return true end
   -- Indented code block (4+ spaces). Per CommonMark it cannot interrupt a

@@ -439,7 +439,7 @@ Image headings are disabled on Windows. Linux with direct Kitty and SSH to Linux
 
 Select `:MdRender textsize native` for Kitty >= 0.40 without image dependencies. Native headings preserve inline styles and links, and wrap to their painted width. If the available width is too narrow for scaling, or a heading contains control characters such as tabs, the whole document uses ordinary headings to preserve its text and hierarchy. Search, selection and unsupported highlights can still reveal individual headings as text.
 
-Moving the cursor through a heading’s margin keeps it enlarged, including with `cursorline`. Entering its text reveals ordinary text for accurate cursor positioning and keyboard link actions.
+Moving the cursor through a heading’s margin keeps it enlarged. In the left margin, the cursor line spans both rows of the current heading segment. Entering its text reveals ordinary text for accurate cursor positioning and keyboard link actions.
 
 Native headings reserve two rows per wrapped line. Scrolling or redraws may briefly reveal plain text, and redraws can be more expensive. Telescope and Snacks picker previews do not use native scaling. See `:help md-render-text-size` for troubleshooting.
 

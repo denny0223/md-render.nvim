@@ -57,7 +57,7 @@ try {
     'folke/snacks.nvim': ['.github/workflows/test.yml', '.github/workflows/test.yml'],
     'nvim-telescope/telescope.nvim': ['.github/workflows/test.yml'],
     'nvim-lua/plenary.nvim': ['.github/workflows/test.yml'],
-    'BtbN/FFmpeg-Builds 9.0 linux64-gpl': ['.github/ci/ffmpeg-archives.tsv'],
+    'FFmpeg-Builds/FFmpeg-Builds 9.0 linux64-gpl': ['.github/ci/ffmpeg-archives.tsv'],
   };
   for (const [name, expected] of Object.entries(expectedFiles)) {
     assert.deepEqual(depsFor(name).map(dep => dep.packageFile).sort(), expected.sort(), `${name}: all callers extracted`);
@@ -73,7 +73,7 @@ try {
   const replacements = [];
   for (const dep of extracted) {
     const newValue = dep.datasource === 'git-refs' ? dep.currentValue
-      : dep.depName.startsWith('BtbN/') ? dep.currentValue.replace(/autobuild-(\d{4})-/, (_, year) => `autobuild-${Number(year) + 1}-`)
+      : dep.datasource === 'custom.ffmpeg-archives' ? dep.currentValue.replace(/autobuild-(\d{4})-/, (_, year) => `autobuild-${Number(year) + 1}-`)
       : nextVersion(dep.currentValue);
     const upgrade = { ...dep, newValue, ...(dep.currentDigest && { newDigest: digest(dep) }) };
     const before = updated.get(dep.packageFile);
@@ -131,15 +131,16 @@ try {
     assert.deepEqual(await releases(kitty, [release(`v${kittyVersion}`, [incomplete])]), [], 'Kitty requires a valid digest');
   }
 
-  const ffmpeg = depsFor('BtbN/FFmpeg-Builds 9.0 linux64-gpl')[0];
+  const ffmpeg = depsFor('FFmpeg-Builds/FFmpeg-Builds 9.0 linux64-gpl')[0];
   const now = new Date();
   const month = offset => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + offset, 1)).toISOString().slice(0, 7);
-  const build = (stamp, series = '9.0') => {
-    const tag = `autobuild-${stamp}-13-00`;
-    const archive = asset(`ffmpeg-n${series}.1-1-gabcdef-linux64-gpl-${series}.tar.xz`);
-    archive.browser_download_url = `https://github.com/BtbN/FFmpeg-Builds/releases/download/${tag}/${archive.name}`;
-    return release(tag, [archive]);
+  const ffmpegRelease = (tag, archive) => {
+    const url = 'https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases';
+    archive.browser_download_url = `${url}/download/${tag}/${archive.name}`;
+    return { ...release(tag, [archive]), html_url: `${url}/tag/${tag}` };
   };
+  const build = (stamp, series = '9.0') => ffmpegRelease(`autobuild-${stamp}-13-00`,
+    asset(`ffmpeg-n${series}.1-1-gabcdef-linux64-gpl-${series}.tar.xz`));
   const previous = build(`${month(-1)}-25`);
   const older = build(`${month(-2)}-25`);
   const result = await releases(ffmpeg, [build(`${month(0)}-01`), previous, build(`${month(-1)}-05`), older]);
@@ -156,21 +157,29 @@ try {
     assert.deepEqual(await releases(ffmpeg, [{ ...previous, [flag]: true }]), [], `FFmpeg excludes ${flag} releases`);
   }
   assert.deepEqual(await releases(ffmpeg, [build(`${month(0)}-01`)]), [], 'The current month is not complete');
-  // BtbN retires old archives; the old release must not be needed to prepare its replacement.
-  await releases(ffmpeg, [previous]);
-  const retired = { ...getConfig(), ...config, ...ffmpeg, customDatasources: offlineSources,
-    currentValue: ffmpeg.currentValue.replace(/autobuild-\d{4}-\d{2}-\d{2}-/, `autobuild-${month(-3)}-25-`) };
-  const { val: lookup, err } = (await lookupUpdates(retired)).unwrap();
-  if (err) throw err;
+
+  const [tag, filename] = ffmpeg.currentValue.split('/').slice(-2);
+  const pinned = ffmpegRelease(tag, asset(filename, ffmpeg.currentDigest));
+  const [retainedRelease] = await releases(ffmpeg, [pinned]);
+  const lookupConfig = { ...getConfig(), ...config, ...ffmpeg, customDatasources: offlineSources };
+  const current = (await lookupUpdates(lookupConfig)).unwrapOrThrow();
+  assert.deepEqual(current.warnings, [], 'A retained archive resolves at the URL published by GitHub');
+  assert.deepEqual(current.updates, [], 'The pinned archive is current');
+  assert.equal(retainedRelease.changelogUrl, pinned.html_url);
+
+  const retiredArchive = build('2000-01-01').assets[0];
+  const retiredContent = originals.get(ffmpeg.packageFile)
+    .replace(ffmpeg.currentValue, retiredArchive.browser_download_url)
+    .replace(ffmpeg.currentDigest, retiredArchive.digest.slice(7));
+  const retired = { ...lookupConfig, ...extractRegex(retiredContent, ffmpeg.packageFile, ffmpeg).deps[0] };
+  const lookup = (await lookupUpdates(retired)).unwrapOrThrow();
   assert.equal(lookup.updates.length, 1, 'A retired current archive still receives an update');
-  assert.equal(lookup.updates[0].newValue, previous.assets[0].browser_download_url);
-  assert.equal(lookup.updates[0].newDigest, previous.assets[0].digest.slice(7));
+  assert.equal(lookup.updates[0].newValue, pinned.assets[0].browser_download_url);
+  assert.equal(lookup.updates[0].newDigest, ffmpeg.currentDigest);
   assert.equal(lookup.warnings.length, 1);
   assert.match(lookup.warnings[0].message, /Could not determine new digest/, 'Only the retired-current digest warning is expected');
-  const retiredContent = originals.get(ffmpeg.packageFile).replace(ffmpeg.currentValue, retired.currentValue);
-  const retiredDep = extractRegex(retiredContent, ffmpeg.packageFile, ffmpeg).deps[0];
-  const replaced = await doAutoReplace({ ...retired, ...retiredDep, ...lookup.updates[0] }, retiredContent, false);
-  assert(replaced.includes(`${previous.assets[0].browser_download_url}\t${previous.assets[0].digest.slice(7)}`));
+  const replaced = await doAutoReplace({ ...retired, ...lookup.updates[0] }, retiredContent, false);
+  assert.equal(replaced, originals.get(ffmpeg.packageFile), 'The update writes the matching URL and SHA256');
   console.log(`PASS: Renovate extracts and updates ${extracted.length} references; archive filters and fixed coverage boundaries hold.`);
 } finally {
   await rm(localDir, { recursive: true, force: true });

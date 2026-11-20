@@ -153,12 +153,11 @@
         "/^\\.github/ci/ffmpeg-archives\\.tsv$/"
       ],
       "matchStrings": [
-        "(?:^|\\n)9\\.0\\t(?<currentValue>https://github\\.com/BtbN/FFmpeg-Builds/releases/download/autobuild-[^\\t\\n]+)\\t(?<currentDigest>[a-f0-9]{64})(?:\\n|$)"
+        "(?:^|\\n)9\\.0\\t(?<currentValue>https://github\\.com/(?<packageName>FFmpeg-Builds/FFmpeg-Builds)/releases/download/autobuild-[^\\t\\n]+)\\t(?<currentDigest>[a-f0-9]{64})(?:\\n|$)"
       ],
-      "depNameTemplate": "BtbN/FFmpeg-Builds 9.0 linux64-gpl",
-      "packageNameTemplate": "BtbN/FFmpeg-Builds",
+      "depNameTemplate": "{{{packageName}}} 9.0 linux64-gpl",
       "datasourceTemplate": "custom.ffmpeg-archives",
-      "versioningTemplate": "regex:^https://github\\.com/BtbN/FFmpeg-Builds/releases/download/autobuild-(?<major>[0-9]{4})-(?<minor>[0-9]{2})-(?<patch>[0-9]{2})-(?<build>[0-9]{2})-(?<revision>[0-9]{2})/ffmpeg-n[^/]+-linux64-gpl-(?<compatibility>9\\.0)\\.tar\\.xz$"
+      "versioningTemplate": "regex:^https://github\\.com/{{{packageName}}}/releases/download/autobuild-(?<major>[0-9]{4})-(?<minor>[0-9]{2})-(?<patch>[0-9]{2})-(?<build>[0-9]{2})-(?<revision>[0-9]{2})/ffmpeg-n[^/]+-linux64-gpl-(?<compatibility>9\\.0)\\.tar\\.xz$"
     }
   ],
   "pre-commit": {
@@ -166,10 +165,10 @@
   },
   "customDatasources": {
     "ffmpeg-archives": {
-      "defaultRegistryUrlTemplate": "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases?per_page=100",
+      "defaultRegistryUrlTemplate": "https://api.github.com/repos/{{{packageName}}}/releases?per_page=100",
       "format": "json",
       "transformTemplates": [
-        "(\n  $completed := $[$not(draft) and $not(prerelease) and $match(tag_name, /^autobuild-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}$/) and $substring(tag_name, 10, 7) < $substring($now(), 0, 7)];\n  $months := $distinct($completed.$substring(tag_name, 10, 7));\n  $monthly := $map($months, function($month) { ($completed[$substring(tag_name, 10, 7) = $month]^(>tag_name))[0] });\n  {\n    \"releases\": [$monthly.($release := $; assets[$match(name, /^ffmpeg-n[^/]+-linux64-gpl-9\\.0\\.tar\\.xz$/) and $type(digest) = \"string\" and $match(digest, /^sha256:[a-f0-9]{64}$/)].{\n      \"version\": browser_download_url,\n      \"digest\": $substringAfter(digest, \"sha256:\"),\n      \"releaseTimestamp\": $release.published_at,\n      \"changelogUrl\": \"https://github.com/BtbN/FFmpeg-Builds/releases/tag/\" & $release.tag_name\n    })],\n    \"sourceUrl\": \"https://github.com/BtbN/FFmpeg-Builds\"\n  }\n)"
+        "(\n  $completed := $[$not(draft) and $not(prerelease) and $match(tag_name, /^autobuild-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}$/) and $substring(tag_name, 10, 7) < $substring($now(), 0, 7)];\n  $months := $distinct($completed.$substring(tag_name, 10, 7));\n  $monthly := $map($months, function($month) { ($completed[$substring(tag_name, 10, 7) = $month]^(>tag_name))[0] });\n  {\n    \"releases\": [$monthly.($release := $; assets[$match(name, /^ffmpeg-n[^/]+-linux64-gpl-9\\.0\\.tar\\.xz$/) and $type(digest) = \"string\" and $match(digest, /^sha256:[a-f0-9]{64}$/)].{\n      \"version\": browser_download_url,\n      \"digest\": $substringAfter(digest, \"sha256:\"),\n      \"releaseTimestamp\": $release.published_at,\n      \"changelogUrl\": $release.html_url\n    })],\n    \"sourceUrl\": \"https://github.com/{{{packageName}}}\"\n  }\n)"
       ]
     },
     "neovim-archives": {

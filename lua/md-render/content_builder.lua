@@ -1065,6 +1065,7 @@ function ContentBuilder:add_markdown_line(
   local wrap_max = math.max(1, max_width - indent_w - indicator_width)
 
   local lines_before_fn = #self.lines
+  local first_link = #self.link_metadata + 1
   local image_added = level
     and rendered_text ~= ""
     and self.text_scale
@@ -1151,12 +1152,11 @@ function ContentBuilder:add_markdown_line(
   end
 
   -- Register footnote ref anchors (first occurrence per label)
-  for _, link in ipairs(self.link_metadata) do
-    if link.line >= lines_before_fn then
-      local label = link.url and link.url:match "^#footnote%-def%-(.+)$"
-      if label and not self.footnote_anchors["footnote-ref-" .. label] then
-        self.footnote_anchors["footnote-ref-" .. label] = link.line
-      end
+  for index = first_link, #self.link_metadata do
+    local link = self.link_metadata[index]
+    local label = link.url and link.url:match "^#footnote%-def%-(.+)$"
+    if label and not self.footnote_anchors["footnote-ref-" .. label] then
+      self.footnote_anchors["footnote-ref-" .. label] = link.line
     end
   end
 

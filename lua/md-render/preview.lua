@@ -1086,7 +1086,6 @@ MdPreview.show_tab = function(opts)
   vim.wo[win].wrap = true
   vim.wo[win].spell = false
   vim.wo[win].list = false
-  vim.wo[win].statusline = " Markdown Preview "
 
   vim.bo[session.buf].modifiable = false
   vim.bo[session.buf].bufhidden = "hide"

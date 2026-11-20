@@ -88,6 +88,7 @@ local ok, err = pcall(function()
     package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
     require("md-render.text_size").setup { enabled = false }
     vim.o.scrolloff, vim.o.laststatus = 0, 2
+    vim.go.statusline = "Reader %n"
     local lines = {}
     for i = 1, 13 do
       lines[#lines + 1] = ("Para%02d "):format(i) .. string.rep("x", 145)
@@ -119,7 +120,21 @@ local ok, err = pcall(function()
     local eof = vim.fn.screenpos(win, vim.api.nvim_buf_line_count(buf), 1)
     local bottom = vim.api.nvim_win_get_position(win)[1] + vim.api.nvim_win_get_height(win)
     assert(eof.row == bottom, "wrapped EOF should reach the window's last screen row")
+    local function check_status(expected_buf)
+      vim.cmd("redraw!")
+      local expected, cells = "Reader " .. expected_buf, {}
+      for col = 1, #expected do cells[col] = vim.fn.screenstring(vim.o.lines - vim.o.cmdheight, col) end
+      assert(table.concat(cells) == expected, "statusline should show " .. expected)
+    end
+    check_status(buf)
+    vim.o.laststatus = 3
+    check_status(buf)
+    vim.cmd.tabprevious()
+    check_status(source_buf)
+    vim.cmd.tabnext()
+    check_status(buf)
     vim.api.nvim_win_close(win, true)
+    check_status(source_buf)
     assert(vim.api.nvim_win_get_buf(source_win) == source_buf, "closing the preview lost the source")
     assert(vim.api.nvim_win_get_cursor(source_win)[1] == 23, "source cursor changed")
     assert(vim.api.nvim_buf_get_changedtick(source_buf) == source_tick, "source text changed")

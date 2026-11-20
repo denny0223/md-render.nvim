@@ -354,6 +354,7 @@ end
 ---@field fold_state table<integer, boolean>
 ---@field expand_state table<integer, boolean>
 ---@field content MdRender.Content    -- current rendered content
+---@field file_icons table<string, table> -- file icon dependencies of the last full render
 ---@field win? integer                -- bound render window (if any)
 ---@field image_state? MdRender.ImageState
 ---@field text_size_state? MdRender.TextSizeState|MdRender.HeadingImageState
@@ -375,13 +376,30 @@ Session.__index = Session
 MdPreview._sessions = setmetatable({}, { __mode = "v" })
 
 local modified_sources = {}
+-- on_lines runs under textlock. Keep every changed session until its render
+-- can be updated, including background sources edited by another callback.
+local pending_inserts = {}
+local schedule_live_rebuild
 
-local function sync_source_modified(source_bufnr)
+local function sync_source_modified(source_bufnr, tick, first, last, new_last)
   local found = false
   for buf, session in pairs(MdPreview._sessions) do
     if session.source_bufnr == source_bufnr and vim.api.nvim_buf_is_valid(buf) then
       session:sync_modified()
       found = true
+      if tick and session.cache and not session:is_visible() then
+        local change = pending_inserts[session]
+        local row = last == first + 1 and last == new_last and last or 0
+        if change then
+          if change.row ~= row or tick ~= change.tick + 1 then change.row = 0 end
+          change.tick = tick
+        else
+          pending_inserts[session] = { row = tick == session.source_tick + 1 and row or 0, tick = tick }
+          vim.schedule(function()
+            if pending_inserts[session] then schedule_live_rebuild(session) end
+          end)
+        end
+      end
     end
   end
   return found
@@ -397,9 +415,10 @@ vim.api.nvim_create_autocmd("OptionSet", {
 
 local function attach_source_modified(source_bufnr)
   if modified_sources[source_bufnr] or not vim.api.nvim_buf_is_loaded(source_bufnr) then return end
-  local function sync(_, buf)
+  local function sync(event, buf, tick, first, last, new_last)
     -- Returning true retires just this attachment after its last preview.
-    if not sync_source_modified(buf) then
+    local inserting = event == "lines" and vim.api.nvim_get_mode().mode:match "^[iR]"
+    if not sync_source_modified(buf, inserting and tick or nil, first, last, new_last) then
       modified_sources[buf] = nil
       return true
     end
@@ -456,14 +475,56 @@ function MdPreview.rebuild_visible(layouts)
     for _, layout in ipairs(layouts or {}) do
       if session.content.heading_layouts and session.content.heading_layouts[layout.key] then affected = true end
     end
-    if affected and vim.api.nvim_buf_is_valid(buf) and #vim.fn.win_findbuf(buf) > 0 then
-      session:rebuild()
-      session:refresh_images()
+    if affected and vim.api.nvim_buf_is_valid(buf) then
+      if session:is_visible() then
+        session:rebuild()
+        session:refresh_images()
+      else
+        -- Native jumps choose their row before BufEnter. Keep this layout
+        -- usable until the next source edit, which must recheck the whole document.
+        session.render_settings = nil
+      end
     end
   end
   -- `show_demo` builds its own window rather than a Session; it registers a
   -- rebuild hook here so it is not left behind.
   if MdPreview._demo_rebuild then pcall(MdPreview._demo_rebuild, layouts) end
+end
+
+local function render_settings(buf, opts, content)
+  return {
+    max_width = opts.max_width or default_max_width(),
+    autolinks = vim.deepcopy(opts.autolinks),
+    heading_cells = content.heading_backend == "image" and vim.deepcopy(require("md-render.image").get_cell_size(true))
+      or nil,
+    tmux = vim.env.TMUX ~= nil,
+    vim.o.ambiwidth,
+    vim.o.casemap,
+    os.setlocale(nil, "ctype"),
+    vim.o.emoji,
+    vim.o.display,
+    vim.o.isprint,
+    vim.o.termguicolors,
+    vim.wo.list,
+    vim.o.listchars,
+    vim.bo[buf].iskeyword,
+    vim.bo[buf].tabstop,
+    vim.bo[buf].vartabstop,
+    vim.fn.getcellwidths(),
+    require("md-render.icons").config().style,
+    vim.deepcopy(require("md-render.text_size").config()),
+    vim.deepcopy(require("md-render.image").config()),
+  }
+end
+
+local function build_session_content(session)
+  return vim.api.nvim_buf_call(session.buf, function()
+    local content
+    content, session.file_icons =
+      require("md-render.icons").collect_file_icons(MdPreview.build_content, session.source_lines, session.opts)
+    session.render_settings = render_settings(session.buf, session.opts, content)
+    return content
+  end)
 end
 
 --- Build a fresh Session from a source buffer.
@@ -482,6 +543,7 @@ function Session.new(source_bufnr, ns_name, opts)
 
   local self = setmetatable({}, Session)
   self.source_bufnr = source_bufnr
+  self.source_tick = vim.api.nvim_buf_get_changedtick(source_bufnr)
   self.source_lines = vim.api.nvim_buf_get_lines(source_bufnr, 0, -1, false)
   self.opts = effective_opts
   self._explicit_buf_dir = explicit_buf_dir
@@ -526,13 +588,11 @@ function Session.new(source_bufnr, ns_name, opts)
 
   self.opts.fold_state = self.fold_state
   self.opts.expand_state = self.expand_state
-  self.content = vim.api.nvim_buf_call(self.buf, function()
-    return MdPreview.build_content(self.source_lines, self.opts)
-  end)
+  self.content = build_session_content(self)
   -- Defensive: nvim_buf_set_name above can leave the buffer modifiable=false
   -- on some setups (third-party autocmds firing even with eventignore=all).
   vim.bo[self.buf].modifiable = true
-  display_utils.apply_content_to_buffer(self.buf, self.ns, self.content)
+  self.syntax_marks = display_utils.apply_content_to_buffer(self.buf, self.ns, self.content)
   self:sync_modified()
 
   -- Initialize fold_state from default fold states (e.g. `> [!TIP]-`)
@@ -570,6 +630,7 @@ function Session:refresh_source()
     local lines = vim.api.nvim_buf_get_lines(self.source_bufnr, 0, -1, false)
     local directory = self:source_directory()
     local changed = directory ~= self.opts.buf_dir or not vim.deep_equal(lines, self.source_lines)
+    self.source_tick = vim.api.nvim_buf_get_changedtick(self.source_bufnr)
     self.source_lines, self.opts.buf_dir = lines, directory
     return changed
   end
@@ -592,9 +653,7 @@ function Session:rebuild(force)
   end
   self.opts.fold_state = self.fold_state
   self.opts.expand_state = self.expand_state
-  local new_content = vim.api.nvim_buf_call(self.buf, function()
-    return MdPreview.build_content(self.source_lines, self.opts)
-  end)
+  local new_content = build_session_content(self)
 
   local wins = vim.fn.win_findbuf(self.buf)
   local saved_views = {}
@@ -608,7 +667,7 @@ function Session:rebuild(force)
 
   vim.api.nvim_set_option_value("modifiable", true, { buf = self.buf })
   vim.api.nvim_buf_clear_namespace(self.buf, self.ns, 0, -1)
-  display_utils.apply_content_to_buffer(self.buf, self.ns, new_content)
+  self.syntax_marks = display_utils.apply_content_to_buffer(self.buf, self.ns, new_content)
   vim.api.nvim_set_option_value("modifiable", false, { buf = self.buf })
   -- Reflow itself is not an edit; conditional writes still need source dirtiness.
   self:sync_modified()
@@ -1186,17 +1245,98 @@ local function auto_augroup(bufnr)
   return "md_render_auto_" .. bufnr
 end
 
+-- Re-render only a whole, isolated paragraph when the edit changes exactly
+-- one output row. Its native marks move through the same row replacement as
+-- the full document diff, and all surrounding document metadata stays valid.
+local function update_paragraph(session, change)
+  local content = session.content
+  local first = content.paragraph_rows and content.paragraph_rows[change.row]
+  if
+    not first
+    or (content.dynamic_media ~= nil and (content.dynamic_media or require("md-render.image").supports_kitty()))
+    or content.image_heading_fallback
+    or (content.heading_backend == "image" and require("md-render.heading_image").highlights_changed(content))
+    or content.heading_fallback
+    or session.dirty
+    or session:source_directory() ~= session.opts.buf_dir
+  then
+    return false
+  end
+  if
+    content.heading_backend
+    and session.opts.text_scale ~= false
+    and require("md-render.text_size").resolve_backend() ~= content.heading_backend
+  then
+    return false
+  end
+  if change.tick ~= vim.api.nvim_buf_get_changedtick(session.source_bufnr) then return false end
+  local line = vim.api.nvim_buf_get_lines(session.source_bufnr, change.row - 1, change.row, false)[1]
+  local pair = vim.api.nvim_buf_call(session.buf, function()
+    if not vim.deep_equal(render_settings(session.buf, session.opts, content), session.render_settings) then return end
+    if require("md-render.icons").file_icons_changed(session.file_icons) then return end
+    return {
+      MdPreview.build_content({ session.source_lines[change.row] }, session.opts),
+      MdPreview.build_content({ line }, session.opts),
+    }
+  end)
+  if not pair then return false end
+  local old, new = pair[1], pair[2]
+  if
+    old.paragraph_rows[1] ~= 1
+    or new.paragraph_rows[1] ~= 1
+    or #old.lines ~= #new.lines
+    or not vim.deep_equal(old.highlights, new.highlights)
+    or not vim.deep_equal(old.link_metadata, new.link_metadata)
+  then
+    return false
+  end
+  local changed
+  for i, text in ipairs(old.lines) do
+    if content.lines[first + i - 1] ~= text then return false end
+    if text ~= new.lines[i] then
+      if changed then return false end
+      changed = i
+    end
+  end
+  if changed then
+    local row = first + changed - 2
+    vim.bo[session.buf].modifiable = true
+    vim.api.nvim_buf_clear_namespace(session.buf, session.ns, row, row + 1)
+    vim.api.nvim_buf_set_lines(session.buf, row, row + 1, false, { new.lines[changed] })
+    vim.bo[session.buf].modifiable = false
+    display_utils.apply_inline_marks(session.buf, session.ns, new, first - 1, changed - 1)
+    content.lines[row + 1] = new.lines[changed]
+    session:sync_modified()
+  end
+  -- A late parser or an in-place query change can affect untouched code fences.
+  if #content.code_blocks > 0 then
+    session.syntax_marks =
+      display_utils.apply_treesitter_highlights(session.buf, session.ns, content, session.syntax_marks)
+  end
+  session.source_lines[change.row], session.source_tick = line, change.tick
+  return true
+end
+
 --- Schedule a debounced live rebuild of the render buffer.
---- Hidden buffers update immediately: native jumps read their marks before
---- BufEnter, so deferring their repaint until entry would use stale positions.
+--- Hidden renders update immediately so native navigation can read their rows.
 ---@param session MdRender.Session
-local function schedule_live_rebuild(session)
+---@param inserting? boolean
+schedule_live_rebuild = function(session, inserting)
+  local change = pending_inserts[session]
+  pending_inserts[session] = nil
   if not vim.api.nvim_buf_is_valid(session.source_bufnr) then return end
   if not vim.api.nvim_buf_is_valid(session.buf) then return end
-
   close_timer(session._debounce_timer)
   session._debounce_timer = nil
   if not session:is_visible() then
+    if change and update_paragraph(session, change) then return end
+    if
+      inserting
+      and not session.dirty
+      and session.source_tick == vim.api.nvim_buf_get_changedtick(session.source_bufnr)
+    then
+      return
+    end
     if session:refresh_source() or session.dirty then session:rebuild() end
     return
   end
@@ -1215,6 +1355,14 @@ local function schedule_live_rebuild(session)
   session._debounce_timer = timer
 end
 
+-- Native jumps resolve their destination before BufEnter. Finish the insert batch
+-- before an editing command can consult a hidden render's marks.
+local function flush_hidden_inserts()
+  for session in pairs(pending_inserts) do
+    schedule_live_rebuild(session)
+  end
+end
+
 --- Listen for source buffer changes and trigger debounced live rebuilds.
 ---@param session MdRender.Session
 local function install_live_update(session)
@@ -1224,6 +1372,9 @@ local function install_live_update(session)
   vim.api.nvim_create_autocmd({
     "TextChanged",
     "TextChangedI",
+    "TextChangedP",
+    "ModeChanged",
+    "BufLeave",
     "BufWritePost",
     "BufReadPost", -- :e reload
     "BufFilePost", -- :file / :saveas can change relative image and link paths
@@ -1231,10 +1382,17 @@ local function install_live_update(session)
   }, {
     group = augroup,
     buffer = source_bufnr,
-    callback = function()
+    callback = function(ev)
+      -- TextChangedI can miss the last character of a batch. Check on every exit,
+      -- including Ctrl-C (no InsertLeave) and Ctrl-O (temporary Normal mode).
+      if ev.event == "ModeChanged" or ev.event == "BufLeave" then
+        if ev.event == "BufLeave" or ev.match:match "^[iR][^:]*:[^iR]" then flush_hidden_inserts() end
+        return
+      end
+      local inserting = ev.event == "TextChangedI" or ev.event == "TextChangedP"
       sync_source_modified(source_bufnr)
       for _, current in pairs(MdPreview._sessions) do
-        if current.source_bufnr == source_bufnr and current.cache then schedule_live_rebuild(current) end
+        if current.source_bufnr == source_bufnr and current.cache then schedule_live_rebuild(current, inserting) end
       end
     end,
   })
@@ -2143,6 +2301,7 @@ end
 
 --- Release one rendered document; source watchers may still serve other previews.
 function Session:dispose()
+  pending_inserts[self] = nil
   close_timer(self._debounce_timer)
   close_timer(self._sync_unlock_timer)
   self._debounce_timer, self._sync_unlock_timer = nil, nil
@@ -2965,7 +3124,11 @@ vim.api.nvim_create_autocmd("TabLeave", {
     end
   end,
 })
+local older_jump, newer_jump = vim.keycode "<C-o>", vim.keycode "<C-i>"
 vim.on_key(function(key, typed)
+  local jump = key == older_jump or key == newer_jump
+  -- A mapping can inspect native jump positions before TextChangedI or BufLeave.
+  if (jump or key ~= typed) and next(pending_inserts) then flush_hidden_inserts() end
   local event = typed ~= "" and typed or key
   if event == vim.keycode "<LeftRelease>" or event == vim.keycode "<C-LeftRelease>" then
     local mouse = vim.fn.getmousepos()
@@ -2984,7 +3147,7 @@ vim.on_key(function(key, typed)
   local win = vim.api.nvim_get_current_win()
   local session = pending_views[win]
   if session then restore_view(session, win) end
-  if key == vim.keycode "<C-o>" or key == vim.keycode "<C-i>" then
+  if jump then
     session = MdPreview._sessions[vim.api.nvim_get_current_buf()]
     if session and session.jump_views and session.jump_views[win] then
       -- Same-buffer jumps do not fire BufEnter, but still need their saved view.

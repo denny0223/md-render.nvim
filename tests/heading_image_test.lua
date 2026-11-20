@@ -71,6 +71,7 @@ local function build(lines, opts)
 end
 local initial = build()
 assert(#initial.text_placements == 0, "pending layout keeps immediately usable text")
+assert(initial.image_heading_fallback, "pending images can change the rows of a hidden render")
 assert(vim.wait(1000, function()
   return #callbacks == 1
 end))
@@ -127,6 +128,7 @@ assert(vim.wait(1000, function()
 end))
 local content = build()
 assert(#content.text_placements == 2)
+assert(not content.image_heading_fallback and not heading.highlights_changed(content), "completed images are stable")
 assert(next(repeated.heading_layouts) ~= nil)
 vim.wait(20)
 assert(#callbacks == 1, "unchanged headings reuse shaped PNGs")
@@ -141,6 +143,7 @@ for _, entry in pairs(initial.heading_layouts) do
       return byte and byte < 6 and byte or false
     end, columns)
     local unclickable = build()
+    assert(unclickable.image_heading_fallback, "a single fallback still invalidates the document layout")
     assert(
       #unclickable.text_placements == 1 and #unclickable.link_metadata == 2,
       "unsampled links retain clickable text"

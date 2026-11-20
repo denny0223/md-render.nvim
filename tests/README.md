@@ -76,7 +76,9 @@ MD_RENDER_PLENARY_PATH=/path/to/plenary.nvim \
 make tests/picker_integration_test.lua
 ```
 
-Without the required flag, missing dependency paths produce a local skip. The released Fedora CI job installs a fixed Telescope release and Plenary commit and requires this check; missing dependencies or a skipped/failed required step cannot pass. Telescope and Snacks run in separate steps, so an installation or test failure in one does not prevent checking the other. The test uses real previewer APIs, buffers and parsing while intercepting image setup; it does not verify terminal pixels or the full interactive picker UI.
+Without the required flag, missing dependency paths produce a local skip. The released Fedora CI job installs a fixed Telescope release and Plenary commit and requires this check; missing dependencies or a skipped/failed required step cannot pass. Telescope and Snacks run in separate steps, so an installation or test failure in one does not prevent checking the other.
+
+The previewer tests use real buffers and parsing while intercepting image setup. A headless test edits the Markdown source, opens Telescope's jumplist from an Insert-mode mapping and presses Enter on a rendered heading. It checks that the cursor lands on that heading. Terminal appearance requires a visual check.
 
 ## Image headings
 

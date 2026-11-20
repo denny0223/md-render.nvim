@@ -9,11 +9,16 @@ vim.o.showtabline = 0
 image.setup { backend = "kitty", autoplay = true }
 image._set_kitty_supported(true)
 image._test_cell_size = { cell_w = 8, cell_h = 16 }
-local stored, deleted = {}, {}
+local stored, deleted, visible, present = {}, {}, {}, {}
+local wakes = 0
 vim.api.nvim_ui_send = function(bytes)
+  if bytes == "\0" then wakes = wakes + 1 end
   for sequence in bytes:gmatch "\27_G(.-)\27\\" do
     local id = tonumber(sequence:match ",i=(%d+)")
     if sequence:match "^a=t," then stored[id] = true end
+    if sequence:match "^a=p," and not sequence:find(",U=1", 1, true) then visible[id] = (visible[id] or 0) + 1 end
+    if sequence:match "^a=p," and sequence:find(",p=2,q=0", 1, true) then present[id] = (present[id] or 0) + 1 end
+    if sequence:match "^a=d,d=[iI]," then visible[id] = nil end
     if sequence:match "^a=d,d=I," then
       stored[id], deleted[id] = nil, true
     end
@@ -173,6 +178,55 @@ local timer = state.redraw_timer
 display.cleanup_images(state)
 assert(timer:is_closing(), "cleanup stopped but did not close its timer")
 image.ensure_png_async = ensure_png
+
+-- Two occurrences of a PNG disappear together when their tab is hidden.
+-- Returning reuses the original upload, even after displaying a different one.
+local tty = require "md-render.tty"
+local version = tty.kitty_version
+tty.kitty_version = function()
+  return { 0, 48 }
+end
+local function placement_reply(id, status)
+  vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27_Gi=" .. id .. ",p=2;" .. status } })
+end
+local repeated = content(png)
+table.insert(repeated.image_placements, vim.tbl_extend("force", repeated.image_placements[1], { line = 1 }))
+-- The offscreen occurrence shares the upload but cannot request a presentation.
+table.insert(repeated.image_placements, 1, vim.tbl_extend("force", repeated.image_placements[1], { line = 400 }))
+state = display.setup_images(win, repeated, ns)
+wait_for(function()
+  return state.image_ids[png] and visible[state.image_ids[png]] == 2
+end, "both occurrences were not placed")
+local source_id = state.image_ids[png]
+assert(present[source_id] == 1 and wakes == 0, "only the first visible occurrence requests a reply")
+placement_reply(source_id, "ENOENT")
+placement_reply(source_id + 999, "OK")
+assert(wakes == 0, "error or unrelated reply woke the terminal")
+state.schedule_redraw()
+vim.wait(100)
+assert(present[source_id] == 1, "ordinary redraw requested another acknowledgement")
+vim.cmd "tabnew"
+assert(stored[source_id] and not visible[source_id], "hidden tab left placements or discarded its upload")
+local other_state = display.setup_images(vim.api.nvim_get_current_win(), content(png), ns)
+wait_for(function()
+  return other_state.image_ids[png] and visible[other_state.image_ids[png]]
+end, "second tab did not paint")
+local other_id = other_state.image_ids[png]
+assert(source_id ~= other_id and not visible[source_id], "second tab reused the first tab's placement")
+vim.cmd "tabprevious"
+wait_for(function()
+  return visible[source_id] == 2
+end, "return did not restore both original placements")
+assert(stored[other_id] and not visible[other_id], "return did not hide only the second tab's image")
+assert(present[source_id] == 2 and present[other_id] == 1, "each tab entry requests its own acknowledgement")
+placement_reply(source_id, "OK")
+assert(wakes == 1, "visible placement was accepted without waking the terminal")
+display.cleanup_images(other_state)
+placement_reply(other_id, "OK")
+assert(wakes == 1, "reply for a retired upload woke the terminal")
+tty.kitty_version = version
+vim.cmd "tabclose 2"
+display.cleanup_images(state)
 
 -- Native animation pauses in a hidden tab, resumes on return, and honors autoplay.
 local extract = image.extract_frames_async

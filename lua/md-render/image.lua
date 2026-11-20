@@ -1775,10 +1775,13 @@ vim.api.nvim_create_autocmd("TermResponse", {
   callback = function(ev)
     local sequence = type(ev.data) == "table" and ev.data.sequence or ev.data
     if type(sequence) ~= "string" then return end
+    -- Placement 2 asks for a second render cycle when a view becomes visible.
+    -- A NUL wakes Kitty after it accepted the placement, without changing it.
+    sequence = sequence:gsub("\27\\$", "")
+    local presented = sequence:match "^\27_Gi=(%d+),p=2;OK$"
+    if presented and _image_paths[tonumber(presented)] then term_write "\0" end
     local id, response = sequence:match "^\27_Gi=(%d+);(.*)"
-    if not id then return end
-    response = response:gsub("\27\\$", "")
-    finish_png(tonumber(id), response ~= "OK" and response or nil)
+    if id then finish_png(tonumber(id), response ~= "OK" and response or nil) end
   end,
 })
 
@@ -2313,7 +2316,9 @@ end
 ---@param anim_path? string  if set, use a=T for animated GIF display
 ---@param img_w? integer  source image width in pixels (for cropping)
 ---@param img_h? integer  source image height in pixels (for cropping)
-function M.put_image(image_id, win, row, col, display_cols, display_rows, anim_path, img_w, img_h)
+---@param present? boolean request a second Kitty render cycle after a view becomes visible
+---@return boolean? sent
+function M.put_image(image_id, win, row, col, display_cols, display_rows, anim_path, img_w, img_h, present)
   if not M.supports_kitty() then return end
   if not vim.api.nvim_win_is_valid(win) then return end
   if vim.api.nvim_win_get_tabpage(win) ~= vim.api.nvim_get_current_tabpage() then return end
@@ -2462,15 +2467,18 @@ function M.put_image(image_id, win, row, col, display_cols, display_rows, anim_p
       b64_path
     )
   else
-    -- Static: put a previously transmitted image
+    -- Placement 1 is the invisible upload pin. Name only the first visible
+    -- occurrence so repeated occurrences of the same image stay independent.
+    local reply = present and not vim.env.TMUX and tty_mod.kitty_version() and ",p=2,q=0" or ",q=2"
     message =
-      string.format("\x1b_Ga=p,i=%d,c=%d,r=%d%s,C=1,q=2\x1b\\", image_id, display_cols, display_rows, crop_params)
+      string.format("\x1b_Ga=p,i=%d,c=%d,r=%d%s,C=1%s\x1b\\", image_id, display_cols, display_rows, crop_params, reply)
   end
 
   term_write "\x1b[s"
   move_cursor(screen_col, screen_row)
   term_write(message)
   term_write "\x1b[u"
+  return true
 end
 
 --- Delete all placements for an image but keep the transmitted data.

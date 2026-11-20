@@ -1118,7 +1118,32 @@ function M.setup_images(win, content, ns, opts)
     return p_end >= topline - LAZY_PADDING and p_start < topline + win_height + LAZY_PADDING
   end
 
-  local function place_images()
+  local function clear_placements()
+    for _, id in pairs(state.image_ids) do
+      image.clear_placements(id)
+    end
+    for _, anim in pairs(state.anims) do
+      local id = anim.frame_ids[anim.current]
+      if id then image.clear_placements(id) end
+    end
+  end
+
+  -- Request presentation on the first actual placement after entering this
+  -- view. Animation ticks and intermediate repaint notifications stay quiet.
+  local first_visible = true
+  local function draw_placements(on_entry)
+    for _, p in ipairs(state.placements) do
+      local anim = state.anims[p.path]
+      local id = anim and anim.frame_ids[anim.current] or state.image_ids[p.path]
+      if id then
+        local present = on_entry and first_visible
+        local sent = image.put_image(id, state.win, p.line, p.col, p.cols, p.rows, nil, p.img_w, p.img_h, present)
+        if present and sent then first_visible = false end
+      end
+    end
+  end
+
+  local function place_images(on_entry)
     if not visible() then return end
 
     -- Retry transmit for images that have a path but no ID (up to MAX_RETRIES).
@@ -1152,50 +1177,8 @@ function M.setup_images(win, content, ns, opts)
     -- avoid per-image TTY open/close overhead and ensure atomicity.
     image.begin_batch()
     local ok, err = pcall(function()
-      -- Clear existing placements before re-placing.
-      for _, id in pairs(state.image_ids) do
-        image.clear_placements(id)
-      end
-      -- Clear only the currently displayed animation frame (not all frames).
-      -- Previous frames have no active placement, so clearing them is unnecessary.
-      for _, anim in pairs(state.anims) do
-        local current_id = anim.frame_ids[anim.current]
-        if current_id then image.clear_placements(current_id) end
-      end
-      for _, placement in ipairs(state.placements) do
-        local anim = state.anims[placement.path]
-        if anim then
-          local id = anim.frame_ids[anim.current]
-          if id then
-            image.put_image(
-              id,
-              state.win,
-              placement.line,
-              placement.col,
-              placement.cols,
-              placement.rows,
-              nil,
-              placement.img_w,
-              placement.img_h
-            )
-          end
-        else
-          local id = state.image_ids[placement.path]
-          if id then
-            image.put_image(
-              id,
-              state.win,
-              placement.line,
-              placement.col,
-              placement.cols,
-              placement.rows,
-              nil,
-              placement.img_w,
-              placement.img_h
-            )
-          end
-        end
-      end
+      clear_placements()
+      draw_placements(on_entry)
     end)
     image.flush_batch()
     if not ok then vim.notify("md-render: image redraw error: " .. tostring(err), vim.log.levels.WARN) end
@@ -1241,48 +1224,11 @@ function M.setup_images(win, content, ns, opts)
         local ok, err = pcall(function()
           -- WezTerm needs every image re-placed after TUI cell writes. Clear
           -- this state's old placements first so repeated puts cannot stack.
-          for _, id in pairs(state.image_ids) do
-            image.clear_placements(id)
-          end
+          clear_placements()
           for _, anim in pairs(state.anims) do
-            local prev_id = anim.frame_ids[anim.current]
-            if prev_id then image.clear_placements(prev_id) end
             anim.current = anim.current % #anim.frame_ids + 1
           end
-          for _, placement in ipairs(state.placements) do
-            local anim = state.anims[placement.path]
-            if anim then
-              local id = anim.frame_ids[anim.current]
-              if id then
-                image.put_image(
-                  id,
-                  state.win,
-                  placement.line,
-                  placement.col,
-                  placement.cols,
-                  placement.rows,
-                  nil,
-                  placement.img_w,
-                  placement.img_h
-                )
-              end
-            else
-              local id = state.image_ids[placement.path]
-              if id then
-                image.put_image(
-                  id,
-                  state.win,
-                  placement.line,
-                  placement.col,
-                  placement.cols,
-                  placement.rows,
-                  nil,
-                  placement.img_w,
-                  placement.img_h
-                )
-              end
-            end
-          end
+          draw_placements()
         end)
         image.flush_batch()
         if not ok then vim.notify("md-render: animation error: " .. tostring(err), vim.log.levels.WARN) end
@@ -1313,14 +1259,14 @@ function M.setup_images(win, content, ns, opts)
       -- Note: we cannot wrap redraw! itself because Neovim's TUI uses
       -- its own ?2026 sequences that would end our sync block prematurely.
       image.begin_sync_update()
-      place_images()
+      place_images(true)
       image.end_sync_update()
       resume_anim_timers()
     else
       vim.cmd "redraw!"
       vim.schedule(function()
         if state.closed then return end
-        place_images()
+        place_images(true)
         resume_anim_timers()
         M.announce_repaint "image"
       end)
@@ -1655,6 +1601,14 @@ function M.setup_images(win, content, ns, opts)
       if event.event == "TabLeave" or event.buf == state.buf then
         pause_anim_timers()
         stop_timer(state, "redraw_timer")
+        if visible() then
+          -- A partial redraw in the next tab can leave graphics from this one
+          -- visible. Keep the upload for TabEnter, but remove its placements.
+          first_visible = true
+          image.begin_batch()
+          clear_placements()
+          image.flush_batch()
+        end
       end
     end,
   })

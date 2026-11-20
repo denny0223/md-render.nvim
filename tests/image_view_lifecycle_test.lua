@@ -238,14 +238,71 @@ for case, script in ipairs { "trap '' TERM; printf ready; exec sleep 10", "print
   vim.api.nvim_buf_delete(view.buf, { force = true })
   if vim.api.nvim_win_is_valid(duplicate) then vim.api.nvim_win_close(duplicate, true) end
 end
+-- Opening the same file from different document positions keeps each tab's caption.
+do
+  local image = require "md-render.image"
+  image.setup { backend = "snacks" }
+  image._set_kitty_supported(true)
+  local path = root .. "/assets/demo/test.png"
+  vim.cmd "enew"
+  local source = vim.api.nvim_get_current_buf()
+  vim.bo[source].filetype = "markdown"
+  vim.api.nvim_buf_set_lines(source, 0, -1, false, {
+    "[![修正前](" .. path .. ")](https://example.org/) [![修正後][pic]](https://example.com/)",
+    "",
+    "| A | B |",
+    "|---|---|",
+    "| ![左欄][pic] | ![右欄][pic] |",
+    "",
+    "[pic]: " .. path,
+  })
+  local preview = require "md-render.preview"
+  preview.show_tab { max_width = 64 }
+  local session = assert(preview._sessions[vim.api.nvim_get_current_buf()])
+  local first_view_win
+  for idx, caption in ipairs { "修正前", "修正後", "左欄", "右欄" } do
+    wait_for(function()
+      local object = session.image_state.objects[idx]
+      return object and object:ready()
+    end, "source image did not load")
+    local p = session.content.image_placements[idx]
+    local row = p.line + 1
+    vim.api.nvim_win_set_cursor(session.win, { row, vim.fn.virtcol2col(session.win, row, p.col + 1) - 1 })
+    vim.fn.maparg("<CR>", "n", false, true).callback()
+    local win = vim.api.nvim_get_current_win()
+    assert(win ~= session.win)
+    wait_for(function()
+      return vim.api.nvim_buf_get_lines(0, -2, -1, false)[1] == caption
+    end, "wrong caption in image tab for " .. caption)
+    if idx == 1 then
+      first_view_win = win
+      vim.fn.maparg("+", "n", false, true).callback()
+      wait_for(function()
+        return vim.api.nvim_buf_get_lines(0, 0, 1, false)[1]:find("125%", 1, true)
+      end, "zoom did not settle")
+      vim.api.nvim_set_current_win(session.win)
+    else
+      vim.fn.maparg("q", "n", false, true).callback()
+      wait_for(function()
+        return vim.api.nvim_get_current_win() == session.win
+      end, "return to source window")
+    end
+  end
+  vim.api.nvim_set_current_win(first_view_win)
+  assert(vim.api.nvim_buf_get_lines(0, -2, -1, false)[1] == "修正前")
+  assert(vim.api.nvim_buf_get_lines(0, 0, 1, false)[1]:find("125%", 1, true))
+  vim.fn.maparg("q", "n", false, true).callback()
+  vim.api.nvim_buf_delete(session.buf, { force = true })
+end
+
 if vim.fn.executable "ffmpeg" == 1 then
   local image = require "md-render.image"
   image.setup { backend = "snacks" }
   image._set_kitty_supported(true)
   local viewer = require "md-render.image_view"
   local open, opened = viewer.open, nil
-  viewer.open = function(path)
-    opened, view = path, open(path)
+  viewer.open = function(path, name)
+    opened, view = path, open(path, name)
     return view
   end
   local requests, request = {}, terminal.request

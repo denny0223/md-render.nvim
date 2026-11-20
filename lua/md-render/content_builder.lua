@@ -45,6 +45,7 @@
 ---@field cols integer display width in cells
 ---@field cell_col? integer 0-indexed display column of the table cell interior
 ---@field cell_cols? integer table cell width including padding, excluding borders
+---@field display_name? string caption of this occurrence in the document
 ---@field label_rows? integer number of caption rows before an image
 ---@field img_w? integer source image width in pixels
 ---@field img_h? integer source image height in pixels
@@ -643,6 +644,7 @@ function ContentBuilder:add_table(
     for _, p in ipairs(tbl_image_placements) do
       table.insert(self.image_placements, {
         path = p.resolved,
+        display_name = p.display_name,
         line = base_line + p.line_offset,
         col = p.col,
         rows = p.rows,
@@ -3667,6 +3669,7 @@ function ContentBuilder:render_document(lines, opts)
         end
         table.insert(self.image_placements, {
           path = cached,
+          display_name = title,
           line = img_start_line,
           col = img_col,
           rows = display_rows,
@@ -5082,10 +5085,7 @@ function ContentBuilder:render_document(lines, opts)
             local video_tag = video_rest and video_rest:match "^%s*$" and video_open .. video_body .. "</video>"
             if video_tag then
               img_path = inline.html_target(video_tag)
-              if img_path then
-                img_alt = img_path:match "([^/]+)$" or img_path
-                img_video = true
-              end
+              if img_path then img_video = true end
             end
           end
           -- CommonMark autolink to GitHub user-attachments CDN: <https://github.com/user-attachments/assets/...>
@@ -5094,10 +5094,7 @@ function ContentBuilder:render_document(lines, opts)
           -- stuck on a "Loading..." placeholder.
           if not img_path then
             local autolink_url = line:match "^%s*<(https?://github%.com/user%-attachments/[%w%-/%.]+)>%s*$"
-            if autolink_url then
-              img_path = autolink_url
-              img_alt = autolink_url:match "([^/]+)$" or autolink_url
-            end
+            if autolink_url then img_path = autolink_url end
           end
           -- Obsidian embed: ![[file]] or ![[file|caption]]
           if not img_path then
@@ -5211,8 +5208,7 @@ function ContentBuilder:render_document(lines, opts)
             end
           end
 
-          local display_name = (img_entry.alt and img_entry.alt ~= "") and img_entry.alt
-            or (img_entry.path:match "([^/]+)$" or img_entry.path)
+          local display_name = image.display_name(img_entry.path, img_entry.alt)
           if graphics then
             if display_cols and display_rows then
               local raw_icon, icon_hl = icons.get_image_icon(img_entry.path, is_video and "video" or "image")
@@ -5266,6 +5262,7 @@ function ContentBuilder:render_document(lines, opts)
               end
               table.insert(self.image_placements, {
                 path = resolved,
+                display_name = display_name,
                 line = img_start_line,
                 label_rows = header_lines_added,
                 col = img_col,

@@ -973,7 +973,9 @@ function Session:install_float_keymaps(close_handle, keymap_opts)
           and (not p.cell_col or (col >= p.cell_col and col < p.cell_col + p.cell_cols))
         then
           local object = self.image_state and self.image_state.objects[idx]
-          if object and object:ready() then require("md-render.image_view").open(p.path or object.img.file) end
+          if object and object:ready() then
+            require("md-render.image_view").open(p.path or object.img.file, p.display_name)
+          end
           return true
         end
       end

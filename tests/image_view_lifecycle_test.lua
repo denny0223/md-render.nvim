@@ -244,9 +244,17 @@ do
   image.setup { backend = "snacks" }
   image._set_kitty_supported(true)
   local path = root .. "/assets/demo/test.png"
+  local has_mmdc, cached = image.has_mmdc, image.get_mermaid_cached
+  image.has_mmdc = function()
+    return true
+  end
+  image.get_mermaid_cached = function()
+    return path
+  end
   vim.cmd "enew"
   local source = vim.api.nvim_get_current_buf()
   vim.bo[source].filetype = "markdown"
+  vim.api.nvim_buf_set_name(source, cache .. "/report.md")
   vim.api.nvim_buf_set_lines(source, 0, -1, false, {
     "[![修正前](" .. path .. ")](https://example.org/) [![修正後][pic]](https://example.com/)",
     "",
@@ -255,12 +263,17 @@ do
     "| ![左欄][pic] | ![右欄][pic] |",
     "",
     "[pic]: " .. path,
+    "",
+    "```mermaid",
+    "graph LR",
+    "A --> B",
+    "```",
   })
   local preview = require "md-render.preview"
   preview.show_tab { max_width = 64 }
   local session = assert(preview._sessions[vim.api.nvim_get_current_buf()])
   local first_view_win
-  for idx, caption in ipairs { "修正前", "修正後", "左欄", "右欄" } do
+  for idx, caption in ipairs { "修正前", "修正後", "左欄", "右欄", "Mermaid · report.md:9" } do
     wait_for(function()
       local object = session.image_state.objects[idx]
       return object and object:ready()
@@ -293,6 +306,7 @@ do
   assert(vim.api.nvim_buf_get_lines(0, 0, 1, false)[1]:find("125%", 1, true))
   vim.fn.maparg("q", "n", false, true).callback()
   vim.api.nvim_buf_delete(session.buf, { force = true })
+  image.has_mmdc, image.get_mermaid_cached = has_mmdc, cached
 end
 
 if vim.fn.executable "ffmpeg" == 1 then

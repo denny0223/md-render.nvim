@@ -96,13 +96,14 @@ for _, lang in ipairs { "mermaid", "plantuml" } do
           local baseline
           for _, ending in ipairs(endings) do
             local payload = "Alice -> Bob: 甲"
-            local c = build(lang, list, details, ending, payload)
+            local c, opener = build(lang, list, details, ending, payload)
             local p = assert(c.image_placements[1])
             local inset = (list and 2 or 0) + (details and 2 or 0)
             local cols = cached and 46 - inset or ({ [0] = 36, [2] = 35, [4] = 33 })[inset]
             local col = cached and 1 + inset or ({ [0] = 6, [2] = 7, [4] = 9 })[inset]
             local expected = {
               display_name = lang == "mermaid" and "Mermaid" or "PlantUML",
+              diagram_line = opener,
               line = (details and 2 or 0) + (list and 1 or 0) + 1,
               col = col,
               cols = cols,

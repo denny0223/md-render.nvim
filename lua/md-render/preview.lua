@@ -974,7 +974,13 @@ function Session:install_float_keymaps(close_handle, keymap_opts)
         then
           local object = self.image_state and self.image_state.objects[idx]
           if object and object:ready() then
-            require("md-render.image_view").open(p.path or object.img.file, p.display_name)
+            local name = p.display_name
+            if p.diagram_line then
+              local file = vim.fn.fnamemodify(vim.fn.bufname(self.source_bufnr), ":t")
+              local location = file ~= "" and file .. ":" or "line "
+              name = ("%s · %s%d"):format(name, location, p.diagram_line)
+            end
+            require("md-render.image_view").open(p.path or object.img.file, name)
           end
           return true
         end

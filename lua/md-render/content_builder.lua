@@ -46,6 +46,7 @@
 ---@field cell_col? integer 0-indexed display column of the table cell interior
 ---@field cell_cols? integer table cell width including padding, excluding borders
 ---@field display_name? string caption of this occurrence in the document
+---@field diagram_line? integer physical source line of the opening diagram fence
 ---@field label_rows? integer number of caption rows before an image
 ---@field img_w? integer source image width in pixels
 ---@field img_h? integer source image height in pixels
@@ -3670,6 +3671,7 @@ function ContentBuilder:render_document(lines, opts)
         table.insert(self.image_placements, {
           path = cached,
           display_name = title,
+          diagram_line = src_indices[code_block_id] + source_line_offset,
           line = img_start_line,
           col = img_col,
           rows = display_rows,

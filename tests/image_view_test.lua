@@ -125,6 +125,7 @@ do
   for _, key in ipairs(navigation_keys) do
     original_maps[key] = vim.fn.maparg(key, "n", false, true)
   end
+  original_maps.F = vim.fn.maparg("F", "n", false, true)
   local view = require("md-render.image_view").open "unused.png"
   vim.cmd "belowright new"
   local extra_win = vim.api.nvim_get_current_win()
@@ -132,6 +133,8 @@ do
   local function press(key)
     vim.cmd("normal " .. vim.api.nvim_replace_termcodes(key, true, false, true))
   end
+  assert(vim.fn.maparg("F", "n", false, true).buffer == 1)
+  press "F"
   for _, key in ipairs(navigation_keys) do
     assert(vim.fn.maparg(key, "n", false, true).buffer == 1, key .. " must be buffer-local")
     press(key) -- Loading has not produced a crop yet.
@@ -224,6 +227,7 @@ do
   assert(math.abs(view.crop.y - before.y - before.h / before.rows) <= 1, "tiny viewport must advance one row")
   press "<C-b>"
   assert(math.abs(view.crop.y - before.y) <= 1, "tiny viewport must page back")
+  local detail, zoom = view.crop, view.zoom
   press "f"
   assert(view.zoom == 1 and view.x == 0.5 and view.y == 0.5, "fit must restore the complete centered image")
   for _, key in ipairs(navigation_keys) do
@@ -231,6 +235,21 @@ do
     assert(view.crop.x == 0 and view.crop.y == 0, key .. " must preserve the overview")
     assert(view.crop.w == view.iw and view.crop.h == view.ih)
   end
+  press "F"
+  assert(vim.deep_equal(view.crop, detail) and view.zoom == zoom, "repeated fit must preserve the previous view")
+  press "l"
+  local latest = view.crop
+  press "f"
+  vim.api.nvim_win_set_height(view.win, 12)
+  press "F"
+  assert(
+    vim.deep_equal(
+      view.crop,
+      geometry(view.iw, view.ih, vim.api.nvim_win_get_width(view.win) - 2, 10, cell, zoom, latest.cx, latest.cy)
+    ),
+    "restore the latest detail in the resized window"
+  )
+  press "f"
   press "<kPlus>"
   assert(view.zoom == 1.25, "keypad plus must zoom in")
   press "<kMinus>"
@@ -263,7 +282,7 @@ do
   assert(vim.wait(1000, function()
     return view.closed and vim.api.nvim_get_current_win() == origin
   end, 10))
-  for _, key in ipairs(navigation_keys) do
+  for key in pairs(original_maps) do
     assert(vim.deep_equal(original_maps[key], vim.fn.maparg(key, "n", false, true)), key .. " leaked into the document")
   end
   vim.system, image._test_cell_size = system, cell_size

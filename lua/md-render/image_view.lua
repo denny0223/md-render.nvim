@@ -39,6 +39,7 @@ function M.open(path)
   local state =
     { zoom = 1, x = 0.5, y = 0.5, serial = 0, win = win, buf = buf, playing = image.config().autoplay ~= false }
   local drag
+  local detail
   vim.b[buf].md_render_image_view = true
   vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
   vim.bo[buf].filetype = "md-render-image"
@@ -152,7 +153,8 @@ function M.open(path)
 
   local function header(zoom_level)
     local playback = state.frames and (state.playing and "Space pause · " or "Space play · ") or ""
-    return ("  %.0f%% · %shjkl · +/- · f fit · ? help · q back"):format(zoom_level * 100, playback)
+    local fit_key = zoom_level == 1 and detail and "F restore" or "f fit"
+    return ("  %.0f%% · %shjkl · +/- · %s · ? help · q back"):format(zoom_level * 100, playback, fit_key)
   end
   local function paint()
     if not valid() or not state.path then return end
@@ -324,7 +326,13 @@ function M.open(path)
     ["-"] = function()
       zoom(1 / 1.25)
     end,
+    F = function()
+      if not detail then return end
+      state.zoom, state.x, state.y = detail.zoom, detail.x, detail.y
+      paint()
+    end,
     f = function()
+      if state.crop and state.zoom > 1 then detail = { zoom = state.zoom, x = state.x, y = state.y } end
       state.zoom, state.x, state.y = 1, 0.5, 0.5
       paint()
     end,

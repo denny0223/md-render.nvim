@@ -201,6 +201,90 @@ vim.notify = notify
 vim.api.nvim_buf_delete(view.buf, { force = true })
 
 vim.system, Snacks.util.debounce = system, debounce
+-- Public preview/Enter with a cold diagram. Hold only the diagram renderer;
+-- use the real Snacks placements and first-frame conversion in the image tab.
+do
+  local image = require "md-render.image"
+  local has_mmdc, get_cached, render = image.has_mmdc, image.get_mermaid_cached, image.render_mermaid_async
+  local requests, cached = {}, {}
+  image.has_mmdc = function()
+    return true
+  end
+  image.get_mermaid_cached = function(source)
+    return cached[source]
+  end
+  image.render_mermaid_async = function(source, callback)
+    assert(not requests[source], "viewer duplicated the document's render request")
+    requests[source] = callback
+  end
+  image.setup { backend = "snacks" }
+  image._set_kitty_supported(true)
+  vim.cmd "enew"
+  local source = vim.api.nvim_get_current_buf()
+  vim.bo[source].filetype = "markdown"
+  vim.api.nvim_buf_set_name(source, vim.fn.tempname() .. "/report.md")
+  local a, b = "graph TD; A-->B", "graph TD; C-->D"
+  vim.api.nvim_buf_set_lines(source, 0, -1, false, { "```mermaid", a, "```", "", "```mermaid", b, "```" })
+  local preview = require "md-render.preview"
+  preview.toggle()
+  local session = preview._toggle_sessions[source]
+  wait_for(function()
+    return requests[a] and requests[b]
+  end, "document did not start both renders")
+  local function key(name)
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(name, true, false, true), "x", false)
+  end
+  local function open(index)
+    vim.api.nvim_win_set_cursor(session.win, { session.content.image_placements[index].line, 0 })
+    key "<CR>"
+    assert(vim.bo.filetype == "md-render-image", "one Enter should open a waiting viewer")
+    return vim.api.nvim_get_current_buf()
+  end
+  local cold = session.content.image_placements[1]
+  assert(session:image_view_hint(cold, 1) == "Enter: open and wait", "cold diagram must advertise one-press waiting")
+  local first_buf = open(1)
+  assert(vim.api.nvim_get_current_line():match "Loading image.*Enter/q back")
+  key "q"
+  assert(vim.api.nvim_get_current_win() == session.win, "cancel must return to the document")
+  local second_buf = open(2)
+  local caption = "Mermaid · report.md:5"
+  assert(vim.fn.getline "$" == caption, "the waiting tab must identify the selected diagram")
+  cached[a] = root .. "/tests/fixtures/test_4x4.png"
+  requests[a](cached[a])
+  requests[b](nil)
+  wait_for(function()
+    return vim.api.nvim_get_current_line():match "Mermaid rendering failed.*Enter/q back"
+  end, "first-frame failure left the waiting message on screen")
+  assert(vim.fn.getline "$" == caption, "a failed diagram must retain its source location")
+  assert(
+    vim.api.nvim_get_current_buf() == second_buf and not vim.api.nvim_buf_is_valid(first_buf),
+    "late A displaced B"
+  )
+  key "<CR>"
+  assert(vim.api.nvim_get_current_win() == session.win, "Enter leaves a failed waiting tab")
+  wait_for(function()
+    return session.content.image_placements[1].path == cached[a]
+  end, "cancel discarded document result")
+
+  -- Reopening a failed diagram retries it inside the document's shared queue.
+  requests[b] = nil
+  local success = open(2)
+  wait_for(function()
+    return requests[b]
+  end, "Enter did not retry the failed diagram")
+  cached[b] = root .. "/assets/demo/test.png"
+  requests[b](cached[b])
+  wait_for(function()
+    return vim.api.nvim_buf_get_lines(success, 0, 1, false)[1]:match "100%%"
+  end, "finished image did not replace the waiting screen")
+  assert(vim.fn.getline "$" == caption, "the retried diagram must retain its source location")
+  key "<Esc>"
+  assert(vim.api.nvim_get_current_win() == session.win, "Esc should return to the document")
+  vim.api.nvim_buf_delete(session.buf, { force = true })
+  vim.api.nvim_buf_delete(source, { force = true })
+  image.has_mmdc, image.get_mermaid_cached, image.render_mermaid_async = has_mmdc, get_cached, render
+end
+
 -- Closing the owner kills an uncooperative crop before its timeout, even while
 -- a second split retains the viewer buffer; its late callback stays harmless.
 for case, script in ipairs { "trap '' TERM; printf ready; exec sleep 10", "printf ready; sleep 3 & exit 0" } do
@@ -320,9 +404,9 @@ if vim.fn.executable "ffmpeg" == 1 then
   image.setup { backend = "snacks" }
   image._set_kitty_supported(true)
   local viewer = require "md-render.image_view"
-  local open, opened = viewer.open, nil
-  viewer.open = function(path, name)
-    opened, view = path, open(path, name)
+  local open = viewer.open
+  viewer.open = function(source, name)
+    view = open(source, name)
     return view
   end
   local requests, request = {}, terminal.request
@@ -356,7 +440,11 @@ if vim.fn.executable "ffmpeg" == 1 then
     end
     return true
   end, "inline dimensions did not settle")
-  for idx, path in ipairs { gif, video } do
+  local extract_frames = image.extract_frames_async
+  image.extract_frames_async = function()
+    error "a ready animation must reuse the document's decoded frames"
+  end
+  for idx = 1, 2 do
     assert(
       vim.wait(15000, function()
         local p = session.image_state.objects[idx]
@@ -408,7 +496,6 @@ if vim.fn.executable "ffmpeg" == 1 then
     else
       key "<CR>"
     end
-    assert(opened == path, "Enter must pass the media source, not its first PNG frame")
     wait_for(function()
       return view.placement and view.media._md_render_upload and view.media._md_render_upload:completed()
     end, "viewer must load the complete animation")
@@ -477,6 +564,7 @@ if vim.fn.executable "ffmpeg" == 1 then
     img:on_send() -- A late base-image completion must not restart the upload.
     assert(#requests == closed + 1 and requests[#requests].d == "I", "closed media was uploaded again")
   end
+  image.extract_frames_async = extract_frames
   image.setup { autoplay = false }
   local paused_from = #requests + 1
   viewer.open(gif)

@@ -56,7 +56,7 @@ for _, mode in ipairs { "tab", "pager", "float" } do
       return ready
     end,
   }
-  session.image_state = { objects = { object, object, object } }
+  session.image_state = { objects = {} }
   vim.api.nvim_win_set_cursor(win, { p.line, 0 })
   vim.cmd "normal! zt"
   vim.cmd.redraw()
@@ -64,7 +64,15 @@ for _, mode in ipairs { "tab", "pager", "float" } do
     return vim.api.nvim_buf_get_extmarks(buf, hint_ns, 0, -1, { details = true })
   end
   hint.refresh()
-  assert(#marks() == 0, "no shortcut for pending media")
+  assert(#marks() == 0, "no shortcut before transport detection")
+  session.image_state.objects = { object, object, object }
+  hint.refresh()
+  assert(marks()[1][4].virt_text[1][1]:find("Enter: open and wait", 1, true), "pending file can open")
+  local file = p.path
+  p.path = nil
+  hint.refresh()
+  assert(#marks() == 0, "an image with only a remote URL cannot open")
+  p.path = file
   ready = true
   vim.env.PATH = "/nonexistent"
   hint.refresh()

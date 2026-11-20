@@ -1435,6 +1435,12 @@ Look below the loading message or the image for the selected caption or source
 filename. Diagrams show their source location. Use :echo getline('$') to read a
 caption wider than the window.
 
+You can press Enter while a local file is decoding or a Mermaid diagram is
+rendering. The tab waits for the first frame. When space is tight, the
+preview can shorten or omit the hint. Enter still opens the tab. Press Enter,
+q or Esc to return while waiting or after an error. Remote images can open
+once the preview picks up the downloaded file.
+
 GIF and video tabs require Kitty 0.31 or newer and start playing automatically
 unless autoplay=false. Space starts playback when paused; pausing holds the
 current frame.

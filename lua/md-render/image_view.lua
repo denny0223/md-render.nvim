@@ -24,9 +24,9 @@ function M.geometry(iw, ih, cols, rows, cell, zoom, cx, cy)
   }
 end
 
----@param path string
+---@param source string|fun(viewer_open: fun():boolean):string?,table? Local media path, or the document's queued diagram or animation.
 ---@param name? string caption of the selected occurrence
-function M.open(path, name)
+function M.open(source, name)
   if vim.fn.executable "magick" ~= 1 then
     vim.notify(
       "md-render: image zoom requires ImageMagick 7 (magick) on Neovim's PATH; run :checkhealth md-render",
@@ -38,7 +38,7 @@ function M.open(path, name)
   local win, buf, group, valid = state.win, state.buf, state.group, state.valid
   state.zoom, state.x, state.y, state.serial = 1, 0.5, 0.5, 0
   state.playing = image.config().autoplay ~= false
-  local caption = image.display_name(path, name)
+  local caption = image.display_name(type(source) == "string" and source or "", name)
   local detail
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, "p")
@@ -429,11 +429,19 @@ function M.open(path, name)
   end, mouse_ns)
   vim.api.nvim_create_autocmd("WinResized", { group = group, callback = paint })
   local function load()
-    local frames
-    if image.is_video_file(path) or image.is_video_content(path) or image.is_animated_gif(path) then
-      frames = async.await(2, image.extract_frames_async, path)
+    local path, frames = source, nil
+    if type(source) == "function" then
+      path, frames = source(valid)
+      if not valid() then return end
+      if not path then
+        first_frame_status "  Mermaid rendering failed · :messages · Enter/q back"
+        return
+      end
+    elseif image.is_video_file(path) or image.is_video_content(path) or image.is_animated_gif(path) then
+      frames = require("md-render.snacks_image").extract_frames(path, valid)
     end
     if not valid() then return end
+    if caption == "" then caption = image.display_name(path) end
     local png = frames and frames[1] or async.await(2, image.ensure_png_async, path)
     if not valid() then return end
     local iw, ih

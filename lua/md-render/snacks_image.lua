@@ -219,6 +219,9 @@ function M.update(state, content)
         range = { p.line + 1, p.col, p.line + p.rows, p.col },
         width = p.cols,
         height = p.rows,
+        on_update = function()
+          if state.win == vim.api.nvim_get_current_win() then require("md-render.image_hint").schedule() end
+        end,
       }
       local function place(path, frames)
         local source = literal_source(path)

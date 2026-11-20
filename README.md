@@ -238,7 +238,7 @@ After loading the plugins, check the setup:
 
 1. Run `:checkhealth md-render` to check the selected backend, tools, heading status, and cache location. Also run `:checkhealth snacks` for the Snacks setup.
 2. Inside tmux, `tmux show-options -gv allow-passthrough` should print `on` or `all`.
-3. In Kitty, open a Markdown file containing a local PNG and run `:MdRender tab`. Wait for the image to appear, place the cursor on it or its title, and press Enter to verify that its image tab opens. Tool availability alone does not verify terminal display.
+3. In Kitty, open the [offline image fixture](tests/fixtures/visual_test.md) from your plugin checkout and run `:MdRender tab`. Move to **Test PNG**. When `Enter: open image` appears, press Enter to see the image and Enter again to return to the same place in the document.
 
 Both backends play animated GIFs and videos. The Snacks backend uses Kitty animation support, including inside tmux; video frame extraction requires `ffmpeg`. The Snacks backend prepares images throughout the document, including off-screen images; diagram rendering, downloads, and frame extraction share a two-job limit across previews, and work already running may finish into the cache after closing a preview. Image-heavy documents therefore do more work up front.
 
@@ -321,7 +321,7 @@ Reference links use the first valid definition, match labels with Unicode case f
 
 ### Image tab keys
 
-With the [Snacks backend](#optional-snacks-image-backend) configured and ImageMagick (`magick`) installed, press Enter on an image or its title to open a focused image tab. Use arrows or `hjkl` to move, `+/-` to zoom, `f` to see the whole image, `F` to restore the zoom and position you left with `f`, and `q` to return. These keys are set automatically in the image tab. The bottom row shows the selected image’s caption or source filename. Diagrams show their source location.
+With the [Snacks backend](#optional-snacks-image-backend) configured and ImageMagick (`magick`) installed, press Enter on an image or its title to open a focused image tab. Use arrows or `hjkl` to move, `+/-` to zoom, `f` to see the whole image, `F` to restore the zoom and position you left with `f`, and Enter, `q`, or Esc to return. These keys are set automatically in the image tab. The bottom row shows the selected image’s caption or source filename. Diagrams show their source location.
 
 GIF and video tabs require Kitty 0.31 or newer and play automatically unless `autoplay = false`. Press Space to start, pause, or resume; zooming and panning preserve the playback state. Playback controls affect only the image tab.
 

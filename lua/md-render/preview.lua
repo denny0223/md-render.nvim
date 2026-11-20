@@ -949,6 +949,16 @@ function Session:image_view_path(placement, index)
   if object and object:ready() then return placement.path or object.img.file end
 end
 
+function Session:image_view_hint(placement, index)
+  if
+    require("md-render.image").config().backend == "snacks"
+    and self:image_view_path(placement, index)
+    and vim.fn.executable "magick" == 1
+  then
+    return "Enter: open image"
+  end
+end
+
 function Session:image_view_name(placement)
   local name = placement.display_name
   if placement.diagram_line then
@@ -1008,6 +1018,7 @@ function Session:install_float_keymaps(close_handle, keymap_opts)
   }
   self._rebind_keymaps =
     display_utils.setup_float_keymaps(self.buf, self.ns, self.win, self.content, close_handle, self._keymap_opts)
+  require("md-render.image_hint").schedule()
   if self.pager then
     -- Let :qa handle unsaved buffers, including showing the editor that
     -- needs saving. Do not tear down renderers before exit is accepted.

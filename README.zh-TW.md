@@ -237,7 +237,7 @@ require("md-render.image").setup({ backend = "snacks" })
 
 1. 執行 `:checkhealth md-render`，檢查選用後端、工具、標題狀態與快取位置；另用 `:checkhealth snacks` 檢查 Snacks 設定。
 2. 如果使用 tmux，`tmux show-options -gv allow-passthrough` 應顯示 `on` 或 `all`。
-3. 在 Kitty 中開啟含有本機 PNG 圖片的 Markdown 檔案，執行 `:MdRender tab`。等圖片出現後，將游標移到圖片或標題上，按 Enter 確認能開啟圖片分頁。找到工具不代表終端機一定能正確顯示，仍需完成這一步。
+3. 在 Kitty 開啟外掛目錄中的[離線圖片範例](tests/fixtures/visual_test.md)，執行 `:MdRender tab`。移到 **Test PNG**，看到 `Enter: open image` 時按 Enter 看圖，再按 Enter 回到文件原位。
 
 兩個後端都能播放 GIF 動畫與影片。Snacks 後端使用 Kitty 的動畫功能，也支援在 tmux 內播放；影片影格擷取需要 `ffmpeg`。Snacks 後端會準備整份文件的圖片，包括目前畫面外的圖片；所有預覽共用最多兩個圖表產生／下載／影格擷取工作，關閉預覽後，已經開始的工作仍可能繼續執行並寫入快取。因此，圖片較多的文件會有較多前置處理。
 
@@ -320,7 +320,7 @@ Pager 以外的模式會在原始編輯視窗交給已設定的目錄瀏覽器�
 
 ### 圖片分頁按鍵
 
-完成 [Snacks 後端](#選用-snacks-圖片後端)設定並安裝 ImageMagick（`magick`）後，在圖片或其標題上按 Enter，即可開啟獨立圖片分頁。使用方向鍵或 `hjkl` 移動、`+/-` 縮放、`f` 看全圖、`F` 回到看全圖前的倍率與位置、`q` 返回。這些按鍵會自動設定在圖片分頁內。分頁底列顯示所選圖片的圖說或來源檔名。圖表會標出原始文件的位置。
+完成 [Snacks 後端](#選用-snacks-圖片後端)設定並安裝 ImageMagick（`magick`）後，在圖片或其標題上按 Enter，即可開啟獨立圖片分頁。使用方向鍵或 `hjkl` 移動、`+/-` 縮放、`f` 看全圖、`F` 回到看全圖前的倍率與位置，Enter、`q` 或 Esc 返回。這些按鍵會自動設定在圖片分頁內。分頁底列顯示所選圖片的圖說或來源檔名。圖表會標出原始文件的位置。
 
 GIF 與影片分頁需要 Kitty 0.31 以上版本，除非設定 `autoplay = false`，否則開啟後會自動播放。按空白鍵可開始、暫停或繼續；縮放與平移會維持目前的播放狀態。播放控制只影響圖片分頁。
 

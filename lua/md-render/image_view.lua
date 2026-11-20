@@ -47,6 +47,18 @@ function M.open(path, name)
   state.on_leave = function()
     drag = nil
   end
+  local function write_lines(end_row, lines)
+    vim.bo[buf].modifiable = true
+    vim.api.nvim_buf_set_lines(buf, 0, end_row, false, lines)
+    vim.bo[buf].modifiable = false
+  end
+  local first_frame_message = "  Loading image · Enter/q back"
+  local function first_frame_status(message)
+    if state.presented or not valid() then return end
+    first_frame_message = message
+    write_lines(1, { message })
+  end
+  write_lines(-1, { first_frame_message, caption })
   state.on_close = function()
     vim.on_key(nil, mouse_ns)
     if state.job then state.job:kill(9) end
@@ -54,7 +66,14 @@ function M.open(path, name)
     if media and media._md_render_upload then media._md_render_upload:close() end
     if state.pending then state.pending:close() end
     if state.placement then state.placement:close() end
-    if media then Snacks.image.terminal.request { a = "d", d = "I", i = media.id } end
+    if media then
+      media:del(1)
+      -- A conversion that completes after the tab closes must release its late upload.
+      media.on_send = function(self)
+        Snacks.image.terminal.request { a = "d", d = "I", i = self.id }
+      end
+      media:on_send()
+    end
     vim.fn.delete(dir, "rf")
   end
   local function playing()
@@ -90,14 +109,15 @@ function M.open(path, name)
     local fit_key = zoom_level == 1 and detail and "F restore" or "f fit"
     return ("  Enter/q: back · %.0f%% · %shjkl · +/- · %s · ? help"):format(zoom_level * 100, playback, fit_key)
   end
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { header(state.zoom) })
-  vim.bo[buf].modifiable = false
   local function paint()
     if not valid() or not state.path then return end
     local cols = math.max(1, vim.api.nvim_win_get_width(win) - 2)
     local rows = math.max(1, vim.api.nvim_win_get_height(win) - 2)
     local cell = image.get_cell_size()
-    if not cell then return end
+    if not cell then
+      first_frame_status "  Terminal cell size unavailable · Enter/q back"
+      return
+    end
     local g = M.geometry(state.iw, state.ih, cols, rows, cell, state.zoom, state.x, state.y)
     state.x, state.y, state.crop = g.cx, g.cy, g
     -- Finish the current frame during input bursts, then draw the latest view.
@@ -118,21 +138,20 @@ function M.open(path, name)
       state.job = nil
       if result.code ~= 0 or (not state.frames and not image.image_dimensions(file)) then
         if not state.frames then os.remove(file) end
+        first_frame_status "  Image crop failed · :messages · Enter/q back"
         vim.notify("md-render: image crop failed: " .. (result.stderr or ""), vim.log.levels.ERROR)
         if state.dirty then paint() end
         return
       end
       local col = math.floor((cols + 2 - g.cols) / 2)
       local lines = {
-        header(zoom_level),
+        state.presented and header(zoom_level) or first_frame_message,
       }
       for _ = 1, rows do
         lines[#lines + 1] = string.rep(" ", cols + 2)
       end
       lines[#lines + 1] = caption
-      vim.bo[buf].modifiable = true
-      vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-      vim.bo[buf].modifiable = false
+      write_lines(-1, lines)
       local opts = {
         inline = true,
         conceal = true,
@@ -175,6 +194,11 @@ function M.open(path, name)
               h = g.h,
             }
           end
+          -- The transparent animation anchor can arrive before the media itself.
+          if not state.presented and (not state.media or state.media.sent) then
+            first_frame_status(header(zoom_level))
+            state.presented = true
+          end
           if state.placement ~= p then
             if state.placement then state.placement:close() end
             if state.file and state.file ~= file then vim.fn.delete(state.file) end
@@ -193,7 +217,17 @@ function M.open(path, name)
         opts.on_update(state.placement)
       else
         state.pending_file = file
-        state.pending = Snacks.image.placement.new(buf, file, opts)
+        local pending = Snacks.image.placement.new(buf, file, opts)
+        state.pending = pending
+        pending.error = function(self)
+          if not valid() or state.pending ~= self then return end
+          state.pending = nil
+          self:close()
+          if not state.frames then os.remove(file) end
+          first_frame_status "  Image display failed · :checkhealth snacks · Enter/q back"
+          if state.dirty then paint() end
+        end
+        if pending.img:failed() then pending:error() end
       end
       vim.api.nvim_win_set_cursor(win, { 1, 0 })
       vim.api.nvim_win_call(win, function()
@@ -253,9 +287,7 @@ function M.open(path, name)
       if state.media and state.media.sent then
         Snacks.image.terminal.request { a = "a", i = state.media.id, s = state.playing and 3 or 1 }
       end
-      vim.bo[buf].modifiable = true
-      vim.api.nvim_buf_set_lines(buf, 0, 1, false, { header(state.zoom) })
-      vim.bo[buf].modifiable = false
+      if state.presented then write_lines(1, { header(state.zoom) }) end
     end,
     ["+"] = function()
       zoom(1.25)
@@ -396,7 +428,7 @@ function M.open(path, name)
     return ""
   end, mouse_ns)
   vim.api.nvim_create_autocmd("WinResized", { group = group, callback = paint })
-  async.run(function()
+  local function load()
     local frames
     if image.is_video_file(path) or image.is_video_content(path) or image.is_animated_gif(path) then
       frames = async.await(2, image.extract_frames_async, path)
@@ -409,6 +441,7 @@ function M.open(path, name)
       iw, ih = image.image_dimensions(png)
     end
     if not iw or not ih then
+      first_frame_status "  Unable to load image · :messages · Enter/q back"
       vim.notify("md-render: unable to load image", vim.log.levels.ERROR)
       return
     end
@@ -419,15 +452,19 @@ function M.open(path, name)
       assert(vim.uv.fs_copyfile(png, file))
       state.frames, state.media = frames, Snacks.image.image.new(file)
       require("md-render.snacks_image").animate(state.media, frames, playing)
-      local on_send = state.media.on_send
-      state.media.on_send = function(self)
-        if state.closed then
-          Snacks.image.terminal.request { a = "d", d = "I", i = self.id }
-          return
-        end
-        on_send(self)
-        if state.placement then state.placement.opts.on_update(state.placement) end
-      end
+      -- Snacks reports conversion errors to the image's placements. Register
+      -- the cropped media placement (p=1), whose anchor has its own image.
+      local placement = {
+        id = 1,
+        update = function()
+          if state.placement then state.placement.opts.on_update(state.placement) end
+        end,
+        error = function()
+          first_frame_status "  Media frame conversion failed · :checkhealth snacks · Enter/q back"
+        end,
+      }
+      state.media:place(placement)
+      if state.media:failed() then placement:error() end
       png = dir .. "/anchor.png"
       local anchor = assert(io.open(png, "wb"))
       anchor:write(
@@ -437,6 +474,13 @@ function M.open(path, name)
     end
     state.path, state.iw, state.ih = png, iw, ih
     paint()
+  end
+  async.run(function()
+    local ok, err = pcall(load)
+    if not ok and valid() then
+      first_frame_status "  Unable to load image · :messages · Enter/q back"
+      vim.notify("md-render: " .. tostring(err), vim.log.levels.ERROR)
+    end
   end)
   return state
 end

@@ -77,7 +77,7 @@ for _, mode in ipairs { "tab", "pager", "float" } do
   for _, key in ipairs { "<CR>", "q", "<Esc>" } do
     feed "<CR>"
     assert(vim.bo.filetype == "md-render-image" and #marks() == 0, "open image and hide source cue")
-    assert(vim.api.nvim_buf_get_lines(0, 0, 1, false)[1]:find("Enter/q: back", 1, true), "visible return")
+    assert(vim.api.nvim_buf_get_lines(0, 0, 1, false)[1]:match "Enter/q:? back", "visible return")
     local owner = vim.api.nvim_get_current_win()
     vim.cmd.vsplit()
     local duplicate = vim.api.nvim_get_current_win()

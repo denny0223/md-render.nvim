@@ -321,7 +321,7 @@ Reference links use the first valid definition, match labels with Unicode case f
 
 ### Image tab keys
 
-With the [Snacks backend](#optional-snacks-image-backend) configured and ImageMagick (`magick`) installed, press Enter on an image or its title to open a focused image tab. Use arrows or `hjkl` to move, `+/-` to zoom, `f` to see the whole image, `F` to restore the zoom and position you left with `f`, and Enter, `q`, or Esc to return. These keys are set automatically in the image tab. The bottom row shows the selected image’s caption or source filename. Diagrams show their source location.
+With the [Snacks backend](#optional-snacks-image-backend) configured and ImageMagick (`magick`) installed, press Enter on an image or its title to open a focused image tab. Use arrows or `hjkl` to move, `+/-` to zoom, `f` to see the whole image, `F` to restore the zoom and position you left with `f`, and Enter, `q`, or Esc to return. These keys are set automatically in the image tab. Look below the loading message or the image for the selected caption or source filename. Diagrams show their source location.
 
 GIF and video tabs require Kitty 0.31 or newer and play automatically unless `autoplay = false`. Press Space to start, pause, or resume; zooming and panning preserve the playback state. Playback controls affect only the image tab.
 

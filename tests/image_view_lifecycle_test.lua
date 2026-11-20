@@ -68,6 +68,10 @@ local view = require("md-render.image_view").open(root .. "/tests/fixtures/test_
 wait_for(function()
   return #crops == 1
 end, "initial crop did not start")
+local function status()
+  return vim.api.nvim_buf_get_lines(view.buf, 0, 1, false)[1]
+end
+assert(status():match "Loading image.*Enter/q back", "first crop must show how to cancel")
 local tab = vim.api.nvim_get_current_tabpage()
 local zoom = vim.fn.maparg("+", "n", false, true).callback
 local function finish_crop(n)
@@ -91,6 +95,7 @@ end
 
 local first = finish_crop(1)
 flush_updates()
+assert(status():match "100%%", "first visible frame replaces waiting status")
 assert(view.placement == first and not view.pending, "first frame was not promoted")
 assert_only_drawn(first)
 zoom()
@@ -161,6 +166,7 @@ wait_for(function()
 end, "failed conversion stranded queued input")
 vim.notify = notify
 assert(#errors == 1 and errors[1]:find("image crop failed", 1, true), "crop error was not reported")
+assert(status():match "Image crop failed.*Enter/q back", "first crop failure must replace the waiting message")
 assert(vim.fn.filereadable(crops[6].file) == 0, "timed-out crop left partial output")
 vim.api.nvim_buf_delete(view.buf, { force = true })
 assert(crops[7].killed, "closing the viewer must cancel its active conversion")
@@ -360,7 +366,48 @@ if vim.fn.executable "ffmpeg" == 1 then
     )
     local inline = session.image_state.objects[idx]
     vim.api.nvim_win_set_cursor(session.win, { session.content.image_placements[idx].line + 1, 0 })
-    key "<CR>"
+    if idx == 1 then
+      local width_limit = vim.env.MAGICK_WIDTH_LIMIT
+      vim.env.MAGICK_WIDTH_LIMIT = "32" -- Reject the private 160x120 frame but allow the 1x1 anchor.
+      key "<CR>"
+      wait_for(function()
+        return view.media and view.media:failed() and view.placement and view.placement:ready()
+      end, "expected a failed private frame with a ready transparent anchor")
+      vim.env.MAGICK_WIDTH_LIMIT = width_limit
+      wait_for(function()
+        return status():match "failed.*Enter/q back"
+      end, "private frame failure must replace the waiting message")
+      key "+"
+      assert(status():match "failed", "repainting a failed first frame must keep its diagnostic")
+      key "<CR>"
+      assert(view.closed and vim.api.nvim_get_current_win() == session.win)
+
+      local send, held = Snacks.image.image.send, nil
+      Snacks.image.image.send = function(img)
+        if not img.src:match "/media%.png$" then return send(img) end
+        held = img
+      end
+      for _, cancel in ipairs { true, false } do
+        key "<CR>"
+        wait_for(function()
+          return held and view.placement
+        end, "expected transparent anchor before media")
+        assert(status():match "Loading image.*Enter/q back", "transparent anchor cannot complete the wait")
+        key "<Space>"
+        assert(status():match "Enter/q back", "Space hid the waiting message before the first frame")
+        if cancel then
+          key "<CR>"
+          assert(view.closed and vim.api.nvim_get_current_win() == session.win)
+        else
+          key "<Space>"
+          send(held)
+        end
+        held = nil
+      end
+      Snacks.image.image.send = send
+    else
+      key "<CR>"
+    end
     assert(opened == path, "Enter must pass the media source, not its first PNG frame")
     wait_for(function()
       return view.placement and view.media._md_render_upload and view.media._md_render_upload:completed()

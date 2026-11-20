@@ -1431,9 +1431,9 @@ or its title to open a focused image tab. Its keys are set automatically:
   Help          ?; open this reference.
   Back          <Enter> / q / <Esc> to return to your place in the document.
 
-The bottom row shows the selected caption or source filename. Diagrams show
-their source location. Use :echo getline('$') to read a caption wider than the
-window.
+Look below the loading message or the image for the selected caption or source
+filename. Diagrams show their source location. Use :echo getline('$') to read a
+caption wider than the window.
 
 GIF and video tabs require Kitty 0.31 or newer and start playing automatically
 unless autoplay=false. Space starts playback when paused; pausing holds the

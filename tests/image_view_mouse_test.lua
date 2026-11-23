@@ -105,6 +105,8 @@ local ok, err = pcall(function()
     assert(math.abs(after.y - crop.y + delta[2] * crop.h / crop.rows) <= 1, "drag vertical distance/direction")
     mouse("left", "release", "view.win", 8 + delta[2], 10 + delta[1])
     assert(lua "return vim.fn.mode() == 'n'", "dragging must not select placeholder text")
+    lua [[vim.cmd "normal ffF"]]
+    assert(vim.deep_equal(lua "return view.crop", after), "restore the mouse-dragged crop after repeated fit")
   end
 
   -- A drag remains owned by its starting image when crossing another window.

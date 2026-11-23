@@ -8,8 +8,10 @@ function M.geometry(iw, ih, cols, rows, cell, zoom, cx, cy)
   local scale = math.min(cols * cell.cell_w / iw, rows * cell.cell_h / ih, 1) * zoom
   local w = math.max(1, math.min(iw, math.floor(cols * cell.cell_w / scale)))
   local h = math.max(1, math.min(ih, math.floor(rows * cell.cell_h / scale)))
-  local x = math.max(0, math.min(iw - w, math.floor(cx * iw - w / 2)))
-  local y = math.max(0, math.min(ih - h, math.floor(cy * ih - h / 2)))
+  -- A center reconstructed from a pixel crop can land one floating-point step below its origin.
+  local epsilon = 2 ^ -52
+  local x = math.max(0, math.min(iw - w, math.floor((cx + epsilon) * iw - w / 2)))
+  local y = math.max(0, math.min(ih - h, math.floor((cy + epsilon) * ih - h / 2)))
   return {
     x = x,
     y = y,
@@ -40,6 +42,7 @@ function M.open(path, name)
   local state =
     { zoom = 1, x = 0.5, y = 0.5, serial = 0, win = win, buf = buf, playing = image.config().autoplay ~= false }
   local drag
+  local detail
   vim.b[buf].md_render_image_view = true
   vim.bo[buf].buftype, vim.bo[buf].bufhidden, vim.bo[buf].swapfile = "nofile", "wipe", false
   vim.bo[buf].filetype = "md-render-image"
@@ -153,7 +156,8 @@ function M.open(path, name)
 
   local function header(zoom_level)
     local playback = state.frames and (state.playing and "Space pause · " or "Space play · ") or ""
-    return ("  %.0f%% · %shjkl · +/- · f fit · ? help · q back"):format(zoom_level * 100, playback)
+    local fit_key = zoom_level == 1 and detail and "F restore" or "f fit"
+    return ("  %.0f%% · %shjkl · +/- · %s · ? help · q back"):format(zoom_level * 100, playback, fit_key)
   end
   local function paint()
     if not valid() or not state.path then return end
@@ -326,7 +330,13 @@ function M.open(path, name)
     ["-"] = function()
       zoom(1 / 1.25)
     end,
+    F = function()
+      if not detail then return end
+      state.zoom, state.x, state.y = detail.zoom, detail.x, detail.y
+      paint()
+    end,
     f = function()
+      if state.crop and state.zoom > 1 then detail = { zoom = state.zoom, x = state.x, y = state.y } end
       state.zoom, state.x, state.y = 1, 0.5, 0.5
       paint()
     end,

@@ -19,7 +19,7 @@ A Markdown rendering engine for Neovim. Transforms raw Markdown into richly high
 
 The split keeps focus in the source window so you can keep editing; the preview updates without saving. In Normal mode, `<C-w>p` (Ctrl-w then p) selects the previous window; immediately after opening the split, that is the preview. The [keymap examples](#keymaps) include an optional `<leader>ms` shortcut.
 
-With Snacks and `magick` configured, press Enter on a loaded image in the preview to open its [image tab](#image-tab-keys) for zoom and pan.
+With Snacks and `magick` configured, press Enter on an image in the preview to open its [image tab](#image-tab-keys) for zoom and pan.
 
 For the full [key reference](#keymaps), [commands](#commands), and [troubleshooting](#faq--troubleshooting), see below.
 
@@ -321,7 +321,9 @@ Reference links use the first valid definition, match labels with Unicode case f
 
 ### Image tab keys
 
-With the [Snacks backend](#optional-snacks-image-backend) configured and ImageMagick (`magick`) installed, press Enter on an image or its title to open a focused image tab. Use arrows or `hjkl` to move, `+/-` to zoom, `f` to see the whole image, `F` to restore the zoom and position you left with `f`, and Enter, `q`, or Esc to return. These keys are set automatically in the image tab. The bottom row shows the selected image’s caption or source filename. Diagrams show their source location.
+With the [Snacks backend](#optional-snacks-image-backend) configured and ImageMagick (`magick`) installed, press Enter on an image or its title to open a focused image tab. Use arrows or `hjkl` to move, `+/-` to zoom, `f` to see the whole image, `F` to restore the zoom and position you left with `f`, and Enter, `q`, or Esc to return. These keys are set automatically in the image tab. Look below the loading message or the image for the selected caption or source filename. Diagrams show their source location.
+
+While a local file is decoding or a Mermaid diagram is rendering, press Enter to wait for the first frame in its own tab. When space is tight, the preview shortens or omits the `Enter: open and wait` hint. Press Enter, q or Esc to return while waiting or after an error. Remote images can open once the preview picks up the downloaded file.
 
 GIF and video tabs require Kitty 0.31 or newer and play automatically unless `autoplay = false`. Press Space to start, pause, or resume; zooming and panning preserve the playback state. Playback controls affect only the image tab.
 
@@ -613,7 +615,7 @@ Check that `autoplay` is enabled in your image setup. With `autoplay = false`, a
 <details>
 <summary><strong>Enter does not open an image tab</strong></summary>
 
-Use a document preview such as `:MdRender tab`, select the [Snacks backend](#optional-snacks-image-backend), and check that `:echo executable('magick')` returns `1`. Wait for the image to finish loading, then place the cursor on it or its title before pressing Enter. The built-in `:MdRender demo` window does not provide this image-opening action.
+Use a document preview such as `:MdRender tab`, select the [Snacks backend](#optional-snacks-image-backend), and check that `:echo executable('magick')` returns `1`. Place the cursor on the image or its title and press Enter. For a remote image, wait until the download finishes. The built-in `:MdRender demo` window does not provide this image-opening action.
 
 </details>
 

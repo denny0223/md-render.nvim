@@ -4,6 +4,13 @@ local image = require "md-render.image"
 local async = require "md-render.async"
 local permits = async.semaphore(2)
 
+-- Standalone image tabs also use a producer slot when they need to decode media.
+function M.extract_frames(path, viewer_open)
+  return permits:with(function()
+    if viewer_open() then return async.await(2, image.extract_frames_async, path) end
+  end)
+end
+
 -- Keep Snacks' placement/transport lifecycle; Kitty cycles frames itself.
 function M.animate(img, frames, playing)
   local owns_placements = playing == nil
@@ -182,6 +189,7 @@ function M.update(state, content)
   end
   stop_timer(state)
   state.placements = content.image_placements or {}
+  state.wait_for_source = {}
   -- Rebuilding replaces buffer rows even when the image coordinates stay the
   -- same. Recreate placements so Snacks cannot reuse displaced extmarks.
   for _, object in pairs(state.objects) do
@@ -210,6 +218,43 @@ function M.update(state, content)
       end
     end, 100)
   end
+  -- A selected diagram or animation can outlive its document. Joining its
+  -- existing task keeps queued viewer work within the same producer limit.
+  local function prepare(p, work)
+    local viewers = {}
+    local function needed()
+      if current() then return true end
+      for viewer_open in pairs(viewers) do
+        if viewer_open() then return true end
+      end
+      return false
+    end
+    local task
+    local function start()
+      local pending = async.run(function()
+        return permits:with(function()
+          if needed() then return work(needed) end
+        end)
+      end)
+      task = pending
+      -- A new reader may retry a failed preparation after the current readers finish.
+      pending:on_complete(function(err, path)
+        if err or not path then task = nil end
+      end)
+      return pending
+    end
+    if p.path or p.mermaid_source then
+      state.wait_for_source[p] = function(viewer_open)
+        viewers[viewer_open] = true
+        local ok, path, frames = async.pawait(task or start())
+        viewers[viewer_open] = nil
+        if not ok then error(path, 0) end
+        -- A failed frame extraction can still display the original file as a still image.
+        return path or p.path, frames
+      end
+    end
+    start()
+  end
   for idx, p in ipairs(state.placements) do
     if p.path then
       local opts = {
@@ -230,6 +275,7 @@ function M.update(state, content)
           vim.notify_once("md-render: image source could not be prepared; check the file path", vim.log.levels.WARN)
           return
         end
+        if state.objects[idx] then state.objects[idx]:close() end
         local object = Snacks.image.placement.new(state.buf, source, opts)
         state.objects[idx] = object
         local original_error, reported = object.error, false
@@ -265,50 +311,44 @@ function M.update(state, content)
         end
       end
       if p.animated or p.video or image.is_video_file(p.path) or image.is_animated_gif(p.path) then
-        async.run(function()
-          permits:with(function()
-            if not current() then return end
-            if not p.img_w and (p.video or image.is_video_file(p.path)) then
-              local width, height = async.await(2, image.video_dimensions_async, p.path)
-              if not current() then return end
-              if width and height then
-                p.img_w, p.img_h = width, height
-                ready()
-              end
+        prepare(p, function(needed)
+          if not p.img_w and (p.video or image.is_video_file(p.path)) then
+            local width, height = async.await(2, image.video_dimensions_async, p.path)
+            if not needed() then return end
+            if width and height and current() then
+              p.img_w, p.img_h = width, height
+              ready()
             end
-            local frames = async.await(2, image.extract_frames_async, p.path)
-            if not current() then return end
-            place(frames and frames[1] or p.path, frames)
-          end)
+          end
+          local frames = async.await(2, image.extract_frames_async, p.path)
+          if current() then place(frames and frames[1] or p.path, frames) end
+          return frames and p.path, frames
         end)
       else
         place(p.path)
       end
     else
-      -- Shared producers outlive their callers. Keep the permit until their
-      -- callback finishes; cancelled waiters would let new edits exceed the cap.
-      async.run(function()
-        permits:with(function()
-          if not current() then return end
-          local path
-          if p.mermaid_source then
-            path = async.await(2, image.render_mermaid_async, p.mermaid_source)
-          elseif p.plantuml_source then
-            path = async.await(2, image.render_plantuml_async, p.plantuml_source)
-          elseif p.src_url then
-            path = async.await(2, image.download_async, p.src_url)
-          end
-          if not current() then return end
-          if path then
-            p.path = path
-            ready()
-          else
-            require("md-render.display_utils").show_image_error(state.buf, state.ns, p)
-          end
-        end)
+      prepare(p, function()
+        local path
+        if p.mermaid_source then
+          path = async.await(2, image.render_mermaid_async, p.mermaid_source)
+        elseif p.plantuml_source then
+          path = async.await(2, image.render_plantuml_async, p.plantuml_source)
+        elseif p.src_url then
+          path = async.await(2, image.download_async, p.src_url)
+        end
+        if not current() then return path end
+        if path then
+          p.path = path
+          ready()
+        else
+          require("md-render.display_utils").show_image_error(state.buf, state.ns, p)
+        end
+        return path
       end)
     end
   end
+  require("md-render.image_hint").schedule()
   return state
 end
 

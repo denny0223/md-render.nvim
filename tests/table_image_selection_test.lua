@@ -118,11 +118,22 @@ for idx = 6, 7 do
   end
 end
 
--- An unloaded selected image must not open a different ready image.
+-- A URL-only image stays in the document until its own file arrives.
 session.image_state.objects[2] = nil
 local right = placements[2]
 local right_label_row = right.line - right.label_rows + 1
-enter(right_label_row, vim.fn.virtcol2col(session.win, right_label_row, right.cell_col + 1) - 1, nil)
+local right_col = vim.fn.virtcol2col(session.win, right_label_row, right.cell_col + 1) - 1
+right.path, right.src_url = nil, "https://example.invalid/right.png"
+enter(right_label_row, right_col, nil)
+right.path = paths[2]
+enter(right_label_row, right_col, nil) -- the download alone does not establish the media type
+session.image_state.objects[2] = {
+  ready = function()
+    return false
+  end,
+}
+enter(right_label_row, right_col, paths[2]) -- the static placement exists and is preparing its first frame
+right.src_url = nil
 
 local standalone = placements[8]
 enter(standalone.line, 0, paths[1])

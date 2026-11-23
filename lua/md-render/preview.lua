@@ -942,21 +942,16 @@ function Session:image_at(row, col)
   end
 end
 
---- Keep the original media path when a Snacks placement displays an extracted frame.
-function Session:image_view_path(placement, index)
+--- Resolve the same source for hints and Enter. An animated Snacks
+--- placement keeps its shared frame task even after its first frame is visible.
+function Session:image_view_source(placement, index)
   local state = self.image_state
-  local object = state and state.objects and state.objects[index]
-  if object and object:ready() then return placement.path or object.img.file end
-end
-
-function Session:image_view_hint(placement, index)
-  if
-    require("md-render.image").config().backend == "snacks"
-    and self:image_view_path(placement, index)
-    and vim.fn.executable "magick" == 1
-  then
-    return "Enter: open image"
-  end
+  if not state or state.closed then return end
+  local object = state.objects and state.objects[index]
+  local ready = object and object:ready()
+  local source = state.wait_for_source and state.wait_for_source[placement]
+  if object then source = source or placement.path or (ready and object.img.file) end
+  return source, ready
 end
 
 function Session:image_view_name(placement)
@@ -969,12 +964,19 @@ function Session:image_view_name(placement)
   return name
 end
 
+function Session:image_view_hint(placement, index)
+  if require("md-render.image").config().backend ~= "snacks" or vim.fn.executable "magick" ~= 1 then return end
+  local source, ready = self:image_view_source(placement, index)
+  if ready and source then return "Enter: open image" end
+  if source then return "Enter: open and wait" end
+end
+
 function Session:open_image_at(row, col)
   if require("md-render.image").config().backend ~= "snacks" then return false end
   local placement, index = self:image_at(row, col)
   if not placement then return false end
-  local path = self:image_view_path(placement, index)
-  if path then require("md-render.image_view").open(path, self:image_view_name(placement)) end
+  local source = self:image_view_source(placement, index)
+  if source then require("md-render.image_view").open(source, self:image_view_name(placement)) end
   return true
 end
 

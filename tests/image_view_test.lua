@@ -68,7 +68,7 @@ for _, release in ipairs { "close", "replace" } do
   local view = require("md-render.image_view").open "unused.png"
   vim.fn.tempname = tempname
   vim.fn.writefile({ "crop" }, dir .. "/crop.png")
-  local calls = { kill = 0, upload = 0, pending = 0, placement = 0, delete = 0 }
+  local calls = { kill = 0, upload = 0, pending = 0, placement = 0, media_placement = 0, delete = 0 }
   local function called(name)
     return function()
       calls[name] = calls[name] + 1
@@ -77,7 +77,7 @@ for _, release in ipairs { "close", "replace" } do
   view.job = { kill = called "kill" }
   view.pending = { close = called "pending" }
   view.placement = { close = called "placement" }
-  view.media = { id = 42, _md_render_upload = { close = called "upload" } }
+  view.media = { id = 42, del = called "media_placement", _md_render_upload = { close = called "upload" } }
   _G.Snacks = { image = { terminal = { request = called "delete" } } }
   vim.cmd "vsplit"
   local duplicate = vim.api.nvim_get_current_win()
@@ -156,6 +156,10 @@ do
   end
   assert(vim.fn.maparg("F", "n", false, true).buffer == 1)
   press "F"
+  view.frames = { "first", "next" }
+  vim.fn.maparg("<Space>", "n", false, true).callback()
+  assert(not view.playing and vim.api.nvim_buf_get_lines(view.buf, 0, 1, false)[1]:match "Enter/q back")
+  view.frames = nil
   for _, key in ipairs(navigation_keys) do
     assert(vim.fn.maparg(key, "n", false, true).buffer == 1, key .. " must be buffer-local")
     press(key) -- Loading has not produced a crop yet.

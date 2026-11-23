@@ -171,6 +171,93 @@ local ok, err = pcall(function()
   end, "reopened content did not complete")
   assert(#jobs == 9 and active == 0 and peak == 2, "producer limit did not survive cleanup")
 
+  -- A viewer waiting behind two producers can keep its selected diagram
+  -- even when the original preview closes before the queue reaches it.
+  local queued = setup(content("waiting", 4))
+  pump(function()
+    return #jobs == 11
+  end, "initial waiting producers did not start")
+  local abandoned, selected = unpack(queued.content.image_placements, 3, 4)
+  local cancelled, skipped, result = false, false, nil
+  local function viewer_open()
+    return not cancelled
+  end
+  local async = require "md-render.async"
+  async.run(function()
+    local path = queued.wait_for_source[abandoned](viewer_open)
+    skipped = path == nil
+  end)
+  async.run(function()
+    queued.wait_for_source[selected](viewer_open)
+  end)
+  async.run(function()
+    result = queued.wait_for_source[selected](function()
+      return true
+    end)
+  end)
+  cancelled = true
+  transport.cleanup(queued)
+  jobs[10]:finish(true)
+  jobs[11]:finish(true)
+  pump(function()
+    return #jobs >= 12
+  end, "the selected queued diagram was dropped")
+  assert(#jobs == 12 and jobs[12].source == source "waiting4", "a cancelled viewer took a producer slot")
+  assert(skipped, "abandoned queued work must finish without rendering")
+  jobs[12]:finish(true)
+  pump(function()
+    return result
+  end, "closed document did not deliver the selected file to its viewer")
+  assert(vim.fn.filereadable(result) == 1 and peak == 2 and #jobs == 12, "waiting bypassed the producer limit")
+
+  -- A pending local animation also shares extraction with its inline owner.
+  local image = require "md-render.image"
+  local frames, extracted = { "frame.png" }, {}
+  local extract = image.extract_frames_async
+  image.extract_frames_async = function(path, done)
+    extracted[#extracted + 1] = { path = path, done = done }
+  end
+  local videos = content("animation", 3)
+  for i, p in ipairs(videos.image_placements) do
+    p.mermaid_source, p.animated, p.path = nil, true, "animation" .. i .. ".gif"
+  end
+  local animations = setup(videos)
+  local standalone_open = true
+  local standalone = async.run(function()
+    transport.extract_frames("closed.gif", function()
+      return standalone_open
+    end)
+  end)
+  standalone_open = false
+  local target = videos.image_placements[3]
+  local file, decoded
+  require("md-render.async").run(function()
+    file, decoded = animations.wait_for_source[target](function()
+      return true
+    end)
+  end)
+  assert(#extracted == 2, "waiting animated view decoded a third image outside the queue")
+  transport.cleanup(animations)
+  extracted[1].done(frames)
+  pump(function()
+    return #extracted == 3
+  end, "selected animation was skipped after its document closed")
+  assert(extracted[3].path == target.path, "the viewer decoded another animation")
+  extracted[2].done(frames)
+  extracted[3].done(frames)
+  pump(function()
+    return file
+  end, "the waiting animation did not receive its source")
+  assert(
+    file == target.path and decoded == frames and #extracted == 3,
+    "viewer lost or decoded the shared frames twice"
+  )
+  pump(function()
+    return standalone:completed() or #extracted > 3
+  end, "the standalone viewer did not release its turn")
+  assert(standalone:completed() and #extracted == 3, "a closed standalone viewer started its queued decode")
+  image.extract_frames_async = extract
+
   -- Terminal detection can finish after the owning window changes buffers.
   local detect, pending_detect = Snacks.image.terminal.detect, nil
   Snacks.image.terminal.detect = function(callback)

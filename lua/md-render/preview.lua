@@ -929,6 +929,55 @@ function Session:cleanup_images()
   self.win = nil
 end
 
+--- Find the placement owning a rendered row and display column (both zero-based).
+function Session:image_at(row, col)
+  for idx, p in ipairs(self.content.image_placements or {}) do
+    if
+      row >= p.line - (p.label_rows or 1)
+      and row < p.line + p.rows
+      and (not p.cell_col or (col >= p.cell_col and col < p.cell_col + p.cell_cols))
+    then
+      return p, idx
+    end
+  end
+end
+
+--- Keep the original media path when a Snacks placement displays an extracted frame.
+function Session:image_view_path(placement, index)
+  local state = self.image_state
+  local object = state and state.objects and state.objects[index]
+  if object and object:ready() then return placement.path or object.img.file end
+end
+
+function Session:image_view_hint(placement, index)
+  if
+    require("md-render.image").config().backend == "snacks"
+    and self:image_view_path(placement, index)
+    and vim.fn.executable "magick" == 1
+  then
+    return "Enter: open image"
+  end
+end
+
+function Session:image_view_name(placement)
+  local name = placement.display_name
+  if placement.diagram_line then
+    local file = vim.fn.fnamemodify(vim.fn.bufname(self.source_bufnr), ":t")
+    local location = file ~= "" and file .. ":" or "line "
+    name = ("%s · %s%d"):format(name, location, placement.diagram_line)
+  end
+  return name
+end
+
+function Session:open_image_at(row, col)
+  if require("md-render.image").config().backend ~= "snacks" then return false end
+  local placement, index = self:image_at(row, col)
+  if not placement then return false end
+  local path = self:image_view_path(placement, index)
+  if path then require("md-render.image_view").open(path, self:image_view_name(placement)) end
+  return true
+end
+
 --- Install the standard click/keymap handlers on a window-managed close handle
 --- (FloatWin or TabWin). Used by show / show_tab. Pass `keymap_opts.close_keys = {}`
 --- and a nil close_handle for toggle-mode buffers that must not self-close.
@@ -964,32 +1013,12 @@ function Session:install_float_keymaps(close_handle, keymap_opts)
       self:refresh_images()
     end,
     on_image_open = function(row)
-      if require("md-render.image").config().backend ~= "snacks" then return false end
-      local col = vim.fn.virtcol "." - 1
-      for idx, p in ipairs(self.content.image_placements or {}) do
-        if
-          row >= p.line - (p.label_rows or 1)
-          and row < p.line + p.rows
-          and (not p.cell_col or (col >= p.cell_col and col < p.cell_col + p.cell_cols))
-        then
-          local object = self.image_state and self.image_state.objects[idx]
-          if object and object:ready() then
-            local name = p.display_name
-            if p.diagram_line then
-              local file = vim.fn.fnamemodify(vim.fn.bufname(self.source_bufnr), ":t")
-              local location = file ~= "" and file .. ":" or "line "
-              name = ("%s · %s%d"):format(name, location, p.diagram_line)
-            end
-            require("md-render.image_view").open(p.path or object.img.file, name)
-          end
-          return true
-        end
-      end
-      return false
+      return self:open_image_at(row, vim.fn.virtcol "." - 1)
     end,
   }
   self._rebind_keymaps =
     display_utils.setup_float_keymaps(self.buf, self.ns, self.win, self.content, close_handle, self._keymap_opts)
+  require("md-render.image_hint").schedule()
   if self.pager then
     -- Let :qa handle unsaved buffers, including showing the editor that
     -- needs saving. Do not tear down renderers before exit is accepted.

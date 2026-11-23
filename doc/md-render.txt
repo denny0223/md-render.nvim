@@ -1429,7 +1429,7 @@ or its title to open a focused image tab. Its keys are set automatically:
   Fit           f; fit the complete image and center it.
   Restore       F; return to the zoom and position last saved by f in this tab.
   Help          ?; open this reference.
-  Back          q / <Esc>; close the image tab and return to the document.
+  Back          <Enter> / q / <Esc> to return to your place in the document.
 
 The bottom row shows the selected caption or source filename. Diagrams show
 their source location. Use :echo getline('$') to read a caption wider than the

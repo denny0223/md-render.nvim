@@ -893,13 +893,15 @@ function M.setup_float_keymaps(buf, ns, win, content, close_handle, opts)
   -- not a close key by default (closing on Enter is unintuitive — use q / <Esc>
   -- / <C-c>). It still falls back to closing when a caller opts <CR> into
   -- close_keys explicitly (cr_is_close).
-  vim.keymap.set("n", "<CR>", function()
+  local function on_enter()
     local cursor = vim.api.nvim_win_get_cursor(0)
     if Links.follow_anchor(Links.at(buf, ns, cursor[1] - 1, cursor[2]), get_content()) then return end
     if opts.on_image_open and opts.on_image_open(cursor[1] - 1) then return end
     if toggle_at_cursor() then return end
     if cr_is_close then vim.cmd.close() end
-  end, { buffer = buf, noremap = true, silent = true })
+  end
+  opts.image_enter = on_enter
+  map_default("<CR>", on_enter, "Follow anchor, open image or toggle block")
 
   vim.keymap.set("n", "<LeftRelease>", function()
     local mouse, projected = M.getmousepos(true)

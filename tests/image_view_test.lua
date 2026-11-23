@@ -25,6 +25,27 @@ assert(vim.deep_equal(crop, fractional_center(crop.cx)), "repainting the same ce
 assert(fractional_center(207.9 / 1502).x == 82, "a fractional origin must still round down")
 print "Image overview, zoom and pan boundaries OK"
 
+-- Suppressed leave events can remove the owning window while its buffer survives.
+local silent_view = require("md-render.image_view_tab").open()
+local released = 0
+silent_view.on_close = function()
+  released = released + 1
+end
+vim.cmd.vsplit()
+local surviving_win = vim.api.nvim_get_current_win()
+vim.api.nvim_win_call(silent_view.win, function()
+  vim.cmd "noautocmd close"
+end)
+vim.cmd.redraw()
+assert(
+  vim.wait(1000, function()
+    return released == 1
+  end, 5),
+  "silent close leaked the tab's resources"
+)
+assert(vim.api.nvim_get_current_win() == surviving_win, "silent close stole focus")
+vim.cmd.tabclose()
+
 -- Exercise the real tab/window lifecycle without invoking image converters.
 require("md-render.async").run = function() end
 local executable = vim.fn.executable
@@ -362,6 +383,33 @@ for _, close in ipairs {
   check_return(close, "closing the viewer did not return to its original window")
 end
 
+-- Only the last reader returns. Its original image owner may already be gone.
+for _, silent_close in ipairs { false, true } do
+  vim.api.nvim_set_current_win(origin)
+  local split_view = require("md-render.image_view").open "unused.png"
+  vim.cmd.tabnew()
+  local neighbour = vim.api.nvim_get_current_win()
+  vim.cmd.tabprevious()
+  vim.cmd.vsplit()
+  local copy = vim.api.nvim_get_current_win()
+  if silent_close then
+    vim.cmd "noautocmd only"
+  else
+    vim.api.nvim_set_current_win(split_view.win)
+    vim.api.nvim_feedkeys("q", "x", false)
+  end
+  assert(vim.api.nvim_get_current_win() == copy and not vim.api.nvim_win_is_valid(split_view.win))
+  vim.api.nvim_set_current_win(origin)
+  vim.cmd("normal! " .. vim.keycode "<C-y>")
+  local reading_view = vim.fn.winsaveview()
+  vim.api.nvim_set_current_win(copy)
+  vim.api.nvim_feedkeys(vim.keycode "<CR>", "x", false)
+  assert(vim.api.nvim_get_current_win() == origin, "last image split did not return to the document")
+  assert(vim.deep_equal(vim.fn.winsaveview(), reading_view), "the surviving split restored a stale view")
+  assert(vim.api.nvim_win_is_valid(neighbour), "return closed an unrelated tab")
+  vim.api.nvim_win_close(neighbour, true)
+end
+
 -- Revisit the document and scroll without moving the cursor, then return.
 vim.api.nvim_win_set_cursor(origin, { 60, 0 })
 vim.cmd "normal! zt"
@@ -389,6 +437,23 @@ vim.wait(20, function()
 end)
 assert(vim.api.nvim_get_current_win() == other, "background close stole focus")
 
+-- A source hook can reuse the former image window during the return.
+vim.api.nvim_set_current_win(origin)
+view = require("md-render.image_view").open "unused.png"
+local draft = vim.api.nvim_create_buf(true, false)
+vim.api.nvim_buf_set_lines(draft, 0, -1, false, { "unsaved notes" })
+vim.api.nvim_create_autocmd("WinEnter", {
+  buffer = origin_buf,
+  once = true,
+  callback = function()
+    vim.api.nvim_win_set_buf(view.win, draft)
+  end,
+})
+vim.api.nvim_feedkeys("q", "x", false)
+assert(vim.api.nvim_get_current_win() == origin and vim.api.nvim_win_get_buf(view.win) == draft)
+assert(vim.bo[draft].modified and vim.api.nvim_buf_get_lines(draft, 0, 1, false)[1] == "unsaved notes")
+vim.api.nvim_win_close(view.win, true)
+
 -- A replaced or closed origin must leave Neovim's fallback window intact.
 vim.api.nvim_set_current_win(origin)
 view = require("md-render.image_view").open "unused.png"
@@ -407,4 +472,9 @@ vim.wait(20, function()
   return false
 end)
 assert(vim.api.nvim_get_current_win() == other, "return did not tolerate a closed origin")
+-- If :tabonly removed the document, the final return still dismisses the image.
+view = require("md-render.image_view").open "unused.png"
+vim.cmd.tabonly()
+vim.api.nvim_feedkeys(vim.keycode "<Esc>", "x", false)
+assert(not vim.api.nvim_buf_is_valid(view.buf), "return left the last image buffer open")
 print "Image view return: original window, latest scroll, background close and invalid origin OK"

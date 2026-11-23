@@ -335,8 +335,11 @@ test("pager return replaces resources and ignores late image and heading callbac
     preview.show_pager()
     local session = preview._sessions[vim.api.nvim_get_current_buf()]
     local old_images, old_headings = session.image_state, session.text_size_state
+    assert(old_headings and old_headings.image_headings)
     assert(
-      old_headings and old_headings.image_headings and #static_jobs > 0 and #heading_jobs > 0,
+      vim.wait(1000, function()
+        return #static_jobs > 0 and #heading_jobs > 0
+      end),
       "pending renderers missing"
     )
     local rebuild, rebuilds = session.rebuild, 0

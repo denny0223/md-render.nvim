@@ -961,6 +961,7 @@ end
 ---@class MdRender.ImageState
 ---@field placements MdRender.ImagePlacement[]
 ---@field image_ids table<string, integer>  path -> Kitty image ID (transmitted)
+---@field ready_images table<string, {png_revision: string}|false> original PNG uploads accepted or rejected by direct Kitty
 ---@field anims table<string, MdRender.AnimState>  path -> animation state
 ---@field tasks table<MdRender.ImagePlacement, vim.async.Task>  work started per placement
 ---@field win integer
@@ -1012,7 +1013,7 @@ end
 ---@param win integer
 ---@param content MdRender.Content
 ---@param ns integer?
----@param opts? { buf?: integer, on_ready?: fun(), build_content?: fun(): MdRender.Content, on_content_applied?: fun(content: MdRender.Content) }
+---@param opts? { buf?: integer, on_ready?: fun(), build_content?: fun(): MdRender.Content, on_content_applied?: fun(content: MdRender.Content), png_revision?: string, on_view_ready?: fun(ready: boolean) }
 ---@return MdRender.ImageState?
 function M.setup_images(win, content, ns, opts)
   if not content.image_placements or #content.image_placements == 0 then return nil end
@@ -1030,6 +1031,7 @@ function M.setup_images(win, content, ns, opts)
   local state = {
     placements = content.image_placements,
     image_ids = {},
+    ready_images = {},
     anims = {},
     tx_dims = {}, -- path → {w, h}: actual transmitted image dimensions
     win = win,
@@ -1128,6 +1130,10 @@ function M.setup_images(win, content, ns, opts)
     end
   end
 
+  local selected_png = opts and opts.png_revision
+  local private_view = opts and opts.on_view_ready
+  local on_view_ready = private_view
+
   -- Request presentation on the first actual placement after entering this
   -- view. Animation ticks and intermediate repaint notifications stay quiet.
   local first_visible = true
@@ -1135,10 +1141,14 @@ function M.setup_images(win, content, ns, opts)
     for _, p in ipairs(state.placements) do
       local anim = state.anims[p.path]
       local id = anim and anim.frame_ids[anim.current] or state.image_ids[p.path]
-      if id then
+      if id and (not private_view or state.ready_images[p.path]) then
         local present = on_entry and first_visible
         local sent = image.put_image(id, state.win, p.line, p.col, p.cols, p.rows, nil, p.img_w, p.img_h, present)
         if present and sent then first_visible = false end
+        if sent and on_view_ready then
+          on_view_ready(true)
+          on_view_ready = nil
+        end
       end
     end
   end
@@ -1401,6 +1411,8 @@ function M.setup_images(win, content, ns, opts)
     -- Save original placeholder row count before recalculation
     local placeholder_rows = placement.rows
 
+    if selected_png and selected_png ~= image.file_revision(path) then return false end
+
     -- Auto-detect video content when not already flagged (e.g. URL without extension)
     if not placement.video and image.is_video_content(path) then placement.video = true end
 
@@ -1441,7 +1453,20 @@ function M.setup_images(win, content, ns, opts)
           return
         end
         callback(id, ...)
-      end)
+      end, function(accepted_id, err, file_revision)
+        if state.closed or state.image_ids[path] ~= accepted_id then return end
+        local changed = selected_png and selected_png ~= image.file_revision(path)
+        state.ready_images[path] = not (err or changed) and { png_revision = file_revision }
+        require("md-render.image_hint").schedule()
+        if on_view_ready then
+          if state.ready_images[path] then
+            schedule_redraw()
+          else
+            on_view_ready(false)
+            on_view_ready = nil
+          end
+        end
+      end, selected_png)
     end)
     if not id then return false end
     if not current(revision) then
@@ -1545,6 +1570,10 @@ function M.setup_images(win, content, ns, opts)
         local ok, shown = pcall(process_placement_async, placement, revision, owner)
         if current(revision) and (not ok or shown == false) then
           placement._retries = MAX_RETRIES
+          if on_view_ready then
+            on_view_ready(false)
+            on_view_ready = nil
+          end
           if ns and placement.line < vim.api.nvim_buf_line_count(state.buf) then
             M.show_image_error(state.buf, ns, reserved)
           end
@@ -1561,14 +1590,15 @@ function M.setup_images(win, content, ns, opts)
   state.start_anim_timer = start_anim_timer
   state.placement_near_viewport = placement_near_viewport
 
-  -- Ask for everything near the viewport; the semaphore decides how much of it
-  -- happens at once. Off-screen placements are skipped entirely on this pass
-  -- and only transmitted later via the WinScrolled-driven retry in
-  -- place_images, so the user's first paint costs what is actually visible
-  -- (typically 1-2 images) rather than the file's total image count.
-  for _, placement in ipairs(state.placements) do
-    if placement_near_viewport(placement) then process_placement(placement) end
-  end
+  -- Let the caller own this state before the first Kitty upload can yield to
+  -- a rebuild. A newer revision has already requested its own placements.
+  local initial_revision = state.revision
+  vim.schedule(function()
+    for _, placement in ipairs(content.image_placements) do
+      if not current(initial_revision) then return end
+      if placement_near_viewport(placement) then process_placement(placement) end
+    end
+  end)
   schedule_redraw()
 
   -- Re-display on scroll and cursor movement; clean up on window close
@@ -1688,6 +1718,7 @@ function M.update_images(state, win, content, ns, opts)
     if not new_paths[path] then
       image.delete_image(id)
       state.image_ids[path] = nil
+      state.ready_images[path] = nil
     end
   end
   for path, anim in pairs(state.anims) do

@@ -10,12 +10,16 @@ image.setup { backend = "kitty", autoplay = true }
 image._set_kitty_supported(true)
 image._test_cell_size = { cell_w = 8, cell_h = 16 }
 local stored, deleted, visible, present = {}, {}, {}, {}
+local confirmed_uploads = {}
 local wakes = 0
 vim.api.nvim_ui_send = function(bytes)
   if bytes == "\0" then wakes = wakes + 1 end
   for sequence in bytes:gmatch "\27_G(.-)\27\\" do
     local id = tonumber(sequence:match ",i=(%d+)")
-    if sequence:match "^a=t," then stored[id] = true end
+    if sequence:match "^a=t," then
+      stored[id] = true
+      confirmed_uploads[id] = sequence:find(",q=0;", 1, true) ~= nil
+    end
     if sequence:match "^a=p," and not sequence:find(",U=1", 1, true) then visible[id] = (visible[id] or 0) + 1 end
     if sequence:match "^a=p," and sequence:find(",p=2,q=0", 1, true) then present[id] = (present[id] or 0) + 1 end
     if sequence:match "^a=d,d=[iI]," then visible[id] = nil end
@@ -189,6 +193,9 @@ end
 local function placement_reply(id, status)
   vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27_Gi=" .. id .. ",p=2;" .. status } })
 end
+local function upload_reply(id, status)
+  vim.api.nvim_exec_autocmds("TermResponse", { data = { sequence = "\27_Gi=" .. id .. ";" .. status } })
+end
 local repeated = content(png)
 table.insert(repeated.image_placements, vim.tbl_extend("force", repeated.image_placements[1], { line = 1 }))
 -- The offscreen occurrence shares the upload but cannot request a presentation.
@@ -198,6 +205,9 @@ wait_for(function()
   return state.image_ids[png] and visible[state.image_ids[png]] == 2
 end, "both occurrences were not placed")
 local source_id = state.image_ids[png]
+assert(confirmed_uploads[source_id] and not state.ready_images[png], "allocating a file ID is not acceptance")
+upload_reply(source_id, "ENOENT: file is unreadable from Kitty")
+upload_reply(source_id, "OK")
 assert(present[source_id] == 1 and wakes == 0, "only the first visible occurrence requests a reply")
 placement_reply(source_id, "ENOENT")
 placement_reply(source_id + 999, "OK")
@@ -212,6 +222,21 @@ wait_for(function()
   return other_state.image_ids[png] and visible[other_state.image_ids[png]]
 end, "second tab did not paint")
 local other_id = other_state.image_ids[png]
+-- A stationary mouse can be over the image while a neighboring split has focus.
+vim.cmd "vnew"
+local hints = require "md-render.image_hint"
+local schedule, notified = hints.schedule, false
+hints.schedule = function()
+  notified = true
+end
+upload_reply(other_id, "OK")
+wait_for(function()
+  return other_state.ready_images[png]
+end, "accepted PNG did not become actionable")
+hints.schedule = schedule
+assert(notified, "accepting the PNG did not refresh the inactive window's hover")
+vim.cmd.close()
+assert(not state.ready_images[png], "late or unrelated reply enabled the rejected file")
 assert(source_id ~= other_id and not visible[source_id], "second tab reused the first tab's placement")
 vim.cmd "tabprevious"
 wait_for(function()

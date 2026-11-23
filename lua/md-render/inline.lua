@@ -423,11 +423,29 @@ function M.reference_definition(text, start)
   if destination_only then return label, text:sub(dest_start, dest_end - 1), line_end end
 end
 
+-- Only image-only layouts consume Pandoc attributes. Match a complete list so
+-- ordinary braces stay in the paragraph and quoted values can contain Markdown.
+local image_attributes
+do
+  local P, S, R = vim.lpeg.P, vim.lpeg.S, vim.lpeg.R
+  local space = S " \t"
+  local name = (R("az", "AZ", "09", "\128\255") + S "_:.-") ^ 1
+  local function quoted(delimiter)
+    local escaped_char = P "\\" * (1 - S "\r\n")
+    return P(delimiter) * (escaped_char + (1 - S(delimiter .. "\\\r\n"))) ^ 0 * delimiter
+  end
+  local value = quoted '"' + quoted "'" + (1 - S " \t\r\n{}\"'") ^ 1
+  local attribute = S "#." * name + name * "=" * value
+  image_attributes = P "{" * space ^ 0 * attribute * (space ^ 1 * attribute) ^ 0 * space ^ 0 * "}"
+end
+
 --- Scan one already-parsed paragraph; block boundaries are the caller's job.
-local function scan(text, refs, wanted_link, source_label, bare_url, index_labels)
+local function scan(text, refs, request, source_label, bare_url)
   local spans, brackets, autolinks, invalid_destinations, hard_breaks = {}, {}, {}, {}, {}
   local standard_ranges, links, images = {}, {}, {}
-  local labels = index_labels and {} or nil
+  local wanted_link = request and request.link
+  local labels = request and request.labels
+  local attribute_ranges = request and request.attributes
   local link_labels, label_cursor, label_finish = nil, 1, 0
   local wiki_close
   local last_link_start = 0
@@ -492,7 +510,7 @@ local function scan(text, refs, wanted_link, source_label, bare_url, index_label
       pos = (finish or pos) + 1
     elseif
       not wanted_link
-      and not index_labels
+      and not labels
       and (text:sub(pos, pos + 3) == "www." or (bare_url and text:match("^https?://", pos)))
     then
       -- Hard-break ownership reuses Markdown's established HTTP matcher.
@@ -503,7 +521,7 @@ local function scan(text, refs, wanted_link, source_label, bare_url, index_label
       -- for every unmatched opener. Candidates then advance one range cursor.
       if finish and #brackets > 0 then
         if not link_labels then
-          link_labels = scan(text, refs, nil, source_label, nil, true).labels
+          link_labels = scan(text, refs, { labels = {} }, source_label).labels
           table.sort(link_labels, function(a, b)
             return a.start < b.start
           end)
@@ -592,24 +610,33 @@ local function scan(text, refs, wanted_link, source_label, bare_url, index_label
       if matched then
         links[bracket.start] =
           { start = bracket.start, suffix_start = pos + 1, finish = finish, url = url, image = bracket.image }
+        local media
         if bracket.image then
           local destination = text:sub(pos + 2, finish - 1)
-          images[#images + 1] = {
+          media = {
             start = bracket.start - 1,
             finish = finish,
             label_start = bracket.start + 1,
             label_end = pos - 1,
             src = url or M.link_destination(source_label and source_label(destination) or destination),
           }
-          links[bracket.start].media = images[#images]
+          images[#images + 1] = media
+          links[bracket.start].media = media
         else
           local child = links[bracket.start + 2]
           local image = child and child.media
-          if image and image.finish == pos - 1 then
+          if image and (image.attributes_end or image.finish) == pos - 1 then
             local destination = text:sub(pos + 2, finish - 1)
             image.href = url or M.link_destination(source_label and source_label(destination) or destination)
             image.outer_start, image.outer_finish = bracket.start, finish
+            media = image
           end
+        end
+        if attribute_ranges and media then
+          local after = image_attributes:match(text, finish + 1)
+          if after then attribute_ranges[#attribute_ranges + 1] = { finish + 1, after - 1 } end
+          media.attributes_end = after and after - 1
+          finish = media.attributes_end or finish
         end
         if labels then labels[#labels + 1] = { start = bracket.start, finish = pos } end
         standard_ranges[#standard_ranges + 1] = {
@@ -658,17 +685,20 @@ function M.scan(text, ref_links, source_label)
 end
 
 --- Existing block media layouts apply only when images are the sole content.
+---@return table[]? images occurrences in original source coordinates
+---@return table[]? attributes inclusive byte ranges omitted when measuring a single-image table cell
 function M.image_line(text, ref_links)
   if not text:find("![", 1, true) then return end
-  local images = M.scan(text, ref_links).images
+  local attribute_ranges = text:find("{", 1, true) and {}
+  local images = scan(text, ref_links, attribute_ranges and { attributes = attribute_ranges }).images
   if #images == 0 then return end
   local pos = 1
   for _, image in ipairs(images) do
     local between = text:sub(pos, (image.outer_start or image.start) - 1)
     if not M.hide_html_comments(between):match "^%s*$" then return end
-    pos = (image.outer_finish or image.finish) + 1
+    pos = (image.attributes_end or image.outer_finish or image.finish) + 1
   end
-  if M.hide_html_comments(text:sub(pos)):match "^%s*$" then return images end
+  if M.hide_html_comments(text:sub(pos)):match "^%s*$" then return images, attribute_ranges end
 end
 
 --- Hard breaks belong to text nodes, never code, HTML or valid link suffixes.
@@ -699,7 +729,7 @@ function M.link_bounds(text, start, ref_links, source_label, links)
     if link then return link.suffix_start, link.finish, link.url end
     return
   end
-  local result = scan(text, ref_links, start, source_label)
+  local result = scan(text, ref_links, { link = start }, source_label)
   return result.suffix_start, result.link_end, result.reference_url
 end
 

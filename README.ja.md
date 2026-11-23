@@ -83,7 +83,7 @@ nvim +"MdRender pager" assets/showcase.md
 | 依存 | 用途 | フォールバック |
 |---|---|---|
 | [curl](https://curl.se/) | Web 画像・動画のダウンロード | `set_download_fn()` でカスタム関数を指定可 |
-| [snacks.nvim](https://github.com/folke/snacks.nvim) | オプションの画像バックエンド、サイズ調整、専用画像タブ | Kitty を直接使う場合は、デフォルトのバックエンドでも表示済みの PNG をタブの大きさに合わせて開けます |
+| [snacks.nvim](https://github.com/folke/snacks.nvim) | オプションの画像バックエンド、サイズ調整、専用画像タブ | Kitty を直接使う場合は、既定のバックエンドでも PNG をタブの大きさに合わせて開けます。アニメーション GIF と動画はローカルの Kitty セッションで開けます |
 | [FFmpeg](https://ffmpeg.org/) (`ffmpeg` / `ffprobe`) | ネイティブの JPEG/WebP → PNG 変換、両バックエンド共通の GIF / 動画のフレーム展開 | ImageMagick にフォールバック（画像のみ。動画には ffmpeg が必要） |
 | [ImageMagick](https://imagemagick.org/) (`magick`) | Snacks の画像変換と画像タブのズーム・パン、ネイティブの画像変換と共通の GIF フレーム展開 | ネイティブの変換は下表のツールで代替可。Snacks の画像タブは PNG でも `magick` が必須で、`ffmpeg`、`sips`、`convert` のみのインストールでは代替できません |
 | [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) とヘッドレスブラウザ | 両バックエンドで Mermaid ダイアグラムを描画 | なければコードブロックを保持。npm フォールバックには `mermaid_allow_npx = true`、Node.js/npm とブラウザが必要 |
@@ -173,7 +173,7 @@ require("md-render.image").setup {
 }
 ```
 
-`autoplay = false` ではどちらのバックエンドでも文書内の GIF や動画は最初のフレームで止まります。Snacks の GIF・動画タブでは Space で再生を開始できます。動画のフレーム準備には引き続き FFmpeg が必要で、GIF は FFmpeg または ImageMagick を使えます。`mermaid_allow_npx = false` ではインストール済みの `mmdc` のみ使い、見つからなければ Mermaid はコードブロックのまま表示します。これらのオプションは既存の画像設定に統合し、選択済みの `backend = "snacks"` も維持してください。見出しを通常の文字にするには `:MdRender textsize off` を使います。
+`autoplay = false` ではどちらのバックエンドでも文書内の GIF や動画は最初のフレームで止まります。GIF・動画タブでは Space で再生を開始できます。動画のフレーム準備には引き続き FFmpeg が必要で、GIF は FFmpeg または ImageMagick を使えます。`mermaid_allow_npx = false` ではインストール済みの `mmdc` のみ使い、見つからなければ Mermaid はコードブロックのまま表示します。これらのオプションは既存の画像設定に統合し、選択済みの `backend = "snacks"` も維持してください。見出しを通常の文字にするには `:MdRender textsize off` を使います。
 
 リモートの画像と動画は、文書プレビューと設定済みの Telescope／Snacks picker プレビューで自動的に読み込みます。picker の選択変更でもリクエストが始まり、`:MdRender toggle` は不要です。内蔵ダウンローダは HTTP(S) と HTTP(S) リダイレクトに対応し、URL をそのまま扱い、`.curlrc` は読みません。プロキシと CA の環境設定は引き続き使われます。独自の認証には `set_download_fn()` を使ってください。
 
@@ -321,7 +321,7 @@ vim.keymap.set("n", "<leader>md", "<Plug>(md-render-demo)",        { desc = "Mar
 
 ### 画像タブのキー
 
-Kitty を直接使う場合、既定のバックエンドで表示済みの PNG をクリックするか、画像またはそのタイトル上で Enter を押すと、タブの大きさに合わせて画像全体を表示します。描画済みの Mermaid PNG も開けます。`[Back]` をクリックするか、Enter、`q`、Esc を押すと、元の位置に戻ります。
+Kitty を直接使う場合、既定のバックエンドで表示済みの PNG をクリックするか、画像またはそのタイトル上で Enter を押すと、タブの大きさに合わせて画像全体を表示します。描画済みの Mermaid PNG も開けます。ローカルの Kitty ではアニメーション GIF や動画も同じ操作で開き、Space で再生と一時停止を切り替えられます。`autoplay = false` の場合は、Space を押すまで最初のフレームを表示します。`[Back]` をクリックするか、Enter、`q`、Esc を押すと元の位置に戻ります。
 
 [Snacks バックエンド](#snacks-画像バックエンド) と ImageMagick（`magick`）を設定した状態で、画像またはそのタイトル上で Enter を押すと専用画像タブが開きます。以下のキーはタブ内で自動設定され、追加のプラグインやキーマップ設定は不要です。選択した画像のキャプションまたは元のファイル名は、読み込みメッセージの下に表示され、画像が開くとその下に移ります。図にはソース上の位置を表示します。
 
@@ -621,7 +621,7 @@ require("snacks").setup({
 <details>
 <summary><strong>Enter で画像タブが開かない</strong></summary>
 
-`:MdRender tab` などの文書プレビューを使用してください。ネイティブバックエンドでは、Kitty を直接使用して表示済みの PNG を選択します。[Snacks バックエンド](#snacks-画像バックエンド)では、`:echo executable('magick')` が `1` を返すことを確認してください。画像またはそのタイトル上で Enter を押します。リモート画像はダウンロードの完了後に開けます。組み込みの `:MdRender demo` ウィンドウには、この画像を開く操作はありません。
+`:MdRender tab` などの文書プレビューを使用してください。ネイティブバックエンドでは、Kitty を直接使用して、表示済みの PNG を選択します。アニメーション GIF や動画を開くには、SSH 接続を使わずにローカルの Kitty で Neovim を実行してください。[Snacks バックエンド](#snacks-画像バックエンド)では、`:echo executable('magick')` が `1` を返すことを確認してください。画像またはそのタイトル上で Enter を押します。リモート画像はダウンロードの完了後に開けます。組み込みの `:MdRender demo` ウィンドウには、この画像を開く操作はありません。
 
 </details>
 

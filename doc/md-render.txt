@@ -1378,9 +1378,9 @@ Configure before opening a preview. These are the defaults: >lua
     mermaid_allow_npx = false,
   }
 <
-With autoplay=false, both backends show the first frame inline. In a Snacks
-GIF or video tab, press Space to start playback. Videos require FFmpeg for
-frame extraction. GIFs can use FFmpeg or ImageMagick.
+With autoplay=false, both backends show the first frame inline. In a GIF or
+video tab, press Space to start playback. Videos require FFmpeg for frame
+extraction. GIFs can use FFmpeg or ImageMagick.
 mermaid_allow_npx=false uses only an installed mmdc, retaining Mermaid as code
 if it is unavailable.
 Every Mermaid launch uses a private working directory, so Puppeteer
@@ -1419,9 +1419,12 @@ falls back to lookup without an attachment-folder setting.
 
                                                         *md-render-image-view*
 
-In direct Kitty, click a displayed PNG or press <Enter> on it or its caption
-to open the whole image in a fitted tab. Rendered Mermaid PNGs work the same
-way. Click [Back] or press <Enter>, q, or <Esc> to return to the document.
+In direct Kitty, click a displayed PNG or press <Enter> on the image or its
+caption to open a fitted tab. Rendered Mermaid PNGs work the same way.
+In a local Kitty session, the same controls open animated GIFs and videos.
+Press <Space> to play or pause. With autoplay = false, the first frame stays
+on screen until you press <Space>. Click [Back] or press <Enter>, q, or <Esc>
+to return to the original reading position.
 
 With the Snacks backend and ImageMagick (magick), press <Enter> on an image
 or its title to open a focused image tab. Its keys are set automatically:

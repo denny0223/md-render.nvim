@@ -2096,6 +2096,17 @@ function M.transmit_animated(path)
   return frame_ids, nil, frame_w, frame_h
 end
 
+-- A local path can be readable here and unreadable by the terminal.
+local function send_png_file(id, path, mode, on_response)
+  if on_response then await_png(id, function(err)
+    on_response(id, err)
+  end) end
+  term_write(
+    string.format("\x1b_Ga=t,f=100,t=%s,i=%d,q=%d;%s\x1b\\", mode, id, on_response and 0 or 2, vim.base64.encode(path))
+  )
+  retain_image(id)
+end
+
 --- Transmit image asynchronously (converts to PNG if needed, then transmits).
 --- When the image is converted (e.g. JPEG→PNG with resize), the callback
 --- receives the actual transmitted image dimensions so callers can update
@@ -2119,14 +2130,11 @@ function M.transmit_image_async(path, callback, on_response, expected_revision)
     if expected_revision and revision ~= expected_revision then return callback(nil) end
     _image_id = _image_id + 1
     local id = _image_id
-    if revision then await_png(id, function(err)
-      on_response(id, err, revision)
-    end) end
-    local b64_path = vim.base64.encode(png_path)
     -- Ghostty does not support t=t; always use t=f and delete temp files ourselves
     local t = (is_temp and not is_ghostty()) and "t" or "f"
-    term_write(string.format("\x1b_Ga=t,f=100,t=%s,i=%d,q=%d;%s\x1b\\", t, id, revision and 0 or 2, b64_path))
-    retain_image(id)
+    send_png_file(id, png_path, t, revision and function(accepted_id, err)
+      on_response(accepted_id, err, revision)
+    end)
     if is_temp and is_ghostty() then _temp_image_paths[id] = true end
     _image_paths[id] = png_path
     -- Return actual transmitted dimensions when the converted PNG differs from
@@ -2243,7 +2251,8 @@ end
 ---@param source string|string[] media path or the immutable frame files displayed by another renderer
 ---@param callback fun(frame_ids: integer[]?, tmp_dir: string?, frame_w: integer?, frame_h: integer?, frame_files: string[]?)
 ---@param owner? table renderer sharing these frame IDs
-function M.transmit_animated_async(source, callback, owner)
+---@param on_response? fun(id: integer, err?: string) direct Kitty response for the first frame
+function M.transmit_animated_async(source, callback, owner, on_response)
   if not M.supports_kitty() then
     callback(nil)
     return
@@ -2275,14 +2284,12 @@ function M.transmit_animated_async(source, callback, owner)
     ---@return integer last  index of the last frame sent
     local function send_batch(first)
       local last = math.min(first + BATCH_SIZE - 1, total)
-      tty_mod.kitty_version()
+      local kitty = tty_mod.kitty_version()
       M.begin_batch()
       for i = first, last do
         -- Cleanup may release these IDs before the background batch runs.
         if _image_paths[all_ids[i]] == frames[i] then
-          local b64_path = vim.base64.encode(frames[i])
-          term_write(string.format("\x1b_Ga=t,f=100,t=f,i=%d,q=2;%s\x1b\\", all_ids[i], b64_path))
-          retain_image(all_ids[i])
+          send_png_file(all_ids[i], frames[i], "f", i == 1 and kitty and not vim.env.TMUX and on_response)
         end
       end
       M.flush_batch()

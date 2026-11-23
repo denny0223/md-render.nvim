@@ -249,7 +249,6 @@ assert(wakes == 1, "visible placement was accepted without waking the terminal")
 display.cleanup_images(other_state)
 placement_reply(other_id, "OK")
 assert(wakes == 1, "reply for a retired upload woke the terminal")
-tty.kitty_version = version
 vim.cmd "tabclose 2"
 display.cleanup_images(state)
 
@@ -262,6 +261,14 @@ state = display.setup_images(win, content(gif), ns)
 wait_for(function()
   return state.anims[gif] and state.anim_timer:is_active()
 end, "animation did not start")
+local first_frame = state.anims[gif].frame_ids[1]
+assert(confirmed_uploads[first_frame] and not confirmed_uploads[state.anims[gif].frame_ids[2]])
+assert(not state.ready_images[gif], "decoded frames are not proof of a terminal upload")
+upload_reply(first_frame, "ENOENT")
+wait_for(function()
+  return state.ready_images[gif] == false
+end, "rejected first frame was not recorded")
+tty.kitty_version = version
 vim.cmd "tabnew"
 assert(not state.anim_timer:is_active(), "hidden animation timer kept running")
 vim.cmd "tabclose"

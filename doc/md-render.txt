@@ -1435,7 +1435,8 @@ or its title to open a focused image tab. Its keys are set automatically:
   Fit           f; fit the complete image and center it.
   Restore       F; return to the zoom and position last saved by f in this tab.
   Help          ?; open this reference.
-  Back          <Enter> / q / <Esc> to return to your place in the document.
+  Back          Click [Back] or press <Enter> / q / <Esc> to return to your
+                place in the document.
 
 Look below the loading message or the image for the selected caption or source
 filename. Diagrams show their source location. Use :echo getline('$') to read a

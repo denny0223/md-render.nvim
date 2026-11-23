@@ -1,5 +1,16 @@
 -- Image tabs return to the specific window and reading position that opened them.
-local M = {}
+local back_label = "[Back]"
+local M = { back_padding = string.rep(" ", #back_label) }
+
+local mouse_actions = {
+  ["<ScrollWheelUp>"] = "zoom_in",
+  ["<ScrollWheelDown>"] = "zoom_out",
+  ["<ScrollWheelLeft>"] = "ignore",
+  ["<ScrollWheelRight>"] = "ignore",
+  ["<LeftMouse>"] = "press",
+  ["<LeftDrag>"] = "drag",
+  ["<LeftRelease>"] = "release",
+}
 local owners = {}
 -- :noautocmd close skips WinClosed, and a second split can keep the buffer alive.
 vim.api.nvim_set_decoration_provider(vim.api.nvim_create_namespace "md_render_image_tab_owner", {
@@ -34,6 +45,15 @@ function M.open()
   vim.wo[win].conceallevel, vim.wo[win].scrolloff = 2, 0
   local group = vim.api.nvim_create_augroup("md_render_image_view_" .. buf, { clear = true })
   state.group = group
+  local mouse_ns = vim.api.nvim_create_namespace("md_render_image_mouse_" .. buf)
+  -- The buffer can be split; only the owner receives Back gestures.
+  vim.api.nvim__ns_set(mouse_ns, { wins = { win } })
+  vim.api.nvim_buf_set_extmark(buf, mouse_ns, 0, 0, {
+    virt_text = { { back_label } },
+    virt_text_pos = "overlay",
+    right_gravity = false,
+  })
+  local back_pressed
 
   -- The bookmark belongs to the image buffer, so a surviving split can still
   -- return to a document the reader revisited after the image owner closed.
@@ -53,7 +73,8 @@ function M.open()
       if event.event == "WinEnter" then
         viewer_active = current == win
       elseif current == win then
-        if state.on_leave then state.on_leave() end
+        back_pressed = nil
+        if state.cancel_mouse then state.cancel_mouse() end
       end
     end,
   })
@@ -66,6 +87,8 @@ function M.open()
   local function cleanup()
     if state.closed then return end
     state.closed = true
+    vim.on_key(nil, mouse_ns)
+    if vim.api.nvim_buf_is_valid(buf) then vim.api.nvim_buf_clear_namespace(buf, mouse_ns, 0, -1) end
     owners[state] = nil
     if state.on_close then state.on_close() end
     pcall(vim.api.nvim_del_augroup_by_id, group)
@@ -136,6 +159,36 @@ function M.open()
       end)
     end,
   })
+  -- Native and Snacks tabs share the same press/release boundary. Image drags
+  -- started by a backend keep their capture when the pointer crosses the header.
+  vim.on_key(function(key)
+    local action = mouse_actions[vim.fn.keytrans(key):gsub("^<[234]%-", "<")]
+    if not action or not state.valid() then return end
+    if vim.o.mouse == "" then
+      back_pressed = nil
+      if state.cancel_mouse then state.cancel_mouse() end
+      return
+    end
+    local mouse = vim.fn.getmousepos()
+    local over_back = mouse.winid == win
+      and mouse.line == 1
+      and mouse.column >= 1
+      and mouse.column <= #back_label
+      and vim.fn.screenpos(win, 1, mouse.column).row == mouse.screenrow
+    if action == "press" then
+      back_pressed = over_back
+      if over_back then
+        if state.cancel_mouse then state.cancel_mouse() end
+        vim.api.nvim_set_current_win(win)
+        return ""
+      end
+    elseif back_pressed then
+      back_pressed = nil
+      if action == "release" and over_back then go_back() end
+      return ""
+    end
+    if state.on_mouse then return state.on_mouse(action, mouse) end
+  end, mouse_ns)
   return state
 end
 

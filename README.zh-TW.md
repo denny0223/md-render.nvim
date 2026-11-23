@@ -328,7 +328,7 @@ Pager 以外的模式會在原始編輯視窗交給已設定的目錄瀏覽器�
 
 Snacks 的 GIF 與影片分頁需要 Kitty 0.31 以上版本，除非設定 `autoplay = false`，否則開啟後會自動播放。按空白鍵可開始、暫停或繼續；縮放與平移會維持目前的播放狀態。播放控制只影響圖片分頁。
 
-滑鼠滾輪可縮放圖片，按住左鍵拖曳可移動圖片。也支援 Vim 風格導覽、Page Up／Down、Home／End 與數字前綴。按 `?` 或使用 `:help md-render-image-view` 查閱[完整操作說明](doc/md-render.twx)。
+點圖片分頁左上方的 `[Back]` 可回到原來的閱讀位置。滑鼠滾輪可縮放圖片，按住左鍵拖曳可移動圖片。也支援 Vim 風格導覽、Page Up／Down、Home／End 與數字前綴。按 `?` 或使用 `:help md-render-image-view` 查閱[完整操作說明](doc/md-render.twx)。
 
 縮放使用轉換後圖片既有的像素，不會重新產生更高解析度的圖表。
 

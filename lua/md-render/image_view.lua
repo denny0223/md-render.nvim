@@ -34,7 +34,8 @@ function M.open(source, name)
     )
     return
   end
-  local state = require("md-render.image_view_tab").open()
+  local tab = require "md-render.image_view_tab"
+  local state = tab.open()
   local win, buf, group, valid = state.win, state.buf, state.group, state.valid
   state.zoom, state.x, state.y, state.serial = 1, 0.5, 0.5, 0
   state.playing = image.config().autoplay ~= false
@@ -42,17 +43,19 @@ function M.open(source, name)
   local detail
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, "p")
-  local mouse_ns = vim.api.nvim_create_namespace("md_render_image_mouse_" .. buf)
   local drag
-  state.on_leave = function()
+  state.cancel_mouse = function()
     drag = nil
+  end
+  local function status(message)
+    return tab.back_padding .. "  " .. message .. " · Enter/q back"
   end
   local function write_lines(end_row, lines)
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_set_lines(buf, 0, end_row, false, lines)
     vim.bo[buf].modifiable = false
   end
-  local first_frame_message = "  Loading image · Enter/q back"
+  local first_frame_message = status "Loading image"
   local function first_frame_status(message)
     if state.presented or not valid() then return end
     first_frame_message = message
@@ -60,7 +63,6 @@ function M.open(source, name)
   end
   write_lines(-1, { first_frame_message, caption })
   state.on_close = function()
-    vim.on_key(nil, mouse_ns)
     if state.job then state.job:kill(9) end
     local media = state.media
     if media and media._md_render_upload then media._md_render_upload:close() end
@@ -107,7 +109,12 @@ function M.open(source, name)
   local function header(zoom_level)
     local playback = state.frames and (state.playing and "Space pause · " or "Space play · ") or ""
     local fit_key = zoom_level == 1 and detail and "F restore" or "f fit"
-    return ("  Enter/q: back · %.0f%% · %shjkl · +/- · %s · ? help"):format(zoom_level * 100, playback, fit_key)
+    return ("%s  Enter/q: back · %.0f%% · %shjkl · +/- · %s · ? help"):format(
+      tab.back_padding,
+      zoom_level * 100,
+      playback,
+      fit_key
+    )
   end
   local function paint()
     if not valid() or not state.path then return end
@@ -115,7 +122,7 @@ function M.open(source, name)
     local rows = math.max(1, vim.api.nvim_win_get_height(win) - 2)
     local cell = image.get_cell_size()
     if not cell then
-      first_frame_status "  Terminal cell size unavailable · Enter/q back"
+      first_frame_status(status "Terminal cell size unavailable")
       return
     end
     local g = M.geometry(state.iw, state.ih, cols, rows, cell, state.zoom, state.x, state.y)
@@ -138,7 +145,7 @@ function M.open(source, name)
       state.job = nil
       if result.code ~= 0 or (not state.frames and not image.image_dimensions(file)) then
         if not state.frames then os.remove(file) end
-        first_frame_status "  Image crop failed · :messages · Enter/q back"
+        first_frame_status(status "Image crop failed · :messages")
         vim.notify("md-render: image crop failed: " .. (result.stderr or ""), vim.log.levels.ERROR)
         if state.dirty then paint() end
         return
@@ -224,7 +231,7 @@ function M.open(source, name)
           state.pending = nil
           self:close()
           if not state.frames then os.remove(file) end
-          first_frame_status "  Image display failed · :checkhealth snacks · Enter/q back"
+          first_frame_status(status "Image display failed · :checkhealth snacks")
           if state.dirty then paint() end
         end
         if pending.img:failed() then pending:error() end
@@ -382,25 +389,8 @@ function M.open(source, name)
   for key, action in pairs(keys) do
     vim.keymap.set("n", key, action, { buffer = buf, silent = true })
   end
-  local mouse_actions = {
-    ["<ScrollWheelUp>"] = "zoom_in",
-    ["<ScrollWheelDown>"] = "zoom_out",
-    ["<ScrollWheelLeft>"] = "ignore",
-    ["<ScrollWheelRight>"] = "ignore",
-    ["<LeftMouse>"] = "press",
-    ["<LeftDrag>"] = "drag",
-    ["<LeftRelease>"] = "release",
-  }
-  -- Follow the pointer for zoom, and capture drags until release, even outside
-  -- the image window. Repeated clicks must not select the placeholder text.
-  vim.on_key(function(key)
-    local action = mouse_actions[vim.fn.keytrans(key):gsub("^<[234]%-", "<")]
-    if not action then return end
-    if vim.o.mouse == "" then
-      drag = nil
-      return
-    end
-    local mouse = vim.fn.getmousepos()
+  -- Wheel zoom follows the pointer. Captured drags pan even outside this window.
+  state.on_mouse = function(action, mouse)
     if action == "press" then drag = nil end
     if action == "release" and drag then
       drag = nil
@@ -426,7 +416,7 @@ function M.open(source, name)
       return
     end
     return ""
-  end, mouse_ns)
+  end
   vim.api.nvim_create_autocmd("WinResized", { group = group, callback = paint })
   local function load()
     local path, frames = source, nil
@@ -434,7 +424,7 @@ function M.open(source, name)
       path, frames = source(valid)
       if not valid() then return end
       if not path then
-        first_frame_status "  Mermaid rendering failed · :messages · Enter/q back"
+        first_frame_status(status "Mermaid rendering failed · :messages")
         return
       end
     elseif image.is_video_file(path) or image.is_video_content(path) or image.is_animated_gif(path) then
@@ -449,7 +439,7 @@ function M.open(source, name)
       iw, ih = image.image_dimensions(png)
     end
     if not iw or not ih then
-      first_frame_status "  Unable to load image · :messages · Enter/q back"
+      first_frame_status(status "Unable to load image · :messages")
       vim.notify("md-render: unable to load image", vim.log.levels.ERROR)
       return
     end
@@ -468,7 +458,7 @@ function M.open(source, name)
           if state.placement then state.placement.opts.on_update(state.placement) end
         end,
         error = function()
-          first_frame_status "  Media frame conversion failed · :checkhealth snacks · Enter/q back"
+          first_frame_status(status "Media frame conversion failed · :checkhealth snacks")
         end,
       }
       state.media:place(placement)
@@ -486,7 +476,7 @@ function M.open(source, name)
   async.run(function()
     local ok, err = pcall(load)
     if not ok and valid() then
-      first_frame_status "  Unable to load image · :messages · Enter/q back"
+      first_frame_status(status "Unable to load image · :messages")
       vim.notify("md-render: " .. tostring(err), vim.log.levels.ERROR)
     end
   end)

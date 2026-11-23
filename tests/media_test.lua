@@ -94,23 +94,17 @@ local function fresh_copy(name)
   return dst
 end
 
---- Run an async transmit and wait for its callback.
----@param fn fun(path: string, cb: fun(...))
----@param path string
----@return any
-local function await(fn, path)
-  local result, done = nil, false
-  fn(path, function(...)
-    result = { ... }
-    done = true
+--- Upload a media file or the frames another renderer already decoded.
+local function upload_frames(source)
+  local result
+  image.transmit_animated_async(source, function(...)
+    result = vim.F.pack_len(...)
   end)
-  -- Generous: a cold ffmpeg decode of the sample video takes ~1s locally, but
-  -- CI runners are slower and the frame transmit yields to the event loop.
-  vim.wait(120000, function()
-    return done
-  end, 50)
-  if not done then return nil, "timed out" end
-  return result[1]
+  -- Allow for a cold decode on a slow CI runner.
+  if not vim.wait(120000, function()
+    return result ~= nil
+  end, 50) then return nil, "timed out" end
+  return unpack(result, 1, result.n)
 end
 
 -- md-render only talks to the terminal when it believes one is listening, and
@@ -132,13 +126,20 @@ local function check_frames(label, asset, min_frames)
     return
   end
   local path = fresh_copy(asset)
-  local ids, err = await(image.transmit_animated_async, path)
+  local ids, err, w, h, files = upload_frames(path)
   if err then
     fail(label, err)
   elseif type(ids) ~= "table" or #ids < min_frames then
     fail(label, string.format("expected >= %d frames, got %s", min_frames, ids and #ids or "nil"))
   else
-    pass(string.format("%s -> %d frames", label, #ids))
+    -- The source can be replaced on disk while the original frames are still on screen.
+    vim.fn.delete(path)
+    local copies, _, copy_w, copy_h = upload_frames(assert(files))
+    if not copies or #copies ~= #ids or copies[1] == ids[1] or copy_w ~= w or copy_h ~= h then
+      fail(label, "the new viewer should own a fresh upload of the same decoded frames")
+    else
+      pass(string.format("%s -> %d frames shared by two independent uploads", label, #ids))
+    end
   end
 end
 

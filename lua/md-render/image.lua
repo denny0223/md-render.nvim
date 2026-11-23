@@ -2240,10 +2240,10 @@ end
 --- Extract GIF frames and transmit asynchronously.
 --- Large GIFs are sampled down to MAX_ANIM_FRAMES.
 --- Extracted frames are cached on disk for fast subsequent loads.
----@param path string absolute path to animated GIF
----@param callback fun(frame_ids: integer[]?, tmp_dir: string?, frame_w: integer?, frame_h: integer?)
+---@param source string|string[] media path or the immutable frame files displayed by another renderer
+---@param callback fun(frame_ids: integer[]?, tmp_dir: string?, frame_w: integer?, frame_h: integer?, frame_files: string[]?)
 ---@param owner? table renderer sharing these frame IDs
-function M.transmit_animated_async(path, callback, owner)
+function M.transmit_animated_async(source, callback, owner)
   if not M.supports_kitty() then
     callback(nil)
     return
@@ -2256,9 +2256,10 @@ function M.transmit_animated_async(path, callback, owner)
   --- start on the frames that are already there while the rest keep arriving.
   ---@async
   ---@param frames string[]
-  ---@return integer[] frame_ids, nil tmp_dir, integer? frame_w, integer? frame_h
+  ---@return integer[]? frame_ids, nil tmp_dir, integer? frame_w, integer? frame_h, string[]? frame_files
   local function transmit_frames(frames)
     local frame_w, frame_h = M.image_dimensions(frames[1])
+    if not frame_w or not frame_h then return nil end
     local total = #frames
     local BATCH_SIZE = 10
 
@@ -2302,13 +2303,13 @@ function M.transmit_animated_async(path, callback, owner)
         :detach()
     end
 
-    return all_ids, nil, frame_w, frame_h
+    return all_ids, nil, frame_w, frame_h, frames
   end
 
   -- Reuse IDs within one renderer; another renderer must be able to clear or
   -- delete its own frames independently. File extraction remains shared.
-  shared_work("frames:" .. tostring(owner) .. ":" .. path, function()
-    local frames = async.await(2, M.extract_frames_async, path)
+  shared_work("frames:" .. tostring(owner) .. ":" .. tostring(source), function()
+    local frames = type(source) == "table" and source or async.await(2, M.extract_frames_async, source)
     if not frames then return nil end
     return transmit_frames(frames)
   end, callback)

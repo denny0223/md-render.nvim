@@ -46,16 +46,49 @@ assert(
 assert(vim.api.nvim_get_current_win() == surviving_win, "silent close stole focus")
 vim.cmd.tabclose()
 
+-- Losing a background owner silently must leave an unrelated tab alone.
+local hidden_view = require("md-render.image_view_tab").open()
+local returns = 0
+hidden_view.on_silent_return = function()
+  returns = returns + 1
+end
+vim.cmd.tabnew()
+local unrelated = vim.api.nvim_get_current_win()
+vim.api.nvim_win_call(hidden_view.win, function()
+  vim.cmd "noautocmd close"
+end)
+vim.cmd.redraw()
+assert(vim.wait(1000, function()
+  return hidden_view.closed
+end, 5))
+assert(returns == 0 and vim.api.nvim_get_current_win() == unrelated, "background close resumed another tab")
+vim.cmd.tabclose()
+
 -- Exercise the real tab/window lifecycle without invoking image converters.
 require("md-render.async").run = function() end
 local executable = vim.fn.executable
 vim.fn.executable = function(name)
   return name == "magick" and 1 or executable(name)
 end
-vim.o.lines, vim.o.columns, vim.o.showtabline = 40, 120, 1
 local origin = vim.api.nvim_get_current_win()
 local origin_buf = vim.api.nvim_get_current_buf()
 vim.api.nvim_buf_set_lines(0, 0, -1, false, vim.tbl_map(tostring, vim.fn.range(1, 100)))
+
+-- Losing the tabline can nudge topline even though the cursor is unchanged.
+vim.api.nvim_win_set_cursor(origin, { 45, 0 })
+vim.cmd "normal! zz"
+local reading = vim.fn.winsaveview()
+local silent = require("md-render.image_view_tab").open()
+vim.cmd "noautocmd close"
+vim.fn.winrestview { topline = reading.topline + 1 }
+assert(vim.fn.winsaveview().topline ~= reading.topline)
+vim.cmd.redraw()
+assert(vim.wait(1000, function()
+  return silent.closed
+end, 5))
+assert(vim.fn.winsaveview().topline == reading.topline, "silent close shifted the original reading position")
+
+vim.o.lines, vim.o.columns, vim.o.showtabline = 40, 120, 1
 
 -- Resources belong to the original window even when the scratch buffer is
 -- duplicated. Replacing that window's buffer must obey the same ownership.

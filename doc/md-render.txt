@@ -157,8 +157,8 @@ https://sw.kovidgoyal.net/kitty/conf/#opt-kitty.symbol_map
 ==============================================================================
 INSTALLATION						*md-render-installation*
 
-The basic example uses the default native backend ("kitty"). For Kitty/tmux
-images, viewport fitting, and zoom/pan, see |md-render-snacks-image| below.
+The basic example uses the default native backend ("kitty"). For images inside
+tmux or for zoom and pan, see |md-render-snacks-image|.
 Use this fork's default branch: inherited upstream release tags do not
 include those features. The examples use version = false for this reason.
 
@@ -208,7 +208,7 @@ For static images, diagrams, viewport fitting, and image tabs, install:
   Other Snacks terminals have not been verified with this integration;
   the native backend's terminal list does not establish compatibility.
 - ImageMagick with `magick` on Neovim's PATH for the complete image workflow.
-  Image tabs require this command even for PNG; ffmpeg, sips, or an
+  Snacks image tabs require this command even for PNG; ffmpeg, sips, or an
   installation providing only convert cannot replace it.
 - For Mermaid, mmdc (or an explicitly enabled npx fallback) and its headless
   browser. Snacks displays images; it does not replace the diagram renderer.
@@ -349,7 +349,8 @@ Inside the preview window, the following Normal-mode keys are available.
 	`gO`		List full heading titles with their Markdown level in a
 			native location list; Enter jumps
 	`<CR>`		Follow a heading/footnote link within the document, open
-			an image (Snacks), or toggle a fold / expandable region
+			a supported image (|md-render-image-view|), or toggle a
+			fold / expandable region
 	`gf` / `gF`	Open local links; gF also jumps to a source line,
 			including destinations such as ./guide.md:10
 	`<C-w>f` / `<C-w>F` Follow a local link in a split
@@ -381,8 +382,8 @@ file and tag commands retain native lookup and counts. <C-w><C-f> and
 Inside a render-mode buffer opened with |:MdRender-toggle|, `q` / `<Esc>` /
 `<C-c>` are NOT bound to close — call |:MdRender-toggle| again to return to
 source mode.  `<LeftMouse>`, `za`, and `<CR>` still toggle folds and expand
-regions; `<CR>` also opens images with the Snacks backend. `<LeftMouse>`
-opens links, and `<MouseMove>` hover-peek also stays active.
+regions. On a supported image, `<CR>` opens |md-render-image-view|.
+`<LeftMouse>` opens links, and `<MouseMove>` hover-peek also stays active.
 
 `gf` uses the exact link destination, resolved relative to the source file,
 independently of the working directory. Markdown targets keep the current
@@ -1375,9 +1376,9 @@ Configure before opening a preview. These are the defaults: >lua
     mermaid_allow_npx = false,
   }
 <
-autoplay=false shows the first GIF/video frame with either backend and opens
-image tabs paused; Space can still start playback. Frame preparation still
-requires FFmpeg for videos; GIFs can use FFmpeg or ImageMagick.
+With autoplay=false, both backends show the first frame inline. In a Snacks
+GIF or video tab, press Space to start playback. Videos require FFmpeg for
+frame extraction. GIFs can use FFmpeg or ImageMagick.
 mermaid_allow_npx=false uses only an installed mmdc, retaining Mermaid as code
 if it is unavailable.
 Every Mermaid launch uses a private working directory, so Puppeteer
@@ -1415,6 +1416,11 @@ use an explicit path or the configured attachment folder in that case.
 falls back to lookup without an attachment-folder setting.
 
                                                         *md-render-image-view*
+
+In direct Kitty, press <Enter> on a displayed PNG or its caption to open the
+whole image in a fitted tab. Rendered Mermaid PNGs work the same way.
+<Enter>, q, and <Esc> return to the original reading position.
+
 With the Snacks backend and ImageMagick (magick), press <Enter> on an image
 or its title to open a focused image tab. Its keys are set automatically:
 
@@ -1441,7 +1447,7 @@ preview can shorten or omit the hint. Enter still opens the tab. Press Enter,
 q or Esc to return while waiting or after an error. Remote images can open
 once the preview picks up the downloaded file.
 
-GIF and video tabs require Kitty 0.31 or newer and start playing automatically
+Snacks GIF and video tabs require Kitty 0.31 or newer and start playing automatically
 unless autoplay=false. Space starts playback when paused; pausing holds the
 current frame.
 zooming and panning preserve the playback state. Playback controls affect only
@@ -1716,7 +1722,7 @@ that use them. Install command-line tools separately on Neovim's PATH.
                        images; video requires ffmpeg.
 
   ImageMagick          Required for Snacks conversion of non-PNG images.
-  (magick)             Image tabs require magick even for PNG; ffmpeg, sips,
+  (magick)             Snacks tabs require magick even for PNG; ffmpeg, sips,
                        or convert alone cannot replace it.
                        Native static conversion tries sips, ffmpeg, magick;
                        both backends try ffmpeg, then magick for GIF frames.

@@ -158,8 +158,8 @@ https://sw.kovidgoyal.net/kitty/conf/#opt-kitty.symbol_map
 インストール						*md-render-installation*
 
 基本の例はデフォルトのネイティブバックエンド（"kitty"）を使います。
-Kitty/tmux の画像表示、サイズ調整、ズーム・パンには、下記の
-|md-render-snacks-image| の設定も必要です。引き継いだ upstream のリリースタグ
+tmux 内での画像表示や画像のズーム・パンには、|md-render-snacks-image| の
+設定も必要です。引き継いだ upstream のリリースタグ
 にはこれらの機能が含まれないため、このフォークのデフォルトブランチを使います。
 そのため、例では version = false を指定しています。
 
@@ -210,7 +210,7 @@ Snacks 画像バックエンド（オプション） ~
   Snacks が対応する他の端末は、この連携では未検証です。ネイティブバックエンド
   の対応一覧は、Snacks の互換性を保証しません。
 - Neovim の PATH から magick を実行できる ImageMagick。
-  画像機能一式に必要です。画像タブは PNG でも magick が必須で、
+  画像機能一式に必要です。Snacks の画像タブは PNG でも magick が必須で、
   ffmpeg、sips、convert のみのインストールでは代替できません。
 - Mermaid には mmdc（または明示的に有効にした npx フォールバック）と
   ヘッドレスブラウザ。
@@ -350,8 +350,8 @@ Snacks を設定済みの場合は、その設定に image オプションを統
 	`[[` / `]]`	前 / 次の見出しへ移動。カウント対応、循環しない
 	`gO`		標準の location list に見出しの全文と Markdown の
 			レベルを表示。Enter で移動
-	`<CR>`		文書内の見出し・脚注リンクへ移動、画像を開く（Snacks）、
-			またはコールアウトの折りたたみ / 省略領域の展開を切り替える
+	`<CR>`		文書内の見出し・脚注リンクへ移動、対応する画像を開く
+			（|md-render-image-view|）、または折りたたみ・展開を切り替える
 	`gf` / `gF`	ローカルリンクを開く。gF は指定されたソース行へ移動。
 			リンク先の ./guide.md:10 にも対応。
 	`<C-w>f` / `<C-w>F` 分割でローカルリンクを開く
@@ -382,7 +382,8 @@ Enter は #heading などのリンクや脚注の参照から、文書内の対�
 |:MdRender-toggle| で開かれたレンダーモードのバッファでは `q` / `<Esc>` /
 `<C-c>` は閉じる動作に**割り当てられません**。ソースに戻すには再度
 |:MdRender-toggle| を呼びます。折りたたみ・展開の切り替えには引き続き
-`<LeftMouse>` / `za` / `<CR>` が使えます。Snacks では `<CR>` で画像も開けます。
+`<LeftMouse>` / `za` / `<CR>` が使えます。対応する画像上で `<CR>` を押すと
+画像タブが開きます（|md-render-image-view|）。
 リンク open は `<LeftMouse>`、URL を表示する `<MouseMove>` も有効なままです。
 
 `gf` はリンク元ファイルのディレクトリを基準に解決し、作業ディレクトリには
@@ -1348,9 +1349,10 @@ image.setup({opts}) ~
     mermaid_allow_npx = false,
   }
 <
-autoplay=false では両バックエンドとも GIF／動画の最初のフレームを表示し、画像
-タブを一時停止状態で開きます。Space で再生を開始できます。動画のフレーム準備には
-引き続き FFmpeg が必要で、GIF は FFmpeg または ImageMagick を使えます。
+autoplay=false では、どちらのバックエンドでも文書内の GIF や動画は最初の
+フレームで止まります。Snacks の GIF・動画タブでは Space で再生を開始できます。
+動画のフレーム準備には引き続き FFmpeg が必要で、GIF は FFmpeg または
+ImageMagick を使えます。
 mermaid_allow_npx=false はインストール済みの mmdc のみ使い、なければ Mermaid
 をコードのまま表示します。
 すべての Mermaid 描画は専用の作業ディレクトリを使い、閲覧中のプロジェクトや
@@ -1386,6 +1388,11 @@ vault 全体を検索します。共通のフォールバック索引は最大 1
 添付フォルダが未設定の状態で検索を続けます。
 
                                                         *md-render-image-view*
+
+Kitty を直接使う場合、表示済みの PNG またはタイトル上で <Enter> を押すと、
+タブの大きさに合わせて画像全体を表示します。描画済みの Mermaid PNG も
+開けます。<Enter>、q、<Esc> で元の位置に戻ります。
+
 Snacks バックエンドと ImageMagick（magick）を設定し、画像またはタイトル上で
 <Enter> を押すと専用画像タブが開きます。キーは自動設定され、追加のプラグインや
 キーマップ設定は不要です：
@@ -1415,7 +1422,7 @@ Snacks バックエンドと ImageMagick（magick）を設定し、画像また�
 待機中やエラー表示中は Enter、q、Esc で文書に戻れます。リモート画像は、
 ダウンロードしたファイルがプレビューに読み込まれると開けます。
 
-GIF / 動画タブには Kitty 0.31 以降が必要です。autoplay=false 以外では自動再生
+Snacks の GIF / 動画タブには Kitty 0.31 以降が必要です。autoplay=false 以外では自動再生
 され、一時停止すると現在のフレームで止まります。Space で再生を開始できます。ズームや
 パンでも再生状態を維持し、再生操作は文書プレビューとは独立してこのタブだけに
 適用されます。文書内と同じ音声なしのフレームプレビューを使用します。ffmpeg
@@ -1689,7 +1696,7 @@ Details ~
                        フォールバック。動画には ffmpeg が必要。
 
   ImageMagick          Snacks の PNG 以外の画像変換に必要。
-  (magick)             画像タブは PNG でも magick が必須で、ffmpeg、sips、
+  (magick)             Snacks の画像タブは PNG でも magick が必須で、ffmpeg、sips、
                        convert のみでは代替不可。
                        ネイティブ静止画は sips → ffmpeg → magick の順、
                        GIF フレームは両バックエンドとも ffmpeg → magick

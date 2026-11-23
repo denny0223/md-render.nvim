@@ -9,7 +9,7 @@
 ## 第一次使用
 
 1. 先確認[系統需求](#系統需求)，再選擇一種[安裝方式](#安裝)。
-2. 如果要使用這個 fork 的 Kitty/tmux 支援、自動調整圖片大小、縮放與平移，請完成 [Snacks 圖片後端設定](#選用-snacks-圖片後端)。基本安裝仍使用原生後端，也能播放動畫與影片。
+2. 預設原生後端可在 Kitty 中顯示圖片、播放 GIF 動畫與影片。若要在 tmux 中顯示圖片，或使用圖片縮放與平移，請完成 [Snacks 圖片後端設定](#選用-snacks-圖片後端)。
 3. 安裝並設定外掛後，重新啟動 Neovim，再開啟 Markdown 檔案。從原始文字視窗依需求選擇：
 
 | 用途 | 指令 | 關閉預覽 |
@@ -19,7 +19,7 @@
 
 左右分割後，焦點會留在原始文字視窗，可以直接繼續編輯；不必存檔，預覽就會更新。剛開啟分割預覽時，在一般模式按 `<C-w>p`（先按 Ctrl-w，再按 p）即可進入預覽；這組按鍵的作用是切到上一個視窗。[按鍵設定範例](#按鍵設定)也提供可自行設定的 `<leader>ms` 快捷鍵。
 
-設定好 Snacks 與 `magick` 後，在預覽中對圖片按 Enter，可開啟[圖片分頁](#圖片分頁按鍵)進行縮放與平移。
+直接在 Kitty 中使用預設後端時，將游標移到已顯示的 PNG 上按 Enter，即可在[圖片分頁](#圖片分頁按鍵)中看全圖。按 `q` 返回文件。
 
 完整的[按鍵說明](#按鍵設定)、[指令](#指令)與[疑難排解](#常見問題與疑難排解)請見下方。
 
@@ -82,9 +82,9 @@ nvim +"MdRender pager" assets/showcase.md
 | 套件或工具 | 用途 | 替代方式或限制 |
 |---|---|---|
 | [curl](https://curl.se/) | 下載網路圖片與影片 | 可透過 `set_download_fn()` 提供自訂下載函式 |
-| [snacks.nvim](https://github.com/folke/snacks.nvim) | 選用圖片後端、自動調整圖片大小與獨立圖片分頁 | 仍可使用預設原生後端，但不會有這些 fork 新增功能 |
+| [snacks.nvim](https://github.com/folke/snacks.nvim) | 選用圖片後端、自動調整圖片大小與獨立圖片分頁 | 直接使用 Kitty 時，預設後端也可以在分頁開啟符合視窗大小的 PNG |
 | [FFmpeg](https://ffmpeg.org/)（`ffmpeg` / `ffprobe`） | 原生後端的 JPEG/WebP → PNG 轉換，以及兩個後端共用的 GIF 動畫與影片影格擷取 | 圖片可改用 ImageMagick；影片仍需要 ffmpeg |
-| [ImageMagick](https://imagemagick.org/)（`magick`） | Snacks 圖片轉換、圖片分頁縮放與平移，以及原生圖片轉換與共用的 GIF 影格擷取 | 原生後端可使用下表的替代工具。圖片分頁即使開啟 PNG 也需要 `magick`，無法用 `ffmpeg`、`sips` 或只有 `convert` 指令的安裝取代 |
+| [ImageMagick](https://imagemagick.org/)（`magick`） | Snacks 圖片轉換、圖片分頁縮放與平移，以及原生圖片轉換與共用的 GIF 影格擷取 | 原生後端可使用下表的替代工具。Snacks 圖片分頁即使開啟 PNG 也需要 `magick`，無法用 `ffmpeg`、`sips` 或只有 `convert` 指令的安裝取代 |
 | [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli)（`mmdc`）及其無頭瀏覽器 | 兩種後端都用它產生 Mermaid 圖表 | 找不到時保留程式碼區塊。選用 npm 替代方式須設定 `mermaid_allow_npx = true`，並備妥 Node.js/npm 與瀏覽器 |
 | [PlantUML](https://plantuml.com/) 1.2020.11 以上（`plantuml`，或 `java` 搭配 `$PLANTUML_JAR`） | 產生 PlantUML 圖表 | 只有在你指定伺服器時，才會改用該伺服器，並需要 curl；否則維持程式碼區塊 |
 | [budoux.lua](https://github.com/delphinus/budoux.lua) | 使用 BudouX，讓中日韓文字依詞組換行 | 未安裝時依字元斷行，仍保留行首行尾禁則 |
@@ -103,7 +103,7 @@ nvim +"MdRender pager" assets/showcase.md
 
 ## 安裝
 
-以下基本範例使用預設的原生後端（`kitty`）。若要在 Kitty/tmux 中顯示圖片、自動調整大小，以及縮放和平移，請接著完成 [Snacks 圖片後端設定](#選用-snacks-圖片後端)。請使用這個 fork 的預設分支；沿用自上游的發行標籤不包含這些新增功能，因此 lazy.nvim 範例使用 `version = false`。
+以下基本範例使用預設的原生後端（`kitty`）。若要在 tmux 中顯示圖片，或使用圖片縮放與平移，請接著完成 [Snacks 圖片後端設定](#選用-snacks-圖片後端)。請使用這個 fork 的預設分支；沿用自上游的發行標籤不包含這些新增功能，因此 lazy.nvim 範例使用 `version = false`。
 
 安裝後重新啟動 Neovim，先執行 `:MdRender demo` 載入外掛（包含延遲載入的設定），再執行 `:checkhealth md-render`。只需安裝所選功能需要的工具；使用 Snacks 時，另執行 `:checkhealth snacks`。
 
@@ -172,7 +172,7 @@ require("md-render.image").setup {
 }
 ```
 
-設定 `autoplay = false` 時，兩個後端都只顯示第一個影格；圖片分頁初始為暫停，仍可按空白鍵開始播放。影片仍需要 FFmpeg 準備影格；GIF 可使用 FFmpeg 或 ImageMagick。設定 `mermaid_allow_npx = false` 時，只使用已安裝的 `mmdc`；找不到時，Mermaid 保留為程式碼區塊。請將這些選項合併到既有圖片設定，包含已選用的 `backend = "snacks"`。若要使用一般文字標題，可執行 `:MdRender textsize off`。
+設定 `autoplay = false` 時，兩個後端都會讓文件內的 GIF 或影片停在第一個影格。在 Snacks 的 GIF 或影片分頁中，按空白鍵即可播放。影片仍需要 FFmpeg 準備影格；GIF 可使用 FFmpeg 或 ImageMagick。設定 `mermaid_allow_npx = false` 時，只使用已安裝的 `mmdc`；找不到時，Mermaid 保留為程式碼區塊。請將這些選項合併到既有圖片設定，包含已選用的 `backend = "snacks"`。若要使用一般文字標題，可執行 `:MdRender textsize off`。
 
 遠端圖片與影片會在文件預覽，以及已設定的 Telescope／Snacks picker 預覽中自動載入。切換 picker 選取項目即可觸發請求，無須另執行 `:MdRender toggle`。內建下載器支援 HTTP(S) 與 HTTP(S) 重新導向，依 URL 原文請求，並忽略 `.curlrc`；代理伺服器與 CA 環境設定仍會生效。自訂驗證方式請使用 `set_download_fn()`。
 
@@ -291,7 +291,7 @@ vim.keymap.set("n", "<leader>md", "<Plug>(md-render-demo)",        { desc = "Mar
 | `zj` / `zk` | 下一個摺疊起點／上一個摺疊終點；支援數字前綴 |
 | `[[` / `]]` | 上一個／下一個標題；支援數字前綴，不循環跳轉 |
 | `gO` | 在原生 location list 列出完整標題與 Markdown 層級，按 Enter 跳到所選標題 |
-| `<CR>` | 跟隨文件內的標題或註腳連結、開啟圖片（Snacks 後端），或切換區塊的摺疊／展開 |
+| `<CR>` | 跟隨文件內的標題或註腳連結、在[圖片分頁](#圖片分頁按鍵)開啟支援的圖片，或切換區塊的摺疊／展開 |
 | `gf` / `gF` | 開啟本機連結；`gF` 另跳到指定的來源行號 |
 | `<C-w>f` / `<C-w>F` | 在分割視窗開啟本機連結；`<C-w>gf`／`<C-w>gF` 則用新分頁 |
 | `<C-]>` / `g]` / `g<C-]>` | 透過原生 tag 導覽跟隨標題、註腳或檔案連結 |
@@ -320,11 +320,13 @@ Pager 以外的模式會在原始編輯視窗交給已設定的目錄瀏覽器�
 
 ### 圖片分頁按鍵
 
+直接在 Kitty 使用預設後端時，在已顯示的 PNG 或圖說上按 Enter，可開啟配合分頁大小的全圖。已產生的 Mermaid PNG 也可開啟。按 Enter、`q` 或 Esc 回到原本的閱讀位置。
+
 完成 [Snacks 後端](#選用-snacks-圖片後端)設定並安裝 ImageMagick（`magick`）後，在圖片或其標題上按 Enter，即可開啟獨立圖片分頁。使用方向鍵或 `hjkl` 移動、`+/-` 縮放、`f` 看全圖、`F` 回到看全圖前的倍率與位置，Enter、`q` 或 Esc 返回。這些按鍵會自動設定在圖片分頁內。載入時，圖說或來源檔名顯示在提示下方。圖片出現後，圖說或檔名會顯示在圖片下方。圖表會標出原始文件的位置。
 
 本機圖片解碼中或 Mermaid 產圖時，按 Enter 可進入圖片分頁等待第一個影格。空間不足時，預覽會縮短或省略 `Enter: open and wait` 提示。等待或顯示錯誤時，按 Enter、q 或 Esc 可回到文件。遠端圖片要等預覽讀到下載完成的檔案才能開啟。
 
-GIF 與影片分頁需要 Kitty 0.31 以上版本，除非設定 `autoplay = false`，否則開啟後會自動播放。按空白鍵可開始、暫停或繼續；縮放與平移會維持目前的播放狀態。播放控制只影響圖片分頁。
+Snacks 的 GIF 與影片分頁需要 Kitty 0.31 以上版本，除非設定 `autoplay = false`，否則開啟後會自動播放。按空白鍵可開始、暫停或繼續；縮放與平移會維持目前的播放狀態。播放控制只影響圖片分頁。
 
 滑鼠滾輪可縮放圖片，按住左鍵拖曳可移動圖片。也支援 Vim 風格導覽、Page Up／Down、Home／End 與數字前綴。按 `?` 或使用 `:help md-render-image-view` 查閱[完整操作說明](doc/md-render.twx)。
 
@@ -381,7 +383,7 @@ vim.g.md_render_max_width = 120
 - 同一份來源若同時出現在多個視窗，只會切換執行指令的視窗。其他視窗中的編輯會自動反映在預覽中。
 - 游標透過來源行對應，在原始文字與預覽之間保留位置。
 - 預覽視窗會關閉 `number`、`relativenumber` 與 `list`，原本設定會保存在視窗中，切回原始文字時還原。
-- 在這種預覽模式中，`q` / `<Esc>` / `<C-c>` **不會用來關閉視窗**；請再次執行 `:MdRender toggle` 回到原始文字。`<LeftMouse>`、`za`、`<CR>` 仍能切換摺疊與展開，`<LeftMouse>` 也能開啟連結；Snacks 後端的 `<CR>` 還能開啟圖片。
+- 在這種預覽模式中，`q` / `<Esc>` / `<C-c>` **不會用來關閉視窗**；請再次執行 `:MdRender toggle` 回到原始文字。`<LeftMouse>`、`za`、`<CR>` 仍能切換摺疊與展開，`<LeftMouse>` 也能開啟連結；在支援的圖片上按 `<CR>` 可開啟[圖片分頁](#圖片分頁按鍵)。
 
 ### 隨插入模式自動切換
 
@@ -608,7 +610,7 @@ require("snacks").setup({
 <details>
 <summary><strong>按 Enter 沒有開啟圖片分頁</strong></summary>
 
-請使用 `:MdRender tab` 之類的文件預覽，選擇 [Snacks 後端](#選用-snacks-圖片後端)，並確認 `:echo executable('magick')` 回傳 `1`。將游標移到圖片或其標題上按 Enter。遠端圖片須先完成下載。內建的 `:MdRender demo` 展示視窗沒有提供這個開圖操作。
+請使用 `:MdRender tab` 之類的文件預覽。使用原生後端時，在直接使用 Kitty 的環境選擇已載入的 PNG。使用 [Snacks 後端](#選用-snacks-圖片後端)時，請確認 `:echo executable('magick')` 回傳 `1`。將游標移到圖片或其標題上按 Enter。遠端圖片須先完成下載。內建的 `:MdRender demo` 展示視窗沒有提供這個開圖操作。
 
 </details>
 

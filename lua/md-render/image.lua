@@ -418,10 +418,11 @@ end
 local _video_dimensions_cache = {}
 local _video_dimensions_generation = 0
 
-local function video_signature(path)
-  local stat = uv.fs_stat(path)
-  if not stat or stat.type ~= "file" then return nil end
-  return table.concat({ stat.size, stat.mtime.sec, stat.mtime.nsec }, ":")
+--- Identify the local file offered to the terminal, including atomic replacements.
+function M.file_revision(path)
+  local st = uv.fs_stat(path)
+  if not st or st.type ~= "file" then return end
+  return table.concat({ st.dev, st.ino, st.size, st.mtime.sec, st.mtime.nsec, st.ctime.sec, st.ctime.nsec }, ":")
 end
 
 local function video_probe_cmd(path)
@@ -440,7 +441,7 @@ local function video_probe_cmd(path)
 end
 
 local function cache_video_dimensions(path, signature, generation, result)
-  if generation ~= _video_dimensions_generation or signature ~= video_signature(path) then return nil, nil end
+  if generation ~= _video_dimensions_generation or signature ~= M.file_revision(path) then return nil, nil end
   local dimensions = { signature = signature }
   if result.code == 0 and result.stdout then
     local w, h = result.stdout:match "(%d+)x(%d+)"
@@ -458,7 +459,7 @@ end
 ---@param cache_only? boolean never launch ffprobe during a content rebuild
 ---@return integer? width, integer? height
 function M.video_dimensions(path, cache_only)
-  local signature = video_signature(path)
+  local signature = M.file_revision(path)
   if not signature then return nil, nil end
   local cached = _video_dimensions_cache[path]
   if cached and cached.signature == signature then return cached[1], cached[2] end
@@ -478,7 +479,7 @@ end
 ---@param path string absolute path to video file
 ---@param callback fun(width: integer?, height: integer?)
 function M.video_dimensions_async(path, callback)
-  local signature = video_signature(path)
+  local signature = M.file_revision(path)
   if not signature then
     callback(nil, nil)
     return
@@ -1676,8 +1677,9 @@ end
 ---@param img_h integer
 ---@param max_cols integer
 ---@param max_rows integer
+---@param upscale? boolean allow the focused viewer to enlarge small images
 ---@return integer cols, integer rows
-function M.calc_display_size(img_w, img_h, max_cols, max_rows)
+function M.calc_display_size(img_w, img_h, max_cols, max_rows, upscale)
   local cell = M.get_cell_size()
   if not cell then return math.min(20, max_cols), math.min(10, max_rows) end
 
@@ -1685,8 +1687,8 @@ function M.calc_display_size(img_w, img_h, max_cols, max_rows)
   local max_w = max_cols * cell.cell_w
   local max_h = max_rows * cell.cell_h
 
-  -- Scale to fit within bounds (don't upscale)
-  local scale = math.min(max_w / img_w, max_h / img_h, 1.0)
+  local scale = math.min(max_w / img_w, max_h / img_h)
+  if not upscale then scale = math.min(scale, 1) end
 
   local pixel_w = img_w * scale
   local pixel_h = img_h * scale
@@ -1775,10 +1777,13 @@ vim.api.nvim_create_autocmd("TermResponse", {
   callback = function(ev)
     local sequence = type(ev.data) == "table" and ev.data.sequence or ev.data
     if type(sequence) ~= "string" then return end
+    -- Placement 2 asks for a second render cycle when a view becomes visible.
+    -- A NUL wakes Kitty after it accepted the placement, without changing it.
+    sequence = sequence:gsub("\27\\$", "")
+    local presented = sequence:match "^\27_Gi=(%d+),p=2;OK$"
+    if presented and _image_paths[tonumber(presented)] then term_write "\0" end
     local id, response = sequence:match "^\27_Gi=(%d+);(.*)"
-    if not id then return end
-    response = response:gsub("\27\\$", "")
-    finish_png(tonumber(id), response ~= "OK" and response or nil)
+    if id then finish_png(tonumber(id), response ~= "OK" and response or nil) end
   end,
 })
 
@@ -2097,7 +2102,9 @@ end
 --- their source rectangle parameters accordingly.
 ---@param path string absolute path to image file
 ---@param callback fun(image_id: integer?, tx_w: integer?, tx_h: integer?)
-function M.transmit_image_async(path, callback)
+---@param on_response? fun(id: integer, err?: string, revision?: string) direct Kitty response for an original PNG
+---@param expected_revision? string revision selected in the document
+function M.transmit_image_async(path, callback, on_response, expected_revision)
   if not M.supports_kitty() then
     callback(nil)
     return
@@ -2107,13 +2114,18 @@ function M.transmit_image_async(path, callback)
       callback(nil)
       return
     end
-    tty_mod.kitty_version()
+    local kitty = tty_mod.kitty_version()
+    local revision = on_response and kitty and not vim.env.TMUX and png_path == path and M.file_revision(path)
+    if expected_revision and revision ~= expected_revision then return callback(nil) end
     _image_id = _image_id + 1
     local id = _image_id
+    if revision then await_png(id, function(err)
+      on_response(id, err, revision)
+    end) end
     local b64_path = vim.base64.encode(png_path)
     -- Ghostty does not support t=t; always use t=f and delete temp files ourselves
     local t = (is_temp and not is_ghostty()) and "t" or "f"
-    term_write(string.format("\x1b_Ga=t,f=100,t=%s,i=%d,q=2;%s\x1b\\", t, id, b64_path))
+    term_write(string.format("\x1b_Ga=t,f=100,t=%s,i=%d,q=%d;%s\x1b\\", t, id, revision and 0 or 2, b64_path))
     retain_image(id)
     if is_temp and is_ghostty() then _temp_image_paths[id] = true end
     _image_paths[id] = png_path
@@ -2134,7 +2146,7 @@ end
 ---@param gif_path string
 ---@return string?
 function get_frames_cache_dir(gif_path)
-  local signature = video_signature(gif_path)
+  local signature = M.file_revision(gif_path)
   if not signature then return nil end
   local hash = vim.fn.sha256(gif_path .. ":" .. signature):sub(1, 16)
   -- v3 directories are published atomically, after successful extraction.
@@ -2313,7 +2325,9 @@ end
 ---@param anim_path? string  if set, use a=T for animated GIF display
 ---@param img_w? integer  source image width in pixels (for cropping)
 ---@param img_h? integer  source image height in pixels (for cropping)
-function M.put_image(image_id, win, row, col, display_cols, display_rows, anim_path, img_w, img_h)
+---@param present? boolean request a second Kitty render cycle after a view becomes visible
+---@return boolean? sent
+function M.put_image(image_id, win, row, col, display_cols, display_rows, anim_path, img_w, img_h, present)
   if not M.supports_kitty() then return end
   if not vim.api.nvim_win_is_valid(win) then return end
   if vim.api.nvim_win_get_tabpage(win) ~= vim.api.nvim_get_current_tabpage() then return end
@@ -2462,15 +2476,18 @@ function M.put_image(image_id, win, row, col, display_cols, display_rows, anim_p
       b64_path
     )
   else
-    -- Static: put a previously transmitted image
+    -- Placement 1 is the invisible upload pin. Name only the first visible
+    -- occurrence so repeated occurrences of the same image stay independent.
+    local reply = present and not vim.env.TMUX and tty_mod.kitty_version() and ",p=2,q=0" or ",q=2"
     message =
-      string.format("\x1b_Ga=p,i=%d,c=%d,r=%d%s,C=1,q=2\x1b\\", image_id, display_cols, display_rows, crop_params)
+      string.format("\x1b_Ga=p,i=%d,c=%d,r=%d%s,C=1%s\x1b\\", image_id, display_cols, display_rows, crop_params, reply)
   end
 
   term_write "\x1b[s"
   move_cursor(screen_col, screen_row)
   term_write(message)
   term_write "\x1b[u"
+  return true
 end
 
 --- Delete all placements for an image but keep the transmitted data.
@@ -2533,6 +2550,7 @@ function M.delete_images(image_ids)
   if not M.supports_kitty() or #image_ids == 0 then return end
   local parts = {}
   for _, id in ipairs(image_ids) do
+    cancel_png(id)
     _retained_images[id] = nil
     table.insert(parts, string.format("\x1b_Ga=d,d=I,i=%d\x1b\\", id))
     if _temp_image_paths[id] and _image_paths[id] then

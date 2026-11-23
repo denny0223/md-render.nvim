@@ -961,6 +961,7 @@ end
 ---@class MdRender.ImageState
 ---@field placements MdRender.ImagePlacement[]
 ---@field image_ids table<string, integer>  path -> Kitty image ID (transmitted)
+---@field ready_images table<string, {png_revision: string}|false> original PNG uploads accepted or rejected by direct Kitty
 ---@field anims table<string, MdRender.AnimState>  path -> animation state
 ---@field tasks table<MdRender.ImagePlacement, vim.async.Task>  work started per placement
 ---@field win integer
@@ -1012,7 +1013,7 @@ end
 ---@param win integer
 ---@param content MdRender.Content
 ---@param ns integer?
----@param opts? { buf?: integer, on_ready?: fun(), build_content?: fun(): MdRender.Content, on_content_applied?: fun(content: MdRender.Content) }
+---@param opts? { buf?: integer, on_ready?: fun(), build_content?: fun(): MdRender.Content, on_content_applied?: fun(content: MdRender.Content), png_revision?: string, on_view_ready?: fun(ready: boolean) }
 ---@return MdRender.ImageState?
 function M.setup_images(win, content, ns, opts)
   if not content.image_placements or #content.image_placements == 0 then return nil end
@@ -1030,6 +1031,7 @@ function M.setup_images(win, content, ns, opts)
   local state = {
     placements = content.image_placements,
     image_ids = {},
+    ready_images = {},
     anims = {},
     tx_dims = {}, -- path → {w, h}: actual transmitted image dimensions
     win = win,
@@ -1118,7 +1120,40 @@ function M.setup_images(win, content, ns, opts)
     return p_end >= topline - LAZY_PADDING and p_start < topline + win_height + LAZY_PADDING
   end
 
-  local function place_images()
+  local function clear_placements()
+    for _, id in pairs(state.image_ids) do
+      image.clear_placements(id)
+    end
+    for _, anim in pairs(state.anims) do
+      local id = anim.frame_ids[anim.current]
+      if id then image.clear_placements(id) end
+    end
+  end
+
+  local selected_png = opts and opts.png_revision
+  local private_view = opts and opts.on_view_ready
+  local on_view_ready = private_view
+
+  -- Request presentation on the first actual placement after entering this
+  -- view. Animation ticks and intermediate repaint notifications stay quiet.
+  local first_visible = true
+  local function draw_placements(on_entry)
+    for _, p in ipairs(state.placements) do
+      local anim = state.anims[p.path]
+      local id = anim and anim.frame_ids[anim.current] or state.image_ids[p.path]
+      if id and (not private_view or state.ready_images[p.path]) then
+        local present = on_entry and first_visible
+        local sent = image.put_image(id, state.win, p.line, p.col, p.cols, p.rows, nil, p.img_w, p.img_h, present)
+        if present and sent then first_visible = false end
+        if sent and on_view_ready then
+          on_view_ready(true)
+          on_view_ready = nil
+        end
+      end
+    end
+  end
+
+  local function place_images(on_entry)
     if not visible() then return end
 
     -- Retry transmit for images that have a path but no ID (up to MAX_RETRIES).
@@ -1152,50 +1187,8 @@ function M.setup_images(win, content, ns, opts)
     -- avoid per-image TTY open/close overhead and ensure atomicity.
     image.begin_batch()
     local ok, err = pcall(function()
-      -- Clear existing placements before re-placing.
-      for _, id in pairs(state.image_ids) do
-        image.clear_placements(id)
-      end
-      -- Clear only the currently displayed animation frame (not all frames).
-      -- Previous frames have no active placement, so clearing them is unnecessary.
-      for _, anim in pairs(state.anims) do
-        local current_id = anim.frame_ids[anim.current]
-        if current_id then image.clear_placements(current_id) end
-      end
-      for _, placement in ipairs(state.placements) do
-        local anim = state.anims[placement.path]
-        if anim then
-          local id = anim.frame_ids[anim.current]
-          if id then
-            image.put_image(
-              id,
-              state.win,
-              placement.line,
-              placement.col,
-              placement.cols,
-              placement.rows,
-              nil,
-              placement.img_w,
-              placement.img_h
-            )
-          end
-        else
-          local id = state.image_ids[placement.path]
-          if id then
-            image.put_image(
-              id,
-              state.win,
-              placement.line,
-              placement.col,
-              placement.cols,
-              placement.rows,
-              nil,
-              placement.img_w,
-              placement.img_h
-            )
-          end
-        end
-      end
+      clear_placements()
+      draw_placements(on_entry)
     end)
     image.flush_batch()
     if not ok then vim.notify("md-render: image redraw error: " .. tostring(err), vim.log.levels.WARN) end
@@ -1241,48 +1234,11 @@ function M.setup_images(win, content, ns, opts)
         local ok, err = pcall(function()
           -- WezTerm needs every image re-placed after TUI cell writes. Clear
           -- this state's old placements first so repeated puts cannot stack.
-          for _, id in pairs(state.image_ids) do
-            image.clear_placements(id)
-          end
+          clear_placements()
           for _, anim in pairs(state.anims) do
-            local prev_id = anim.frame_ids[anim.current]
-            if prev_id then image.clear_placements(prev_id) end
             anim.current = anim.current % #anim.frame_ids + 1
           end
-          for _, placement in ipairs(state.placements) do
-            local anim = state.anims[placement.path]
-            if anim then
-              local id = anim.frame_ids[anim.current]
-              if id then
-                image.put_image(
-                  id,
-                  state.win,
-                  placement.line,
-                  placement.col,
-                  placement.cols,
-                  placement.rows,
-                  nil,
-                  placement.img_w,
-                  placement.img_h
-                )
-              end
-            else
-              local id = state.image_ids[placement.path]
-              if id then
-                image.put_image(
-                  id,
-                  state.win,
-                  placement.line,
-                  placement.col,
-                  placement.cols,
-                  placement.rows,
-                  nil,
-                  placement.img_w,
-                  placement.img_h
-                )
-              end
-            end
-          end
+          draw_placements()
         end)
         image.flush_batch()
         if not ok then vim.notify("md-render: animation error: " .. tostring(err), vim.log.levels.WARN) end
@@ -1313,14 +1269,14 @@ function M.setup_images(win, content, ns, opts)
       -- Note: we cannot wrap redraw! itself because Neovim's TUI uses
       -- its own ?2026 sequences that would end our sync block prematurely.
       image.begin_sync_update()
-      place_images()
+      place_images(true)
       image.end_sync_update()
       resume_anim_timers()
     else
       vim.cmd "redraw!"
       vim.schedule(function()
         if state.closed then return end
-        place_images()
+        place_images(true)
         resume_anim_timers()
         M.announce_repaint "image"
       end)
@@ -1455,6 +1411,8 @@ function M.setup_images(win, content, ns, opts)
     -- Save original placeholder row count before recalculation
     local placeholder_rows = placement.rows
 
+    if selected_png and selected_png ~= image.file_revision(path) then return false end
+
     -- Auto-detect video content when not already flagged (e.g. URL without extension)
     if not placement.video and image.is_video_content(path) then placement.video = true end
 
@@ -1495,7 +1453,20 @@ function M.setup_images(win, content, ns, opts)
           return
         end
         callback(id, ...)
-      end)
+      end, function(accepted_id, err, file_revision)
+        if state.closed or state.image_ids[path] ~= accepted_id then return end
+        local changed = selected_png and selected_png ~= image.file_revision(path)
+        state.ready_images[path] = not (err or changed) and { png_revision = file_revision }
+        require("md-render.image_hint").schedule()
+        if on_view_ready then
+          if state.ready_images[path] then
+            schedule_redraw()
+          else
+            on_view_ready(false)
+            on_view_ready = nil
+          end
+        end
+      end, selected_png)
     end)
     if not id then return false end
     if not current(revision) then
@@ -1599,6 +1570,10 @@ function M.setup_images(win, content, ns, opts)
         local ok, shown = pcall(process_placement_async, placement, revision, owner)
         if current(revision) and (not ok or shown == false) then
           placement._retries = MAX_RETRIES
+          if on_view_ready then
+            on_view_ready(false)
+            on_view_ready = nil
+          end
           if ns and placement.line < vim.api.nvim_buf_line_count(state.buf) then
             M.show_image_error(state.buf, ns, reserved)
           end
@@ -1615,14 +1590,15 @@ function M.setup_images(win, content, ns, opts)
   state.start_anim_timer = start_anim_timer
   state.placement_near_viewport = placement_near_viewport
 
-  -- Ask for everything near the viewport; the semaphore decides how much of it
-  -- happens at once. Off-screen placements are skipped entirely on this pass
-  -- and only transmitted later via the WinScrolled-driven retry in
-  -- place_images, so the user's first paint costs what is actually visible
-  -- (typically 1-2 images) rather than the file's total image count.
-  for _, placement in ipairs(state.placements) do
-    if placement_near_viewport(placement) then process_placement(placement) end
-  end
+  -- Let the caller own this state before the first Kitty upload can yield to
+  -- a rebuild. A newer revision has already requested its own placements.
+  local initial_revision = state.revision
+  vim.schedule(function()
+    for _, placement in ipairs(content.image_placements) do
+      if not current(initial_revision) then return end
+      if placement_near_viewport(placement) then process_placement(placement) end
+    end
+  end)
   schedule_redraw()
 
   -- Re-display on scroll and cursor movement; clean up on window close
@@ -1655,6 +1631,14 @@ function M.setup_images(win, content, ns, opts)
       if event.event == "TabLeave" or event.buf == state.buf then
         pause_anim_timers()
         stop_timer(state, "redraw_timer")
+        if visible() then
+          -- A partial redraw in the next tab can leave graphics from this one
+          -- visible. Keep the upload for TabEnter, but remove its placements.
+          first_visible = true
+          image.begin_batch()
+          clear_placements()
+          image.flush_batch()
+        end
       end
     end,
   })
@@ -1734,6 +1718,7 @@ function M.update_images(state, win, content, ns, opts)
     if not new_paths[path] then
       image.delete_image(id)
       state.image_ids[path] = nil
+      state.ready_images[path] = nil
     end
   end
   for path, anim in pairs(state.anims) do

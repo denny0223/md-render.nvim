@@ -142,8 +142,8 @@ https://sw.kovidgoyal.net/kitty/conf/#opt-kitty.symbol_map
 ==============================================================================
 安裝                                                  *md-render-installation*
 
-基本範例使用預設原生後端（"kitty"）。若要在 Kitty/tmux 中顯示圖片、自動配合
-視窗大小，以及縮放和平移，請接著閱讀 |md-render-snacks-image|。
+基本範例使用預設原生後端（"kitty"）。若要在 tmux 中顯示圖片，或使用圖片縮放
+與平移，請參閱 |md-render-snacks-image|。
 請使用這個 fork 的預設分支；沿用自上游的發行標籤不包含這些新增功能，因此範例
 使用 version = false。
 
@@ -192,7 +192,7 @@ https://sw.kovidgoyal.net/kitty/conf/#opt-kitty.symbol_map
   `set -g allow-passthrough on`，並重新載入設定。此整合尚未驗證其他 Snacks
   支援的終端機；原生後端的相容清單不能直接套用到此整合。
 - ImageMagick：完整圖片流程需要 Neovim 的 PATH 能找到 `magick`。
-  圖片分頁即使開啟 PNG 也需要此指令，無法用 ffmpeg、sips，或只有 convert
+  Snacks 圖片分頁即使開啟 PNG 也需要此指令，無法用 ffmpeg、sips，或只有 convert
   指令的安裝取代。
 - Mermaid：需要 mmdc（或明確啟用的 npx 替代方式）及其無頭瀏覽器。
   Snacks 負責顯示圖片，圖表仍由原本的工具產生，不會開啟瀏覽器視窗。
@@ -324,8 +324,8 @@ setup()。停用 Snacks 的文件與數學式渲染，讓 md-render 負責預覽
 	`[[` / `]]`             上一個／下一個標題；支援數字前綴，不循環。
 	`gO`                    在原生 location list 列出完整標題與 Markdown 層級，
 	                        Enter 跳轉。
-	`<CR>`                  跟隨文件內的標題／註腳連結、開啟圖片（Snacks
-	                        後端），或切換提示區塊摺疊與可展開區域。
+	`<CR>`                  跟隨文件內的標題／註腳連結、開啟支援的圖片
+	                        （|md-render-image-view|），或切換摺疊與展開。
 	`gf` / `gF`             開啟本機連結；gF 另跳到指定的來源行號，
 	                        也支援 ./guide.md:10 這類本機目的地。
 	`<C-w>f` / `<C-w>F`     在分割視窗跟隨本機連結。
@@ -353,8 +353,8 @@ Tag 導覽建立真正的原生 tag stack：Ctrl-T／:pop 返回，:tag 前進�
 
 使用 |:MdRender-toggle| 開啟的預覽緩衝區不會把 `q` / `<Esc>` / `<C-c>` 綁定
 為關閉操作；請再次執行 |:MdRender-toggle| 回到原始文字。摺疊與展開區域仍可用
-`<LeftMouse>` / `za` / `<CR>` 切換；使用 Snacks 後端時，按 `<CR>` 也可開啟
-圖片。
+`<LeftMouse>` / `za` / `<CR>` 切換。在支援的圖片上按 `<CR>` 可開啟圖片分頁，
+詳見 |md-render-image-view|。
 `<LeftMouse>` 仍可開啟連結。滑鼠事件 `<MouseMove>` 仍可預覽目的地，
 過長時省略。
 
@@ -1212,8 +1212,9 @@ image.setup({opts}) ~
     mermaid_allow_npx = false,
   }
 <
-autoplay=false 讓兩個後端只顯示 GIF／影片第一個影格；圖片分頁初始為暫停，
-仍可按空白鍵開始播放。影片仍需要 FFmpeg 準備影格；GIF 可使用 FFmpeg 或
+autoplay=false 會讓兩個後端的文件預覽停在 GIF 或影片的第一個影格。
+在 Snacks 的 GIF 或影片分頁中，按空白鍵即可播放。
+影片仍需要 FFmpeg 準備影格；GIF 可使用 FFmpeg 或
 ImageMagick。mermaid_allow_npx=false 限定使用已安裝的 mmdc，找不到
 時保留 Mermaid 程式碼。每次繪圖都使用獨立工作目錄，不會載入文件所在專案或
 上層目錄的 Puppeteer 設定；受支援的 PUPPETEER_* 環境設定仍有效。明確設定 mermaid_allow_npx=true 才允許 npm 下載並執行指定版本
@@ -1242,6 +1243,10 @@ Obsidian 附件 ~
 大小上限時，會依未設定附件目錄的方式繼續查找。
 
                                                         *md-render-image-view*
+
+直接使用 Kitty 時，在已顯示的 PNG 或圖說上按 <Enter> 可開啟配合分頁大小的全圖。
+已產生的 Mermaid PNG 也可開啟。按 <Enter>、q 或 <Esc> 可回到原本的閱讀位置。
+
 使用 Snacks 後端與 ImageMagick（magick）時，在圖片或其標題上按 <Enter> 可開啟
 獨立圖片分頁。以下按鍵會自動設定：
 
@@ -1266,7 +1271,7 @@ Obsidian 附件 ~
 縮短或省略提示，仍可按 Enter 開圖。等待或顯示錯誤時，按 Enter、q 或 Esc 可
 回到文件。遠端圖片要等預覽讀到下載完成的檔案才能開啟。
 
-GIF 與影片分頁需要 Kitty 0.31 以上版本，除非 autoplay=false，否則開啟後會
+Snacks 的 GIF 與影片分頁需要 Kitty 0.31 以上版本，除非 autoplay=false，否則開啟後會
 自動播放。暫停時停在目前影格，按空白鍵可開始播放；縮放與平移會維持播放狀態。
 播放控制只影響此分頁，與文件預覽各自獨立。沿用文件內的無聲影格預覽；使用
 ffmpeg 時為每秒 5 格、最大 400x400 像素與 300 格（最多 60 秒）。
@@ -1513,7 +1518,7 @@ DETAILS 區塊 ~
   (ffmpeg/ffprobe)     GIF 動畫／影片影格擷取。圖片可改用 ImageMagick，
                        影片仍需要 ffmpeg。
 
-  ImageMagick          Snacks 轉換非 PNG 圖片時需要此工具。圖片分頁即使開啟
+  ImageMagick          Snacks 轉換非 PNG 圖片時需要此工具。Snacks 圖片分頁即使開啟
   (magick)             PNG 也需要 magick，不能以 ffmpeg、sips 或只有 convert
                        的安裝取代。
                        原生靜態圖片轉換依序嘗試 sips、ffmpeg、magick；

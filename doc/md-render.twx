@@ -1200,8 +1200,8 @@ display_utils.setup_images({win}, {content}, {ns}, {opts}) ~
 
 Snacks 的設定、系統需求與檢查方式請見 |md-render-snacks-image|。
 
-整行只有圖片，或表格儲存格只有一張圖時，可在圖片或其外層連結後緊接 Pandoc
-屬性，例如 `![地圖](map.png){width=16cm}`。預覽沿用原有的圖片尺寸。
+整行只有圖片，或表格資料列的儲存格只有一張圖時，可在圖片或其外層連結後緊接
+Pandoc 屬性，例如 `![地圖](map.png){width=16cm}`。預覽沿用原有的圖片尺寸。
 
                                                             *image.setup()*
 image.setup({opts}) ~

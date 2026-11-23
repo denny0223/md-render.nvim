@@ -1335,9 +1335,9 @@ IMAGE							       *md-render-image*
 
 Snacks の設定、依存関係、確認手順は |md-render-snacks-image| を参照。
 
-画像だけの行や画像が 1 枚だけの表セルでは、画像やそれを囲むリンクの直後に
-Pandoc 属性を付けられます。例：`![地図](map.png){width=16cm}`。プレビューでは
-通常の画像サイズで表示します。
+画像だけの行や、表のデータ行で画像が 1 枚だけのセルでは、画像または
+画像を囲むリンクの直後に Pandoc 属性を付けられます。
+例：`![地図](map.png){width=16cm}`。プレビューでは通常の画像サイズで表示します。
 
                                                             *image.setup()*
 image.setup({opts}) ~

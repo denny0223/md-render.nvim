@@ -341,10 +341,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
     local video_tag = video_end and stripped:sub(video_end + 1):match "^%s*$" and stripped:sub(1, video_end)
     if video_tag then
       local src = inline.html_target(video_tag)
-      if src then
-        alt = src:match "([^/]+)$" or src
-        return alt, src, true
-      end
+      if src then return require("md-render.image").display_name(src), src, true end
     end
     return nil, nil, nil
   end
@@ -818,6 +815,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
         local cached_img = cached[col]
         table.insert(out_image_placements, {
           resolved = img.resolved,
+          display_name = require("md-render.image").display_name(img.url, img.alt),
           src_url = img.src_url,
           line_offset = img_start_line_idx,
           label_rows = #label_lines,

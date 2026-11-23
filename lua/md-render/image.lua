@@ -1218,6 +1218,20 @@ function M.is_url(s)
   return type(s) == "string" and not s:find "%c" and s:lower():match "^https?://" ~= nil
 end
 
+--- A single-line caption for the original Markdown media, before caching or conversion.
+function M.display_name(source, alt)
+  if not alt or alt == "" then
+    if M.is_url(source) then
+      local path = source:match "^%a+://[^/?#]+(/[^?#]*)"
+      local name = path and path:match "([^/]+)$"
+      alt = name and vim.uri_decode(name) or "Image"
+    else
+      alt = vim.fs.basename(source)
+    end
+  end
+  return (alt:gsub("\r\n", " "):gsub("%c", " "))
+end
+
 --- URLs that are badges or tiny icons — not worth displaying as block images
 local BADGE_PATTERNS = {
   "img%.shields%.io",

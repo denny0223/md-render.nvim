@@ -8,6 +8,10 @@ image._set_kitty_supported(true)
 image._test_cell_size = { cell_w = 1, cell_h = 1 }
 -- Keep real parsing, layout and Enter mappings; no terminal or image converter is needed.
 require("md-render.display_utils").setup_images = function() end
+assert(image.display_name "https://example.org/dir/photo%20one.png?signature=x#part" == "photo one.png")
+assert(image.display_name "https://example.org/?file=one.png" == "Image")
+assert(image.display_name "a#b.png" == "a#b.png")
+assert(image.display_name("image.png", "part 1\r\npart 2") == "part 1 part 2")
 local opened
 require("md-render.image_view").open = function(path)
   opened = path

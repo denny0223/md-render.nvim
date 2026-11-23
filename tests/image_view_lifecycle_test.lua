@@ -297,6 +297,8 @@ if vim.fn.executable "ffmpeg" == 1 then
     local img, anchor = view.media, view.placement
     assert(#view.frames > 1 and view.playing, "media must open playing")
     assert(img.id ~= inline.img.id, "viewer playback must be independent of inline media")
+    key "F"
+    assert(view.zoom == 1, "a newly opened image must not inherit another tab's detail")
     key "<Space>"
     assert(not view.playing and requests[#requests].s == 1, "Space must pause the current frame")
     local paused = #requests
@@ -314,6 +316,11 @@ if vim.fn.executable "ffmpeg" == 1 then
       return not view.pending and not view.dirty
     end, "pan did not settle")
     assert(view.crop.x < x or view.crop.y < y, "pan must move the animated crop")
+    local detail = view.crop
+    key "f"
+    assert(view.zoom == 1 and view.crop.w == view.iw and view.crop.h == view.ih, "fit must show all of paused media")
+    key "F"
+    assert(vim.deep_equal(view.crop, detail) and not view.playing, "restore the paused detail")
     assert(
       view.media == img and view.placement == anchor and vim.fn.filereadable(view.path) == 1,
       "zoom/pan must preserve the animation"

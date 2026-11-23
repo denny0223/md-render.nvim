@@ -1427,6 +1427,7 @@ or its title to open a focused image tab. Its keys are set automatically:
   Edges         0 / ^ / <Home> and $ / <End> (left/right);
                 gg / <C-Home> and G / <C-End> (top/bottom).
   Fit           f; fit the complete image and center it.
+  Restore       F; return to the zoom and position last saved by f in this tab.
   Help          ?; open this reference.
   Back          q / <Esc>; close the image tab and return to the document.
 

@@ -726,6 +726,15 @@ function M.text_area(win)
   return left, right, top, top + wininfo.height - 1
 end
 
+local function number_only_cursorline(option)
+  local has_number = false
+  for part in option:gmatch "[^,]+" do
+    if part ~= "number" then return false end
+    has_number = true
+  end
+  return has_number
+end
+
 --- Compute where every placement would be drawn right now.
 ---@param state MdRender.TextSizeState
 ---@return { p: MdRender.TextPlacement, row: integer, col: integer }[]
@@ -807,7 +816,7 @@ local function visible_placements(state)
           and cursor.row < pos.row + p.scale
           and cursor.col < pos.col
           and vim.wo[win].cursorline
-          and vim.wo[win].cursorlineopt ~= "number"
+          and not number_only_cursorline(vim.wo[win].cursorlineopt)
         then
           cursorline = vim.api.nvim_get_hl(0, { name = "CursorLine", link = false })
           -- All native heading placements reserve precisely two buffer rows.

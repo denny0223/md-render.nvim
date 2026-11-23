@@ -960,7 +960,18 @@ with_support(true, function()
   local col = out.text_placements[1].col
   for _, enabled in ipairs { false, true } do
     vim.wo[win].cursorline = enabled
-    for _, option in ipairs { "line", "screenline", "both", "number" } do
+    for option, highlights_text in pairs {
+      line = true,
+      screenline = true,
+      both = true,
+      number = false,
+      [",number"] = false,
+      ["number,"] = false,
+      ["number,number"] = false,
+      ["number,screenline"] = true,
+      [",both,"] = true,
+      [","] = true,
+    } do
       vim.wo[win].cursorlineopt = option
       for _, case in ipairs {
         { row + 1, 0, 1 }, -- left margin
@@ -972,7 +983,7 @@ with_support(true, function()
         text_size.paint(state)
         assert_eq(#state.drawn, case[3], "cursor entry reveals text while heading margins retain scaling")
         local marks = state.cursorline_ns and vim.api.nvim_buf_get_extmarks(buf, state.cursorline_ns, 0, -1, {}) or {}
-        if enabled and option ~= "number" and case[2] == 0 then
+        if enabled and highlights_text and case[2] == 0 then
           assert_eq(#marks, 1, "only the sibling row needs an extra CursorLine")
           assert_eq(marks[1] and marks[1][2], case[1] == row + 1 and row + 1 or row, "correct CursorLine sibling")
         else

@@ -135,6 +135,32 @@ local function literal_source(path)
   return alias
 end
 
+-- A one-row Snacks image uses inline virtual text at a byte column. Taller
+-- images use overlays at window columns. Follow the marks Snacks actually drew.
+function M.placement_at_mouse(state, mouse)
+  if vim.fn.screenchar(mouse.screenrow, mouse.screencol) ~= 0x10EEEE then return end
+  local row = mouse.line - 1
+  local marks = vim.api.nvim_buf_get_extmarks(
+    state.buf,
+    Snacks.image.placement.ns,
+    { row, 0 },
+    { row, -1 },
+    { type = "virt_text", details = true }
+  )
+  local col = mouse.wincol - vim.fn.getwininfo(mouse.winid)[1].textoff - 1
+  for _, mark in ipairs(marks) do
+    local opts = mark[4]
+    local left = opts.virt_text_win_col
+    local hit = opts.virt_text_pos == "inline" and mark[3] == mouse.column - 1
+      or left and col >= left and col < left + vim.api.nvim_strwidth(opts.virt_text[1][1])
+    if hit then
+      for index, object in pairs(state.objects) do
+        if vim.list_contains(object.eids, mark[1]) then return state.placements[index], index end
+      end
+    end
+  end
+end
+
 function M.supported()
   if not (_G.Snacks and Snacks.image) then return false end
   -- Reattached tmux panes can lack KITTY_WINDOW_ID; ask the current client.
@@ -265,7 +291,7 @@ function M.update(state, content)
         width = p.cols,
         height = p.rows,
         on_update = function()
-          if state.win == vim.api.nvim_get_current_win() then require("md-render.image_hint").schedule() end
+          require("md-render.image_hint").schedule()
         end,
       }
       local function place(path, frames)

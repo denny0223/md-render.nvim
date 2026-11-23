@@ -943,7 +943,7 @@ function Session:image_at(row, col)
   end
 end
 
---- Resolve the same source for hints and Enter. An animated Snacks
+--- Resolve the same source for hints, clicks and Enter. An animated Snacks
 --- placement keeps its shared frame task even after its first frame is visible.
 function Session:image_view_source(placement, index)
   local state = self.image_state
@@ -977,16 +977,16 @@ function Session:image_view_hint(placement, index)
   if source then return "Enter: open and wait" end
 end
 
-function Session:open_image_at(row, col)
-  local placement, index = self:image_at(row, col)
+function Session:open_image(placement, index, source)
   if not placement then return false end
-  local source, _, native_source = self:image_view_source(placement, index)
   if require("md-render.image").config().backend == "snacks" then
+    source = source or self:image_view_source(placement, index)
     if source then require("md-render.image_view").open(source, self:image_view_name(placement)) end
     return true
   end
-  if not source then return false end
-  local view = require("md-render.native_image_view").open(source, native_source)
+  local path, _, native_source = self:image_view_source(placement, index)
+  if not path then return false end
+  local view = require("md-render.native_image_view").open(path, native_source)
   if view then
     view.on_silent_return = function(origin_win, returned)
       -- :noautocmd close also skipped the source renderer's TabEnter.
@@ -1033,7 +1033,7 @@ function Session:install_float_keymaps(close_handle, keymap_opts)
       self:refresh_images()
     end,
     on_image_open = function(row)
-      return self:open_image_at(row, vim.fn.virtcol "." - 1)
+      return self:open_image(self:image_at(row, vim.fn.virtcol "." - 1))
     end,
   }
   self._rebind_keymaps =

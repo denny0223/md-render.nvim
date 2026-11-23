@@ -73,6 +73,7 @@ function M.show(win, p, text)
 end
 
 function M.refresh()
+  if require("md-render.url_hover").refresh() then return end
   local win = vim.api.nvim_get_current_win()
   local session = require("md-render.preview")._sessions[vim.api.nvim_win_get_buf(win)]
   if not session or not session._keymap_opts or vim.api.nvim_get_mode().mode ~= "n" then return M.hide() end

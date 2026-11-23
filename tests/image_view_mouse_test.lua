@@ -7,6 +7,7 @@ local function lua(code, ...)
   return vim.rpcrequest(child, "nvim_exec_lua", code, { ... })
 end
 local ok, err = pcall(function()
+  vim.rpcrequest(child, "nvim_ui_attach", 100, 40, { rgb = true })
   lua [[
     package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
     vim.o.mouse, vim.o.mousescroll = "a", "ver:2,hor:4"
@@ -137,6 +138,16 @@ local ok, err = pcall(function()
   assert(lua "return view.crop.x > 0 and view.crop.y > 0", "reversing a drag at an edge must move immediately")
   mouse("left", "release", "view.win", 6, 8)
 
+  -- A drag onto or away from the Back label cannot activate it.
+  mouse("left", "press", "view.win", 5, 5)
+  mouse("left", "drag", "view.win", 0, 2)
+  mouse("left", "release", "view.win", 0, 2)
+  mouse("left", "press", "view.win", 0, 2)
+  mouse("left", "drag", "view.win", 4, 6)
+  mouse("left", "drag", "view.win", 0, 2)
+  mouse("left", "release", "view.win", 0, 2)
+  assert(lua "return not view.closed", "only a click activates the Back label")
+
   -- Fast repeated grabs include double/triple-click mouse keycodes.
   for _ = 1, 4 do
     center()
@@ -161,6 +172,59 @@ local ok, err = pcall(function()
   before = lua "return vim.fn.getwininfo(other)[1].topline"
   mouse("wheel", "down", "other")
   assert(lua "return vim.fn.getwininfo(other)[1].topline" > before, "closing the viewer broke normal scrolling")
+  lua [[_G.view = require("md-render.image_view").open "still-loading.png"; vim.cmd "redraw"]]
+  lua [[
+    function rendered_back(win)
+      vim.cmd("redraw!")
+      local first = vim.fn.screenpos(win, 1, 1)
+      local label = {}
+      for x = first.col, first.col + 5 do label[#label+1] = vim.fn.screenstring(first.row, x) end
+      return table.concat(label)
+    end
+    assert(rendered_back(view.win) == "[Back]", "Back available during loading")
+    vim.cmd.vsplit()
+    copy = vim.api.nvim_get_current_win()
+    assert(rendered_back(copy) == "      ", "a duplicate viewer cannot display the owner's button")
+    assert(rendered_back(view.win) == "[Back]", "owner must keep its button")
+  ]]
+  mouse("left", "press", "copy", 0, 1)
+  mouse("left", "release", "copy", 0, 1)
+  lua [[assert(vim.api.nvim_win_is_valid(copy) and not view.closed); vim.cmd.close()]]
+  mouse("left", "release", "view.win", 0, 1)
+  assert(lua "return not view.closed", "release without viewer press must not close the new tab")
+  mouse("left", "press", "view.win", 0, 1)
+  mouse("left", "release", "view.win", 0, 1)
+  assert(lua "return view.closed and vim.api.nvim_get_current_win() == other", "Back returns to source")
+
+  lua [[
+    local disp = require "md-render.display_utils"
+    disp.update_images = function() end
+    _G.view = require("md-render.native_image_view").open(vim.fn.getcwd() .. "/tests/fixtures/test_4x4.png")
+    vim.cmd "redraw"
+  ]]
+  mouse("left", "press", "view.win", 0, 2)
+  mouse("left", "drag", "view.win", 1, 4)
+  mouse("left", "release", "view.win", 0, 2)
+  assert(lua "return not view.closed", "dragging across native Back leaves the image open")
+  mouse("left", "press", "view.win", 0, 2)
+  mouse("left", "release", "view.win", 0, 2)
+  assert(lua "return view.closed and vim.api.nvim_get_current_win() == other", "native Back returns to source")
+  assert(lua "return vim.on_key() == listeners + 1", "closing the native viewer removes its input listener")
+
+  lua [[
+    view = require("md-render.native_image_view").open(vim.fn.getcwd() .. "/tests/fixtures/test_4x4.png")
+    vim.cmd.vsplit()
+    copy = vim.api.nvim_get_current_win()
+    vim.api.nvim_set_current_win(view.win)
+    vim.cmd "noautocmd close"
+    vim.cmd.redraw()
+  ]]
+  mouse("wheel", "down", "other")
+  assert(lua "return view.closed and vim.on_key() == listeners + 1", "lost native owner releases mouse capture")
+  lua [[
+    vim.api.nvim_win_call(copy, function() vim.cmd("normal! gg0zt") end)
+    assert(rendered_back(copy) == "      ", "a surviving duplicate cannot retain an inert Back button")
+  ]]
 end)
 vim.fn.jobstop(child)
 assert(ok, err)

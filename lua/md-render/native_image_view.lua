@@ -16,7 +16,8 @@ function M.open(path, source)
   source = source or { png_revision = image.file_revision(path) }
   local iw, ih = image.image_dimensions(path)
   if not iw or not ih or iw < 1 or ih < 1 then return end
-  local view = require("md-render.image_view_tab").open()
+  local tab = require "md-render.image_view_tab"
+  local view = tab.open()
   local win, buf = view.win, view.buf
   local width, height
   local status
@@ -53,7 +54,7 @@ function M.open(path, source)
     if cols == width and info.height == height then return end
     width, height = cols, info.height
     local lines = vim.fn["repeat"]({ "" }, height)
-    lines[1] = "  Enter / q / Esc: back"
+    lines[1] = tab.back_padding .. "  Enter / q / Esc: back"
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modifiable = false

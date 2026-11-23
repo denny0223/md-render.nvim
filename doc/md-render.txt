@@ -361,7 +361,8 @@ Inside the preview window, the following Normal-mode keys are available.
 	`gx`		Jump to an internal anchor, or open the exact external
 			URL / absolute local path with the system handler
 	`<C-LeftMouse>` / `g<LeftMouse>` Follow the clicked link as a tag
-	`<LeftMouse>`	Click links, toggle folds, expand regions
+	`<LeftMouse>`	Follow a link, open a displayed image, or toggle a fold
+			/ expandable region
 	`<MouseMove>`	Hover a link to preview its destination in a small
 			float at the bottom; long URLs are shortened. Requires
 			'mousemoveevent' (md-render enables it automatically
@@ -530,7 +531,8 @@ still registered as deprecated aliases — see |md-render-deprecated-commands|.
 
 	  Read-only operations: motion (hjkl, gg, G, ...), search (/, ?),
 	  yank (y), visual selection, marks, `za` / `<CR>` (toggle folds
-	  and expand regions), and <LeftMouse> (folds, expand, link open).
+	  and expand regions), and <LeftMouse> (links, images, folds, and
+	  expandable regions).
 
 	  `:w` / `:w!`, `:update`, `:x`, and `ZZ` save the source buffer;
 	  conditional writes run only when the source is modified. Native
@@ -1417,9 +1419,9 @@ falls back to lookup without an attachment-folder setting.
 
                                                         *md-render-image-view*
 
-In direct Kitty, press <Enter> on a displayed PNG or its caption to open the
-whole image in a fitted tab. Rendered Mermaid PNGs work the same way.
-<Enter>, q, and <Esc> return to the original reading position.
+In direct Kitty, click a displayed PNG or press <Enter> on it or its caption
+to open the whole image in a fitted tab. Rendered Mermaid PNGs work the same
+way. Click [Back] or press <Enter>, q, or <Esc> to return to the document.
 
 With the Snacks backend and ImageMagick (magick), press <Enter> on an image
 or its title to open a focused image tab. Its keys are set automatically:
@@ -1435,7 +1437,8 @@ or its title to open a focused image tab. Its keys are set automatically:
   Fit           f; fit the complete image and center it.
   Restore       F; return to the zoom and position last saved by f in this tab.
   Help          ?; open this reference.
-  Back          <Enter> / q / <Esc> to return to your place in the document.
+  Back          Click [Back] or press <Enter> / q / <Esc> to return to your
+                place in the document.
 
 Look below the loading message or the image for the selected caption or source
 filename. Diagrams show their source location. Use :echo getline('$') to read a
@@ -1460,8 +1463,10 @@ Counts repeat pan, half-screen, page, and fine-scroll steps, e.g. 3j or
 jumps preserve zoom and the other axis. Keypad navigation keys also work.
 
 With 'mouse' enabled, wheel up/down zooms in/out like +/-, without changing
-focus. Hold the left mouse button and drag to move the image with the
-pointer; release to stop. Trackpad vertical scroll events also zoom.
+focus. Click an image in the preview to open it. Click a heading link in its
+caption to jump there. For external OSC 8 links, use the terminal's link
+shortcut (Ctrl+Shift+click in Kitty). Hold the left mouse button and drag to
+move the image. Release to stop. Trackpad vertical scroll events also zoom.
 
 Zoom ranges from 1x to 16x the fitted overview. It enlarges existing pixels;
 it does not regenerate the diagram.

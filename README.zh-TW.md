@@ -82,7 +82,7 @@ nvim +"MdRender pager" assets/showcase.md
 | 套件或工具 | 用途 | 替代方式或限制 |
 |---|---|---|
 | [curl](https://curl.se/) | 下載網路圖片與影片 | 可透過 `set_download_fn()` 提供自訂下載函式 |
-| [snacks.nvim](https://github.com/folke/snacks.nvim) | 選用圖片後端、自動調整圖片大小與獨立圖片分頁 | 直接使用 Kitty 時，預設後端也可以在分頁開啟符合視窗大小的 PNG |
+| [snacks.nvim](https://github.com/folke/snacks.nvim) | 選用圖片後端、自動調整圖片大小與獨立圖片分頁 | 直接使用 Kitty 時，預設後端也可依分頁大小顯示 PNG。若直接在 Kitty 執行本機 Neovim，也可開啟 GIF 動畫與影片 |
 | [FFmpeg](https://ffmpeg.org/)（`ffmpeg` / `ffprobe`） | 原生後端的 JPEG/WebP → PNG 轉換，以及兩個後端共用的 GIF 動畫與影片影格擷取 | 圖片可改用 ImageMagick；影片仍需要 ffmpeg |
 | [ImageMagick](https://imagemagick.org/)（`magick`） | Snacks 圖片轉換、圖片分頁縮放與平移，以及原生圖片轉換與共用的 GIF 影格擷取 | 原生後端可使用下表的替代工具。Snacks 圖片分頁即使開啟 PNG 也需要 `magick`，無法用 `ffmpeg`、`sips` 或只有 `convert` 指令的安裝取代 |
 | [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli)（`mmdc`）及其無頭瀏覽器 | 兩種後端都用它產生 Mermaid 圖表 | 找不到時保留程式碼區塊。選用 npm 替代方式須設定 `mermaid_allow_npx = true`，並備妥 Node.js/npm 與瀏覽器 |
@@ -172,7 +172,7 @@ require("md-render.image").setup {
 }
 ```
 
-設定 `autoplay = false` 時，兩個後端都會讓文件內的 GIF 或影片停在第一個影格。在 Snacks 的 GIF 或影片分頁中，按空白鍵即可播放。影片仍需要 FFmpeg 準備影格；GIF 可使用 FFmpeg 或 ImageMagick。設定 `mermaid_allow_npx = false` 時，只使用已安裝的 `mmdc`；找不到時，Mermaid 保留為程式碼區塊。請將這些選項合併到既有圖片設定，包含已選用的 `backend = "snacks"`。若要使用一般文字標題，可執行 `:MdRender textsize off`。
+設定 `autoplay = false` 時，兩個後端都會讓文件內的 GIF 或影片停在第一個影格。在 GIF 或影片分頁中，按空白鍵即可播放。影片仍需要 FFmpeg 準備影格；GIF 可使用 FFmpeg 或 ImageMagick。設定 `mermaid_allow_npx = false` 時，只使用已安裝的 `mmdc`；找不到時，Mermaid 保留為程式碼區塊。請將這些選項合併到既有圖片設定，包含已選用的 `backend = "snacks"`。若要使用一般文字標題，可執行 `:MdRender textsize off`。
 
 遠端圖片與影片會在文件預覽，以及已設定的 Telescope／Snacks picker 預覽中自動載入。切換 picker 選取項目即可觸發請求，無須另執行 `:MdRender toggle`。內建下載器支援 HTTP(S) 與 HTTP(S) 重新導向，依 URL 原文請求，並忽略 `.curlrc`；代理伺服器與 CA 環境設定仍會生效。自訂驗證方式請使用 `set_download_fn()`。
 
@@ -320,7 +320,7 @@ Pager 以外的模式會在原始編輯視窗交給已設定的目錄瀏覽器�
 
 ### 圖片分頁按鍵
 
-直接在 Kitty 使用預設後端時，點選已顯示的 PNG，或在圖片、圖說上按 Enter，可開啟配合分頁大小的全圖。已產生的 Mermaid PNG 也可開啟。點 `[Back]` 或按 Enter、`q`、Esc 回到原本的閱讀位置。
+直接在 Kitty 使用預設後端時，點選已顯示的 PNG，或在圖片、圖說上按 Enter，可開啟配合分頁大小的全圖。已產生的 Mermaid PNG 也可開啟。在本機 Kitty 中，GIF 動畫與影片同樣可用滑鼠或 Enter 開啟，按空白鍵可暫停或繼續。若設定 `autoplay = false`，分頁會停在第一幀，按空白鍵才開始播放。點 `[Back]` 或按 Enter、`q`、Esc 回到原本的閱讀位置。
 
 完成 [Snacks 後端](#選用-snacks-圖片後端)設定並安裝 ImageMagick（`magick`）後，在圖片或其標題上按 Enter，即可開啟獨立圖片分頁。使用方向鍵或 `hjkl` 移動、`+/-` 縮放、`f` 看全圖、`F` 回到看全圖前的倍率與位置，Enter、`q` 或 Esc 返回。這些按鍵會自動設定在圖片分頁內。載入時，圖說或來源檔名顯示在提示下方。圖片出現後，圖說或檔名會顯示在圖片下方。圖表會標出原始文件的位置。
 
@@ -610,7 +610,7 @@ require("snacks").setup({
 <details>
 <summary><strong>按 Enter 沒有開啟圖片分頁</strong></summary>
 
-請使用 `:MdRender tab` 之類的文件預覽。使用原生後端時，在直接使用 Kitty 的環境選擇已載入的 PNG。使用 [Snacks 後端](#選用-snacks-圖片後端)時，請確認 `:echo executable('magick')` 回傳 `1`。將游標移到圖片或其標題上按 Enter。遠端圖片須先完成下載。內建的 `:MdRender demo` 展示視窗沒有提供這個開圖操作。
+請使用 `:MdRender tab` 之類的文件預覽。使用原生後端時，請直接在 Kitty 選擇已載入的 PNG。開啟 GIF 動畫或影片時，請使用未透過 SSH 連線的本機 Kitty 工作階段。使用 [Snacks 後端](#選用-snacks-圖片後端)時，請確認 `:echo executable('magick')` 回傳 `1`。將游標移到圖片或其標題上按 Enter。遠端圖片須先完成下載。內建的 `:MdRender demo` 展示視窗沒有提供這個開圖操作。
 
 </details>
 

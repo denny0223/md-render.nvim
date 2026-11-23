@@ -83,7 +83,7 @@ These dependencies are optional for basic Markdown rendering, but required for t
 | Dependency | Purpose | Fallback |
 |---|---|---|
 | [curl](https://curl.se/) | Download web images and video | Custom function via `set_download_fn()` |
-| [snacks.nvim](https://github.com/folke/snacks.nvim) | Optional image backend, viewport fitting, and focused image tabs | The default backend also opens displayed PNGs in a fitted tab in direct Kitty |
+| [snacks.nvim](https://github.com/folke/snacks.nvim) | Optional image backend, viewport fitting, and focused image tabs | The default backend opens PNGs in a fitted tab in direct Kitty. Animated GIFs and videos also work in a local Kitty session outside SSH |
 | [FFmpeg](https://ffmpeg.org/) (`ffmpeg` / `ffprobe`) | Native JPEG/WebP → PNG conversion; GIF / video frame extraction for both backends | Falls back to ImageMagick (images only; video requires ffmpeg) |
 | [ImageMagick](https://imagemagick.org/) (`magick`) | Snacks image conversion and image-tab zoom/pan; native image conversion and shared GIF frame extraction | Native conversion can use the tools below. The Snacks image tab requires `magick`, including for PNG; `ffmpeg`, `sips`, or an installation providing only `convert` cannot replace it |
 | [Mermaid CLI](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) and its headless browser | Render Mermaid diagrams with either backend | Retains the code block if unavailable. Optional npm fallback requires `mermaid_allow_npx = true`, Node.js/npm and the browser |
@@ -173,7 +173,7 @@ require("md-render.image").setup {
 }
 ```
 
-With `autoplay = false`, both backends show the first frame inline. In a Snacks GIF or video tab, press Space to start playback. Frame preparation still requires FFmpeg for videos; GIFs can use FFmpeg or ImageMagick. With `mermaid_allow_npx = false`, only an installed `mmdc` is used; without it, Mermaid stays a code block. Merge these options into your existing image setup, including `backend = "snacks"` if selected. For ordinary text headings, use `:MdRender textsize off`.
+With `autoplay = false`, both backends show the first frame inline. In a GIF or video tab, press Space to start playback. Frame preparation still requires FFmpeg for videos; GIFs can use FFmpeg or ImageMagick. With `mermaid_allow_npx = false`, only an installed `mmdc` is used; without it, Mermaid stays a code block. Merge these options into your existing image setup, including `backend = "snacks"` if selected. For ordinary text headings, use `:MdRender textsize off`.
 
 Remote images and videos load automatically in document previews and configured Telescope/Snacks picker previews. Changing a picker selection can start requests without `:MdRender toggle`. The built-in downloader supports HTTP(S) and HTTP(S) redirects, treats URLs literally, and ignores `.curlrc`; proxy and CA environment settings still apply. Use `set_download_fn()` for custom authentication.
 
@@ -321,7 +321,7 @@ Reference links use the first valid definition, match labels with Unicode case f
 
 ### Image tab keys
 
-On the default backend in direct Kitty, click a displayed PNG or press Enter on it or its caption to fit the full image in a tab. This includes rendered Mermaid PNGs. Click `[Back]` or press Enter, `q`, or Esc to return to the same reading position.
+On the default backend in direct Kitty, click a displayed PNG or press Enter on it or its caption to fit the full image in a tab. This includes rendered Mermaid PNGs. In a local Kitty session, you can also open animated GIFs and videos this way. Press Space to play or pause. With `autoplay = false`, the tab shows the first frame until you press Space. Click `[Back]` or press Enter, `q`, or Esc to return to the same reading position.
 
 With the [Snacks backend](#optional-snacks-image-backend) configured and ImageMagick (`magick`) installed, press Enter on an image or its title to open a focused image tab. Use arrows or `hjkl` to move, `+/-` to zoom, `f` to see the whole image, `F` to restore the zoom and position you left with `f`, and Enter, `q`, or Esc to return. These keys are set automatically in the image tab. Look below the loading message or the image for the selected caption or source filename. Diagrams show their source location.
 
@@ -617,7 +617,7 @@ Check that `autoplay` is enabled in your image setup. With `autoplay = false`, a
 <details>
 <summary><strong>Enter does not open an image tab</strong></summary>
 
-Use a document preview such as `:MdRender tab`. For the native backend, use a loaded PNG in direct Kitty. For the [Snacks backend](#optional-snacks-image-backend), check that `:echo executable('magick')` returns `1`. Place the cursor on the image or its title and press Enter. For a remote image, wait until the download finishes. The built-in `:MdRender demo` window does not provide this image-opening action.
+Use a document preview such as `:MdRender tab`. For the native backend, use a loaded PNG in direct Kitty. To open an animated GIF or video, run Neovim locally in Kitty, outside SSH. For the [Snacks backend](#optional-snacks-image-backend), check that `:echo executable('magick')` returns `1`. Place the cursor on the image or its title and press Enter. For a remote image, wait until the download finishes. The built-in `:MdRender demo` window does not provide this image-opening action.
 
 </details>
 

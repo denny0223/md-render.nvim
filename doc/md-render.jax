@@ -1351,7 +1351,7 @@ image.setup({opts}) ~
   }
 <
 autoplay=false では、どちらのバックエンドでも文書内の GIF や動画は最初の
-フレームで止まります。Snacks の GIF・動画タブでは Space で再生を開始できます。
+フレームで止まります。GIF・動画タブでは Space で再生を開始できます。
 動画のフレーム準備には引き続き FFmpeg が必要で、GIF は FFmpeg または
 ImageMagick を使えます。
 mermaid_allow_npx=false はインストール済みの mmdc のみ使い、なければ Mermaid
@@ -1390,9 +1390,12 @@ vault 全体を検索します。共通のフォールバック索引は最大 1
 
                                                         *md-render-image-view*
 
-Kitty を直接使う場合、表示済みの PNG をクリックするか、画像またはタイトル上で <Enter> を押すと、
-タブの大きさに合わせて画像全体を表示します。描画済みの Mermaid PNG も
-開けます。[Back] をクリックするか、<Enter>、q、<Esc> を押すと元の位置に戻ります。
+Kitty を直接使う場合、表示済みの PNG をクリックするか、画像またはタイトル上で
+<Enter> を押すと、タブの大きさに合わせて表示します。描画済みの Mermaid PNG も
+開けます。ローカルの Kitty ではアニメーション GIF や動画も同じ操作で開けます。
+<Space> で再生と一時停止を切り替えます。autoplay = false の場合は、<Space> を
+押すまで最初のフレームを表示します。[Back] をクリックするか、<Enter>、q、<Esc>
+を押すと元の位置に戻ります。
 
 Snacks バックエンドと ImageMagick（magick）を設定し、画像またはタイトル上で
 <Enter> を押すと専用画像タブが開きます。キーは自動設定され、追加のプラグインや

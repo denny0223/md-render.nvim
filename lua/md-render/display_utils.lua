@@ -962,6 +962,7 @@ end
 
 ---@class MdRender.AnimState
 ---@field frame_ids integer[]  Kitty image IDs for each frame
+---@field frame_files string[] immutable PNG files used for these uploads
 ---@field current integer  current frame index (1-based)
 ---@field timer any  uv timer for frame cycling
 ---@field tmp_dir string  temp directory to clean up
@@ -969,7 +970,7 @@ end
 ---@class MdRender.ImageState
 ---@field placements MdRender.ImagePlacement[]
 ---@field image_ids table<string, integer>  path -> Kitty image ID (transmitted)
----@field ready_images table<string, {png_revision: string}|false> original PNG uploads accepted or rejected by direct Kitty
+---@field ready_images table<string, {png_revision?: string, animation?: MdRender.AnimState}|false> uploads accepted or rejected by direct Kitty
 ---@field anims table<string, MdRender.AnimState>  path -> animation state
 ---@field tasks table<MdRender.ImagePlacement, vim.async.Task>  work started per placement
 ---@field win integer
@@ -1021,7 +1022,7 @@ end
 ---@param win integer
 ---@param content MdRender.Content
 ---@param ns integer?
----@param opts? { buf?: integer, on_ready?: fun(), build_content?: fun(): MdRender.Content, on_content_applied?: fun(content: MdRender.Content), png_revision?: string, on_view_ready?: fun(ready: boolean) }
+---@param opts? { buf?: integer, on_ready?: fun(), build_content?: fun(): MdRender.Content, on_content_applied?: fun(content: MdRender.Content), playback?: { playing: boolean, frame_files: string[] }, png_revision?: string, on_view_ready?: fun(ready: boolean) }
 ---@return MdRender.ImageState?
 function M.setup_images(win, content, ns, opts)
   if not content.image_placements or #content.image_placements == 0 then return nil end
@@ -1138,6 +1139,7 @@ function M.setup_images(win, content, ns, opts)
     end
   end
 
+  local playback = opts and opts.playback
   local selected_png = opts and opts.png_revision
   local private_view = opts and opts.on_view_ready
   local on_view_ready = private_view
@@ -1154,7 +1156,7 @@ function M.setup_images(win, content, ns, opts)
         local sent = image.put_image(id, state.win, p.line, p.col, p.cols, p.rows, nil, p.img_w, p.img_h, present)
         if present and sent then first_visible = false end
         if sent and on_view_ready then
-          on_view_ready(true)
+          on_view_ready(not anim or #anim.frame_ids > 1)
           on_view_ready = nil
         end
       end
@@ -1209,6 +1211,11 @@ function M.setup_images(win, content, ns, opts)
   local anim_timer = (vim.uv or vim.loop).new_timer()
   state.anim_timer = anim_timer
 
+  local function playing()
+    if playback then return playback.playing end
+    return image.config().autoplay ~= false
+  end
+
   local function start_anim_timer()
     if state.closed then return end
     -- Check if any animation has multiple frames
@@ -1219,12 +1226,12 @@ function M.setup_images(win, content, ns, opts)
         break
       end
     end
-    if image.config().autoplay == false then
+    if not playback and not playing() then
       for _, anim in pairs(state.anims) do
         anim.current = 1
       end
     end
-    if not has_multi or not visible() or image.config().autoplay == false then
+    if not has_multi or not visible() or not playing() then
       anim_timer:stop()
       return
     end
@@ -1234,7 +1241,7 @@ function M.setup_images(win, content, ns, opts)
       200,
       vim.schedule_wrap(function()
         if state.closed then return end
-        if not visible() or image.config().autoplay == false then
+        if not visible() or not playing() then
           anim_timer:stop()
           return
         end
@@ -1299,6 +1306,29 @@ function M.setup_images(win, content, ns, opts)
     state.redraw_timer = vim.defer_fn(function()
       redraw_images()
     end, 50)
+  end
+
+  -- Keep ownership of submissions separate from confirmation that Kitty read the file.
+  local function on_upload_response(path)
+    return function(id, err, file_revision)
+      local anim = state.anims[path]
+      if state.closed or id ~= (anim and anim.frame_ids[1] or state.image_ids[path]) then return end
+      local changed = selected_png and selected_png ~= image.file_revision(path)
+      state.ready_images[path] = not (err or changed) and { png_revision = file_revision, animation = anim }
+      require("md-render.image_hint").schedule()
+      if on_view_ready then
+        if not state.ready_images[path] then
+          if playback then
+            playback.playing = false
+            pause_anim_timers()
+          end
+          on_view_ready(false)
+          on_view_ready = nil
+        else
+          schedule_redraw()
+        end
+      end
+    end
   end
 
   --- Clear placeholder text from buffer lines for a given placement.
@@ -1376,8 +1406,8 @@ function M.setup_images(win, content, ns, opts)
       return true
     end
 
-    local frame_ids, tmp_dir, frame_w, frame_h = async.await(function(callback)
-      image.transmit_animated_async(path, function(ids, ...)
+    local frame_ids, tmp_dir, frame_w, frame_h, frame_files = async.await(function(callback)
+      image.transmit_animated_async(playback and playback.frame_files or path, function(ids, ...)
         -- A cancelled await discards its result; release late IDs here.
         if not current(revision) then
           if ids then image.delete_images(ids) end
@@ -1385,7 +1415,7 @@ function M.setup_images(win, content, ns, opts)
           return
         end
         callback(ids, ...)
-      end, owner)
+      end, owner, on_upload_response(path))
     end)
     if not frame_ids then return false end
     if not current(revision) then
@@ -1394,6 +1424,7 @@ function M.setup_images(win, content, ns, opts)
     end
     state.anims[path] = {
       frame_ids = frame_ids,
+      frame_files = frame_files,
       current = 1,
       tmp_dir = tmp_dir,
       frame_w = frame_w,
@@ -1419,6 +1450,8 @@ function M.setup_images(win, content, ns, opts)
     -- Save original placeholder row count before recalculation
     local placeholder_rows = placement.rows
 
+    -- A media viewer already has the dimensions of the decoded inline animation.
+    if playback then return setup_animation(path, placement, placeholder_rows, revision, owner) end
     if selected_png and selected_png ~= image.file_revision(path) then return false end
 
     -- Auto-detect video content when not already flagged (e.g. URL without extension)
@@ -1461,20 +1494,7 @@ function M.setup_images(win, content, ns, opts)
           return
         end
         callback(id, ...)
-      end, function(accepted_id, err, file_revision)
-        if state.closed or state.image_ids[path] ~= accepted_id then return end
-        local changed = selected_png and selected_png ~= image.file_revision(path)
-        state.ready_images[path] = not (err or changed) and { png_revision = file_revision }
-        require("md-render.image_hint").schedule()
-        if on_view_ready then
-          if state.ready_images[path] then
-            schedule_redraw()
-          else
-            on_view_ready(false)
-            on_view_ready = nil
-          end
-        end
-      end, selected_png)
+      end, on_upload_response(path), selected_png)
     end)
     if not id then return false end
     if not current(revision) then
@@ -1736,6 +1756,7 @@ function M.update_images(state, win, content, ns, opts)
       end
       if anim.tmp_dir then vim.fn.delete(anim.tmp_dir, "rf") end
       state.anims[path] = nil
+      state.ready_images[path] = nil
     end
   end
   -- Restart or stop shared timer based on remaining animations

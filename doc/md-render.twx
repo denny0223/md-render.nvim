@@ -1213,7 +1213,7 @@ image.setup({opts}) ~
   }
 <
 autoplay=false 會讓兩個後端的文件預覽停在 GIF 或影片的第一個影格。
-在 Snacks 的 GIF 或影片分頁中，按空白鍵即可播放。
+在 GIF 或影片分頁中，按空白鍵即可播放。
 影片仍需要 FFmpeg 準備影格；GIF 可使用 FFmpeg 或
 ImageMagick。mermaid_allow_npx=false 限定使用已安裝的 mmdc，找不到
 時保留 Mermaid 程式碼。每次繪圖都使用獨立工作目錄，不會載入文件所在專案或
@@ -1244,8 +1244,11 @@ Obsidian 附件 ~
 
                                                         *md-render-image-view*
 
-直接使用 Kitty 時，點選已顯示的 PNG，或在圖片、圖說上按 <Enter>，可開啟配合分頁大小的全圖。
-已產生的 Mermaid PNG 也可開啟。點 [Back] 或按 <Enter>、q、<Esc> 可回到原本的閱讀位置。
+直接使用 Kitty 時，點選已顯示的 PNG，或在圖片、圖說上按 <Enter>，可依分頁
+大小觀看。已產生的 Mermaid PNG 也可開啟。在本機 Kitty 中，GIF 動畫或影片
+可用同樣方式開啟。按 <Space> 可暫停或繼續。若設定 autoplay = false，分頁
+會停在第一幀，按 <Space> 才開始播放。點 [Back] 或按 <Enter>、q、<Esc> 可
+回到原本的閱讀位置。
 
 使用 Snacks 後端與 ImageMagick（magick）時，在圖片或其標題上按 <Enter> 可開啟
 獨立圖片分頁。以下按鍵會自動設定：

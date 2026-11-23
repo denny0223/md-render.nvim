@@ -222,6 +222,18 @@ function MarkdownTable.parse(lines, repo_base_url, autolinks, ref_links, raw_htm
     local row = {}
     for col = 1, #alignments do
       local cell_text = cells[col] or ""
+      -- Text fallback and column measurement must see the same caption as the image.
+      if cell_text:find("{", 1, true) then
+        local images, attributes = inline.image_line(cell_text, ref_links)
+        if images and #images == 1 and #attributes > 0 then
+          local pieces, pos = {}, 1
+          for _, range in ipairs(attributes) do
+            pieces[#pieces + 1] = cell_text:sub(pos, range[1] - 1)
+            pos = range[2] + 1
+          end
+          cell_text = table.concat(pieces) .. cell_text:sub(pos)
+        end
+      end
       table.insert(row, process_cell(cell_text, repo_base_url, autolinks, ref_links, raw_html))
     end
     table.insert(rows, row)

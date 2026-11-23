@@ -1361,6 +1361,10 @@ IMAGE							       *md-render-image*
 
 For Snacks setup, requirements, and checks, see |md-render-snacks-image|.
 
+Pandoc attributes can follow an image or its enclosing link on an image-only
+line or in a table body cell containing one image, e.g.
+`![Map](map.png){width=16cm}`. The preview uses its usual image dimensions.
+
                                                             *image.setup()*
 image.setup({opts}) ~
 Configure before opening a preview. These are the defaults: >lua

@@ -206,6 +206,24 @@ assert(
   "source occurrences remain distinct and ordered"
 )
 assert(inline.image_line("before ![caption](image.png)", refs) == nil, "inline prose keeps its text layout")
+local decorated = [=[[![第一][r]{#圖 .wide}](a(b)){data-note="this } is ![text](unused.png)"} ![第二](two.png)]=]
+local pair = assert(inline.image_line(decorated, refs))
+assert(#pair == 2 and pair[1].src == "image.png" and pair[1].href == "a(b)" and pair[2].src == "two.png")
+assert(decorated:sub(pair[1].start, pair[1].finish) == "![第一][r]", "image source range excludes attributes")
+assert(decorated:sub(pair[1].outer_start, pair[1].outer_finish) == "[![第一][r]{#圖 .wide}](a(b))")
+assert(decorated:sub(pair[2].label_start, pair[2].label_end) == "第二", "later labels use original byte offsets")
+for _, literal in ipairs {
+  "![圖](a.png) {width=16cm}",
+  "![圖](a.png){width=16cm} after",
+  "![圖](a.png){not an attribute}",
+  "![圖](a.png){width=}",
+  '![圖](a.png){title="unterminated}',
+  "![圖](a.png){.wide",
+  "[link](a.png){.wide}",
+  "`![圖](a.png){.wide}`",
+} do
+  assert(inline.image_line(literal, refs) == nil, "preserve ordinary text: " .. literal)
+end
 for _, source in ipairs {
   "[caption [child](/inner)](/outer)",
   "[![caption [child](/inner)](two spaces.png)](/outer)",

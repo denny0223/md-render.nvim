@@ -22,7 +22,9 @@ function M.geometry(iw, ih, cols, rows, cell, zoom, cx, cy)
   }
 end
 
-function M.open(path)
+---@param path string
+---@param name? string caption of the selected occurrence
+function M.open(path, name)
   if vim.fn.executable "magick" ~= 1 then
     vim.notify(
       "md-render: image zoom requires ImageMagick 7 (magick) on Neovim's PATH; run :checkhealth md-render",
@@ -30,6 +32,7 @@ function M.open(path)
     )
     return
   end
+  local caption = image.display_name(path, name)
   local origin_win, origin_buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
   local origin_view = vim.fn.winsaveview()
   vim.cmd "tabnew"
@@ -189,6 +192,7 @@ function M.open(path)
       for _ = 1, rows do
         lines[#lines + 1] = string.rep(" ", cols + 2)
       end
+      lines[#lines + 1] = caption
       vim.bo[buf].modifiable = true
       vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
       vim.bo[buf].modifiable = false

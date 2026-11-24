@@ -418,7 +418,22 @@ def run_kitty(kitty, enabled, workdir, mode="float"):
                 "vim.o.laststatus = 2; vim.o.showtabline = 2; vim.o.cmdheight = 1; "
                 "vim.o.ruler = true; vim.o.showcmd = true; vim.wo.number = true; "
                 "vim.wo.statusline = 'PAGER EDITOR STATUS'; vim.wo.winbar = 'PAGER EDITOR BAR'; "
-                "p.show_pager(); vim.cmd('normal! G0wzt'); return true end)()")
+                "p.show_pager(); return true end)()")
+
+            # Read back the two margin cells from Kitty's own grid. The OSC
+            # run alone cannot tell us what background the reserved row got.
+            row = lua("(function() local s = require('md-render.preview')._sessions[vim.api.nvim_get_current_buf()]; "
+                      "local p = s.content.text_placements[1]; vim.wo.cursorline = true; "
+                      "vim.wo.cursorlineopt = 'line'; vim.api.nvim_set_hl(0, 'CursorLine', {bg=0x234567}); "
+                      "vim.api.nvim_win_set_cursor(0, {p.line+1,0}); return vim.fn.screenpos(0,p.line+1,1).row end)()")
+            time.sleep(0.6)
+            rows = screen(ansi=True).splitlines()[row-1:row+1]
+            assert len(rows) == 2, rows
+            for margin in rows:
+                assert re.search(rb"48[:;]2[:;]35[:;]69[:;]103m?", margin.split(b" ", 1)[0]), repr(margin)
+            assert any(text == b"Pager origin" for _, text in OSC66.findall(rows[0])), rows[0]
+            ok("pager heading stays enlarged with CursorLine on both left margins")
+            lua("(function() vim.cmd('normal! G0wzt'); return true end)()")
 
             def state():
                 return lua("(function() "

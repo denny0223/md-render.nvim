@@ -971,6 +971,13 @@ with_support(true, function()
         vim.api.nvim_win_set_cursor(win, { case[1], case[2] })
         text_size.paint(state)
         assert_eq(#state.drawn, case[3], "cursor entry reveals text while heading margins retain scaling")
+        local marks = state.cursorline_ns and vim.api.nvim_buf_get_extmarks(buf, state.cursorline_ns, 0, -1, {}) or {}
+        if enabled and option ~= "number" and case[2] == 0 then
+          assert_eq(#marks, 1, "only the sibling row needs an extra CursorLine")
+          assert_eq(marks[1] and marks[1][2], case[1] == row + 1 and row + 1 or row, "correct CursorLine sibling")
+        else
+          assert_eq(#marks, 0, "ordinary text or number-only cursorline clears the band")
+        end
       end
     end
   end
@@ -1022,6 +1029,39 @@ with_support(true, function()
   text_size.paint(state)
   assert_eq(#state.drawn, 0, "global highlight namespace keeps native text")
   vim.api.nvim_set_hl_ns(0)
+
+  local wrapped = render({ "# " .. string.rep("wrapped heading ", 5) }, { max_width = 38, indent = "  " })
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, wrapped.lines)
+  state = text_size.refresh(state, win, wrapped)
+  local second = wrapped.text_placements[2].line
+  vim.wo[win].cursorline, vim.wo[win].cursorlineopt = true, "line"
+  vim.api.nvim_win_set_cursor(win, { second + 1, 0 })
+  text_size.paint(state)
+  local line_style = vim.api.nvim_get_hl(0, { name = "CursorLine", link = false })
+  vim.api.nvim_set_hl(0, "MdRenderH1", { bg = 0x848484 })
+  for _, high in ipairs { false, true } do
+    vim.api.nvim_set_hl(0, "CursorLine", { bg = 0x303030, fg = high and 0xa0a0a0 or nil })
+    text_size.paint(state)
+    for _, drawn in ipairs(state.drawn) do
+      local expected = high and drawn.p == wrapped.text_placements[2] and "48;2;48;48;48" or "48;2;132;132;132"
+      assert_true(drawn.styles[1]:find(expected, 1, true), "cursorline color respects both heading priority and wrap")
+    end
+  end
+  vim.api.nvim_set_hl(0, "CursorLine", line_style)
+  vim.api.nvim_set_hl(0, "MdRenderH1", style)
+  local nsid = state.cursorline_ns
+  assert_eq(vim.api.nvim_buf_get_extmarks(buf, nsid, 0, -1, {})[1][2], second + 1, "wrapped heading's own row pair")
+  vim.cmd "vsplit"
+  text_size.paint(state)
+  assert_eq(#vim.api.nvim_buf_get_extmarks(buf, nsid, 0, -1, {}), 0, "inactive split releases its extended band")
+  vim.cmd "close"
+  text_size.paint(state)
+  assert_true(vim.deep_equal(vim.api.nvim__ns_get(nsid).wins, { win }), "band applies only to the owner window")
+  vim.cmd "normal! v"
+  text_size.paint(state)
+  assert_eq(#vim.api.nvim_buf_get_extmarks(buf, nsid, 0, -1, {}), 0, "Visual mode from the margin clears the band")
+  vim.cmd("normal! " .. vim.keycode "<Esc>")
+  vim.wo[win].cursorline, vim.wo[win].cursorlineopt = cursorline, cursorlineopt
   vim.fn.setreg("/", pattern)
   vim.v.hlsearch = hlsearch
   text_size.detach(state)

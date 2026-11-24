@@ -522,8 +522,9 @@ local _sgr_cache = {}
 --- background instead of the float's.
 ---@param hl_name string|string[]
 ---@param normal_name string
+---@param cursorline? table
 ---@return string?
-local function sgr_for(hl_name, normal_name)
+local function sgr_for(hl_name, normal_name, cursorline)
   local groups = type(hl_name) == "table" and hl_name or { hl_name }
   local hl = {}
   for _, name in ipairs(groups) do
@@ -531,6 +532,11 @@ local function sgr_for(hl_name, normal_name)
     hl = style.nocombine and style or vim.tbl_extend("force", hl, style)
   end
   hl.nocombine = nil
+  if cursorline then
+    -- :help hl-CursorLine: a foreground raises the group above syntax.
+    local priority = (cursorline.fg or cursorline.ctermfg) and "force" or "keep"
+    hl = vim.tbl_extend(priority, hl, cursorline)
+  end
   if normal_name == "NormalFloat" then
     hl = vim.tbl_extend("force", vim.api.nvim_get_hl(0, { name = normal_name, link = false }), hl)
   end
@@ -619,6 +625,8 @@ end
 ---@field image_headings? false
 ---@field placements MdRender.TextPlacement[]
 ---@field win integer
+---@field cursorline_ns? integer window-scoped highlight for the other row of a scaled heading
+---@field cursorline_row? integer
 ---@field redraw_timer any?
 ---@field keepalive_timer any? re-asserts the runs against repaints we cannot see
 ---@field autocmd_ids integer[]
@@ -754,15 +762,6 @@ local function visible_placements(state)
   end
   local out = {}
   for _, p in ipairs(state.placements) do
-    local sgr = sgr_for(p.hl, p.normal or "Normal")
-    local styles = {}
-    for index, run in ipairs(p.runs) do
-      styles[index] = sgr_for(run.hl or p.hl, p.normal or "Normal")
-      if not styles[index] then
-        sgr = nil
-        break
-      end
-    end
     -- Guard against a layout that moved without us being told. Placements are
     -- anchored to rendered line numbers, and anything that rebuilds the content
     -- (an image finishing its download and changing height, a fold, a live
@@ -800,7 +799,26 @@ local function visible_placements(state)
           bottom = pos.row + p.scale - 1,
           right = pos.col + p.width - 1,
         }, overlays)
-      if sgr and fits_vertically and fits_horizontally and not feedback then
+      if fits_vertically and fits_horizontally and not feedback then
+        local peer, cursorline
+        if
+          cursor
+          and cursor.row >= pos.row
+          and cursor.row < pos.row + p.scale
+          and cursor.col < pos.col
+          and vim.wo[win].cursorline
+          and vim.wo[win].cursorlineopt ~= "number"
+        then
+          cursorline = vim.api.nvim_get_hl(0, { name = "CursorLine", link = false })
+          -- All native heading placements reserve precisely two buffer rows.
+          peer = cursor.row == pos.row and p.line + 1 or p.line
+        end
+        local sgr = sgr_for(p.hl, p.normal or "Normal", cursorline)
+        local styles = {}
+        for index, run in ipairs(p.runs) do
+          styles[index] = sgr_for(run.hl or p.hl, p.normal or "Normal", cursorline)
+          if not styles[index] then sgr = nil end
+        end
         -- The icon sits to the left of the text on the same line, so it is
         -- inside the window whenever the text is — unless the window is
         -- scrolled horizontally, which `screenpos` reports by putting it on
@@ -823,7 +841,12 @@ local function visible_placements(state)
             icon_col = ipos.col
           end
         end
-        table.insert(out, { p = p, row = pos.row, col = pos.col, icon_col = icon_col, sgr = sgr, styles = styles })
+        if sgr then
+          table.insert(
+            out,
+            { p = p, row = pos.row, col = pos.col, icon_col = icon_col, sgr = sgr, styles = styles, peer = peer }
+          )
+        end
       end
     end
   end
@@ -873,6 +896,22 @@ local function position(row, col, ctx)
   return string.format("\x1b[%d;%dH", row + (ctx and ctx.top or 0), col + (ctx and ctx.left or 0))
 end
 
+-- Only the sibling row needs decoration. Neovim already paints the actual
+-- cursor line. Avoid touching the extmark on an unchanged keepalive repaint.
+local function set_cursorline_row(state, row)
+  if row == state.cursorline_row then return end
+  if row then
+    if not state.cursorline_ns then
+      state.cursorline_ns = vim.api.nvim_create_namespace("md_render_text_cursorline_" .. state.win)
+      vim.api.nvim__ns_set(state.cursorline_ns, { wins = { state.win } })
+    end
+    vim.api.nvim_buf_set_extmark(state.buf, state.cursorline_ns, row, 0, { id = 1, line_hl_group = "CursorLine" })
+  elseif vim.api.nvim_buf_is_valid(state.buf) then
+    vim.api.nvim_buf_del_extmark(state.buf, state.cursorline_ns, 1)
+  end
+  state.cursorline_row = row
+end
+
 --- Write the runs for `drawn` where they currently sit.
 ---@param state MdRender.TextSizeState
 ---@param drawn { p: MdRender.TextPlacement, row: integer, col: integer, icon_col: integer? }[]
@@ -881,6 +920,11 @@ local function write_runs(state, drawn)
   local ctx = transport(state)
   if state.closed or not can_draw(ctx) then return end
   state.drawn = drawn
+  local peer
+  for _, d in ipairs(drawn) do
+    peer = peer or d.peer
+  end
+  set_cursorline_row(state, peer)
   if #drawn == 0 then return end
   local out = {}
   for _, d in ipairs(drawn) do
@@ -961,7 +1005,10 @@ end
 function M.paint(state)
   if not state or state.closed or not vim.api.nvim_win_is_valid(state.win) then return end
   local ctx = transport(state)
-  if state.closed or not can_draw(ctx) or not M.supports() then return end
+  if state.closed or not can_draw(ctx) or not M.supports() then
+    set_cursorline_row(state, nil)
+    return
+  end
 
   local drawn = visible_placements(state)
   local erased = state.erased
@@ -1096,8 +1143,11 @@ end
 --- Re-send what we believe is already on screen.
 ---@param state MdRender.TextSizeState
 local function reassert(state)
-  if state.closed or not vim.api.nvim_win_is_valid(state.win) then return end
-  if not can_draw(transport(state)) then return end
+  if state.closed then return end
+  if not vim.api.nvim_win_is_valid(state.win) or not can_draw(transport(state)) then
+    set_cursorline_row(state, nil)
+    return
+  end
   local now = vim.uv.now()
   if state.last_reassert_at and (now - state.last_reassert_at) < REASSERT_GAP_MS then return end
   state.last_reassert_at = now
@@ -1485,6 +1535,7 @@ function M.refresh(state, win, content)
     M.detach(state)
     return nil
   end
+  set_cursorline_row(state, nil)
   state.gesture, state.press, state.dragged = nil, nil, nil
   state.placements = content.text_placements
   state.content, state.buf = content, vim.api.nvim_win_get_buf(win)
@@ -1503,6 +1554,7 @@ end
 function M.detach(state)
   if not state then return end
   if state.image_headings then return require("md-render.heading_image").detach(state) end
+  set_cursorline_row(state, nil)
   state.closed = true
   if state.key_ns then vim.on_key(nil, state.key_ns) end
   state.drawn, state.erased = nil, nil

@@ -40,6 +40,8 @@ local DOC = {
   "    - " .. string.rep("かきくけこ `x = 1` ", 8),
   "",
   string.rep("さしすせそ def ", 10),
+  "",
+  "---", -- Keep last so the mode tests can check both edges of the rule.
 }
 
 --- Headless Nvim keeps the windows at their old width until the layout
@@ -62,14 +64,22 @@ local function setup_md_buffer(doc)
   return buf
 end
 
---- Lines of the window's buffer wider than its text area.
-local function overflowing(win)
-  local width = vim.api.nvim_win_get_width(win) - vim.fn.getwininfo(win)[1].textoff
-  local out = {}
-  for _, line in ipairs(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false)) do
-    if vim.api.nvim_strwidth(line) > width then table.insert(out, line) end
-  end
-  return out
+local function check_document_width(win, cap, indent, mode)
+  local info = vim.fn.getwininfo(win)[1]
+  local available = info.width - info.textoff
+  assert(not cap or available > cap, mode .. " window must be wider than the test cap")
+  local width = cap or available
+  vim.api.nvim_win_call(win, function()
+    local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+    local overflow = {}
+    for _, line in ipairs(lines) do
+      if vim.fn.strdisplaywidth(line) > width then table.insert(overflow, line) end
+    end
+    assert_eq(overflow, {}, mode .. " lines fit within " .. width .. " columns")
+    local cells_per_dash = vim.fn.strdisplaywidth "─"
+    local rule = indent .. string.rep("─", math.floor((width - #indent) / cells_per_dash))
+    assert_eq(lines[#lines], rule, mode .. " rule fills " .. width .. " columns")
+  end)
 end
 
 local function render_win()
@@ -78,12 +88,15 @@ local function render_win()
   end
 end
 
-for _, columns in ipairs { 40, 51, 60, 73 } do
+-- The vertical preview has an odd width and differs from the source pane.
+for _, layout in ipairs { { columns = 62, vertical = true }, { columns = 100, cap = 51 } } do
+  local columns = layout.columns
+  vim.g.md_render_max_width = layout.cap
   test("toggle at " .. columns .. " columns", function()
     set_columns(columns)
     local source = setup_md_buffer()
     preview.toggle()
-    assert_eq(overflowing(vim.api.nvim_get_current_win()), {}, "toggle lines fit at " .. columns .. " columns")
+    check_document_width(vim.api.nvim_get_current_win(), layout.cap, "  ", "toggle")
     preview.toggle()
     pcall(vim.api.nvim_buf_delete, source, { force = true })
   end)
@@ -91,8 +104,13 @@ for _, columns in ipairs { 40, 51, 60, 73 } do
   test("split at " .. columns .. " columns", function()
     set_columns(columns)
     local source = setup_md_buffer()
-    preview.split { mods = { vertical = false } }
-    assert_eq(overflowing(render_win()), {}, "split lines fit at " .. columns .. " columns")
+    local source_win = vim.api.nvim_get_current_win()
+    preview.split { mods = { vertical = layout.vertical } }
+    local win = render_win()
+    if layout.vertical then
+      assert(vim.api.nvim_win_get_width(win) ~= vim.api.nvim_win_get_width(source_win), "split widths must differ")
+    end
+    check_document_width(win, layout.cap, "", "split")
     pcall(vim.api.nvim_buf_delete, source, { force = true })
   end)
 
@@ -100,10 +118,11 @@ for _, columns in ipairs { 40, 51, 60, 73 } do
     set_columns(columns)
     local source = setup_md_buffer()
     preview.show_pager()
-    assert_eq(overflowing(render_win()), {}, "pager lines fit at " .. columns .. " columns")
+    check_document_width(render_win(), layout.cap, "  ", "pager")
     pcall(vim.api.nvim_buf_delete, source, { force = true })
   end)
 end
+vim.g.md_render_max_width = nil
 
 -- A code line as wide as the window less the indent fits as it is.
 test("code block uses the full width", function()

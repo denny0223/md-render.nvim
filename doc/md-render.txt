@@ -1400,6 +1400,15 @@ HTTP(S) URLs and redirects, treats URLs literally, and ignores .curlrc.
 Proxy and CA environment settings still apply. Use |image.set_download_fn()|
 for custom authentication.
 
+When other media finish loading, the preview reuses the error for a failed
+download. If another preview is fetching the same URL, it can share the
+result. A <video> using a failed image's URL can still make its own request
+with the video size limit.
+
+To retry, edit the Markdown source of a live preview or reopen the preview.
+In a picker, preview another file and then return. If the file has changed
+on disk, selecting another hit in it makes Snacks reload it.
+
 With Snacks, automatic layout uses the available window width, capped by
 |g:md_render_max_width| when set; an explicit max_width takes precedence.
 Images fit within the window height minus six rows, keep their aspect ratio,

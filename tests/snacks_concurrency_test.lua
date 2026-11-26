@@ -184,12 +184,14 @@ local ok, err = pcall(function()
   local old_buf = vim.api.nvim_get_current_buf()
   local other = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_win_set_buf(late.win, other)
+  Snacks.image.terminal.detect = detect
+  local next_owner = setup { image_placements = {} }
   local before_detect = ui_writes
   pending_detect()
   assert(late.closed and ui_writes == before_detect, "late detection placed an image after window ownership changed")
-  Snacks.image.terminal.detect = detect
   vim.api.nvim_win_set_buf(late.win, old_buf)
   vim.api.nvim_buf_delete(other, { force = true })
+  assert(next_owner.closed, "late detection removed the next owner's cleanup event")
 
   require("md-render.image").setup { backend = "snacks" }
   local ns = vim.api.nvim_create_namespace "snacks_reopened"

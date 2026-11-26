@@ -177,6 +177,8 @@ With `autoplay = false`, both backends show the first frame; image tabs start pa
 
 Remote images and videos load automatically in document previews and configured Telescope/Snacks picker previews. Changing a picker selection can start requests without `:MdRender toggle`. The built-in downloader supports HTTP(S) and HTTP(S) redirects, treats URLs literally, and ignores `.curlrc`; proxy and CA environment settings still apply. Use `set_download_fn()` for custom authentication.
 
+As nearby media load, the preview reuses a failed download's error to avoid repeated requests. To retry, edit the Markdown source of a live preview or reopen the preview. In a picker, preview another file and then return. A `<video>` that shares a URL with a failed image can still make its own request with the video size limit.
+
 ### Optional Snacks image backend
 
 This setup enables static images, diagrams, viewport fitting, and focused image tabs. It requires:

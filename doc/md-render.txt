@@ -1644,10 +1644,16 @@ ALERTS / CALLOUTS ~
 For each alert type ({Type} = Note, Tip, Important, Warning, Caution,
 Abstract, Todo, Success, Question, Failure, Danger, Bug, Example, Quote):
 
-  *MdRenderAlert{Type}*   Alert header text color (bold, derived from
-                        corresponding diagnostic highlight)
+  *MdRenderAlert{Type}*   Alert header text color (bold)
   *MdRenderAlert{Type}Bg* Alert background color (blended from alert
                         fg and NormalFloat bg)
+
+TIP uses the `DiagnosticOk` RGB foreground, falling back to `DiagnosticHint`.
+IMPORTANT and EXAMPLE each use the light or dark purple with better contrast
+on the default tint or the Bg group's explicit RGB background. If both purples
+fall below 4.5:1, the previous color (`Special`'s RGB foreground, or white if
+unset) is kept when its contrast is higher. For these three types, a header
+RGB color set by your colorscheme also tints the default background.
 
 DETAILS ~
 

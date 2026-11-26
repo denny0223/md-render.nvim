@@ -1450,8 +1450,14 @@ b:md_render ~
 各提示類型的 {Type} 可為 Note、Tip、Important、Warning、Caution、Abstract、
 Todo、Success、Question、Failure、Danger、Bug、Example、Quote：
 
-  *MdRenderAlert{Type}*   提示標題文字顏色，使用粗體，顏色取自對應的診斷群組。
+  *MdRenderAlert{Type}*   提示標題的前景色，使用粗體。
   *MdRenderAlert{Type}Bg* 提示背景色，由提示前景色與 NormalFloat 背景色混合。
+
+TIP 使用 `DiagnosticOk` 的 RGB 前景色，未指定時沿用 `DiagnosticHint`。
+IMPORTANT 和 EXAMPLE 各自依預設底色或 Bg 群組指定的 RGB 底色，選用對比
+較高的淺紫或深紫。若兩者都低於 4.5:1，且原色的對比更高，就保留原色。
+原色取自 `Special` 的 RGB 前景色，未指定時為白色。若配色主題為這三類提示
+指定標題的 RGB 前景色，預設背景也會混入該色。
 
 DETAILS 區塊 ~
 

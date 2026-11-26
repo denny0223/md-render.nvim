@@ -1617,10 +1617,16 @@ b:md_render ~
 各アラートタイプ（{Type} = Note, Tip, Important, Warning, Caution, Abstract,
 Todo, Success, Question, Failure, Danger, Bug, Example, Quote）について:
 
-  *MdRenderAlert{Type}*   アラートヘッダのテキスト色（太字、対応する diagnostic
-                        ハイライトから派生）
+  *MdRenderAlert{Type}*   アラートヘッダの文字色（太字）
   *MdRenderAlert{Type}Bg* アラートの背景色（アラート fg と NormalFloat bg
                         からブレンド）
+
+TIP の RGB 文字色は `DiagnosticOk`、未指定なら `DiagnosticHint` に従う。
+IMPORTANT と EXAMPLE には、既定の背景色または Bg グループで指定した RGB
+背景色に対し、明るい紫と暗い紫のうちコントラスト比が高い方を使う。両方とも
+4.5:1 未満で、従来の色の方がコントラスト比が高ければ、その色を使う。
+従来の色は `Special` の RGB 文字色で、未指定なら白。この 3 種類では、
+カラースキームで指定したヘッダの RGB 文字色が、既定の背景にも混ざる。
 
 Details ~
 

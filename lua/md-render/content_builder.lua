@@ -583,6 +583,70 @@ function ContentBuilder:add_simple_markdown(rendered_text, md_highlights, md_lin
   end
 end
 
+local markdown_table = require "md-render.markdown_table"
+
+---@param self MdRender.ContentBuilder
+---@param parsed MdRender.MarkdownTable.ParsedTable
+---@param layout? { quote_col?: integer, alert_hl?: string, max_rows: integer } Quote-prefix byte offset, optional alert highlight and remaining rows.
+local function add_parsed_table(self, parsed, indent, max_width, buf_dir, per_row_source, layout)
+  if layout and layout.max_rows <= 0 then return end
+  local lines, per_line_hls, per_line_links, tbl_image_placements, src_offsets, dynamic_media =
+    markdown_table.render(parsed, indent, max_width, buf_dir)
+  record_media_support(self, dynamic_media)
+  local base_line = #self.lines
+  -- Each pipe-table offset is relative to the header's physical source row.
+  -- Text wraps and image placeholders can share the same offset.
+  local saved_src_line = self._current_source_line
+  local count = math.min(#lines, layout and layout.max_rows or #lines)
+  for i = 1, count do
+    if per_row_source and src_offsets and src_offsets[i] then
+      self._current_source_line = saved_src_line + src_offsets[i]
+    end
+    local groups = per_line_hls[i]
+    if layout and layout.quote_col then
+      table.insert(groups, 1, { col = layout.quote_col, end_col = #indent, hl = layout.alert_hl or "FloatBorder" })
+      if layout.alert_hl then
+        table.insert(groups, { col = 0, end_col = -1, hl = layout.alert_hl .. "Bg", hl_eol = true })
+      end
+    end
+    self:add_line(lines[i], #groups > 0 and groups or nil)
+    self.table_lines[#self.lines - 1] = true
+    for _, link in ipairs(per_line_links[i] or {}) do
+      add_rendered_link(self, {
+        line = base_line + i - 1,
+        col_start = link.col_start,
+        col_end = link.col_end,
+        url = link.url,
+        footnote_label = link.footnote_label,
+      })
+    end
+  end
+  self._current_source_line = saved_src_line
+
+  -- Register image placements from table cells (inline within table borders)
+  if tbl_image_placements then
+    for _, p in ipairs(tbl_image_placements) do
+      if p.line_offset + p.rows <= count then
+        table.insert(self.image_placements, {
+          path = p.resolved,
+          display_name = p.display_name,
+          line = base_line + p.line_offset,
+          col = p.col,
+          rows = p.rows,
+          cols = p.cols,
+          cell_col = p.cell_col,
+          cell_cols = p.cell_cols,
+          label_rows = p.label_rows,
+          src_url = p.src_url,
+          img_w = p.img_w,
+          img_h = p.img_h,
+          video = p.video,
+        })
+      end
+    end
+  end
+end
+
 --- Add a table block with highlights and links
 ---@param self MdRender.ContentBuilder
 ---@param table_lines string[]
@@ -611,7 +675,6 @@ function ContentBuilder:add_table(
   raw_html,
   footnote_map
 )
-  local markdown_table = require "md-render.markdown_table"
   local parsed = markdown_table.parse(table_lines, repo_base_url, autolinks, ref_links, raw_html, footnote_map)
   if not parsed then
     -- Fallback: render each line as markdown
@@ -630,52 +693,7 @@ function ContentBuilder:add_table(
     end
     return
   end
-  local lines, per_line_hls, per_line_links, tbl_image_placements, src_offsets, dynamic_media =
-    markdown_table.render(parsed, indent, max_width, buf_dir)
-  record_media_support(self, dynamic_media)
-  local base_line = #self.lines
-  -- For pipe tables, table_lines[i] corresponds to source line
-  -- (caller's _current_source_line + i - 1). Use the offset returned by
-  -- render to stamp each emitted line at the right source row.
-  local saved_src_line = self._current_source_line
-  for i, line in ipairs(lines) do
-    if per_row_source and src_offsets and src_offsets[i] then
-      self._current_source_line = saved_src_line + src_offsets[i]
-    end
-    self:add_line(line, #per_line_hls[i] > 0 and per_line_hls[i] or nil)
-    self.table_lines[#self.lines - 1] = true
-    for _, link in ipairs(per_line_links[i] or {}) do
-      add_rendered_link(self, {
-        line = base_line + i - 1,
-        col_start = link.col_start,
-        col_end = link.col_end,
-        url = link.url,
-        footnote_label = link.footnote_label,
-      })
-    end
-  end
-  self._current_source_line = saved_src_line
-
-  -- Register image placements from table cells (inline within table borders)
-  if tbl_image_placements then
-    for _, p in ipairs(tbl_image_placements) do
-      table.insert(self.image_placements, {
-        path = p.resolved,
-        display_name = p.display_name,
-        line = base_line + p.line_offset,
-        col = p.col,
-        rows = p.rows,
-        cols = p.cols,
-        cell_col = p.cell_col,
-        cell_cols = p.cell_cols,
-        label_rows = p.label_rows,
-        src_url = p.src_url,
-        img_w = p.img_w,
-        img_h = p.img_h,
-        video = p.video,
-      })
-    end
-  end
+  add_parsed_table(self, parsed, indent, max_width, buf_dir, per_row_source)
 end
 
 --- Emit an image/video header line (icon + display name) with wrapping.
@@ -1202,6 +1220,10 @@ function ContentBuilder:add_markdown_line(
   return alert_type, fold_mod
 end
 
+local function alert_highlight(alert_type)
+  return "MdRenderAlert" .. alert_type:sub(1, 1) .. alert_type:sub(2):lower()
+end
+
 --- Apply alert styling to lines added between lines_before and current line count
 ---@param self MdRender.ContentBuilder
 ---@param lines_before integer Line count before adding the alert line(s)
@@ -1209,7 +1231,7 @@ end
 ---@param alert_type string Alert type key (e.g. "NOTE", "WARNING")
 ---@param is_header boolean Whether this is the alert header line (with icon+label)
 function ContentBuilder:apply_alert_styling(lines_before, lines_after, alert_type, is_header)
-  local alert_hl = "MdRenderAlert" .. alert_type:sub(1, 1) .. alert_type:sub(2):lower()
+  local alert_hl = alert_highlight(alert_type)
   local alert_bg_hl = alert_hl .. "Bg"
 
   for _, hl_info in ipairs(self.highlights) do
@@ -1638,8 +1660,6 @@ local is_block_start = Markdown.is_block_start
 local function is_list_item(line, in_paragraph)
   return Markdown.list_marker_type(line, in_paragraph) ~= nil and not is_thematic_break(line)
 end
-
-local markdown_table = require "md-render.markdown_table"
 
 --- Remove up to `n` leading spaces from a line (CommonMark dedents fenced
 --- code content by the opening fence's indent, no further).
@@ -3235,12 +3255,7 @@ function ContentBuilder:render_document(lines, opts)
   local prev_rendered_blank = false
   local prev_list_marker_type = nil
   local lines_shown = 0
-  local table_buf = {}
-  local table_buf_start_idx = nil
-  -- Display indent of the container the table sits in, taken from its first
-  -- line: the rows are accumulated and rendered together, so the indent of
-  -- whichever line happens to flush the buffer is not the table's own.
-  local table_buf_indent = ""
+  local after_root_table = false
   local truncated = false
   local current_alert_type = nil
   local alert_container, alert_depth
@@ -3319,37 +3334,6 @@ function ContentBuilder:render_document(lines, opts)
     callout_code_source_lines, callout_code_block_id = nil, nil
   end
 
-  --- Flush accumulated table lines
-  local function flush_table()
-    if #table_buf > 0 then
-      local lines_before_tbl = #self.lines
-      -- The trigger line (e.g. the blank after the table) has already
-      -- advanced _current_source_line. Stamp the table's first source
-      -- line so add_table's emissions land in source_line_map under the
-      -- table itself, then restore for the caller.
-      local saved_src_line = self._current_source_line
-      if table_buf_start_idx then self._current_source_line = table_buf_start_idx + source_line_offset end
-      self:add_table(
-        table_buf,
-        base_indent .. table_buf_indent,
-        base_table_max_width,
-        repo_base_url,
-        autolinks,
-        buf_dir,
-        true,
-        ref_links,
-        nil,
-        footnote_map
-      )
-      self._current_source_line = saved_src_line
-      local lines_added = #self.lines - lines_before_tbl
-      lines_shown = lines_shown + lines_added
-      table_buf = {}
-      table_buf_start_idx = nil
-      table_buf_indent = ""
-    end
-  end
-
   --- Render a <details> summary header with fold indicator
   local function render_details_summary(summary_text, raw_html)
     local is_collapsed
@@ -3421,6 +3405,7 @@ function ContentBuilder:render_document(lines, opts)
     local prefix = "│ "
     local prefix_len = #prefix
     local indent_len = #base_indent
+    local styled = {}
 
     for i = from_line + 1, to_line do
       local line_text = self.lines[i]
@@ -3431,6 +3416,7 @@ function ContentBuilder:render_document(lines, opts)
 
     for _, hl_info in ipairs(self.highlights) do
       if hl_info.line >= from_line and hl_info.line < to_line then
+        styled[hl_info.line] = true
         for _, group in ipairs(hl_info.groups) do
           group.col = group.col + prefix_len
           if group.end_col >= 0 then group.end_col = group.end_col + prefix_len end
@@ -3445,14 +3431,7 @@ function ContentBuilder:render_document(lines, opts)
     end
 
     for line_idx = from_line, to_line - 1 do
-      local has_hl = false
-      for _, hl_info in ipairs(self.highlights) do
-        if hl_info.line == line_idx then
-          has_hl = true
-          break
-        end
-      end
-      if not has_hl then
+      if not styled[line_idx] then
         table.insert(self.highlights, {
           line = line_idx,
           groups = {
@@ -3835,6 +3814,10 @@ function ContentBuilder:render_document(lines, opts)
     -- is the original buffer line, which is what consumers (cursor sync,
     -- shadow cursor, link/anchor extraction) actually expect.
     self:set_source_line(src_indices[src_idx] + source_line_offset)
+    local origin = source_origins[src_indices[src_idx]]
+    -- The header emits the complete table while its fold and styling still
+    -- own it. Its physical delimiter and cells have no other block effects.
+    if table_rows[src_indices[src_idx]] and not origin.pipe_table then goto continue end
 
     -- Content of a blockquote or a list item was moved to column 0 by
     -- strip_container_indent(); its indent comes back as display indent for
@@ -3845,7 +3828,6 @@ function ContentBuilder:render_document(lines, opts)
     local container_indent = container_indents[src_indices[src_idx]] or ""
     local indent = base_indent .. container_indent
     local max_width = math.max(1, base_max_width - #container_indent)
-    local origin = source_origins[src_indices[src_idx]]
     if origin.html ~= details_raw_owner then
       -- A blank row ends a type-6 HTML block, but an enclosing details fold
       -- still owns its raw-text payload until the actual raw closing tag.
@@ -3924,8 +3906,15 @@ function ContentBuilder:render_document(lines, opts)
       current_alert_type = nil
       alert_depth = nil
     end
+    -- An implicit details summary precedes even a list marker sharing the
+    -- table header's source row. A collapsed summary conceals both of them.
+    if origin.pipe_table and in_details and not details_summary_rendered and not skip_callout_body then
+      self:set_source_line(details_src_idx + source_line_offset)
+      render_details_summary "Details"
+      self:set_source_line(src_indices[src_idx] + source_line_offset)
+    end
     if origin.list_prefixes and not skip_callout_body and not skip_details_body then
-      flush_table()
+      after_root_table = false
       for _, prefix in ipairs(origin.list_prefixes) do
         if lines_shown >= max_lines then break end
         local text, prefix_indent = prefix.text, base_indent
@@ -3940,6 +3929,10 @@ function ContentBuilder:render_document(lines, opts)
           list_marker = true,
           quote_prefix = quote_display_prefix(prefix, 0),
         })
+        if current_alert_type and #prefix.quote_columns > 0 then
+          self:apply_alert_styling(before, #self.lines, current_alert_type, false)
+        end
+        if in_details and details_summary_rendered then apply_details_body_prefix(before, #self.lines) end
         lines_shown = lines_shown + #self.lines - before
       end
       if lines_shown >= max_lines then
@@ -3951,26 +3944,18 @@ function ContentBuilder:render_document(lines, opts)
     -- A consumed definition may also mark the end of the previous code owner.
     if definition_rows[src_indices[src_idx]] then goto continue end
 
-    -- An established table owns its delimiter and ordinary body rows before
-    -- HTML, images or Setext detection can reinterpret inline cell content.
-    if #table_buf > 0 then
-      if
-        src_indices[src_idx] == table_buf_start_idx + #table_buf
-        and container_indent == table_buf_indent
-        and (#table_buf == 1 or markdown_table.is_body_row(line))
-      then
-        table.insert(table_buf, line)
-        goto continue
-      end
-      flush_table()
+    -- Ordinary tables separate adjacent blocks; quotes retain their explicit
+    -- blank rows, and no synthetic spacer is needed at the end of a document.
+    if after_root_table then
+      self:add_line(indent)
+      lines_shown = lines_shown + 1
+      prev_rendered_blank = true
+      after_root_table = false
       if lines_shown >= max_lines then
         self:add_line(indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
         truncated = true
         break
       end
-      self:add_line(indent)
-      lines_shown = lines_shown + 1
-      prev_rendered_blank = true
     end
 
     -- Skip setext heading underline
@@ -3980,6 +3965,60 @@ function ContentBuilder:render_document(lines, opts)
     end
 
     if skip_callout_body then goto continue end
+
+    if origin.pipe_table then
+      if skip_details_body then goto continue end
+      local root_spacing = quote_depth == 0 and not in_details
+      if root_spacing and lines_shown > 0 then
+        -- A thematic break has its own following margin, independent of the
+        -- table's leading margin. Keep existing root block spacing.
+        if prev_was_hr and lines_shown < max_lines then
+          self:add_line(indent)
+          lines_shown = lines_shown + 1
+        end
+        if not origin.list_prefixes and not prev_rendered_blank and lines_shown < max_lines then
+          self:add_line(indent)
+          lines_shown = lines_shown + 1
+        end
+      end
+      local before = #self.lines
+      local prefix = quote_display_prefix(origin) or string.rep("│ ", quote_depth)
+      local parsed = markdown_table.parse(
+        origin.pipe_table,
+        repo_base_url,
+        autolinks,
+        ref_links,
+        nil,
+        footnote_map,
+        origin.pipe_table_header
+      )
+      -- The table renderer measures the full prefix itself. Only the details
+      -- bar is deferred; reserve its display width before placing cells.
+      add_parsed_table(
+        self,
+        parsed,
+        indent .. prefix,
+        math.max(1, base_table_max_width - (self._details_prefix_width or 0)),
+        buf_dir,
+        true,
+        {
+          quote_col = quote_depth > 0 and #indent or nil,
+          alert_hl = current_alert_type and alert_highlight(current_alert_type),
+          max_rows = math.max(0, max_lines - lines_shown),
+        }
+      )
+      if in_details then apply_details_body_prefix(before, #self.lines) end
+      lines_shown = lines_shown + #self.lines - before
+      after_root_table = root_spacing
+      prev_was_heading, prev_was_hr, prev_rendered_blank, prev_list_marker_type = false, false, false, nil
+      if lines_shown >= max_lines then
+        self:set_source_line(self.source_line_map[#self.lines] or self._current_source_line)
+        self:add_line(indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
+        truncated = true
+        break
+      end
+      goto continue
+    end
 
     if in_math_block and not Markdown.is_math_fence(line) then
       self:add_line(indent .. line, { { col = 0, end_col = -1, hl = "MdRenderMath" } })
@@ -3993,7 +4032,6 @@ function ContentBuilder:render_document(lines, opts)
     if comment and not literal_html and not in_code_block and not in_callout_code_block then
       local comment_suffix = comment.suffix
       if not skip_details_body and comment_suffix:match "%S" then
-        flush_table()
         if lines_shown >= max_lines then
           self:add_line(indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
           truncated = true
@@ -4250,7 +4288,6 @@ function ContentBuilder:render_document(lines, opts)
         end
       end
       if close_first then
-        flush_table()
         local inner = details_tail:sub(1, close_first - 1)
         local tail_first = #line - #details_tail + 1
         local inner_literals = html_literal_slice(literal_ranges, tail_first, tail_first + #inner - 1)
@@ -4445,11 +4482,10 @@ function ContentBuilder:render_document(lines, opts)
           goto continue
         end
 
-        -- No <summary> found and this is content - render default header
-        if not is_blank then
-          render_details_summary "Details"
-          -- Fall through to render this line as body content
-        end
+        -- Whitespace before the summary belongs to the wrapper. Wait for
+        -- visible content so it follows the summary in both fold states.
+        if is_blank then goto continue end
+        render_details_summary "Details"
       end
     end
 
@@ -4525,7 +4561,6 @@ function ContentBuilder:render_document(lines, opts)
         end
         -- Parse <dt> and <dd> elements from the line
         -- A line may contain <dt>term</dt><dd>description patterns
-        flush_table()
         local rest, rest_literals = line, literal_ranges
         local function advance_rest(next_rest)
           rest_literals = html_literal_slice(rest_literals, #rest - #next_rest + 1)
@@ -4636,7 +4671,6 @@ function ContentBuilder:render_document(lines, opts)
       end
 
       if html_opening(line, "dl") then
-        flush_table()
         -- Ensure blank line before <dl> block
         if lines_shown > 0 and not prev_rendered_blank then
           self:add_line(indent)
@@ -4668,13 +4702,12 @@ function ContentBuilder:render_document(lines, opts)
           -- Convert HTML table to pipe-table lines and render
           local pipe_lines = html_table_to_pipe(html_table_lines)
           if #pipe_lines >= 2 then
-            flush_table()
             if lines_shown > 0 and not prev_rendered_blank then
               self:add_line(indent)
               lines_shown = lines_shown + 1
             end
             local tbl_lines_before = #self.lines
-            -- Same source-line stamping rationale as flush_table above.
+            -- Converted HTML rows all belong to the original table opener.
             local saved_src_line = self._current_source_line
             if html_table_src_idx then self._current_source_line = html_table_src_idx + source_line_offset end
             self:add_table(
@@ -4705,7 +4738,6 @@ function ContentBuilder:render_document(lines, opts)
       end
 
       if display_html and html_opening(line, "table") then
-        flush_table()
         in_html_table = true
         html_table_depth = origin.html_table_delta or table_depth_change(line)
         html_table_lines = { line }
@@ -4751,7 +4783,6 @@ function ContentBuilder:render_document(lines, opts)
     -- Handle <hr> as horizontal rule
     local hr_tag, hr_rest = html_opening(line, "hr")
     if display_html and hr_tag and hr_rest:match "^%s*$" then
-      flush_table()
       if lines_shown > 0 and not prev_was_hr then
         self:add_line(indent)
         lines_shown = lines_shown + 1
@@ -4800,7 +4831,6 @@ function ContentBuilder:render_document(lines, opts)
       goto continue
     end
     if not in_code_block and is_thematic_break(line) then
-      flush_table()
       if lines_shown > 0 and not prev_was_hr then
         self:add_line(indent)
         lines_shown = lines_shown + 1
@@ -4820,24 +4850,6 @@ function ContentBuilder:render_document(lines, opts)
       lines_shown = lines_shown + 1
     end
     if prev_was_hr and not is_blank then prev_was_hr = false end
-
-    -- Start collecting only after a matching header and delimiter are known.
-    if
-      not in_code_block
-      and not in_callout_code_block
-      and not in_math_block
-      and markdown_table.parse_header(line, lines[src_idx + 1])
-      and src_indices[src_idx + 1] == src_indices[src_idx] + 1
-    then
-      table_buf_start_idx = src_indices[src_idx]
-      table_buf_indent = container_indent
-      if lines_shown > 0 and not prev_rendered_blank then
-        self:add_line(indent)
-        lines_shown = lines_shown + 1
-      end
-      table.insert(table_buf, line)
-      goto continue
-    end
 
     -- Collapse consecutive rendered blank lines (outside regular code blocks)
     if not in_code_block and not in_callout_code_block and is_blank and prev_rendered_blank then goto continue end
@@ -4920,7 +4932,7 @@ function ContentBuilder:render_document(lines, opts)
           {
             col = #indent + #"│ ",
             end_col = #header_text,
-            hl = "MdRenderAlert" .. (qiita_note_type:sub(1, 1) .. qiita_note_type:sub(2):lower()),
+            hl = alert_highlight(qiita_note_type),
           },
         })
         self:apply_alert_styling(lines_before, #self.lines, qiita_note_type, true)
@@ -5558,12 +5570,8 @@ function ContentBuilder:render_document(lines, opts)
   if in_figure and not truncated then render_figure_caption(figure_indent, figure_width) end
   if in_code_block then finish_code_block(base_indent .. code_container_indent) end
 
-  -- Flush any remaining table lines at end of document
-  if not truncated then
-    flush_table()
-    if lines_shown >= max_lines then
-      self:add_line(base_indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
-    end
+  if not truncated and lines_shown >= max_lines then
+    self:add_line(base_indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
   end
 
   finish_details_fold(#source_origins)

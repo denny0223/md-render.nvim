@@ -111,8 +111,9 @@ md-render.nvim は Neovim 用の Markdown レンダリングエンジンです�
 シェルで使えるツールが見つからない場合は :echo exepath('mmdc')
 （名前を置換）と :echo $PATH を確認します。更新後は Neovim を再起動して
 プレビューを開き直してください。検出結果はキャッシュされます。
-画像領域に Failed または ! が表示された場合は、:messages で
-原因を確認してください。
+Web 画像や動画の位置に HTTP 404 などのダウンロードエラーが
+表示されることがあります。Failed や ! だけが表示される場合は、
+:messages で詳細を確認できます。
 
                                                         *md-render-icons*
 アイコンフォントと代替表示

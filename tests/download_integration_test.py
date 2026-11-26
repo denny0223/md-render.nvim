@@ -26,6 +26,9 @@ def main():
                 self.send_header("Location", "ftp://127.0.0.1:1/forbidden")
                 self.end_headers()
                 return
+            if self.path == "/missing.png":
+                self.send_error(404)
+                return
             self.send_response(200)
             data = {
                 "/broken.png": b"not an image",
@@ -66,15 +69,17 @@ if config.phase ~= "populate" then
   assert((image.get_cached(config.base .. "/ordinary.png") ~= nil) == (config.phase == "reuse"), "unexpected download cache state")
 end
 local names = config.phase == "populate"
-  and { "/ordinary.png", "/brace{a,b}.png", "/bracket[1-3].png", "/redirect", "/broken.png", "/partial.png", "/truncated.jpg" }
+  and { "/ordinary.png", "/brace{a,b}.png", "/bracket[1-3].png", "/redirect", "/broken.png", "/partial.png", "/truncated.jpg", "/missing.png" }
   or { "/ordinary.png" }
 for _, name in ipairs(names) do
-  local done, output = false, nil
-  image.download_async(config.base .. name, function(path) done, output = true, path end)
+  local done, output, reason
+  image.download_async(config.base .. name, function(path, err) done, output, reason = true, path, err end)
   assert(vim.wait(20000, function() return done end), "download timed out: " .. name)
   local success = name == "/ordinary.png" or name == "/brace{a,b}.png" or name == "/bracket[1-3].png"
   assert((output ~= nil) == success, "unexpected result: " .. name)
-  if success then assert(image.image_dimensions(output) == 4) end
+  if success then assert(image.image_dimensions(output) == 4 and reason == nil) end
+  if name == "/missing.png" then assert(reason == "HTTP 404", tostring(reason)) end
+  if name == "/broken.png" then assert(reason == "unsupported media", tostring(reason)) end
   if name == "/redirect" then assert(codes[#codes] == 1, "redirect was not rejected as a forbidden protocol") end
   if name == "/truncated.jpg" then
     assert(codes[#codes] == 0, "JPEG rejection must follow a complete HTTP transfer")
@@ -119,23 +124,24 @@ vim.fn.writefile({ vim.json.encode {
                 return json.loads((temp / "result.json").read_text())
 
             populated = run("populate")
-            assert requests[:7] == [
-                "/ordinary.png", "/brace{a,b}.png", "/bracket[1-3].png", "/redirect", "/broken.png", "/partial.png", "/truncated.jpg",
+            assert requests[:-1] == [
+                "/ordinary.png", "/brace{a,b}.png", "/bracket[1-3].png", "/redirect", "/broken.png", "/partial.png", "/truncated.jpg", "/missing.png",
             ], requests
-            assert len(requests) == 8 and requests[7].startswith("/plantuml/png/~h"), requests
+            assert requests[-1].startswith("/plantuml/png/~h"), requests
+            populated_requests = requests.copy()
             cache_dir = Path(populated["cache_dir"])
             assert cache_dir.name == "md-render" and cache_dir.is_relative_to(temp / "xdg-cache"), cache_dir
             assert len(list((cache_dir / "images").iterdir())) == 3, "failed download left cache/staging output"
             assert len(list((cache_dir / "plantuml").iterdir())) == 1, "diagram staging output leaked"
             assert run("reuse") == populated, "fresh process did not reuse the same cache files"
-            assert len(requests) == 8, "cache reuse made new HTTP requests"
+            assert requests == populated_requests, "cache reuse made new HTTP requests"
 
             # Every Neovim worker and its awaited producers have exited before removal.
             shutil.rmtree(cache_dir)
             assert not cache_dir.exists()
             assert all(path.read_bytes() == data for path, data in originals.items()), "purge changed source/local media"
             assert run("rebuild") == populated, "fresh process did not rebuild the same cache entries"
-            assert requests[8:] == ["/ordinary.png", requests[7]], requests
+            assert requests[len(populated_requests):] == ["/ordinary.png", populated_requests[-1]], requests
             print(f"Media cache lifecycle: {cache_dir}; reuse without HTTP, purge after exit, and rebuild passed")
     finally:
         server.shutdown()

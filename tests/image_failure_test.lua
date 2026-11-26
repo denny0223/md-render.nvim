@@ -40,6 +40,57 @@ local function covers_progress(mark, content, row, progress)
   )
 end
 
+-- Each download reports to its own placement even when two finish out of order.
+do
+  local real_system, saved_snacks = vim.system, _G.Snacks
+  local forbidden, missing = "https://example.invalid/forbidden.png", "https://example.invalid/missing.mp4"
+  _G.Snacks = {
+    image = {
+      terminal = {
+        detect = function(ready)
+          ready()
+        end,
+        env = function()
+          return { placeholders = true }
+        end,
+      },
+    },
+  }
+  for _, backend in ipairs { "kitty", "snacks" } do
+    image.setup { backend = backend }
+    image._set_kitty_supported(true)
+    local pending = {}
+    vim.system = function(cmd, _, callback)
+      assert(cmd[1] == "curl")
+      pending[cmd[#cmd]] = callback
+      return { pid = 0 }
+    end
+    local content = build({ "![first](" .. forbidden .. ")", "", "![second](" .. missing .. ")" }, { max_width = 20 })
+    local tick = vim.api.nvim_buf_get_changedtick(buf)
+    local state = display.setup_images(win, content, ns)
+    wait_for(function()
+      return pending[forbidden] and pending[missing]
+    end, backend .. " did not request both URLs")
+    pending[missing] { code = 22, stdout = "404", stderr = "" }
+    pending[forbidden] { code = 22, stdout = "403", stderr = "" }
+    local function label(placement)
+      local row = placement.line + math.floor(placement.rows / 2)
+      for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, { row, 0 }, { row, -1 }, { details = true })) do
+        local text = mark[4].virt_text
+        if text and text[1][2] == "ErrorMsg" then return vim.trim(text[1][1]) end
+      end
+    end
+    wait_for(function()
+      return label(content.image_placements[1]) == "HTTP 403" and label(content.image_placements[2]) == "HTTP 404"
+    end, backend .. " lost or swapped the two inline HTTP errors")
+    assert(vim.api.nvim_buf_get_changedtick(buf) == tick, "reporting a download error rebuilt the buffer")
+    display.cleanup_images(state)
+  end
+  vim.system, _G.Snacks = real_system, saved_snacks
+  image.setup { backend = "kitty" }
+  image._set_kitty_supported(true)
+end
+
 -- The documented setup_images API permits callers without an auto-rebuild callback.
 image.download_async = function(_, callback)
   callback(png)
@@ -120,18 +171,28 @@ vim.api.nvim_buf_delete(caller, { force = true })
 vim.bo[buf].tabstop = saved_tabstop
 
 -- Table placements use display columns; UTF-8 indentation and borders use more bytes.
-content = build({ "| 中文 | 圖片 |", "| --- | --- |", "| 相鄰內容 | ![圖](tests/fixtures/test_4x4.png) |" }, {
-  max_width = 80,
-  indent = "　",
-  buf_dir = vim.fn.getcwd(),
-})
-p = assert(content.image_placements[1], "fixture has no table image")
-assert(p.cell_cols)
-display.show_image_error(buf, ns, p)
-local mark = failure()
-assert(mark[2] == p.line and vim.fn.strdisplaywidth(content.lines[p.line + 1]:sub(1, mark[3])) == p.col)
-assert(#mark[4].virt_text[1][1] <= p.cols, "failure covered a neighboring table cell")
-assert(vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), content.lines))
+local remote = "https://example.invalid/table.png"
+for _, case in ipairs {
+  { 80, png, "!" },
+  { 18, remote, "!" },
+  { 22, remote, "Failed" },
+  { 28, remote, "HTTP 404" },
+} do
+  local width, url, expected = unpack(case)
+  content = build({ "| 中文 | 圖片 |", "| --- | --- |", "| 相鄰內容 | ![圖](" .. url .. ") |" }, {
+    max_width = width,
+    indent = "　",
+    buf_dir = vim.fn.getcwd(),
+  })
+  p = assert(content.image_placements[1], "fixture has no table image")
+  assert(p.cell_cols)
+  display.show_image_error(buf, ns, p, url == remote and "HTTP 404" or nil)
+  local mark = failure()
+  assert(mark[2] == p.line and vim.fn.strdisplaywidth(content.lines[p.line + 1]:sub(1, mark[3])) == p.col)
+  assert(vim.trim(mark[4].virt_text[1][1]) == expected)
+  assert(#mark[4].virt_text[1][1] <= p.cols, "failure covered a neighboring table cell")
+  assert(vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), content.lines))
+end
 
 -- Cached diagrams reserve blank rows, so the image column may lie beyond EOL.
 local cached = image.get_mermaid_cached
@@ -144,7 +205,7 @@ local line = content.lines[p.line + 1]
 assert(vim.fn.strdisplaywidth(line) < p.col, "cached fixture must place its image beyond EOL")
 tick = vim.api.nvim_buf_get_changedtick(buf)
 display.show_image_error(buf, ns, p)
-mark = failure()
+local mark = failure()
 local overlay = mark[4].virt_text[1][1]
 assert(mark[2] == p.line and vim.fn.strdisplaywidth(line:sub(1, mark[3]) .. overlay:match "^ *") == p.col)
 assert(overlay:find("!", 1, true), "tiny cached diagram must show a failure")
@@ -282,16 +343,20 @@ local ctx = {
   picker = { opts = { previewers = { file = { max_size = 1024 } } } },
 }
 local render = require("md-render.snacks").preview()
+local function picker_has_error(reason)
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, -1, 0, -1, { details = true })) do
+    local text = m[4].virt_text
+    if text and text[1][2] == "ErrorMsg" and vim.trim(text[1][1]) == "Image failed: " .. reason then return true end
+  end
+end
 render(ctx)
 wait_for(function()
   return #pending == 1
 end, "picker download did not start")
 tick = vim.api.nvim_buf_get_changedtick(buf)
-pending[1](nil)
+pending[1](nil, "HTTP 404")
 wait_for(function()
-  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, -1, 0, -1, { details = true })) do
-    if m[4].virt_text and m[4].virt_text[1][2] == "ErrorMsg" then return true end
-  end
+  return picker_has_error "HTTP 404"
 end, "picker failure had no feedback")
 assert(vim.api.nvim_buf_get_changedtick(buf) == tick)
 local first_hit = vim.api.nvim_win_get_cursor(win)[1]
@@ -305,7 +370,18 @@ wait_for(function()
   return #pending == 2
 end, "external reset did not rebuild media content")
 assert(resets == 3 and vim.api.nvim_buf_line_count(buf) > 1)
-pending[2](nil)
+vim.fn.writefile({ "![next](https://example.invalid/picker-next.png)" }, root .. "/next.md")
+ctx.item = { cwd = root, file = "next.md", pos = { 1, 0 } }
+render(ctx)
+wait_for(function()
+  return #pending == 3
+end, "next picker item did not start its download")
+pending[2](nil, "HTTP 403")
+pending[3](nil, "HTTP 410")
+wait_for(function()
+  return picker_has_error "HTTP 410"
+end, "next item lost its own error")
+assert(not picker_has_error "HTTP 403", "a late failure appeared on the next picker item")
 vim.api.nvim_exec_autocmds("WinClosed", { pattern = tostring(win), modeline = false })
 vim.fn.delete(root, "rf")
 print "Image failure: reserved rows, narrow diagrams, UTF-8 table cells, unchanged ticks and picker reset/navigation OK"

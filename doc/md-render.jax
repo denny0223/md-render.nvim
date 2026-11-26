@@ -1174,9 +1174,12 @@ ContentBuilder:add_simple_markdown({text}, ...) ~
 						    *ContentBuilder:add_table()*
 ContentBuilder:add_table({table_lines}, ...) ~
 	罫線文字付きの Markdown テーブルをレンダリングします。
+	|Markdown.parse_footnotes()| の第 2 戻り値を {footnote_map} に渡すと、
+	見出しセルや本文セルの脚注から定義に移動できます。
 
 	全パラメータ: ~
-	  {table_lines}, {indent}, {max_width}, {repo_base_url}, {autolinks}
+	  {table_lines}, {indent}, {max_width}, {repo_base_url}, {autolinks},
+	  {buf_dir}, {per_row_source}, {ref_links}, {raw_html}, {footnote_map}
 
 ------------------------------------------------------------------------------
 MARKDOWN						    *md-render-markdown*

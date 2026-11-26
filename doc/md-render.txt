@@ -1201,9 +1201,12 @@ ContentBuilder:add_simple_markdown({text}, ...) ~
 						    *ContentBuilder:add_table()*
 ContentBuilder:add_table({table_lines}, ...) ~
 	Render a Markdown table with box-drawing borders.
+	Pass the second return value of |Markdown.parse_footnotes()| as
+	{footnote_map} to link footnotes in table headers and body cells.
 
 	All parameters: ~
-	  {table_lines}, {indent}, {max_width}, {repo_base_url}, {autolinks}
+	  {table_lines}, {indent}, {max_width}, {repo_base_url}, {autolinks},
+	  {buf_dir}, {per_row_source}, {ref_links}, {raw_html}, {footnote_map}
 
 ------------------------------------------------------------------------------
 MARKDOWN						    *md-render-markdown*

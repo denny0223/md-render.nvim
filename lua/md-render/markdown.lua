@@ -13,6 +13,7 @@
 ---@field col_start integer 0-indexed start column
 ---@field col_end integer 0-indexed end column
 ---@field url string
+---@field footnote_label? string first parsed reference when collecting backlinks
 
 ---@class MdRender.Markdown.Break
 ---@field col integer 0-indexed separator byte in rendered text (one ASCII space)
@@ -1711,8 +1712,9 @@ end
 ---@param footnote_map table<string, integer> footnote label → number mapping
 ---@param highlights MdRender.Markdown.Highlight[]
 ---@param links MdRender.Markdown.Link[]
+---@param track_footnotes boolean
 ---@return string processed
-local function process_footnote_refs(text, footnote_map, highlights, links, source_label)
+local function process_footnote_refs(text, footnote_map, highlights, links, source_label, track_footnotes)
   if not footnote_map or not next(footnote_map) then return text end
   local pre_hl_count, pre_link_count, removals = #highlights, #links, {}
   local sources = highlights._source_map
@@ -1730,10 +1732,13 @@ local function process_footnote_refs(text, footnote_map, highlights, links, sour
           local start_col = #processed
           processed = processed .. display
           table.insert(highlights, { col = start_col, end_col = start_col + #display, hl = "Special" })
-          table.insert(
-            links,
-            { col_start = start_col, col_end = start_col + #display, url = "#footnote-def-" .. label, _decoded = true }
-          )
+          table.insert(links, {
+            col_start = start_col,
+            col_end = start_col + #display,
+            url = require("md-render.links").footnote_url("def", label),
+            footnote_label = track_footnotes and label or nil,
+            _decoded = true,
+          })
           removals[#removals + 1] = { start = i - 1 + #display, count = close + 1 - i - #display }
           if sources then
             removals.source_edits[#removals.source_edits + 1] = {
@@ -1999,7 +2004,7 @@ end
 ---@param ref_links? table<string, string> Optional reference link definitions (normalized label -> URL)
 ---@param footnote_map? table<string, integer>
 ---@param inline_only? boolean Leave block markers literal in cells, captions and other inline contexts
----@param block_context? {heading_level?: integer, list_marker?: boolean, raw_html?: boolean, quote_prefix?: string} accepted document block syntax
+---@param block_context? {heading_level?: integer, list_marker?: boolean, raw_html?: boolean, quote_prefix?: string, seen_footnotes?: table<string, boolean>} accepted block syntax and footnote labels seen in Markdown order
 ---@param track_sources? boolean retain physical source row origins for joined paragraphs
 ---@return string rendered_text The rendered plain text
 ---@return MdRender.Markdown.Highlight[] highlights
@@ -2026,6 +2031,7 @@ Markdown.render = function(
   local literal_ranges = adjust_literal_ranges(block_context and block_context.literal_html_ranges, removals)
   local raw_html = block_context and block_context.raw_html
   local semantic = block_context and block_context.semantic
+  local seen_footnotes = block_context and block_context.seen_footnotes
   inline_only = inline_only == true or (raw_html and not block_context.heading_level)
   local rendered_text = text
   local highlights = {}
@@ -2035,6 +2041,21 @@ Markdown.render = function(
 
   local function finish(special_type, list_marker, alert_type, fold_mod, heading_content)
     rendered_text = restore_spans(rendered_text:gsub("[\r\n]", " "), hard_break_spans, nil, highlights, links)
+    if seen_footnotes and #links > 0 then
+      -- Replacing inline media can erase a marker. Only a surviving link can own its backlink.
+      local visible = {}
+      for _, link in ipairs(links) do
+        local label = link.footnote_label
+        if not label or link.col_start < link.col_end then
+          if label then
+            if seen_footnotes[label] then link.footnote_label = nil end
+            seen_footnotes[label] = true
+          end
+          visible[#visible + 1] = link
+        end
+      end
+      links = visible
+    end
     local breaks = {}
     for _, span in ipairs(hard_break_spans) do
       if span.col then breaks[#breaks + 1] = { col = span.col, source_line = span.source_line } end
@@ -2318,7 +2339,8 @@ Markdown.render = function(
     autolink_spans,
     decode_url
   )
-  rendered_text = process_footnote_refs(rendered_text, footnote_map, highlights, links, source_label)
+  rendered_text =
+    process_footnote_refs(rendered_text, footnote_map, highlights, links, source_label, seen_footnotes ~= nil)
   rendered_text = restore_spans(rendered_text, standard_spans, nil, highlights, links)
   rendered_text = process_links(rendered_text, highlights, links, source_label, ref_links)
   -- Link/reference ownership is settled before comments leave the display.

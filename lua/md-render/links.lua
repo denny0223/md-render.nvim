@@ -25,6 +25,13 @@ function M.jump(win, row, col)
   end)
 end
 
+--- Keep literal percent signs in footnote labels through URI fragment decoding.
+---@param kind "def"|"ref"
+---@param label string
+function M.footnote_url(kind, label)
+  return "#footnote-" .. kind .. "-" .. label:gsub("%%", "%%25")
+end
+
 --- Resolve a heading or footnote fragment to its rendered row.
 function M.anchor_row(url, content)
   local anchor = url and url:match "^#(.*)$"

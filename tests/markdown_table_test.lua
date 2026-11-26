@@ -371,6 +371,123 @@ test("reference-looking table cells cannot define document links", function()
   eq(quoted.lines[#quoted.lines], "[r]", "quoted code reference stays unresolved")
 end)
 
+test("table footnotes link from their displayed rows and keep the first reference", function()
+  local source = {
+    "Intro[^intro]",
+    "",
+    "| 項目[^title] | 注意事項 |",
+    "| --- | --- |",
+    "| Linux | 離線使用前請先下載完整的安裝手冊[^guide] |",
+    "| BSD[^intro] | 再次閱讀[^guide] |",
+    "",
+    "End[^guide]",
+    "",
+    "[^intro]: Intro note",
+    "[^title]: Title note",
+    "[^guide]: Guide note",
+  }
+  for _, width in ipairs { 24, 80 } do
+    local content = build(source, { max_width = width })
+    local references = { intro = {}, title = {}, guide = {} }
+    for _, link in ipairs(content.link_metadata) do
+      local label = link.url:match "^#footnote%-def%-(.+)$"
+      if label then
+        table.insert(references[label], content.source_line_map[link.line + 1])
+        local mark = content.lines[link.line + 1]:sub(link.col_start + 1, link.col_end)
+        eq(mark, ({ intro = "¹", title = "²", guide = "³" })[label], "only the superscript is linked")
+        if #references[label] == 1 then
+          eq(content.footnote_anchors["footnote-ref-" .. label], link.line, "backlink to first displayed reference")
+        end
+      end
+    end
+    eq(references, { intro = { 1, 6 }, title = { 3 }, guide = { 5, 6, 8 } }, "all source references are linked")
+    if width == 24 then
+      local preview_row = content.footnote_anchors["footnote-ref-guide"] + 1
+      eq(content.source_line_map[preview_row - 1], 5, "guide marker is on a continuation of the Linux cell")
+    end
+  end
+end)
+
+test("literal percent escapes and decoded labels navigate to their own footnotes", function()
+  local content = build {
+    "| Notes |",
+    "| --- |",
+    "| First[^a%2Fb] |",
+    "| Second[^a/b] |",
+    "| [explicit](#footnote-def-a%2Fb) |",
+    "",
+    "[^a%2Fb]: Percent sign",
+    "[^a/b]: Slash",
+  }
+  local destinations = {}
+  for _, link in ipairs(content.link_metadata) do
+    local target = assert(Links.anchor_row(link.url, content), link.url)
+    destinations[content.source_line_map[link.line + 1]] = content.source_line_map[target + 1]
+  end
+  eq(destinations, { [3] = 7, [4] = 8, [5] = 8, [7] = 3, [8] = 4 }, "generated and explicit fragment destinations")
+end)
+
+test("a repeated footnote returns to its first cell in Markdown order at any width", function()
+  local source = {
+    "| First | Second |",
+    "| --- | --- |",
+    "| long text wraps before END[^n] | B[^n] |",
+    "",
+    "[^n]: Definition",
+  }
+  for _, width in ipairs { 20, 80 } do
+    local content = build(source, { max_width = width })
+    local row = content.footnote_anchors["footnote-ref-n"] + 1
+    assert(content.lines[row]:find("END¹", 1, true), "backlink returns to the authored first cell")
+    if width == 20 then eq(content.source_line_map[row - 1], 3, "first cell wraps below the second cell's marker") end
+  end
+end)
+
+test("literal markers in table cells do not claim a footnote backlink", function()
+  local content = build {
+    "| Example | Missing |",
+    "| --- | --- |",
+    "| `[^note]` [¹](#footnote-def-note) | [^undefined] |",
+    "",
+    "<table><tr><td>[^note]</td></tr></table>",
+    "",
+    "[¹](#footnote-def-note)",
+    "",
+    "Reference[^note]",
+    "",
+    "[^note]: Definition",
+  }
+  local literal_rows = {}
+  for i, line in ipairs(content.lines) do
+    if line:find("[^note]", 1, true) then table.insert(literal_rows, content.source_line_map[i]) end
+  end
+  eq(literal_rows, { 3, 5 }, "inline code and raw HTML keep their literal markers")
+  assert(table.concat(content.lines, "\n"):find("[^undefined]", 1, true), "undefined footnote stays literal")
+  eq(#content.link_metadata, 4, "explicit links and both footnote directions remain clickable")
+  eq(
+    content.source_line_map[content.footnote_anchors["footnote-ref-note"] + 1],
+    9,
+    "only the actual marker claims a backlink"
+  )
+  local headings = build { "| [link](#footnote-def-n) |", "| --- |", "", "# Footnote-ref-n", "", "# Footnote-def-n" }
+  eq(headings.footnote_anchors, {}, "links to headings with footnote-like names cannot create footnote anchors")
+end)
+
+test("a footnote hidden by video fallback leaves its backlink to a visible cell", function()
+  for _, width in ipairs { 19, 80 } do
+    local content = build({
+      "| Media |",
+      "| --- |",
+      '| <video src="clip.mp4">[^n]</video> tail |',
+      "| Real[^n] |",
+      "",
+      "[^n]: Definition",
+    }, { max_width = width })
+    local row = content.footnote_anchors["footnote-ref-n"]
+    assert(row and content.lines[row + 1]:find("Real¹", 1, true), "backlink reaches the visible marker")
+  end
+end)
+
 test("earlier table ownership rejects multiline cell definitions", function()
   for _, header in ipairs { "|a|b|", "[r]: /unexpected|b" } do
     local table_source = {

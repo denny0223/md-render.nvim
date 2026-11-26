@@ -115,23 +115,6 @@ function MarkdownTable.parse_header(header, separator)
   return cells, alignments
 end
 
---- Process a cell's text through markdown.render() for inline formatting
----@param text string
----@param repo_base_url? string
----@param autolinks? MdRender.Autolink[]
----@param ref_links? table<string, string> normalized document labels to URLs
----@return MdRender.MarkdownTable.ParsedCell
-local function process_cell(text, repo_base_url, autolinks, ref_links, raw_html)
-  local markdown = require "md-render.markdown"
-  local rendered, highlights, links =
-    markdown.render(text, repo_base_url, autolinks, ref_links, nil, true, { raw_html = raw_html })
-  return {
-    text = rendered,
-    highlights = highlights,
-    links = links,
-  }
-end
-
 --- Wrap at ordinary word boundaries, then at complete glyphs for long tokens.
 --- Kinsoku groups may exceed the target width; layout reserves space for them.
 ---@param text string
@@ -199,18 +182,29 @@ end
 ---@param repo_base_url? string
 ---@param autolinks? MdRender.Autolink[]
 ---@param ref_links? table<string, string> normalized document labels to URLs
+---@param raw_html? boolean
+---@param footnote_map? table<string, integer>
 ---@return MdRender.MarkdownTable.ParsedTable|nil
-function MarkdownTable.parse(lines, repo_base_url, autolinks, ref_links, raw_html)
+function MarkdownTable.parse(lines, repo_base_url, autolinks, ref_links, raw_html, footnote_map)
   if #lines < 2 then return nil end
   lines = vim.tbl_map(require("md-render.character_references").normalize_nul, lines)
 
   local header_cells, alignments = MarkdownTable.parse_header(lines[1], lines[2])
   if not header_cells then return nil end
 
+  local markdown = require "md-render.markdown"
+  -- Choose the first cell in Markdown order before wrapping can put a later cell's marker above it.
+  local context = { raw_html = raw_html, seen_footnotes = footnote_map and next(footnote_map) and {} }
+  local function process_cell(text)
+    local rendered, highlights, links =
+      markdown.render(text, repo_base_url, autolinks, ref_links, footnote_map, true, context)
+    return { text = rendered, highlights = highlights, links = links }
+  end
+
   -- Process header cells
   local headers = {}
   for _, cell_text in ipairs(header_cells) do
-    table.insert(headers, process_cell(cell_text, repo_base_url, autolinks, ref_links, raw_html))
+    table.insert(headers, process_cell(cell_text))
   end
 
   -- Process data rows (line 3+)
@@ -234,7 +228,7 @@ function MarkdownTable.parse(lines, repo_base_url, autolinks, ref_links, raw_htm
           cell_text = table.concat(pieces) .. cell_text:sub(pos)
         end
       end
-      table.insert(row, process_cell(cell_text, repo_base_url, autolinks, ref_links, raw_html))
+      table.insert(row, process_cell(cell_text))
     end
     table.insert(rows, row)
   end
@@ -276,7 +270,7 @@ end
 ---@param buf_dir? string Directory for resolving relative images
 ---@return string[] lines
 ---@return MdRender.Highlight.Group[][] per_line_highlights
----@return {line: integer, col_start: integer, col_end: integer, url: string}[][] per_line_links
+---@return MdRender.Markdown.Link[][] per_line_links
 ---@return table[] image_placements
 ---@return integer[] per_line_source_offsets 0-based offset into the original table source rows for each output line: 0=header, 1=separator, 2+N=Nth data row
 ---@return boolean? dynamic_media graphics support when media layout consulted it
@@ -517,7 +511,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
   ---@param col_align_overrides? table<integer, string> per-column alignment overrides
   ---@return string[] lines
   ---@return MdRender.Highlight.Group[][] per_line_highlights
-  ---@return {col_start: integer, col_end: integer, url: string}[][] per_line_links
+  ---@return MdRender.Markdown.Link[][] per_line_links
   local function build_wrapped_row(cells, is_header, col_align_overrides)
     -- Wrap each cell's text into multiple lines
     local wrapped_cells = {}
@@ -584,6 +578,7 @@ function MarkdownTable.render(parsed_table, indent, max_width, buf_dir)
                 col_start = cell_start + local_start,
                 col_end = cell_start + local_end,
                 url = link.url,
+                footnote_label = link.footnote_label,
               })
             end
           end

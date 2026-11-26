@@ -355,6 +355,15 @@ local function distribute_highlights(
   return per_line
 end
 
+local function add_rendered_link(self, entry)
+  if entry.footnote_label then
+    local anchor = "footnote-ref-" .. entry.footnote_label
+    self.footnote_anchors[anchor] = self.footnote_anchors[anchor] or entry.line
+    entry.footnote_label = nil
+  end
+  table.insert(self.link_metadata, entry)
+end
+
 --- Distribute link metadata across wrapped lines
 ---@param md_links MdRender.Markdown.Link[]
 ---@param wrapped_lines string[] The wrapped line texts
@@ -400,6 +409,7 @@ local function distribute_links(
           col_start = local_start + prefix_len + lm_len,
           col_end = local_end + prefix_len + lm_len,
           url = link.url,
+          footnote_label = link.footnote_label,
         })
         per_line[idx] = entries
       end
@@ -539,7 +549,7 @@ function ContentBuilder:add_wrapped_markdown(
     -- distribute_links assumed the wrapped lines were consecutive; spread the
     -- entries back out over the gaps we just inserted.
     if line_gap > 0 then entry.line = base_line + (entry.line - base_line) * (line_gap + 1) end
-    table.insert(self.link_metadata, entry)
+    add_rendered_link(self, entry)
   end
 end
 
@@ -563,11 +573,12 @@ function ContentBuilder:add_simple_markdown(rendered_text, md_highlights, md_lin
   self:add_line(indent .. rendered_text, #line_hls > 0 and line_hls or nil)
 
   for _, link in ipairs(md_links) do
-    table.insert(self.link_metadata, {
+    add_rendered_link(self, {
       line = #self.lines - 1,
       col_start = link.col_start + #indent,
       col_end = link.col_end + #indent,
       url = link.url,
+      footnote_label = link.footnote_label,
     })
   end
 end
@@ -579,12 +590,15 @@ end
 ---@param max_width integer
 ---@param repo_base_url? string
 ---@param autolinks? MdRender.Autolink[]
----@param ref_links? table<string, string> normalized document labels to URLs
---- @param per_row_source? boolean When true (markdown pipe tables), each
+---@param buf_dir? string
+---@param per_row_source? boolean When true (markdown pipe tables), each
 ---   rendered line gets its source attribution from the corresponding
 ---   source row offset. When false/nil (HTML tables, where the source
 ---   isn't a per-row enumeration), all rows inherit the caller's
 ---   _current_source_line as-is.
+---@param ref_links? table<string, string> normalized document labels to URLs
+---@param raw_html? boolean
+---@param footnote_map? table<string, integer>
 function ContentBuilder:add_table(
   table_lines,
   indent,
@@ -594,10 +608,11 @@ function ContentBuilder:add_table(
   buf_dir,
   per_row_source,
   ref_links,
-  raw_html
+  raw_html,
+  footnote_map
 )
   local markdown_table = require "md-render.markdown_table"
-  local parsed = markdown_table.parse(table_lines, repo_base_url, autolinks, ref_links, raw_html)
+  local parsed = markdown_table.parse(table_lines, repo_base_url, autolinks, ref_links, raw_html, footnote_map)
   if not parsed then
     -- Fallback: render each line as markdown
     for _, line in ipairs(table_lines) do
@@ -608,7 +623,7 @@ function ContentBuilder:add_table(
         repo_base_url,
         autolinks,
         ref_links,
-        nil,
+        footnote_map,
         nil,
         { raw_html = raw_html }
       )
@@ -630,11 +645,12 @@ function ContentBuilder:add_table(
     self:add_line(line, #per_line_hls[i] > 0 and per_line_hls[i] or nil)
     self.table_lines[#self.lines - 1] = true
     for _, link in ipairs(per_line_links[i] or {}) do
-      table.insert(self.link_metadata, {
+      add_rendered_link(self, {
         line = base_line + i - 1,
         col_start = link.col_start,
         col_end = link.col_end,
         url = link.url,
+        footnote_label = link.footnote_label,
       })
     end
   end
@@ -795,7 +811,7 @@ function ContentBuilder:add_native_heading(text, highlights, links, indent, spec
   end
   for _, link in ipairs(metadata) do
     link.line = first_line + (link.line - first_line) * spec.s
-    self.link_metadata[#self.link_metadata + 1] = link
+    add_rendered_link(self, link)
   end
 end
 
@@ -944,8 +960,13 @@ function ContentBuilder:add_image_heading(text, highlights, links, indent, max_w
     for _, link in ipairs(links) do
       local a, b = math.max(first, link.col_start), math.min(last, link.col_end)
       if a < b then
-        self.link_metadata[#self.link_metadata + 1] =
-          { line = row, col_start = #line_indent + a - first, col_end = #line_indent + b - first, url = link.url }
+        add_rendered_link(self, {
+          line = row,
+          col_start = #line_indent + a - first,
+          col_end = #line_indent + b - first,
+          url = link.url,
+          footnote_label = link.footnote_label,
+        })
       end
     end
     self.text_placements[#self.text_placements + 1] = {
@@ -990,6 +1011,9 @@ function ContentBuilder:add_markdown_line(
   block_context
 )
   local markdown = require "md-render.markdown"
+  if footnote_map and next(footnote_map) then
+    block_context = vim.tbl_extend("force", block_context or {}, { seen_footnotes = {} })
+  end
   local rendered_text, md_highlights, md_links, special_type, list_marker, alert_type, fold_mod, heading_content, hard_breaks, source_runs =
     markdown.render(
       text,
@@ -1088,7 +1112,6 @@ function ContentBuilder:add_markdown_line(
   local wrap_max = math.max(1, max_width - indent_w - indicator_width)
 
   local lines_before_fn = #self.lines
-  local first_link = #self.link_metadata + 1
   local image_added = level
     and rendered_text ~= ""
     and self.text_scale
@@ -1173,15 +1196,6 @@ function ContentBuilder:add_markdown_line(
           groups = { { col = #indent - #heading_quote, end_col = #indent, hl = "FloatBorder" } },
         })
       end
-    end
-  end
-
-  -- Register footnote ref anchors (first occurrence per label)
-  for index = first_link, #self.link_metadata do
-    local link = self.link_metadata[index]
-    local label = link.url and link.url:match "^#footnote%-def%-(.+)$"
-    if label and not self.footnote_anchors["footnote-ref-" .. label] then
-      self.footnote_anchors["footnote-ref-" .. label] = link.line
     end
   end
 
@@ -3229,7 +3243,9 @@ function ContentBuilder:render_document(lines, opts)
         autolinks,
         buf_dir,
         true,
-        ref_links
+        ref_links,
+        nil,
+        footnote_map
       )
       self._current_source_line = saved_src_line
       local lines_added = #self.lines - lines_before_tbl
@@ -5552,7 +5568,7 @@ function ContentBuilder:render_document(lines, opts)
         line = def_first_line,
         col_start = #base_indent,
         col_end = #prefix - 1, -- superscript number (exclude trailing space)
-        url = "#footnote-ref-" .. def.label,
+        url = require("md-render.links").footnote_url("ref", def.label),
       })
     end
   end

@@ -1051,9 +1051,12 @@ ContentBuilder:add_simple_markdown({text}, ...) ~
                                                   *ContentBuilder:add_table()*
 ContentBuilder:add_table({table_lines}, ...) ~
 	渲染具有框線的 Markdown 表格。
+	將 |Markdown.parse_footnotes()| 的第二個回傳值傳給 {footnote_map}，
+	即可從表頭或資料格中的註腳跳到定義。
 
 	完整參數：~
-	  {table_lines}, {indent}, {max_width}, {repo_base_url}, {autolinks}
+	  {table_lines}, {indent}, {max_width}, {repo_base_url}, {autolinks},
+	  {buf_dir}, {per_row_source}, {ref_links}, {raw_html}, {footnote_map}
 
 ------------------------------------------------------------------------------
 Markdown                                                  *md-render-markdown*

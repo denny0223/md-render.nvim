@@ -1432,30 +1432,7 @@ local function download_file(url, cache_path, video)
   elseif detail then
     notify_failure(detail)
   end
-  if reason then return nil, reason end
-  return path
-end
-
---- Download a URL to a local file asynchronously.
----@param url string
----@param callback fun(path: string?, reason?: string)  local path on success, optional short reason on failure
-function M.download_async(url, callback)
-  if not M.is_url(url) or M.is_badge_url(url) then
-    callback(nil)
-    return
-  end
-
-  local cached = M.get_cached(url)
-  if cached then
-    callback(cached)
-    return
-  end
-
-  local cache_path = url_to_cache_path(url)
-
-  shared_work(cache_path, function()
-    return download_file(url, cache_path, false)
-  end, callback)
+  return path, reason, video
 end
 
 --- Check if a video URL is already cached (in-memory or on disk).
@@ -1474,26 +1451,55 @@ function M.get_video_cached(url)
   return nil
 end
 
---- Download a video URL to a local file asynchronously.
---- Unlike download_async(), this uses larger limits and skips image_dimensions validation.
----@param url string
----@param callback fun(path: string?, reason?: string)  local path on success, optional short reason on failure
-function M.download_video_async(url, callback)
-  if not M.is_url(url) then
+local function download_key(url, video)
+  return video and "video:" .. url or url
+end
+
+local function request_download(url, video, callback, failures)
+  if not M.is_url(url) or (not video and M.is_badge_url(url)) then
     callback(nil)
     return
   end
-  local cached = M.get_video_cached(url)
-  if cached then
-    callback(cached)
-    return
+  local function finish(path, reason, producer_video)
+    if failures then
+      if path then
+        failures[url], failures[download_key(url, true)] = nil, nil
+      elseif producer_video ~= nil then
+        -- A video can join an image's smaller transfer. Remember only the mode that ran.
+        failures[download_key(url, producer_video)] = reason or false
+      end
+    end
+    if reason then return callback(nil, reason) end
+    callback(path)
   end
-
+  local get_cached = video and M.get_video_cached or M.get_cached
+  local cached = get_cached(url)
+  if cached then return finish(cached) end
   local cache_path = url_to_cache_path(url)
-
+  -- A peer's pending download can replace this preview's earlier failure.
+  if failures and not _in_flight[cache_path] then
+    local reason = failures[download_key(url, video)]
+    if reason ~= nil then return finish(nil, reason) end
+  end
   shared_work(cache_path, function()
-    return download_file(url, cache_path, true)
-  end, callback)
+    return download_file(url, cache_path, video)
+  end, finish)
+end
+
+--- Download a URL to a local file asynchronously.
+---@param url string
+---@param callback fun(path: string?, reason?: string)  local path on success, optional short reason on failure
+---@param failures? table<string, string|false> failures for the current preview source
+function M.download_async(url, callback, failures)
+  request_download(url, false, callback, failures)
+end
+
+--- Download a video URL using larger limits and without image_dimensions validation.
+---@param url string
+---@param callback fun(path: string?, reason?: string)
+---@param failures? table<string, string|false> failures for the current preview source
+function M.download_video_async(url, callback, failures)
+  request_download(url, true, callback, failures)
 end
 
 --- Resolve an image source to a local file path (cache-only for URLs).

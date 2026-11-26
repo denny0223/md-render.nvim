@@ -107,6 +107,41 @@ for _, video in ipairs { false, true } do
   assert(cached(peer_url) == cache_path(peer_url), "failed writer deleted its peer's completed output")
 end
 
+-- Image and video readers can join one transfer, but use different limits.
+do
+  local url = "https://example.invalid/shared-mode.png"
+  local failures, peer_failures, before = {}, {}, #jobs
+  local values, receive, reasons = receiver()
+  image.download_async(url, receive) -- a different caller starts the smaller transfer
+  image.download_video_async(url, receive, failures)
+  image.download_video_async(url, receive, peer_failures)
+  wait_for(function()
+    return #jobs == before + 1
+  end)
+  jobs[#jobs].callback { code = 63 }
+  wait_for(function()
+    return #values == 3
+  end)
+  assert(reasons[1] == "file too large" and reasons[2] == reasons[1] and reasons[3] == reasons[1])
+  image.download_async(url, receive, failures)
+  assert(reasons[4] == "file too large" and #jobs == before + 1)
+  image.download_video_async(url, receive, peer_failures)
+  wait_for(function()
+    return #jobs == before + 2
+  end)
+  image.download_async(url, receive, failures)
+  assert(#values == 4, "a reader replayed its previous failure instead of waiting for the peer")
+  write(jobs[#jobs].output, png)
+  jobs[#jobs].callback { code = 0 }
+  wait_for(function()
+    return #values == 6
+  end)
+  assert(values[5] == cache_path(url) and values[6] == values[5])
+  assert(not next(failures) and not next(peer_failures), "the completed transfer left a stale failure")
+  image.download_async(url, receive, failures)
+  assert(values[7] == cache_path(url) and #jobs == before + 2, "a remembered failure hid the completed file")
+end
+
 fail_spawn = true
 local values, receive, reasons = receiver()
 image.download_async("https://example.invalid/spawn.png", receive)
@@ -157,7 +192,8 @@ end)
 assert(values[1] == values[2] and values[1] ~= stage and image.get_cached(custom_url) == values[1])
 assert(vim.fn.filereadable(stage) == 0)
 values, receive, reasons = receiver()
-image.download_video_async("https://example.invalid/custom-fail.png", receive)
+local failed_url, failures = "https://example.invalid/custom-fail.png", {}
+image.download_video_async(failed_url, receive, failures)
 wait_for(function()
   return custom_calls == 2
 end)
@@ -167,6 +203,11 @@ wait_for(function()
 end)
 assert(not values[1] and not reasons[1] and vim.fn.filereadable(stage) == 0)
 assert(messages[#messages]:find("custom media downloader reported failure", 1, true))
+image.download_video_async(failed_url, function(...)
+  assert(select("#", ...) == 1, "a remembered generic failure should still call back with just nil")
+  receive(...)
+end, failures)
+assert(#values == 2 and not reasons[2] and custom_calls == 2, "a generic download failure was retried")
 image.set_download_fn(function(_, output)
   custom_calls = custom_calls + 1
   stage = output

@@ -104,15 +104,20 @@ function M.preview(opts)
   local cleanup_autocmd_id = nil
   local cleanup_win = nil
 
-  local function render_key(ctx, path)
+  local function render_key(ctx, path, stat)
     return {
       path = path,
+      source = stat and { stat.dev, stat.ino, stat.size, stat.mtime, stat.ctime },
       buf = ctx.buf,
       win = ctx.win,
       tick = vim.api.nvim_buf_get_changedtick(ctx.buf),
       width = require("md-render.display_utils").usable_win_width(ctx.win),
       height = vim.api.nvim_win_get_height(ctx.win),
     }
+  end
+
+  local function owns_scratch()
+    return last_render ~= nil and last_render.key.tick == vim.api.nvim_buf_get_changedtick(last_render.key.buf)
   end
 
   local function cleanup_images()
@@ -149,7 +154,8 @@ function M.preview(opts)
 
     local is_markdown = path:match "%.md$" or path:match "%.markdown$"
     local display_utils = require "md-render.display_utils"
-    local file_changed = not last_render or not vim.deep_equal(last_render.key, render_key(ctx, path))
+    local stat = is_markdown and vim.uv.fs_stat(path)
+    local file_changed = not last_render or not vim.deep_equal(last_render.key, render_key(ctx, path, stat))
 
     if not is_markdown then
       -- Try to display as image/video
@@ -165,8 +171,8 @@ function M.preview(opts)
           display_utils.apply_content_to_buffer(ctx.buf, ns, img_content)
           vim.bo[ctx.buf].modifiable = false
           ensure_win_cleanup(ctx.win)
-          image_state = display_utils.setup_images(ctx.win, img_content, ns)
           last_render = { key = render_key(ctx, path) }
+          image_state = display_utils.setup_images(ctx.win, img_content, ns, { is_current = owns_scratch })
         end
         return
       end
@@ -182,7 +188,6 @@ function M.preview(opts)
       cleanup_images()
       last_render = nil
 
-      local stat = vim.uv.fs_stat(path)
       local max_size = ctx.picker.opts.previewers.file.max_size or (1024 * 1024)
       if not stat or stat.type ~= "file" or stat.size == 0 or stat.size > max_size then
         ctx.prev = nil
@@ -221,15 +226,25 @@ function M.preview(opts)
       vim.bo[ctx.buf].modifiable = false
 
       ensure_win_cleanup(ctx.win)
+      local render = { key = render_key(ctx, path, stat), source_line_map = content.source_line_map }
+      last_render = render
+      local function acknowledge_write()
+        render.key.tick = vim.api.nvim_buf_get_changedtick(render.key.buf)
+      end
       image_state = display_utils.setup_images(ctx.win, content, ns, {
         buf = ctx.buf,
+        is_current = owns_scratch,
         build_content = function()
-          return vim.api.nvim_buf_call(ctx.buf, function()
+          return vim.api.nvim_buf_call(render.key.buf, function()
             return preview_mod.build_content(lines, build_opts)
           end)
         end,
+        on_content_applied = function(fresh)
+          acknowledge_write()
+          render.source_line_map = fresh.source_line_map
+        end,
+        on_placeholder_cleared = acknowledge_write,
       })
-      last_render = { key = render_key(ctx, path), source_line_map = content.source_line_map }
     end
 
     -- Scroll to matched source line (always, even for same file with different position)

@@ -357,6 +357,7 @@ end
 ---@field file_icons table<string, table> -- file icon dependencies of the last full render
 ---@field win? integer                -- bound render window (if any)
 ---@field image_state? MdRender.ImageState
+---@field image_opts? MdRender.ImageOptions
 ---@field text_size_state? MdRender.TextSizeState|MdRender.HeadingImageState
 ---@field dirty boolean               -- true when source changed while render was hidden
 ---@field _debounce_timer? table      -- libuv timer handle for live-update debounce
@@ -630,6 +631,7 @@ function Session:refresh_source()
     local lines = vim.api.nvim_buf_get_lines(self.source_bufnr, 0, -1, false)
     local directory = self:source_directory()
     local changed = directory ~= self.opts.buf_dir or not vim.deep_equal(lines, self.source_lines)
+    if changed and self.image_opts then self.image_opts.failed_downloads = {} end
     self.source_tick = vim.api.nvim_buf_get_changedtick(self.source_bufnr)
     self.source_lines, self.opts.buf_dir = lines, directory
     return changed
@@ -848,7 +850,7 @@ end
 ---@param win integer
 ---@param layout? { max_width?: integer, indent?: string }
 function Session:bind_window(win, layout)
-  self:cleanup_images()
+  self:cleanup_images(true)
   self.win = win
   if layout then
     local explicit = layout.max_width ~= nil
@@ -868,20 +870,23 @@ function Session:bind_window(win, layout)
     pattern = tostring(win),
     once = true,
     callback = function()
-      self:cleanup_images()
+      self:detach_window(win)
       -- WinClosed runs before the window is removed from win_findbuf().
       vim.schedule(function()
         if not self.win then self:refresh_images() end
       end)
     end,
   })
-  self.image_state = display_utils.setup_images(win, self.content, self.ns, {
-    buf = self.buf,
-    on_ready = function()
-      self:rebuild()
-      self:refresh_images()
-    end,
-  })
+  self.image_opts = self.image_opts
+    or {
+      buf = self.buf,
+      failed_downloads = {},
+      on_ready = function()
+        self:rebuild()
+        self:refresh_images()
+      end,
+    }
+  self.image_state = display_utils.setup_images(win, self.content, self.ns, self.image_opts)
   self.text_size_state = require("md-render.text_size").attach(win, self.content)
   if self._rebind_keymaps then self._rebind_keymaps(win) end
 end
@@ -896,24 +901,28 @@ end
 function Session:refresh_images()
   if deferred_rebuilds[self.buf] then return end
   if not self.win or not vim.api.nvim_win_is_valid(self.win) or vim.api.nvim_win_get_buf(self.win) ~= self.buf then
-    self:cleanup_images()
-    if not vim.api.nvim_buf_is_valid(self.buf) then return end
-    local win = vim.fn.win_findbuf(self.buf)[1]
-    if win then self:bind_window(win) end
+    local win = vim.api.nvim_buf_is_valid(self.buf) and vim.fn.win_findbuf(self.buf)[1]
+    if win then
+      self:bind_window(win)
+    else
+      self:cleanup_images()
+    end
     return
   end
-  self.image_state = display_utils.update_images(self.image_state, self.win, self.content, self.ns, {
-    buf = self.buf,
-    on_ready = function()
-      self:rebuild()
-      self:refresh_images()
-    end,
-  })
+  self.image_state = display_utils.update_images(self.image_state, self.win, self.content, self.ns, self.image_opts)
   self.text_size_state = require("md-render.text_size").refresh(self.text_size_state, self.win, self.content)
 end
 
 --- Release the bound window and its renderers (keeps the buffer).
-function Session:cleanup_images()
+---@param handoff? boolean another window is taking over the same render buffer
+function Session:cleanup_images(handoff)
+  -- A completed download can still be waiting to replace its placeholder rows.
+  if self.image_state and self.image_state._rebuild_timer then self.dirty = true end
+  if not handoff and self.image_opts then
+    -- The last view closed. A later reopening needs fresh placeholders and a new attempt.
+    if next(self.image_opts.failed_downloads) then self.dirty = true end
+    self.image_opts = nil
+  end
   if self._win_closed then
     pcall(vim.api.nvim_del_autocmd, self._win_closed)
     self._win_closed = nil
@@ -2541,24 +2550,23 @@ local function restore_view(session, win, leaving)
   end) end
 end
 
-local function detach_session(session, win)
-  if session.win ~= win then return end
-  session:cleanup_images()
-  session.win = nil
+function Session:detach_window(win)
+  if self.win ~= win then return end
   -- Session images have one owner. Hand them back to a retained split when
   -- a jump or window close removes the most recently bound view.
-  for _, other in ipairs(vim.fn.win_findbuf(session.buf)) do
+  for _, other in ipairs(vim.fn.win_findbuf(self.buf)) do
     if other ~= win and vim.api.nvim_win_is_valid(other) then
       local context = navigation_windows[other]
-      session:bind_window(other, context and context.layout)
-      break
+      self:bind_window(other, context and context.layout)
+      return
     end
   end
+  self:cleanup_images()
 end
 
 local function leave_navigation(win, context)
   if not context.session then return end
-  detach_session(context.session, win)
+  context.session:detach_window(win)
   if context.close_handle and context.close_handle.win == win then context.close_handle:detach() end
   if vim.api.nvim_win_get_config(win).relative == "" then restore_render_win_opts(win, context.source_wo) end
   pcall(vim.api.nvim_win_del_var, win, "md_render_state")
@@ -3261,7 +3269,7 @@ vim.api.nvim_create_autocmd("WinClosed", {
     local context = navigation_windows[win]
     if context and context.session then
       if context.close_handle then context.session:sync_source_cursor(win) end
-      detach_session(context.session, win)
+      context.session:detach_window(win)
     end
     navigation_windows[win] = nil
     pending_views[win] = nil

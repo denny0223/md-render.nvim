@@ -79,6 +79,79 @@ assert(state.closed and placement.closed, "cleanup must retire the placement")
 assert(#drawn_rows() == 0, "cleanup must remove image extmarks")
 vim.api.nvim_win_close(other_win, true)
 
+-- A different picker source can reuse the scratch before Snacks paints a ready image.
+do
+  local tick = vim.api.nvim_buf_get_changedtick(buf)
+  local owned = backend.setup(win, content, nil, {
+    is_current = function()
+      return vim.api.nvim_buf_get_changedtick(buf) == tick
+    end,
+  })
+  local queued = assert(owned.objects[1])
+  wait_for(function()
+    return #drawn_rows() > 0
+  end, "first picker image did not paint")
+  local mark = assert(queued.eids[1])
+  queued:update()
+  vim.api.nvim_buf_clear_namespace(buf, Snacks.image.placement.ns, 0, -1)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "First result", "Second result", "Third result" })
+  local ns = Snacks.image.placement.ns
+  vim.api.nvim_buf_set_extmark(buf, ns, 0, 0, { id = mark, virt_text = { { "New image" } } })
+  wait_for(function()
+    return queued.closed
+  end, "queued placement update did not finish")
+  local replacement = vim.api.nvim_buf_get_extmark_by_id(buf, ns, mark, { details = true })
+  assert(replacement[3] and replacement[3].virt_text[1][1] == "New image", "stale placement removed the next image")
+  assert(#drawn_rows() == 1, "stale placement painted over the next picker's text")
+  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+  backend.cleanup(owned)
+end
+
+-- An explicit video gets its own transfer after an image at the same URL fails.
+do
+  local display = require "md-render.display_utils"
+  local ns = vim.api.nvim_create_namespace "snacks_remote_video_test"
+  local url = "https://example.invalid/remote-video-" .. vim.uv.hrtime()
+  local transfers, system = {}, vim.system
+  vim.system = function(cmd, opts, callback)
+    if cmd[1] ~= "curl" then return system(cmd, opts, callback) end
+    local limits = {}
+    for i, arg in ipairs(cmd) do
+      if arg == "--max-time" or arg == "--max-filesize" then limits[arg] = tonumber(cmd[i + 1]) end
+    end
+    transfers[#transfers + 1] = limits
+    callback { code = 22, stdout = #transfers == 1 and "503" or "410" }
+    return { pid = 0 }
+  end
+  local function render(line)
+    local media = require("md-render.preview").build_content({ line }, { max_width = 72, text_scale = false })
+    vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+    display.apply_content_to_buffer(buf, ns, media)
+    return media
+  end
+  local function error_shown(status)
+    for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })) do
+      local text = mark[4].virt_text
+      if text and text[1][2] == "ErrorMsg" and text[1][1]:find(status, 1, true) then return true end
+    end
+  end
+  local owned = backend.setup(win, render("![poster](" .. url .. ")"), ns)
+  wait_for(function()
+    return error_shown "HTTP 503"
+  end, "image did not report its own HTTP failure")
+  backend.update(owned, render('<video src="' .. url .. '"></video>'))
+  wait_for(function()
+    return error_shown "HTTP 410"
+  end, "the video inherited the image's HTTP failure")
+  assert(#transfers == 2)
+  assert(transfers[1]["--max-time"] == 10 and transfers[1]["--max-filesize"] == 20000000)
+  assert(transfers[2]["--max-time"] == 30 and transfers[2]["--max-filesize"] == 104857600)
+  backend.cleanup(owned)
+  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.system = system
+end
+
 -- Animated sources must bypass Snacks' first-page conversion. Exercise the
 -- real decoder and placements, recording only the requests sent to Kitty.
 if vim.fn.executable "ffmpeg" == 1 then
@@ -93,7 +166,7 @@ if vim.fn.executable "ffmpeg" == 1 then
   end
   local animated = backend.setup(win, media)
   local function loaded()
-    if animated.timer then return false end -- Dimension discovery can still replace placements.
+    if animated._rebuild_timer then return false end -- Dimension discovery can still replace placements.
     for idx = 1, 3 do
       local object = animated.objects[idx]
       local task = object and object.img._md_render_upload

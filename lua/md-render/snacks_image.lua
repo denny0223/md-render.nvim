@@ -3,6 +3,7 @@ local M = {}
 local image = require "md-render.image"
 local async = require "md-render.async"
 local permits = async.semaphore(2)
+local state_serial = 0
 
 -- Keep Snacks' placement/transport lifecycle; Kitty cycles frames itself.
 function M.animate(img, frames, playing)
@@ -147,10 +148,10 @@ function M.supported()
 end
 
 local function stop_timer(state)
-  if not state.timer then return end
-  state.timer:stop()
-  if not state.timer:is_closing() then state.timer:close() end
-  state.timer = nil
+  if not state._rebuild_timer then return end
+  state._rebuild_timer:stop()
+  if not state._rebuild_timer:is_closing() then state._rebuild_timer:close() end
+  state._rebuild_timer = nil
 end
 
 function M.cleanup(state)
@@ -163,9 +164,16 @@ function M.cleanup(state)
   pcall(vim.api.nvim_del_augroup_by_id, state.group)
 end
 
+local function owns_buffer(state)
+  return vim.api.nvim_buf_is_valid(state.buf)
+    and vim.api.nvim_win_is_valid(state.win)
+    and vim.api.nvim_win_get_buf(state.win) == state.buf
+    and (not state.opts.is_current or state.opts.is_current())
+end
+
 function M.update(state, content)
   if state.closed then return state end
-  if not vim.api.nvim_win_is_valid(state.win) or vim.api.nvim_win_get_buf(state.win) ~= state.buf then
+  if not owns_buffer(state) then
     M.cleanup(state)
     return state
   end
@@ -174,11 +182,7 @@ function M.update(state, content)
   state.revision = state.revision + 1
   local revision = state.revision
   local function current()
-    return not state.closed
-      and revision == state.revision
-      and vim.api.nvim_buf_is_valid(state.buf)
-      and vim.api.nvim_win_is_valid(state.win)
-      and vim.api.nvim_win_get_buf(state.win) == state.buf
+    return not state.closed and revision == state.revision and owns_buffer(state)
   end
   stop_timer(state)
   state.placements = content.image_placements or {}
@@ -190,8 +194,8 @@ function M.update(state, content)
   state.objects = {}
   local function ready()
     stop_timer(state)
-    state.timer = vim.defer_fn(function()
-      state.timer = nil
+    state._rebuild_timer = vim.defer_fn(function()
+      state._rebuild_timer = nil
       if not current() then return end
       if state.opts.on_ready then
         state.opts.on_ready()
@@ -201,10 +205,12 @@ function M.update(state, content)
         local modifiable = vim.bo[state.buf].modifiable
         vim.bo[state.buf].modifiable = true
         vim.api.nvim_buf_clear_namespace(state.buf, state.ns, 0, -1)
+        state.applying_content = true
         display.apply_content_to_buffer(state.buf, state.ns, fresh)
+        state.applying_content = nil
         vim.bo[state.buf].modifiable, vim.bo[state.buf].modified = modifiable, false
-        M.update(state, fresh)
         if state.opts.on_content_applied then state.opts.on_content_applied(fresh) end
+        M.update(state, fresh)
       else
         M.update(state, content)
       end
@@ -293,7 +299,11 @@ function M.update(state, content)
           elseif p.plantuml_source then
             path = async.await(2, image.render_plantuml_async, p.plantuml_source)
           elseif p.src_url then
-            path, reason = async.await(2, image.download_async, p.src_url)
+            local download = p.video and image.download_video_async or image.download_async
+            local failures = state.failed_downloads
+            path, reason = async.await(function(done)
+              return download(p.src_url, done, failures)
+            end)
           end
           if not current() then return end
           if path then
@@ -311,16 +321,29 @@ end
 
 function M.setup(win, content, ns, opts)
   assert(_G.Snacks and Snacks.image, "md-render: the snacks image backend requires Snacks.image")
+  -- Picker sources can own successive previews in the same window while detection is pending.
+  state_serial = state_serial + 1
   local state = {
     snacks = true,
+    failed_downloads = opts and opts.failed_downloads or {},
     win = win,
     buf = vim.api.nvim_win_get_buf(win),
     ns = ns or vim.api.nvim_create_namespace "md_render_snacks",
     opts = opts or {},
     revision = 0,
     objects = {},
-    group = vim.api.nvim_create_augroup("md_render_snacks_" .. win, { clear = true }),
+    group = vim.api.nvim_create_augroup("md_render_snacks_state_" .. state_serial, {}),
   }
+  if state.opts.is_current then
+    vim.api.nvim_buf_attach(state.buf, false, {
+      on_lines = function()
+        if state.applying_content then return end
+        -- Retire before the next picker source can reuse the old placement's extmark IDs.
+        M.cleanup(state)
+        return true
+      end,
+    })
+  end
   vim.api.nvim_create_autocmd("BufWipeout", {
     group = state.group,
     buffer = state.buf,
@@ -340,7 +363,7 @@ function M.setup(win, content, ns, opts)
     buffer = state.buf,
     callback = function()
       vim.schedule(function()
-        if state.closed then return end
+        if state.closed or not owns_buffer(state) then return end
         for _, placement in pairs(state.objects) do
           placement:show()
           placement:update()
@@ -350,7 +373,7 @@ function M.setup(win, content, ns, opts)
   })
   state.content = content
   Snacks.image.terminal.detect(function()
-    if state.closed then return end
+    if state.closed or not owns_buffer(state) then return M.cleanup(state) end
     if not Snacks.image.terminal.env().placeholders then
       vim.notify("md-render: the Snacks backend requires Kitty Unicode placeholders", vim.log.levels.ERROR)
       return

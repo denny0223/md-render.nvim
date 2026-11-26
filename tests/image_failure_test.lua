@@ -59,9 +59,10 @@ do
   for _, backend in ipairs { "kitty", "snacks" } do
     image.setup { backend = backend }
     image._set_kitty_supported(true)
-    local pending = {}
+    local pending, requests = {}, 0
     vim.system = function(cmd, _, callback)
       assert(cmd[1] == "curl")
+      requests = requests + 1
       pending[cmd[#cmd]] = callback
       return { pid = 0 }
     end
@@ -84,6 +85,17 @@ do
       return label(content.image_placements[1]) == "HTTP 403" and label(content.image_placements[2]) == "HTTP 404"
     end, backend .. " lost or swapped the two inline HTTP errors")
     assert(vim.api.nvim_buf_get_changedtick(buf) == tick, "reporting a download error rebuilt the buffer")
+    -- A layout change replaces every placement and clears its extmarks.
+    content = build(
+      { "label", "", "![first](" .. forbidden .. ")", "", "![second](" .. missing .. ")" },
+      { max_width = 20 }
+    )
+    display.update_images(state, win, content, ns)
+    wait_for(function()
+      return requests > 2
+        or (label(content.image_placements[1]) == "HTTP 403" and label(content.image_placements[2]) == "HTTP 404")
+    end, backend .. " did not restore the failure at its new position")
+    assert(requests == 2, backend .. " retried a failed download during reflow")
     display.cleanup_images(state)
   end
   vim.system, _G.Snacks = real_system, saved_snacks
@@ -91,7 +103,112 @@ do
   image._set_kitty_supported(true)
 end
 
+-- A split can recover after an edit even when the broken URL itself did not change.
+do
+  vim.opt.rtp:prepend(vim.fn.getcwd())
+  vim.cmd "runtime plugin/md-render.lua"
+  vim.cmd "tabnew"
+  local source = vim.api.nvim_get_current_buf()
+  vim.bo[source].filetype = "markdown"
+  local url = "https://example.invalid/split-" .. vim.uv.hrtime() .. ".png"
+  vim.api.nvim_buf_set_lines(source, 0, -1, false, {
+    "<details open>",
+    "<summary>Diagram</summary>",
+    "",
+    "![diagram](" .. url .. ")",
+    "",
+    "</details>",
+    "",
+    "original",
+  })
+  local attempts, online, status = 0, false, "403"
+  local real_system = vim.system
+  vim.system = function(cmd, _, callback)
+    assert(cmd[1] == "curl")
+    callback { code = 22, stdout = status, stderr = "" }
+    return { pid = 0 }
+  end
+  image.set_download_fn(function(_, output, done)
+    attempts = attempts + 1
+    if not online then return false end
+    assert(vim.uv.fs_copyfile(png, output))
+    done(true)
+    return true
+  end)
+  vim.cmd "MdRender split width=30"
+  local session = assert(require("md-render.preview")._toggle_sessions[source])
+  local function errors()
+    local labels = {}
+    for _, m in ipairs(vim.api.nvim_buf_get_extmarks(session.buf, session.ns, 0, -1, { details = true })) do
+      local text = m[4].virt_text
+      if text and text[1][2] == "ErrorMsg" then labels[#labels + 1] = assert(text[1][1]:match "HTTP %d+") end
+    end
+    return table.concat(labels, ",")
+  end
+  wait_for(function()
+    return errors() == "HTTP 403"
+  end, "split did not show the failed download")
+  vim.api.nvim_buf_set_lines(source, -2, -1, false, { "original" })
+  assert(not session:refresh_source(), "identical text counted as an edit")
+  vim.api.nvim_set_current_win(session.win)
+  vim.api.nvim_win_set_cursor(session.win, { session.content.callout_folds[1].header_line + 1, 0 })
+  vim.cmd "normal za"
+  assert(#session.content.image_placements == 0 and errors() == "", "fold did not hide the only image")
+  vim.cmd "normal za"
+  wait_for(function()
+    return errors() == "HTTP 403"
+  end, "unfolding lost the failure")
+  assert(attempts == 1, "unfolding retried an unchanged URL")
+  -- Native splits share this render buffer, including its settled download and layout.
+  local first, content = session.win, session.content
+  vim.cmd "tab split"
+  local copy = vim.api.nvim_get_current_win()
+  wait_for(function()
+    return session.win == copy
+  end, "tab split did not bind the preview")
+  vim.cmd "vsplit"
+  local owner = vim.api.nvim_get_current_win()
+  for _, focused in ipairs { owner, copy, first, owner } do
+    vim.api.nvim_set_current_win(focused)
+    wait_for(function()
+      return session.win == focused
+    end, "native split did not take over images")
+    assert(session.content == content, "switching equal layouts rebuilt the document")
+  end
+  vim.api.nvim_win_close(copy, true)
+  assert(session.win == owner, "closing another view detached the active images")
+  vim.cmd "close"
+  wait_for(function()
+    return session.win == first
+  end, "the surviving view did not take over images")
+  assert(
+    not vim.wait(100, function()
+        return attempts ~= 1 or errors() ~= "HTTP 403"
+      end, 5) and session.content == content,
+    "a shared preview repeated the download, changed layout, or stacked failure overlays"
+  )
+  status = "410"
+  vim.cmd "close"
+  vim.cmd "MdRender split"
+  session = assert(require("md-render.preview")._toggle_sessions[source])
+  wait_for(function()
+    return errors() == "HTTP 410"
+  end, "the reopened split kept an obsolete error overlay")
+  online = true
+  vim.api.nvim_buf_set_lines(source, -2, -1, false, { "edited" })
+  vim.api.nvim_exec_autocmds("TextChanged", { buffer = source })
+  wait_for(function()
+    return image.get_cached(url) and errors() == ""
+  end, "source edit did not recover the image")
+  assert(attempts == 3, "reopen and edit should each retry once")
+  vim.cmd "tabclose!"
+  image.set_download_fn(nil)
+  vim.system = real_system
+  vim.fn.delete(assert(image.get_cached(url)))
+end
+
 -- The documented setup_images API permits callers without an auto-rebuild callback.
+local download_async = image.download_async
 image.download_async = function(_, callback)
   callback(png)
 end
@@ -192,6 +309,36 @@ for _, case in ipairs {
   assert(vim.trim(mark[4].virt_text[1][1]) == expected)
   assert(#mark[4].virt_text[1][1] <= p.cols, "failure covered a neighboring table cell")
   assert(vim.deep_equal(vim.api.nvim_buf_get_lines(buf, 0, -1, false), content.lines))
+end
+
+do
+  local cells = build {
+    "| First remote picture | Second remote picture |",
+    "| --- | --- |",
+    "| ![left](" .. remote .. ") | ![right](" .. remote .. ") |",
+  }
+  local left, right = unpack(cells.image_placements)
+  assert(left.line == right.line and left.col < right.col)
+  display.show_image_error(buf, ns, left, "HTTP 403")
+  local original = failure()
+  display.show_image_error(buf, ns, right, "HTTP 404")
+  display.show_image_error(buf, ns, left, "HTTP 410")
+  local labels = {}
+  for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true, type = "virt_text" })) do
+    local text = m[4].virt_text[1]
+    if text[2] == "ErrorMsg" then labels[#labels + 1] = text[1]:match "HTTP %d+" end
+  end
+  assert(vim.deep_equal(labels, { "HTTP 410", "HTTP 404" }), "repainting one table cell changed another overlay")
+  -- After a rebuild the same ID can belong to an unrelated highlight at the same byte.
+  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+  vim.api.nvim_buf_set_extmark(buf, ns, original[2], original[3], {
+    id = original[1],
+    end_col = original[3] + 1,
+    hl_group = "ErrorMsg",
+  })
+  display.show_image_error(buf, ns, left, "HTTP 403")
+  local highlight = vim.api.nvim_buf_get_extmark_by_id(buf, ns, original[1], { details = true })
+  assert(highlight[3].hl_group == "ErrorMsg" and not highlight[3].virt_text, "a failure replaced a text highlight")
 end
 
 -- Cached diagrams reserve blank rows, so the image column may lie beyond EOL.
@@ -313,13 +460,38 @@ assert(ok, err)
 -- Same-file grep navigation must reuse failed content; external resets still invalidate it.
 local root = vim.fn.tempname()
 vim.fn.mkdir(root, "p")
-vim.fn.writefile(
-  { "# Title", "", "![remote](https://example.invalid/picker-failure.png)", "", "first", "", "last" },
-  root .. "/readme.md"
-)
+local good_url = ("https://example.invalid/picker-ready-%s.png"):format(vim.uv.hrtime())
+vim.fn.writefile({
+  "![remote](https://example.invalid/picker-failure.png)",
+  "",
+  "![ready](" .. good_url .. ")",
+  "",
+  "first",
+  "",
+  "last",
+  "",
+  "after the hits",
+}, root .. "/readme.md")
 local pending, resets = {}, 0
-image.download_async = function(_, callback)
-  pending[#pending + 1] = callback
+local finish_download, finish_transmission
+image.download_async = download_async
+image.set_download_fn(function(url, output, done)
+  if url ~= good_url then return false end
+  finish_download = function()
+    assert(vim.uv.fs_copyfile(png, output))
+    done(true)
+  end
+  return true
+end)
+vim.system = function(cmd, _, callback)
+  assert(cmd[1] == "curl")
+  pending[#pending + 1] = function(status)
+    callback { code = 22, stdout = status, stderr = "" }
+  end
+  return { pid = 0 }
+end
+image.transmit_image_async = function(_, callback)
+  finish_transmission = callback
 end
 _G.Snacks = { picker = { util = {
   path = function(item)
@@ -343,6 +515,16 @@ local ctx = {
   picker = { opts = { previewers = { file = { max_size = 1024 } } } },
 }
 local render = require("md-render.snacks").preview()
+local function finish_old_request(index, status)
+  local done = false
+  image.download_async("https://example.invalid/picker-failure.png", function()
+    done = true
+  end)
+  pending[index](status)
+  wait_for(function()
+    return done
+  end, "old picker request did not finish")
+end
 local function picker_has_error(reason)
   for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, -1, 0, -1, { details = true })) do
     local text = m[4].virt_text
@@ -351,37 +533,67 @@ local function picker_has_error(reason)
 end
 render(ctx)
 wait_for(function()
-  return #pending == 1
+  return #pending == 1 and finish_download
 end, "picker download did not start")
 tick = vim.api.nvim_buf_get_changedtick(buf)
-pending[1](nil, "HTTP 404")
+pending[1] "404"
 wait_for(function()
   return picker_has_error "HTTP 404"
 end, "picker failure had no feedback")
 assert(vim.api.nvim_buf_get_changedtick(buf) == tick)
-local first_hit = vim.api.nvim_win_get_cursor(win)[1]
+finish_download()
+wait_for(function()
+  return finish_transmission
+end, "the picker did not reflow after the other image arrived")
+tick = vim.api.nvim_buf_get_changedtick(buf)
+finish_transmission(42, 4, 4)
+wait_for(function()
+  return vim.api.nvim_buf_get_changedtick(buf) > tick
+end, "Kitty did not clear the placeholder after the rebuild")
 ctx.item.pos = { 7, 0 }
 render(ctx)
 assert(resets == 1 and #pending == 1, "same-file selection retried failed media")
-assert(vim.api.nvim_win_get_cursor(win)[1] > first_hit, "same-file grep navigation stopped working")
+assert(vim.trim(vim.api.nvim_get_current_line()) == "last", "same-file grep used the old layout")
+assert(picker_has_error "HTTP 404", "the picker lost the failure after reflow")
+finish_transmission = nil
 preview:reset()
 render(ctx)
 wait_for(function()
-  return #pending == 2
+  return #pending == 2 and finish_transmission
 end, "external reset did not rebuild media content")
 assert(resets == 3 and vim.api.nvim_buf_line_count(buf) > 1)
+-- Discard a transmission that finished after the picker scratch was repurposed.
+vim.bo[buf].modifiable = true
+vim.api.nvim_buf_set_lines(buf, -2, -1, false, { "external edit" })
+vim.bo[buf].modifiable = false
+tick = vim.api.nvim_buf_get_changedtick(buf)
+local discarded_id, delete_image = nil, image.delete_image
+image.delete_image = function(id)
+  discarded_id = id
+end
+finish_transmission(43, 4, 4)
+image.delete_image = delete_image
+assert(discarded_id == 43 and vim.api.nvim_buf_get_changedtick(buf) == tick, "late transmission changed the scratch")
+finish_old_request(2, "502")
+assert(not picker_has_error "HTTP 502", "late failure painted over the repurposed scratch")
+render(ctx)
+assert(resets == 4, "a delayed transmission hid an external scratch edit")
+wait_for(function()
+  return #pending == 3
+end, "new render of the edited scratch did not retry the request")
 vim.fn.writefile({ "![next](https://example.invalid/picker-next.png)" }, root .. "/next.md")
 ctx.item = { cwd = root, file = "next.md", pos = { 1, 0 } }
 render(ctx)
 wait_for(function()
-  return #pending == 3
+  return #pending == 4
 end, "next picker item did not start its download")
-pending[2](nil, "HTTP 403")
-pending[3](nil, "HTTP 410")
+pending[4] "410"
 wait_for(function()
   return picker_has_error "HTTP 410"
 end, "next item lost its own error")
-assert(not picker_has_error "HTTP 403", "a late failure appeared on the next picker item")
+finish_old_request(3, "403")
+assert(picker_has_error "HTTP 410" and not picker_has_error "HTTP 403", "a late failure changed the next picker item")
 vim.api.nvim_exec_autocmds("WinClosed", { pattern = tostring(win), modeline = false })
+vim.fn.delete(assert(image.get_cached(good_url)))
 vim.fn.delete(root, "rf")
 print "Image failure: reserved rows, narrow diagrams, UTF-8 table cells, unchanged ticks and picker reset/navigation OK"

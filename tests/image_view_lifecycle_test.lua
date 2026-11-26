@@ -309,6 +309,62 @@ do
   image.has_mmdc, image.get_mermaid_cached = has_mmdc, cached
 end
 
+-- A second window can take ownership after a peer supplies the file but before the reflow timer.
+do
+  local image = require "md-render.image"
+  local preview = require "md-render.preview"
+  local url = "https://example.invalid/handoff-" .. vim.uv.hrtime() .. ".png"
+  local attempts, online = 0, false
+  image.set_download_fn(function(_, output, done)
+    attempts = attempts + 1
+    if online then assert(vim.uv.fs_copyfile(root .. "/tests/fixtures/test_4x4.png", output)) end
+    done(online)
+    return true
+  end)
+  vim.cmd "tabnew"
+  local source = vim.api.nvim_get_current_buf()
+  vim.bo[source].filetype = "markdown"
+  vim.api.nvim_buf_set_lines(source, 0, -1, false, { "![missing](" .. url .. ")", "", "end" })
+  preview.toggle()
+  local session = assert(preview._sessions[vim.api.nvim_get_current_buf()])
+  local original_win = session.win
+  local function has_error()
+    for _, m in
+      ipairs(vim.api.nvim_buf_get_extmarks(session.buf, session.ns, 0, -1, { details = true, type = "virt_text" }))
+    do
+      if m[4].virt_text[1][2] == "ErrorMsg" then return true end
+    end
+    return false
+  end
+  wait_for(has_error, "the first download did not fail")
+  vim.cmd "tab split"
+  local copy = vim.api.nvim_get_current_win()
+  wait_for(function()
+    return session.win == copy
+  end, "the duplicate did not take ownership")
+  online = true
+  local cached
+  image.download_async(url, function(path)
+    cached = path
+  end)
+  wait_for(function()
+    return cached
+  end, "peer download did not finish")
+  vim.api.nvim_set_current_win(original_win)
+  wait_for(function()
+    return session.content.image_placements[1].path
+  end, "the preview did not find the peer's file")
+  vim.api.nvim_set_current_win(copy)
+  wait_for(function()
+    return not has_error()
+  end, "a handoff cancelled the successful download's reflow")
+  assert(attempts == 2, "a handoff started a third download")
+  image.set_download_fn(nil)
+  vim.api.nvim_win_close(copy, true)
+  vim.api.nvim_win_close(original_win, true)
+  vim.fn.delete(cached)
+end
+
 if vim.fn.executable "ffmpeg" == 1 then
   local image = require "md-render.image"
   image.setup { backend = "snacks" }
@@ -343,7 +399,7 @@ if vim.fn.executable "ffmpeg" == 1 then
   end
   -- Dimension discovery may rebuild both inline placements before interaction.
   wait_for(function()
-    if session.image_state.timer then return false end
+    if session.image_state._rebuild_timer then return false end
     for idx, placement in ipairs(session.content.image_placements) do
       local object = session.image_state.objects[idx]
       if not placement.img_w or not object or not object:ready() then return false end

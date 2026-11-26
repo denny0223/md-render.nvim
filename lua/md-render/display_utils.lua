@@ -52,7 +52,19 @@ local function show_image_error(buf, ns, placement, reason)
   if #status > columns then status = failed end
   if #status > columns then status = "Failed" end
   if #status > columns then status = "!" end
+  -- Native splits share these buffer overlays. A handoff can paint the same failure again.
+  local existing
+  for _, mark in
+    ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, { row, col }, { row, col }, { details = true, type = "virt_text" }))
+  do
+    local text = mark[4].virt_text
+    if mark[4].virt_text_pos == "overlay" and text and text[1] and text[1][2] == "ErrorMsg" then
+      existing = mark[1]
+      break
+    end
+  end
   vim.api.nvim_buf_set_extmark(buf, ns, row, col, {
+    id = existing,
     virt_text = { { prefix .. status .. string.rep(" ", width - #status), "ErrorMsg" } },
     virt_text_pos = "overlay",
     virt_text_repeat_linebreak = pending ~= nil and not placement.cell_cols or false,
@@ -963,9 +975,11 @@ end
 ---@field image_ids table<string, integer>  path -> Kitty image ID (transmitted)
 ---@field anims table<string, MdRender.AnimState>  path -> animation state
 ---@field tasks table<MdRender.ImagePlacement, vim.async.Task>  work started per placement
+---@field failed_downloads table<string, string|false>  download errors for the current preview source
 ---@field win integer
 ---@field closed boolean
 ---@field redraw_timer any?
+---@field _rebuild_timer? uv.uv_timer_t   -- media completion is waiting for layout
 ---@field autocmd_ids integer[]
 
 --- Transmit all images and display them. Returns state for re-display and cleanup.
@@ -1009,10 +1023,19 @@ local function stop_timer(state, key)
   end
 end
 
+---@class MdRender.ImageOptions
+---@field buf? integer
+---@field failed_downloads? table<string, string|false>
+---@field is_current? fun(): boolean
+---@field on_ready? fun()
+---@field build_content? fun(): MdRender.Content
+---@field on_content_applied? fun(content: MdRender.Content)
+---@field on_placeholder_cleared? fun()
+
 ---@param win integer
 ---@param content MdRender.Content
 ---@param ns integer?
----@param opts? { buf?: integer, on_ready?: fun(), build_content?: fun(): MdRender.Content, on_content_applied?: fun(content: MdRender.Content) }
+---@param opts? MdRender.ImageOptions
 ---@return MdRender.ImageState?
 function M.setup_images(win, content, ns, opts)
   if not content.image_placements or #content.image_placements == 0 then return nil end
@@ -1029,6 +1052,7 @@ function M.setup_images(win, content, ns, opts)
   ---@type MdRender.ImageState
   local state = {
     placements = content.image_placements,
+    failed_downloads = opts and opts.failed_downloads or {},
     image_ids = {},
     anims = {},
     tx_dims = {}, -- path → {w, h}: actual transmitted image dimensions
@@ -1046,6 +1070,7 @@ function M.setup_images(win, content, ns, opts)
       and vim.api.nvim_win_is_valid(state.win)
       and vim.api.nvim_buf_is_valid(state.buf)
       and vim.api.nvim_win_get_buf(state.win) == state.buf
+      and (not opts or not opts.is_current or opts.is_current())
   end
   local function visible()
     return current() and vim.api.nvim_win_get_tabpage(state.win) == vim.api.nvim_get_current_tabpage()
@@ -1073,11 +1098,11 @@ function M.setup_images(win, content, ns, opts)
         vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
         M.apply_content_to_buffer(buf, ns, new_content)
         vim.bo[buf].modifiable = was_modifiable
-        M.update_images(state, win, new_content, ns, opts)
         -- A download changes how many rows an image occupies, so every line
         -- below it moves. Anything else anchored to rendered line numbers has
         -- to be told, or it keeps pointing at the pre-rebuild layout.
         if opts.on_content_applied then opts.on_content_applied(new_content) end
+        M.update_images(state, win, new_content, ns, opts)
       end, 150)
     end
   end
@@ -1375,6 +1400,7 @@ function M.setup_images(win, content, ns, opts)
       vim.bo[buf].modifiable = was_modifiable
       -- An asynchronous image redraw must retain the source's unsaved state.
       vim.bo[buf].modified = was_modified
+      if opts and opts.on_placeholder_cleared then opts.on_placeholder_cleared() end
     end
   end
 
@@ -1541,7 +1567,10 @@ function M.setup_images(win, content, ns, opts)
       return path
     elseif placement.src_url then
       local download = placement.video and image.download_video_async or image.download_async
-      return async.await(2, download, placement.src_url)
+      local failures = state.failed_downloads
+      return async.await(function(done)
+        return download(placement.src_url, done, failures)
+      end)
     end
     return nil
   end
@@ -1708,6 +1737,7 @@ function M.update_images(state, win, content, ns, opts)
     state = nil
   end
   if not vim.api.nvim_win_is_valid(win) then return nil end
+  if state and opts and opts.failed_downloads then state.failed_downloads = opts.failed_downloads end
   if state and state.snacks then return require("md-render.snacks_image").update(state, content) end
   -- No previous state: full setup from scratch
   if not state then return M.setup_images(win, content, ns, opts) end

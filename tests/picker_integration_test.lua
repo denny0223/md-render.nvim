@@ -291,6 +291,7 @@ assert(#rendered == count, "unchanged rendered buffer should be reusable")
 assert(vim.api.nvim_win_get_cursor(win)[1] == expected_row(content, 7), "Snacks same-file grep did not move")
 
 preview:reset() -- Snacks Preview:refresh() clears the same scratch buffer on layout changes.
+assert(not rendered[#rendered].opts.is_current(), "a reset scratch still accepted media from the previous preview")
 snacks(ctx)
 assert(#rendered == count + 1 and vim.api.nvim_buf_line_count(ctx.buf) > 1, "layout reset left a blank cached preview")
 preview.win.buf = vim.api.nvim_create_buf(false, true)
@@ -319,6 +320,31 @@ for index, name in ipairs(binary_files) do
   ctx.prev = ctx.item
   snacks(ctx)
   assert(fallback == index + 1 and #rendered == count + 2, "binary Markdown entered the renderer")
+end
+
+-- Grep hits can come from a newer file at the same path while the scratch stays intact.
+do
+  local changed = root .. "/changed.md"
+  local function save(target, line, stamp)
+    vim.fn.writefile({ line }, target)
+    assert(vim.uv.fs_utime(target, stamp, stamp))
+  end
+  local function selected_line()
+    snacks(ctx)
+    return vim.trim(vim.api.nvim_buf_get_lines(ctx.buf, 0, 1, false)[1])
+  end
+  save(changed, "hit-one", 1700000000.125)
+  ctx.item = { cwd = root, file = "changed.md", pos = { 1, 0 } }
+  assert(selected_line() == "hit-one")
+  local before = #rendered
+  assert(selected_line() == "hit-one" and #rendered == before, "unchanged grep hit rebuilt its preview")
+  save(changed, "hit-two", 1700000000.625)
+  assert(selected_line() == "hit-two", "same-size save in the same second reused stale Markdown")
+  save(changed .. ".new", "hit-new", 1700000000.625)
+  assert(vim.uv.fs_rename(changed .. ".new", changed))
+  assert(selected_line() == "hit-new", "renamed replacement reused stale Markdown")
+  assert(vim.uv.fs_unlink(changed))
+  assert(selected_line() == "native file preview", "a deleted Markdown file kept its old preview")
 end
 
 -- Narrow picker windows must budget their gutter and keep media headers on one row.

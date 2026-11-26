@@ -3,7 +3,7 @@ local M = {}
 --- Alert type definitions: base highlight group for each alert type
 local ALERT_HL_BASES = {
   Note = "DiagnosticInfo",
-  Tip = "DiagnosticHint",
+  Tip = "DiagnosticOk",
   Important = "Special",
   Warning = "DiagnosticWarn",
   Caution = "DiagnosticError",
@@ -32,6 +32,31 @@ local function blend_color(fg, bg, alpha)
   return bit.lshift(r, 16) + bit.lshift(g, 8) + b
 end
 
+local ALERT_TINT = 0.1
+
+local function luminance(rgb)
+  local function linear(shift)
+    local channel = bit.band(bit.rshift(rgb, shift), 0xff) / 255
+    return channel <= 0.04045 and channel / 12.92 or ((channel + 0.055) / 1.055) ^ 2.4
+  end
+  return 0.2126 * linear(16) + 0.7152 * linear(8) + 0.0722 * linear(0)
+end
+
+local function alert_purple(normal_bg, override_bg, previous_fg)
+  -- Each candidate changes its own tinted background unless the theme supplied one.
+  local function contrast(fg)
+    local ink = luminance(fg)
+    local paper = luminance(override_bg or blend_color(fg, normal_bg, ALERT_TINT))
+    return (math.max(ink, paper) + 0.05) / (math.min(ink, paper) + 0.05)
+  end
+  -- Light and dark foregrounds from Primer's purple palette.
+  local light, dark = 0xe2c5ff, 0x3e1f79
+  local light_ratio, dark_ratio = contrast(light), contrast(dark)
+  local best_ratio = math.max(light_ratio, dark_ratio)
+  if best_ratio < 4.5 and contrast(previous_fg) > best_ratio then return previous_fg end
+  return light_ratio >= dark_ratio and light or dark
+end
+
 --- Set up heading highlight groups (MdRenderH1..MdRenderH6).
 --- All attributes from `@markup.heading.<level>.markdown` are carried over
 --- (including `bg`, `italic`, `underline`, etc.) so colorschemes that paint
@@ -55,15 +80,22 @@ end
 
 --- Set up alert highlight groups (MdRenderAlert* and MdRenderAlert*Bg)
 function M.setup_alert_highlights()
-  local normal_hl = vim.api.nvim_get_hl(0, { name = "NormalFloat", link = false })
-  if not normal_hl.bg then normal_hl = vim.api.nvim_get_hl(0, { name = "Normal", link = false }) end
-  local normal_bg = normal_hl.bg or 0x1e1e2e
+  local function highlight(name)
+    return vim.api.nvim_get_hl(0, { name = name, link = false })
+  end
+  local normal_bg = highlight("NormalFloat").bg or highlight("Normal").bg or 0x1e1e2e
 
   for name, base_hl_name in pairs(ALERT_HL_BASES) do
-    local base_hl = vim.api.nvim_get_hl(0, { name = base_hl_name, link = false })
-    local fg = base_hl.fg or 0xFFFFFF
-    vim.api.nvim_set_hl(0, "MdRenderAlert" .. name, { fg = fg, bold = true, default = true })
-    vim.api.nvim_set_hl(0, "MdRenderAlert" .. name .. "Bg", { bg = blend_color(fg, normal_bg, 0.1), default = true })
+    local group = "MdRenderAlert" .. name
+    local fg = highlight(base_hl_name).fg
+    if name == "Tip" then
+      fg = highlight(group).fg or fg or highlight("DiagnosticHint").fg
+    elseif name == "Important" or name == "Example" then
+      fg = highlight(group).fg or alert_purple(normal_bg, highlight(group .. "Bg").bg, fg or 0xFFFFFF)
+    end
+    fg = fg or 0xFFFFFF
+    vim.api.nvim_set_hl(0, group, { fg = fg, bold = true, default = true })
+    vim.api.nvim_set_hl(0, group .. "Bg", { bg = blend_color(fg, normal_bg, ALERT_TINT), default = true })
   end
 end
 

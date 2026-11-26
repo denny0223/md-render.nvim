@@ -39,10 +39,12 @@ local function wait_for(predicate)
   assert(vim.wait(2000, predicate, 5))
 end
 local function receiver()
-  local values = {}
-  return values, function(path)
+  local values, reasons = {}, {}
+  local function receive(path, reason)
     values[#values + 1] = path or false
+    reasons[#values] = reason or false
   end
+  return values, receive, reasons
 end
 local function cache_path(url)
   return image.cache_dir() .. "/images/" .. vim.fn.sha256(url):sub(1, 16) .. ".png"
@@ -51,7 +53,7 @@ for _, video in ipairs { false, true } do
   local download = video and image.download_video_async or image.download_async
   local cached = video and image.get_video_cached or image.get_cached
   local url = "https://example.invalid/{a,b}[1-3]-" .. tostring(video) .. ".png"
-  local values, receive = receiver()
+  local values, receive, reasons = receiver()
   local before = #jobs
   download(url, receive)
   wait_for(function()
@@ -63,12 +65,18 @@ for _, video in ipairs { false, true } do
   download(url, receive)
   vim.wait(10)
   assert(#values == 0 and #jobs == before + 1, "second reader did not join pending download")
-  job.callback { code = 124 }
+  job.callback { code = 124, signal = 0 }
   wait_for(function()
     return #values == 2
   end)
   assert(not values[1] and not values[2] and vim.fn.filereadable(job.output) == 0)
-  download(url, receive)
+  assert(reasons[1] == "curl exit 124" and reasons[2] == reasons[1], "both waiters need the same download error")
+  assert(messages[#messages]:find("(exit 124): no error details", 1, true), messages[#messages])
+  local success_args
+  download(url, function(...)
+    success_args = select("#", ...)
+    receive(...)
+  end)
   wait_for(function()
     return #jobs == before + 2
   end)
@@ -79,6 +87,7 @@ for _, video in ipairs { false, true } do
     return #values == 3
   end)
   assert(values[3] == cache_path(url) and cached(url) == values[3])
+  assert(success_args == 1, "successful downloads should still call back with just the path")
   assert(vim.fn.filereadable(job.output) == 0)
 
   local peer_url = "https://example.invalid/peer-" .. tostring(video) .. ".png"
@@ -88,30 +97,42 @@ for _, video in ipairs { false, true } do
   end)
   local failed = jobs[#jobs]
   write(cache_path(peer_url), png) -- another process completes while this writer is pending
-  failed.callback { code = 1 }
+  failed.callback { code = 7, stderr = "curl: (7) Failed to connect to the test server\n" }
   wait_for(function()
     return #values == 4
   end)
   assert(not values[4] and vim.fn.filereadable(failed.output) == 0)
+  assert(reasons[4] == "could not connect")
+  assert(messages[#messages]:find("Failed to connect to the test server", 1, true), messages[#messages])
   assert(cached(peer_url) == cache_path(peer_url), "failed writer deleted its peer's completed output")
 end
 
 fail_spawn = true
-local values, receive = receiver()
+local values, receive, reasons = receiver()
 image.download_async("https://example.invalid/spawn.png", receive)
 wait_for(function()
   return #values == 1
 end)
 assert(not values[1] and vim.fn.filereadable(jobs[#jobs].output) == 0, "spawn failure leaked staging output")
+assert(reasons[1] == "could not run curl")
 fail_spawn = false
-image.download_async("https://example.invalid/spawn.png", receive)
-wait_for(function()
-  return #jobs == 8
-end)
-jobs[#jobs].callback { code = 1 }
-wait_for(function()
-  return #values == 2
-end)
+for i, result in ipairs {
+  { code = 28, stdout = "200" },
+  { code = 124, signal = 15 },
+  { code = 124, signal = 9 },
+} do
+  local before = #jobs
+  image.download_async("https://example.invalid/spawn.png", receive)
+  wait_for(function()
+    return #jobs == before + 1
+  end)
+  jobs[#jobs].callback(result)
+  wait_for(function()
+    return #values == i + 1
+  end)
+  assert(reasons[i + 1] == "timed out", vim.inspect(result))
+  assert(messages[#messages]:find("(exit " .. result.code .. "): timed out", 1, true), messages[#messages])
+end
 
 local custom_calls, stage, complete = 0, nil, nil
 image.set_download_fn(function(_, output, callback)
@@ -135,7 +156,7 @@ wait_for(function()
 end)
 assert(values[1] == values[2] and values[1] ~= stage and image.get_cached(custom_url) == values[1])
 assert(vim.fn.filereadable(stage) == 0)
-values, receive = receiver()
+values, receive, reasons = receiver()
 image.download_video_async("https://example.invalid/custom-fail.png", receive)
 wait_for(function()
   return custom_calls == 2
@@ -144,7 +165,7 @@ complete(false)
 wait_for(function()
   return #values == 1
 end)
-assert(not values[1] and vim.fn.filereadable(stage) == 0)
+assert(not values[1] and not reasons[1] and vim.fn.filereadable(stage) == 0)
 assert(messages[#messages]:find("custom media downloader reported failure", 1, true))
 image.set_download_fn(function(_, output)
   custom_calls = custom_calls + 1
@@ -152,12 +173,12 @@ image.set_download_fn(function(_, output)
   write(output, png)
   error "controlled custom downloader failure"
 end)
-values, receive = receiver()
+values, receive, reasons = receiver()
 image.download_async("https://example.invalid/custom-throw.png", receive)
 wait_for(function()
   return #values == 1
 end)
-assert(not values[1] and vim.fn.filereadable(stage) == 0)
+assert(not values[1] and not reasons[1] and vim.fn.filereadable(stage) == 0)
 local process_count = #jobs
 for _, url in ipairs { "file:///tmp/a", "ftp://example.invalid/a", "https://example.invalid/\n-a", "http://a/\0", 123 } do
   values, receive = receiver()

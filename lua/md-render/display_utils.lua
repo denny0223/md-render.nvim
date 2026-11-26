@@ -12,7 +12,7 @@ function M.usable_win_width(win)
   return math.max(1, vim.api.nvim_win_get_width(win) - (info and info.textoff or 0))
 end
 
-local function show_image_error(buf, ns, placement)
+local function show_image_error(buf, ns, placement, reason)
   local count = vim.api.nvim_buf_line_count(buf)
   if placement.line >= count then return end
   local row = math.min(placement.line + math.floor((placement.rows or 1) / 2), count - 1)
@@ -46,9 +46,10 @@ local function show_image_error(buf, ns, placement)
     local info = vim.fn.getwininfo(win)[1]
     columns = math.min(columns, math.max(1, info.width - info.textoff - start))
   end
-  local status = "Image failed; see :messages and :checkhealth md-render"
-  if #status > columns then status = "Image failed; :messages" end
-  if #status > columns then status = "Image failed" end
+  local failed = placement.video and "Video failed" or "Image failed"
+  local status = reason and (failed .. ": " .. reason) or (failed .. "; see :messages and :checkhealth md-render")
+  if #status > columns then status = reason or (failed .. "; :messages") end
+  if #status > columns then status = failed end
   if #status > columns then status = "Failed" end
   if #status > columns then status = "!" end
   vim.api.nvim_buf_set_extmark(buf, ns, row, col, {
@@ -60,9 +61,10 @@ local function show_image_error(buf, ns, placement)
 end
 
 --- Overlay a failure using the target buffer's display options, even after an async callback.
-function M.show_image_error(buf, ns, placement)
+---@param reason? string short download diagnostic
+function M.show_image_error(buf, ns, placement, reason)
   vim.api.nvim_buf_call(buf, function()
-    show_image_error(buf, ns, placement)
+    show_image_error(buf, ns, placement, reason)
   end)
 end
 
@@ -1527,6 +1529,7 @@ function M.setup_images(win, content, ns, opts)
   ---@async
   ---@param placement MdRender.ImagePlacement
   ---@return string? path
+  ---@return string? download_reason
   local function produce(placement)
     if placement.mermaid_source then
       local path = async.await(2, image.render_mermaid_async, placement.mermaid_source)
@@ -1549,8 +1552,8 @@ function M.setup_images(win, content, ns, opts)
   local function process_placement_async(placement, revision, owner)
     if placement.path then return show(placement, placement.path, revision, owner) end
 
-    local path = produce(placement)
-    if not path then return false end
+    local path, reason = produce(placement)
+    if not path then return false, reason end
     if not current(revision) then return end
     -- A file that did not exist when the content was built changes how many
     -- rows it needs, so everything below it moves. Rebuilding is what puts it
@@ -1594,11 +1597,11 @@ function M.setup_images(win, content, ns, opts)
         -- The window can go, and the placement can scroll away, while this is
         -- queued behind a permit.
         if not current(revision) then return end
-        local ok, shown = pcall(process_placement_async, placement, revision, owner)
+        local ok, shown, reason = pcall(process_placement_async, placement, revision, owner)
         if current(revision) and (not ok or shown == false) then
           placement._retries = MAX_RETRIES
           if ns and placement.line < vim.api.nvim_buf_line_count(state.buf) then
-            M.show_image_error(state.buf, ns, reserved)
+            M.show_image_error(state.buf, ns, reserved, reason)
           end
         end
       end)

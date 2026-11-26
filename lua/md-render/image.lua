@@ -638,8 +638,9 @@ end
 ---@param result vim.SystemCompleted
 ---@param purpose string
 ---@param timeout_ms? integer configured timeout for this invocation
+---@param silent_detail? string diagnostic to use when stderr is empty
 ---@return string
-local function tool_failure(tool, result, purpose, timeout_ms)
+local function tool_failure(tool, result, purpose, timeout_ms, silent_detail)
   -- Keep the last couple of non-empty stderr lines. FFmpeg prints its banner
   -- and build configuration first, and splits the reason across two lines
   -- ("Unrecognized option 'vsync'." / "Error splitting the argument list: ..."),
@@ -658,7 +659,7 @@ local function tool_failure(tool, result, purpose, timeout_ms)
     local status = string.format("%s exited with code 124 (configured timeout: %d seconds)", tool, timeout_ms / 1000)
     return detail == "" and status or status .. ": " .. detail
   end
-  if detail == "" then detail = result.code == 124 and "timed out" or "no error details" end
+  if detail == "" then detail = silent_detail or (result.code == 124 and "timed out" or "no error details") end
   return string.format("%s %s (exit %s): %s", tool, purpose, tostring(result.code), detail)
 end
 
@@ -707,6 +708,8 @@ local function curl_download(url, output, seconds, bytes)
     tostring(seconds),
     "--max-filesize",
     tostring(bytes),
+    "--write-out",
+    "%{http_code}",
     "-o",
     output,
     "--",
@@ -1338,15 +1341,16 @@ end
 ---@param cache_path string
 ---@param video boolean skip image header validation for explicit video downloads
 ---@return string? path  nil when the download is not usable
----@return string? reason
+---@return string? detail for :messages
+---@return string? reason for the image placeholder
 local function finalize_download(url, output, cache_path, video)
   local stat = uv.fs_stat(output)
-  if not stat or stat.type ~= "file" then return nil, "download produced no file" end
-  if stat.size == 0 then return nil, "download produced an empty file" end
+  if not stat or stat.type ~= "file" then return nil, "download produced no file", "no file downloaded" end
+  if stat.size == 0 then return nil, "download produced an empty file", "empty file" end
   if not video and not M.image_dimensions(output) then
     -- Check if it's a video with wrong extension
     local video_ext = detect_video_ext(output)
-    if not video_ext then return nil, "downloaded content is not a supported image or video" end
+    if not video_ext then return nil, "downloaded content is not a supported image or video", "unsupported media" end
     cache_path = cache_path:gsub("%.[^./]+$", "." .. video_ext)
   end
   local installed, err = uv.fs_rename(output, cache_path)
@@ -1354,7 +1358,7 @@ local function finalize_download(url, output, cache_path, video)
     _url_cache[url] = cache_path
     return cache_path
   end
-  return nil, "could not publish downloaded media to the cache: " .. tostring(err)
+  return nil, "could not publish downloaded media to the cache: " .. tostring(err), "cache write failed"
 end
 
 --- Offer the download to the user's `set_download_fn`, if one is registered.
@@ -1380,32 +1384,61 @@ local function custom_download(url, cache_path)
   return taken, ok
 end
 
+local curl_errors = {
+  [6] = "could not resolve host",
+  [7] = "could not connect",
+  [28] = "timed out",
+  [35] = "TLS handshake failed",
+  [47] = "too many redirects",
+  [52] = "empty reply",
+  [56] = "receive error",
+  [60] = "certificate verification failed",
+  [63] = "file too large",
+}
+
+local function known_curl_failure(transfer)
+  local status = (transfer.stdout or ""):match "^([45]%d%d)$"
+  if transfer.code == 22 and status then return "HTTP " .. status end
+  -- The deadline sends TERM or KILL. A wrapper can also exit 124 on its own.
+  if transfer.code == 124 and (transfer.signal == 15 or transfer.signal == 9) then return "timed out" end
+  return curl_errors[transfer.code]
+end
+
 --- Keep partial built-in and custom output invisible to cache readers.
 local function download_file(url, cache_path, video)
   local nonce = vim.fn.sha256(vim.fn.tempname()):sub(1, 16)
   local output = cache_path:gsub("(%.[^./]+)$", "." .. nonce .. "%1")
-  local ok, result, reason = pcall(function()
+  local exception_reason
+  local ok, path, detail, reason = pcall(function()
     local taken, arrived = custom_download(url, output)
-    if not taken then
+    if taken then
+      if not arrived then return nil, "custom media downloader reported failure" end
+    else
+      exception_reason = "could not run curl"
       local transfer = curl_download(url, output, video and 30 or 10, video and 104857600 or 20000000)
-      arrived = transfer.code == 0
-      if not arrived then return nil, tool_failure("curl", transfer, "could not download media") end
+      if transfer.code ~= 0 then
+        local reason = known_curl_failure(transfer)
+        local detail = tool_failure("curl", transfer, "could not download media", nil, reason or "no error details")
+        return nil, detail, reason or ("curl exit %d"):format(transfer.code)
+      end
     end
-    if arrived then return finalize_download(url, output, cache_path, video) end
-    return nil, "custom media downloader reported failure"
+    exception_reason = "could not cache download"
+    return finalize_download(url, output, cache_path, video)
   end)
   os.remove(output)
   if not ok then
-    notify_failure("media download failed: " .. tostring(result), vim.log.levels.ERROR)
-  elseif reason then
-    notify_failure(reason)
+    notify_failure("media download failed: " .. tostring(path), vim.log.levels.ERROR)
+    path, reason = nil, exception_reason
+  elseif detail then
+    notify_failure(detail)
   end
-  return ok and result or nil
+  if reason then return nil, reason end
+  return path
 end
 
 --- Download a URL to a local file asynchronously.
 ---@param url string
----@param callback fun(path: string?)  called with local path on success, nil on failure
+---@param callback fun(path: string?, reason?: string)  local path on success, optional short reason on failure
 function M.download_async(url, callback)
   if not M.is_url(url) or M.is_badge_url(url) then
     callback(nil)
@@ -1444,7 +1477,7 @@ end
 --- Download a video URL to a local file asynchronously.
 --- Unlike download_async(), this uses larger limits and skips image_dimensions validation.
 ---@param url string
----@param callback fun(path: string?)  called with local path on success, nil on failure
+---@param callback fun(path: string?, reason?: string)  local path on success, optional short reason on failure
 function M.download_video_async(url, callback)
   if not M.is_url(url) then
     callback(nil)

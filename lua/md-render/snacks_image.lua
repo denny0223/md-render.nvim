@@ -287,20 +287,20 @@ function M.update(state, content)
       async.run(function()
         permits:with(function()
           if not current() then return end
-          local path
+          local path, reason
           if p.mermaid_source then
             path = async.await(2, image.render_mermaid_async, p.mermaid_source)
           elseif p.plantuml_source then
             path = async.await(2, image.render_plantuml_async, p.plantuml_source)
           elseif p.src_url then
-            path = async.await(2, image.download_async, p.src_url)
+            path, reason = async.await(2, image.download_async, p.src_url)
           end
           if not current() then return end
           if path then
             p.path = path
             ready()
           else
-            require("md-render.display_utils").show_image_error(state.buf, state.ns, p)
+            require("md-render.display_utils").show_image_error(state.buf, state.ns, p, reason)
           end
         end)
       end)

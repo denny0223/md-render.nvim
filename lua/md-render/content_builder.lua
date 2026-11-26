@@ -1744,7 +1744,7 @@ end
 -- Canonical quote markers are parser scaffolding; literal content stays intact.
 -- A wider gap is permitted only for the exact scaffold of an already-accepted
 -- interleaved list owner. Callers discard those columns on an owner exit.
-local function quote_content(line, column, limit, owner_columns)
+local function quote_content(line, column, limit, owner_columns, list_gaps)
   local columns = {}
   local prefix = ""
   while #columns < math.min(limit or inline.MAX_NESTING, inline.MAX_NESTING) do
@@ -1754,7 +1754,8 @@ local function quote_content(line, column, limit, owner_columns)
       and #columns > 0
       and owner_columns[#columns + 1]
       and owner_columns[#columns + 1] - owner_columns[#columns] - 2
-    if (ws > 3 and ws ~= owner_gap) or structural:sub(ws + 1, ws + 1) ~= ">" then break end
+    local minimum = list_gaps and list_gaps[#columns + 1] or 0
+    if ws < minimum or (ws > minimum + 3 and ws ~= owner_gap) or structural:sub(ws + 1, ws + 1) ~= ">" then break end
     local _
     _, line, column = split_quote_marker(structural:sub(ws + 1), column + ws)
     -- Canonical markers preserve quote identity; intervening indent stays physical.
@@ -1774,6 +1775,20 @@ local function quote_display_prefix(origin, list_column)
     prefix, previous = prefix .. "│ ", column
   end
   return prefix .. string.rep(" ", list_column or origin.list_column)
+end
+
+-- Block rows must carry every physical quote/list ancestor.
+-- The optional indentation around a quote marker can change on each row.
+local function quoted_container_row(line, outer, quote, inner)
+  if not line then return end
+  line = expand_leading_tabs(line)
+  local ws = #line:match "^ *"
+  if ws < outer or ws > outer + 3 then return end
+  local content, columns, column, scaffold = quote_content(line:sub(ws + 1), ws, quote.depth, nil, quote.list_gaps)
+  if #columns ~= quote.depth then return end
+  content = expand_leading_tabs(content, column)
+  if #content:match "^ *" < inner and not content:match "^ *$" then return end
+  return content:sub(inner + 1), columns, ws, scaffold
 end
 
 -- Peel only accepted same-row containers. Ordinary item paragraphs and tasks
@@ -1894,7 +1909,7 @@ local function strip_container_indent(lines)
     if base == 0 then item_cols = {} end
   end
 
-  local function expose_setext_item(item, last, quoted)
+  local function expose_block_item(item, last, quoted)
     local origin = origins[item.row]
     origin.list_prefixes = origin.list_prefixes or {}
     origin.list_prefixes[#origin.list_prefixes + 1] = item.prefix
@@ -1913,9 +1928,61 @@ local function strip_container_indent(lines)
     end
   end
 
+  local function table_header(header, delimiter, in_paragraph)
+    local cells, alignments = markdown_table.parse_header(header, delimiter, in_paragraph)
+    if cells then return { cells = cells, alignments = alignments } end
+  end
+
+  local function quoted_header(row, header, outer, owner, inner, in_paragraph)
+    local delimiter = lines[row + 1]
+    if owner.fence or owner.html or owner.comment or not delimiter or not delimiter:find("-", 1, true) then return end
+    local leaf = quoted_container_row(delimiter, outer, owner, inner)
+    return table_header(header, leaf, in_paragraph)
+  end
+
+  local function collect_quoted_table(row, header, parsed_header, outer, owner, inner)
+    local origin = origins[row]
+    local rows = { header }
+    origin.pipe_table, origin.pipe_table_header = rows, parsed_header
+    if inner > 0 then origin.list_column = inner end
+    local markers = string.rep("> ", owner.depth) .. string.rep(" ", inner)
+    local index = row + 1
+    while index <= #lines do
+      local leaf, columns, column, scaffold = quoted_container_row(lines[index], outer, owner, inner)
+      if not leaf or (#rows > 1 and not markdown_table.is_body_row(leaf)) then break end
+      rows[#rows + 1] = leaf
+      indents[index] = indents[row]
+      origins[index] = {
+        column = column,
+        quote_columns = columns,
+        ancestor_prefix = scaffold .. string.rep(" ", inner),
+        list_column = origin.list_column,
+      }
+      result[index] = markers .. leaf
+      index = index + 1
+    end
+    owner.paragraph, owner.paragraph_item = false, nil
+  end
+
   for i, line in ipairs(lines) do
+    if origins[i] then goto next_source end -- An accepted table already owns this physical row.
     local origin = { column = 0, quote_columns = {} }
     origins[i] = origin
+    if quote and quote.math then
+      local inner = quote.math
+      local leaf, columns, column, scaffold = quoted_container_row(line, quote.base, quote, inner)
+      if leaf then
+        origin.column, origin.quote_columns = column, columns
+        origin.quoted_math = true
+        origin.list_column = quote.child_base
+        origin.ancestor_prefix = scaffold .. string.rep(" ", inner)
+        if quote.base > 0 then indents[i] = string.rep(" ", quote.base) end
+        result[i] = string.rep("> ", quote.depth) .. string.rep(" ", inner) .. leaf
+        if Markdown.is_math_fence(leaf) then quote.math = nil end
+        goto next_source
+      end
+      quote.math = nil
+    end
     if html then
       in_root_code, code_blanks = false, {}
       local blank = line:match "^[ \t]*$"
@@ -2003,11 +2070,18 @@ local function strip_container_indent(lines)
         for depth = #columns + 1, quote.depth do
           columns[depth] = column -- the virtual marker consumes no source columns
         end
-        origin.continuation_depth = quote.depth
         origin.ancestor_prefix = quote.ancestor_prefix
         origin.list_column = quote.child_base
         result[i] = string.rep("> ", quote.depth) .. content
         if quote.base > 0 then indents[i] = string.rep(" ", quote.base) end
+        local inner = quote.items[#quote.items] or 0
+        local header = strip_container_prefix(content, inner, column)
+        local parsed_header = quoted_header(i, header, quote.base, quote, inner, true)
+        if parsed_header then
+          collect_quoted_table(i, header, parsed_header, quote.base, quote, inner)
+        else
+          origin.continuation_depth = quote.depth
+        end
         goto next_source
       end
     end
@@ -2102,20 +2176,30 @@ local function strip_container_indent(lines)
           if not html_block.ends(html_kind, leaf) then html = { kind = html_kind, src = i, container = leaf_column } end
           goto next_source
         end
-        if next_line then
-          next_line = #next_line:match "^ *" >= leaf_column and next_line:sub(leaf_column + 1) or nil
+        local table_base = lazy_item and paragraph_column or leaf_column
+        local table_body = not opens_item and table_column == leaf_column and markdown_table.is_body_row(leaf)
+        if not table_body and next_line and #next_line:match "^ *" >= table_base then
+          origin.pipe_table_header =
+            table_header(leaf, next_line:sub(table_base + 1), not opens_item and paragraph_column == table_base)
         end
-        if
-          (table_column == leaf_column and markdown_table.is_body_row(leaf))
-          or markdown_table.parse_header(leaf, next_line)
-        then
-          table_column, paragraph_column, paragraph_item = leaf_column, nil, nil
-        else
+        if origin.pipe_table_header then
+          if lazy_item then
+            indents[i], origin.column = string.rep(" ", table_base), table_base
+          elseif opens_item then
+            expose_block_item({
+              row = i,
+              column = col,
+              content = leaf,
+              prefix = list_prefix_entry(line, base, origin, ""),
+            }, i)
+          end
+          table_column, paragraph_column, paragraph_item = table_base, nil, nil
+        elseif not table_body then
           table_column = nil
           if is_fence or result[i]:match "^>" then
             paragraph_column, paragraph_item = nil, nil
           elseif paragraph_column == leaf_column and Markdown.parse_setext_underline(leaf) then
-            if paragraph_item then expose_setext_item(paragraph_item, i) end
+            if paragraph_item then expose_block_item(paragraph_item, i) end
             paragraph_column, paragraph_item = nil, nil
           elseif opens_item or not paragraph_column or is_block_start(leaf, true) then
             paragraph_column = not is_block_start(leaf, false) and leaf_column or nil
@@ -2200,31 +2284,11 @@ local function strip_container_indent(lines)
     if quote.columns and not quote.fence then
       for level = 2, depth do
         if quote_columns[level] - quote_columns[level - 1] < quote.columns[level] - quote.columns[level - 1] then
-          quote.paragraph, quote.child_base, quote.columns = false, nil, nil
+          quote.paragraph, quote.child_base, quote.columns, quote.list_gaps = false, nil, nil, nil
           break
         end
       end
     end
-    local next_content, next_columns
-    local next_line = lines[i + 1]
-    if next_line then
-      next_line = expand_leading_tabs(next_line)
-      local ws = #next_line:match "^ *"
-      if ws >= base and ws - base <= 3 then
-        next_content, next_columns = quote_content(next_line:sub(ws + 1), ws, nil, quote.columns)
-      end
-    end
-    if
-      not quote.fence
-      and (
-        (quote.table and markdown_table.is_body_row(content))
-        or (next_columns and #next_columns == depth and markdown_table.parse_header(content, next_content))
-      )
-    then
-      quote.table, quote.paragraph, quote.paragraph_item = true, false, nil
-      goto next_source
-    end
-    quote.table = nil
     local was_paragraph = quote.paragraph
     if content:match "^%s*$" and quote.empty_item and quote.items[#quote.items] == quote.empty_item then
       table.remove(quote.items)
@@ -2233,9 +2297,16 @@ local function strip_container_indent(lines)
       and #quote.items > 0
       and #expand_leading_tabs(content, column):match "^ *" < quote.items[#quote.items]
     if quote.paragraph and not sibling and quote_paragraph_line(content, column, nil, quote.items[#quote.items]) then
-      origin.continuation_depth = depth
-      origin.ancestor_prefix = quote.ancestor_prefix
-      origin.list_column = quote.child_base
+      local inner = quote.items[#quote.items] or 0
+      local header = strip_container_prefix(content, inner, column)
+      local parsed_header = quoted_header(i, header, base, quote, inner, true)
+      if parsed_header then
+        collect_quoted_table(i, header, parsed_header, base, quote, inner)
+      else
+        origin.continuation_depth = depth
+        origin.ancestor_prefix = quote.ancestor_prefix
+        origin.list_column = quote.child_base
+      end
       goto next_source
     end
     local quote_suffix
@@ -2281,6 +2352,8 @@ local function strip_container_indent(lines)
       local leaf, columns, leaf_column, scaffold =
         quote_content(inner, column + local_base, inline.MAX_NESTING - #origin.quote_columns)
       if #columns == 0 then break end
+      local list_gaps = quote.list_gaps or {}
+      list_gaps[#origin.quote_columns + 1] = local_base
       ancestor_prefix = ancestor_prefix .. string.rep(" ", local_base) .. scaffold
       for _, next_column in ipairs(columns) do
         origin.quote_columns[#origin.quote_columns + 1] = next_column
@@ -2294,6 +2367,7 @@ local function strip_container_indent(lines)
         paragraph = false,
         child_base = 0,
         columns = vim.deepcopy(origin.quote_columns),
+        list_gaps = list_gaps,
       }
       local _
       local_base, col, _, item_content =
@@ -2317,6 +2391,26 @@ local function strip_container_indent(lines)
     if col then leaf = item_content end
     quote.empty_item = col and leaf:match "^[ \t]*$" and col or nil
     local paragraph_leaf = col and leaf or strip_container_prefix(leaf, local_base, column)
+    local table_base = col or local_base
+    if not quote.fence and Markdown.is_math_fence(paragraph_leaf) then
+      quote.math, quote.paragraph, quote.paragraph_item = table_base, false, nil
+      origin.quoted_math = true
+      goto next_source
+    end
+    local parsed_header = quoted_header(i, paragraph_leaf, base, quote, table_base, false)
+    if parsed_header then
+      if col then
+        expose_block_item({
+          row = i,
+          column = col,
+          content = leaf,
+          scaffold = ancestor_prefix,
+          prefix = list_prefix_entry(content, local_base, origin, string.rep(" ", base) .. ancestor_prefix),
+        }, i, quote)
+      end
+      collect_quoted_table(i, paragraph_leaf, parsed_header, base, quote, table_base)
+      goto next_source
+    end
     local html_kind = not quote.fence
       and html_block.start(paragraph_leaf, quote.paragraph and not col, column + (col or local_base))
     if html_kind then
@@ -2351,7 +2445,7 @@ local function strip_container_indent(lines)
       end
     end
     if was_paragraph and Markdown.parse_setext_underline(paragraph_leaf) and quote.paragraph_item then
-      expose_setext_item(quote.paragraph_item, i, quote)
+      expose_block_item(quote.paragraph_item, i, quote)
     end
     quote.paragraph = not origin.code
       and not (was_paragraph and Markdown.parse_setext_underline(paragraph_leaf))
@@ -2385,8 +2479,7 @@ local function table_end(lines, idx, src_indices, container_indents)
   local src = src_indices[idx]
   local container = container_indents and container_indents[src] or ""
   if
-    not markdown_table.parse_header(lines[idx], lines[idx + 1])
-    or src_indices[idx + 1] ~= src + 1
+    src_indices[idx + 1] ~= src + 1
     or (container_indents and container_indents[src_indices[idx + 1]] or "") ~= container
   then
     return nil
@@ -2492,10 +2585,19 @@ local function join_paragraph_continuations(
         and not comment_state
         and Markdown.is_math_fence(line)
       if math_boundary then in_math = not in_math end
-      if in_math or math_boundary then
+      if in_math or math_boundary or line_origin.quoted_math then
         flush_para()
         table.insert(result, line)
         table.insert(result_indices, src)
+        goto next_line
+      end
+      if line_origin.pipe_table then
+        flush_para()
+        consumed = #line_origin.pipe_table
+        for row = idx, idx + consumed - 1 do
+          table.insert(result, lines[row])
+          table.insert(result_indices, src_indices[row])
+        end
         goto next_line
       end
       if line_origin.continuation_depth == quote_depth and not (reference_defs and reference_defs[src]) then
@@ -2599,19 +2701,6 @@ local function join_paragraph_continuations(
         goto next_line
       end
 
-      -- Decide table ownership before paragraph joining can merge the header
-      -- or an unpiped body row. Keep each row's original source boundary.
-      local last_table_row = not in_code and not is_fence and table_end(lines, idx, src_indices, container_indents)
-      if last_table_row then
-        flush_para()
-        for row = idx, last_table_row - 1 do
-          table.insert(result, lines[row])
-          table.insert(result_indices, src_indices[row])
-        end
-        consumed = last_table_row - idx
-        goto next_line
-      end
-
       -- A list item opens a paragraph of its own: the lines that follow it
       -- (indented to its content, or lazily unindented) belong to that same
       -- paragraph, so they must be joined onto the marker line.
@@ -2663,22 +2752,27 @@ local function preprocess_multiline_html(lines, src_indices, container_indents, 
   local masked = {}
   for index, line in ipairs(lines) do
     local origin = source_origins[src_indices[index]]
-    masked[index] = (origin.code or origin.html) and "" or line
+    masked[index] = (origin.code or origin.html or origin.quoted_math) and "" or line
   end
   local _, _, definition_ends = Markdown.parse_reference_links(masked, source_origins, src_indices)
   local reference_end = 0
   for idx, line in ipairs(lines) do
     local src = src_indices[idx]
     local origin = source_origins[src]
+    local quoted_table, header = origin.pipe_table, origin.pipe_table_header
+    origin.pipe_table, origin.pipe_table_header = nil, nil
     if comment_state == "html" and comment_owner ~= origin.html then comment_state = nil end
-    if origin.code then goto next_row end
+    if origin.code or origin.quoted_math then goto next_row end
     if idx <= reference_end then goto next_row end
     local math_boundary = not origin.html and not open_fence and not comment_state and Markdown.is_math_fence(line)
     if math_boundary then in_math = not in_math end
     if in_math or math_boundary or table_rows[src] then goto next_row end
     if not origin.html and not open_fence and not comment_state then
-      local last = table_end(lines, idx, src_indices, container_indents)
+      local last = quoted_table and idx + #quoted_table
+        or (header and table_end(lines, idx, src_indices, container_indents))
       if last then
+        origin.pipe_table = quoted_table or vim.list_slice(lines, idx, last - 1)
+        origin.pipe_table_header = header
         for row = idx, last - 1 do
           table_rows[src_indices[row]] = true
         end
@@ -2736,7 +2830,7 @@ local function fenced_code_lines(
       and not open_fence
       and not comment_state
       and Markdown.is_math_fence(line)
-    if origin.code then
+    if origin.code or origin.quoted_math then
       code_lines[src] = true
       goto next_line
     end

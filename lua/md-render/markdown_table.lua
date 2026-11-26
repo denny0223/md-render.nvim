@@ -1,3 +1,7 @@
+---@class MdRender.MarkdownTable.Header
+---@field cells string[]
+---@field alignments string[]
+
 ---@class MdRender.MarkdownTable.ParsedCell
 ---@field text string rendered text (inline markdown processed)
 ---@field highlights MdRender.Markdown.Highlight[] highlights from markdown.render()
@@ -87,7 +91,9 @@ function MarkdownTable.is_body_row(line, in_paragraph)
   if text:match "^!%[" or text:match "^=+%s*$" then return true end
   if text:match "^[%-%*%+]%s*$" then return false end
   local digits, tail = text:match "^(%d+)[.)](.*)$"
-  if digits and (tail == "" or tail:match "^[ \t]") then return #digits > 9 end
+  if digits and (tail == "" or tail:match "^[ \t]") then
+    return #digits > 9 or (in_paragraph and not require("md-render.markdown").list_marker_type(text, true)) or false
+  end
   -- The paragraph boundary helper also recognizes Setext underlines and
   -- loose thematic-break prefixes; neither can end a table unless it is
   -- an actual thematic break or list item.
@@ -102,14 +108,15 @@ end
 --- Validate the header and delimiter together before collecting table rows.
 ---@param header string
 ---@param separator? string
+---@param in_paragraph? boolean whether the header is a continuation of an open paragraph
 ---@return string[]? cells
 ---@return string[]? alignments
-function MarkdownTable.parse_header(header, separator)
+function MarkdownTable.parse_header(header, separator, in_paragraph)
   -- Plain dashes retain Setext-heading precedence, even after a piped header.
   if not separator or separator:match "^%s*%-+%s*$" then return nil end
   if not MarkdownTable.is_body_row(separator) then return nil end
   local alignments = parse_separator(separator)
-  if not alignments or not MarkdownTable.is_body_row(header) then return nil end
+  if not alignments or not MarkdownTable.is_body_row(header, in_paragraph) then return nil end
   local cells = split_row(header)
   if not cells or #cells ~= #alignments then return nil end
   return cells, alignments
@@ -184,13 +191,19 @@ end
 ---@param ref_links? table<string, string> normalized document labels to URLs
 ---@param raw_html? boolean
 ---@param footnote_map? table<string, integer>
+---@param header? MdRender.MarkdownTable.Header header already accepted in its source container
 ---@return MdRender.MarkdownTable.ParsedTable|nil
-function MarkdownTable.parse(lines, repo_base_url, autolinks, ref_links, raw_html, footnote_map)
+function MarkdownTable.parse(lines, repo_base_url, autolinks, ref_links, raw_html, footnote_map, header)
   if #lines < 2 then return nil end
   lines = vim.tbl_map(require("md-render.character_references").normalize_nul, lines)
 
-  local header_cells, alignments = MarkdownTable.parse_header(lines[1], lines[2])
-  if not header_cells then return nil end
+  local header_cells, alignments
+  if header then
+    header_cells, alignments = header.cells, header.alignments
+  else
+    header_cells, alignments = MarkdownTable.parse_header(lines[1], lines[2])
+    if not header_cells then return nil end
+  end
 
   local markdown = require "md-render.markdown"
   -- Choose the first cell in Markdown order before wrapping can put a later cell's marker above it.

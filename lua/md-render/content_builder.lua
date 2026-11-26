@@ -583,6 +583,70 @@ function ContentBuilder:add_simple_markdown(rendered_text, md_highlights, md_lin
   end
 end
 
+local markdown_table = require "md-render.markdown_table"
+
+---@param self MdRender.ContentBuilder
+---@param parsed MdRender.MarkdownTable.ParsedTable
+---@param layout? { quote_col?: integer, alert_hl?: string, max_rows: integer } Quote-prefix byte offset, optional alert highlight and remaining rows.
+local function add_parsed_table(self, parsed, indent, max_width, buf_dir, per_row_source, layout)
+  if layout and layout.max_rows <= 0 then return end
+  local lines, per_line_hls, per_line_links, tbl_image_placements, src_offsets, dynamic_media =
+    markdown_table.render(parsed, indent, max_width, buf_dir)
+  record_media_support(self, dynamic_media)
+  local base_line = #self.lines
+  -- Each pipe-table offset is relative to the header's physical source row.
+  -- Text wraps and image placeholders can share the same offset.
+  local saved_src_line = self._current_source_line
+  local count = math.min(#lines, layout and layout.max_rows or #lines)
+  for i = 1, count do
+    if per_row_source and src_offsets and src_offsets[i] then
+      self._current_source_line = saved_src_line + src_offsets[i]
+    end
+    local groups = per_line_hls[i]
+    if layout and layout.quote_col then
+      table.insert(groups, 1, { col = layout.quote_col, end_col = #indent, hl = layout.alert_hl or "FloatBorder" })
+      if layout.alert_hl then
+        table.insert(groups, { col = 0, end_col = -1, hl = layout.alert_hl .. "Bg", hl_eol = true })
+      end
+    end
+    self:add_line(lines[i], #groups > 0 and groups or nil)
+    self.table_lines[#self.lines - 1] = true
+    for _, link in ipairs(per_line_links[i] or {}) do
+      add_rendered_link(self, {
+        line = base_line + i - 1,
+        col_start = link.col_start,
+        col_end = link.col_end,
+        url = link.url,
+        footnote_label = link.footnote_label,
+      })
+    end
+  end
+  self._current_source_line = saved_src_line
+
+  -- Register image placements from table cells (inline within table borders)
+  if tbl_image_placements then
+    for _, p in ipairs(tbl_image_placements) do
+      if p.line_offset + p.rows <= count then
+        table.insert(self.image_placements, {
+          path = p.resolved,
+          display_name = p.display_name,
+          line = base_line + p.line_offset,
+          col = p.col,
+          rows = p.rows,
+          cols = p.cols,
+          cell_col = p.cell_col,
+          cell_cols = p.cell_cols,
+          label_rows = p.label_rows,
+          src_url = p.src_url,
+          img_w = p.img_w,
+          img_h = p.img_h,
+          video = p.video,
+        })
+      end
+    end
+  end
+end
+
 --- Add a table block with highlights and links
 ---@param self MdRender.ContentBuilder
 ---@param table_lines string[]
@@ -611,7 +675,6 @@ function ContentBuilder:add_table(
   raw_html,
   footnote_map
 )
-  local markdown_table = require "md-render.markdown_table"
   local parsed = markdown_table.parse(table_lines, repo_base_url, autolinks, ref_links, raw_html, footnote_map)
   if not parsed then
     -- Fallback: render each line as markdown
@@ -630,52 +693,7 @@ function ContentBuilder:add_table(
     end
     return
   end
-  local lines, per_line_hls, per_line_links, tbl_image_placements, src_offsets, dynamic_media =
-    markdown_table.render(parsed, indent, max_width, buf_dir)
-  record_media_support(self, dynamic_media)
-  local base_line = #self.lines
-  -- For pipe tables, table_lines[i] corresponds to source line
-  -- (caller's _current_source_line + i - 1). Use the offset returned by
-  -- render to stamp each emitted line at the right source row.
-  local saved_src_line = self._current_source_line
-  for i, line in ipairs(lines) do
-    if per_row_source and src_offsets and src_offsets[i] then
-      self._current_source_line = saved_src_line + src_offsets[i]
-    end
-    self:add_line(line, #per_line_hls[i] > 0 and per_line_hls[i] or nil)
-    self.table_lines[#self.lines - 1] = true
-    for _, link in ipairs(per_line_links[i] or {}) do
-      add_rendered_link(self, {
-        line = base_line + i - 1,
-        col_start = link.col_start,
-        col_end = link.col_end,
-        url = link.url,
-        footnote_label = link.footnote_label,
-      })
-    end
-  end
-  self._current_source_line = saved_src_line
-
-  -- Register image placements from table cells (inline within table borders)
-  if tbl_image_placements then
-    for _, p in ipairs(tbl_image_placements) do
-      table.insert(self.image_placements, {
-        path = p.resolved,
-        display_name = p.display_name,
-        line = base_line + p.line_offset,
-        col = p.col,
-        rows = p.rows,
-        cols = p.cols,
-        cell_col = p.cell_col,
-        cell_cols = p.cell_cols,
-        label_rows = p.label_rows,
-        src_url = p.src_url,
-        img_w = p.img_w,
-        img_h = p.img_h,
-        video = p.video,
-      })
-    end
-  end
+  add_parsed_table(self, parsed, indent, max_width, buf_dir, per_row_source)
 end
 
 --- Emit an image/video header line (icon + display name) with wrapping.
@@ -1202,6 +1220,10 @@ function ContentBuilder:add_markdown_line(
   return alert_type, fold_mod
 end
 
+local function alert_highlight(alert_type)
+  return "MdRenderAlert" .. alert_type:sub(1, 1) .. alert_type:sub(2):lower()
+end
+
 --- Apply alert styling to lines added between lines_before and current line count
 ---@param self MdRender.ContentBuilder
 ---@param lines_before integer Line count before adding the alert line(s)
@@ -1209,7 +1231,7 @@ end
 ---@param alert_type string Alert type key (e.g. "NOTE", "WARNING")
 ---@param is_header boolean Whether this is the alert header line (with icon+label)
 function ContentBuilder:apply_alert_styling(lines_before, lines_after, alert_type, is_header)
-  local alert_hl = "MdRenderAlert" .. alert_type:sub(1, 1) .. alert_type:sub(2):lower()
+  local alert_hl = alert_highlight(alert_type)
   local alert_bg_hl = alert_hl .. "Bg"
 
   for _, hl_info in ipairs(self.highlights) do
@@ -1639,8 +1661,6 @@ local function is_list_item(line, in_paragraph)
   return Markdown.list_marker_type(line, in_paragraph) ~= nil and not is_thematic_break(line)
 end
 
-local markdown_table = require "md-render.markdown_table"
-
 --- Remove up to `n` leading spaces from a line (CommonMark dedents fenced
 --- code content by the opening fence's indent, no further).
 ---@param line string
@@ -1744,7 +1764,7 @@ end
 -- Canonical quote markers are parser scaffolding; literal content stays intact.
 -- A wider gap is permitted only for the exact scaffold of an already-accepted
 -- interleaved list owner. Callers discard those columns on an owner exit.
-local function quote_content(line, column, limit, owner_columns)
+local function quote_content(line, column, limit, owner_columns, list_gaps)
   local columns = {}
   local prefix = ""
   while #columns < math.min(limit or inline.MAX_NESTING, inline.MAX_NESTING) do
@@ -1754,7 +1774,8 @@ local function quote_content(line, column, limit, owner_columns)
       and #columns > 0
       and owner_columns[#columns + 1]
       and owner_columns[#columns + 1] - owner_columns[#columns] - 2
-    if (ws > 3 and ws ~= owner_gap) or structural:sub(ws + 1, ws + 1) ~= ">" then break end
+    local minimum = list_gaps and list_gaps[#columns + 1] or 0
+    if ws < minimum or (ws > minimum + 3 and ws ~= owner_gap) or structural:sub(ws + 1, ws + 1) ~= ">" then break end
     local _
     _, line, column = split_quote_marker(structural:sub(ws + 1), column + ws)
     -- Canonical markers preserve quote identity; intervening indent stays physical.
@@ -1774,6 +1795,20 @@ local function quote_display_prefix(origin, list_column)
     prefix, previous = prefix .. "│ ", column
   end
   return prefix .. string.rep(" ", list_column or origin.list_column)
+end
+
+-- Block rows must carry every physical quote/list ancestor.
+-- The optional indentation around a quote marker can change on each row.
+local function quoted_container_row(line, outer, quote, inner)
+  if not line then return end
+  line = expand_leading_tabs(line)
+  local ws = #line:match "^ *"
+  if ws < outer or ws > outer + 3 then return end
+  local content, columns, column, scaffold = quote_content(line:sub(ws + 1), ws, quote.depth, nil, quote.list_gaps)
+  if #columns ~= quote.depth then return end
+  content = expand_leading_tabs(content, column)
+  if #content:match "^ *" < inner and not content:match "^ *$" then return end
+  return content:sub(inner + 1), columns, ws, scaffold
 end
 
 -- Peel only accepted same-row containers. Ordinary item paragraphs and tasks
@@ -1894,7 +1929,7 @@ local function strip_container_indent(lines)
     if base == 0 then item_cols = {} end
   end
 
-  local function expose_setext_item(item, last, quoted)
+  local function expose_block_item(item, last, quoted)
     local origin = origins[item.row]
     origin.list_prefixes = origin.list_prefixes or {}
     origin.list_prefixes[#origin.list_prefixes + 1] = item.prefix
@@ -1913,9 +1948,61 @@ local function strip_container_indent(lines)
     end
   end
 
+  local function table_header(header, delimiter, in_paragraph)
+    local cells, alignments = markdown_table.parse_header(header, delimiter, in_paragraph)
+    if cells then return { cells = cells, alignments = alignments } end
+  end
+
+  local function quoted_header(row, header, outer, owner, inner, in_paragraph)
+    local delimiter = lines[row + 1]
+    if owner.fence or owner.html or owner.comment or not delimiter or not delimiter:find("-", 1, true) then return end
+    local leaf = quoted_container_row(delimiter, outer, owner, inner)
+    return table_header(header, leaf, in_paragraph)
+  end
+
+  local function collect_quoted_table(row, header, parsed_header, outer, owner, inner)
+    local origin = origins[row]
+    local rows = { header }
+    origin.pipe_table, origin.pipe_table_header = rows, parsed_header
+    if inner > 0 then origin.list_column = inner end
+    local markers = string.rep("> ", owner.depth) .. string.rep(" ", inner)
+    local index = row + 1
+    while index <= #lines do
+      local leaf, columns, column, scaffold = quoted_container_row(lines[index], outer, owner, inner)
+      if not leaf or (#rows > 1 and not markdown_table.is_body_row(leaf)) then break end
+      rows[#rows + 1] = leaf
+      indents[index] = indents[row]
+      origins[index] = {
+        column = column,
+        quote_columns = columns,
+        ancestor_prefix = scaffold .. string.rep(" ", inner),
+        list_column = origin.list_column,
+      }
+      result[index] = markers .. leaf
+      index = index + 1
+    end
+    owner.paragraph, owner.paragraph_item = false, nil
+  end
+
   for i, line in ipairs(lines) do
+    if origins[i] then goto next_source end -- An accepted table already owns this physical row.
     local origin = { column = 0, quote_columns = {} }
     origins[i] = origin
+    if quote and quote.math then
+      local inner = quote.math
+      local leaf, columns, column, scaffold = quoted_container_row(line, quote.base, quote, inner)
+      if leaf then
+        origin.column, origin.quote_columns = column, columns
+        origin.quoted_math = true
+        origin.list_column = quote.child_base
+        origin.ancestor_prefix = scaffold .. string.rep(" ", inner)
+        if quote.base > 0 then indents[i] = string.rep(" ", quote.base) end
+        result[i] = string.rep("> ", quote.depth) .. string.rep(" ", inner) .. leaf
+        if Markdown.is_math_fence(leaf) then quote.math = nil end
+        goto next_source
+      end
+      quote.math = nil
+    end
     if html then
       in_root_code, code_blanks = false, {}
       local blank = line:match "^[ \t]*$"
@@ -2003,11 +2090,18 @@ local function strip_container_indent(lines)
         for depth = #columns + 1, quote.depth do
           columns[depth] = column -- the virtual marker consumes no source columns
         end
-        origin.continuation_depth = quote.depth
         origin.ancestor_prefix = quote.ancestor_prefix
         origin.list_column = quote.child_base
         result[i] = string.rep("> ", quote.depth) .. content
         if quote.base > 0 then indents[i] = string.rep(" ", quote.base) end
+        local inner = quote.items[#quote.items] or 0
+        local header = strip_container_prefix(content, inner, column)
+        local parsed_header = quoted_header(i, header, quote.base, quote, inner, true)
+        if parsed_header then
+          collect_quoted_table(i, header, parsed_header, quote.base, quote, inner)
+        else
+          origin.continuation_depth = quote.depth
+        end
         goto next_source
       end
     end
@@ -2102,20 +2196,30 @@ local function strip_container_indent(lines)
           if not html_block.ends(html_kind, leaf) then html = { kind = html_kind, src = i, container = leaf_column } end
           goto next_source
         end
-        if next_line then
-          next_line = #next_line:match "^ *" >= leaf_column and next_line:sub(leaf_column + 1) or nil
+        local table_base = lazy_item and paragraph_column or leaf_column
+        local table_body = not opens_item and table_column == leaf_column and markdown_table.is_body_row(leaf)
+        if not table_body and next_line and #next_line:match "^ *" >= table_base then
+          origin.pipe_table_header =
+            table_header(leaf, next_line:sub(table_base + 1), not opens_item and paragraph_column == table_base)
         end
-        if
-          (table_column == leaf_column and markdown_table.is_body_row(leaf))
-          or markdown_table.parse_header(leaf, next_line)
-        then
-          table_column, paragraph_column, paragraph_item = leaf_column, nil, nil
-        else
+        if origin.pipe_table_header then
+          if lazy_item then
+            indents[i], origin.column = string.rep(" ", table_base), table_base
+          elseif opens_item then
+            expose_block_item({
+              row = i,
+              column = col,
+              content = leaf,
+              prefix = list_prefix_entry(line, base, origin, ""),
+            }, i)
+          end
+          table_column, paragraph_column, paragraph_item = table_base, nil, nil
+        elseif not table_body then
           table_column = nil
           if is_fence or result[i]:match "^>" then
             paragraph_column, paragraph_item = nil, nil
           elseif paragraph_column == leaf_column and Markdown.parse_setext_underline(leaf) then
-            if paragraph_item then expose_setext_item(paragraph_item, i) end
+            if paragraph_item then expose_block_item(paragraph_item, i) end
             paragraph_column, paragraph_item = nil, nil
           elseif opens_item or not paragraph_column or is_block_start(leaf, true) then
             paragraph_column = not is_block_start(leaf, false) and leaf_column or nil
@@ -2200,31 +2304,11 @@ local function strip_container_indent(lines)
     if quote.columns and not quote.fence then
       for level = 2, depth do
         if quote_columns[level] - quote_columns[level - 1] < quote.columns[level] - quote.columns[level - 1] then
-          quote.paragraph, quote.child_base, quote.columns = false, nil, nil
+          quote.paragraph, quote.child_base, quote.columns, quote.list_gaps = false, nil, nil, nil
           break
         end
       end
     end
-    local next_content, next_columns
-    local next_line = lines[i + 1]
-    if next_line then
-      next_line = expand_leading_tabs(next_line)
-      local ws = #next_line:match "^ *"
-      if ws >= base and ws - base <= 3 then
-        next_content, next_columns = quote_content(next_line:sub(ws + 1), ws, nil, quote.columns)
-      end
-    end
-    if
-      not quote.fence
-      and (
-        (quote.table and markdown_table.is_body_row(content))
-        or (next_columns and #next_columns == depth and markdown_table.parse_header(content, next_content))
-      )
-    then
-      quote.table, quote.paragraph, quote.paragraph_item = true, false, nil
-      goto next_source
-    end
-    quote.table = nil
     local was_paragraph = quote.paragraph
     if content:match "^%s*$" and quote.empty_item and quote.items[#quote.items] == quote.empty_item then
       table.remove(quote.items)
@@ -2233,9 +2317,16 @@ local function strip_container_indent(lines)
       and #quote.items > 0
       and #expand_leading_tabs(content, column):match "^ *" < quote.items[#quote.items]
     if quote.paragraph and not sibling and quote_paragraph_line(content, column, nil, quote.items[#quote.items]) then
-      origin.continuation_depth = depth
-      origin.ancestor_prefix = quote.ancestor_prefix
-      origin.list_column = quote.child_base
+      local inner = quote.items[#quote.items] or 0
+      local header = strip_container_prefix(content, inner, column)
+      local parsed_header = quoted_header(i, header, base, quote, inner, true)
+      if parsed_header then
+        collect_quoted_table(i, header, parsed_header, base, quote, inner)
+      else
+        origin.continuation_depth = depth
+        origin.ancestor_prefix = quote.ancestor_prefix
+        origin.list_column = quote.child_base
+      end
       goto next_source
     end
     local quote_suffix
@@ -2281,6 +2372,8 @@ local function strip_container_indent(lines)
       local leaf, columns, leaf_column, scaffold =
         quote_content(inner, column + local_base, inline.MAX_NESTING - #origin.quote_columns)
       if #columns == 0 then break end
+      local list_gaps = quote.list_gaps or {}
+      list_gaps[#origin.quote_columns + 1] = local_base
       ancestor_prefix = ancestor_prefix .. string.rep(" ", local_base) .. scaffold
       for _, next_column in ipairs(columns) do
         origin.quote_columns[#origin.quote_columns + 1] = next_column
@@ -2294,6 +2387,7 @@ local function strip_container_indent(lines)
         paragraph = false,
         child_base = 0,
         columns = vim.deepcopy(origin.quote_columns),
+        list_gaps = list_gaps,
       }
       local _
       local_base, col, _, item_content =
@@ -2317,6 +2411,26 @@ local function strip_container_indent(lines)
     if col then leaf = item_content end
     quote.empty_item = col and leaf:match "^[ \t]*$" and col or nil
     local paragraph_leaf = col and leaf or strip_container_prefix(leaf, local_base, column)
+    local table_base = col or local_base
+    if not quote.fence and Markdown.is_math_fence(paragraph_leaf) then
+      quote.math, quote.paragraph, quote.paragraph_item = table_base, false, nil
+      origin.quoted_math = true
+      goto next_source
+    end
+    local parsed_header = quoted_header(i, paragraph_leaf, base, quote, table_base, false)
+    if parsed_header then
+      if col then
+        expose_block_item({
+          row = i,
+          column = col,
+          content = leaf,
+          scaffold = ancestor_prefix,
+          prefix = list_prefix_entry(content, local_base, origin, string.rep(" ", base) .. ancestor_prefix),
+        }, i, quote)
+      end
+      collect_quoted_table(i, paragraph_leaf, parsed_header, base, quote, table_base)
+      goto next_source
+    end
     local html_kind = not quote.fence
       and html_block.start(paragraph_leaf, quote.paragraph and not col, column + (col or local_base))
     if html_kind then
@@ -2351,7 +2465,7 @@ local function strip_container_indent(lines)
       end
     end
     if was_paragraph and Markdown.parse_setext_underline(paragraph_leaf) and quote.paragraph_item then
-      expose_setext_item(quote.paragraph_item, i, quote)
+      expose_block_item(quote.paragraph_item, i, quote)
     end
     quote.paragraph = not origin.code
       and not (was_paragraph and Markdown.parse_setext_underline(paragraph_leaf))
@@ -2385,8 +2499,7 @@ local function table_end(lines, idx, src_indices, container_indents)
   local src = src_indices[idx]
   local container = container_indents and container_indents[src] or ""
   if
-    not markdown_table.parse_header(lines[idx], lines[idx + 1])
-    or src_indices[idx + 1] ~= src + 1
+    src_indices[idx + 1] ~= src + 1
     or (container_indents and container_indents[src_indices[idx + 1]] or "") ~= container
   then
     return nil
@@ -2492,10 +2605,19 @@ local function join_paragraph_continuations(
         and not comment_state
         and Markdown.is_math_fence(line)
       if math_boundary then in_math = not in_math end
-      if in_math or math_boundary then
+      if in_math or math_boundary or line_origin.quoted_math then
         flush_para()
         table.insert(result, line)
         table.insert(result_indices, src)
+        goto next_line
+      end
+      if line_origin.pipe_table then
+        flush_para()
+        consumed = #line_origin.pipe_table
+        for row = idx, idx + consumed - 1 do
+          table.insert(result, lines[row])
+          table.insert(result_indices, src_indices[row])
+        end
         goto next_line
       end
       if line_origin.continuation_depth == quote_depth and not (reference_defs and reference_defs[src]) then
@@ -2599,19 +2721,6 @@ local function join_paragraph_continuations(
         goto next_line
       end
 
-      -- Decide table ownership before paragraph joining can merge the header
-      -- or an unpiped body row. Keep each row's original source boundary.
-      local last_table_row = not in_code and not is_fence and table_end(lines, idx, src_indices, container_indents)
-      if last_table_row then
-        flush_para()
-        for row = idx, last_table_row - 1 do
-          table.insert(result, lines[row])
-          table.insert(result_indices, src_indices[row])
-        end
-        consumed = last_table_row - idx
-        goto next_line
-      end
-
       -- A list item opens a paragraph of its own: the lines that follow it
       -- (indented to its content, or lazily unindented) belong to that same
       -- paragraph, so they must be joined onto the marker line.
@@ -2663,22 +2772,27 @@ local function preprocess_multiline_html(lines, src_indices, container_indents, 
   local masked = {}
   for index, line in ipairs(lines) do
     local origin = source_origins[src_indices[index]]
-    masked[index] = (origin.code or origin.html) and "" or line
+    masked[index] = (origin.code or origin.html or origin.quoted_math) and "" or line
   end
   local _, _, definition_ends = Markdown.parse_reference_links(masked, source_origins, src_indices)
   local reference_end = 0
   for idx, line in ipairs(lines) do
     local src = src_indices[idx]
     local origin = source_origins[src]
+    local quoted_table, header = origin.pipe_table, origin.pipe_table_header
+    origin.pipe_table, origin.pipe_table_header = nil, nil
     if comment_state == "html" and comment_owner ~= origin.html then comment_state = nil end
-    if origin.code then goto next_row end
+    if origin.code or origin.quoted_math then goto next_row end
     if idx <= reference_end then goto next_row end
     local math_boundary = not origin.html and not open_fence and not comment_state and Markdown.is_math_fence(line)
     if math_boundary then in_math = not in_math end
     if in_math or math_boundary or table_rows[src] then goto next_row end
     if not origin.html and not open_fence and not comment_state then
-      local last = table_end(lines, idx, src_indices, container_indents)
+      local last = quoted_table and idx + #quoted_table
+        or (header and table_end(lines, idx, src_indices, container_indents))
       if last then
+        origin.pipe_table = quoted_table or vim.list_slice(lines, idx, last - 1)
+        origin.pipe_table_header = header
         for row = idx, last - 1 do
           table_rows[src_indices[row]] = true
         end
@@ -2736,7 +2850,7 @@ local function fenced_code_lines(
       and not open_fence
       and not comment_state
       and Markdown.is_math_fence(line)
-    if origin.code then
+    if origin.code or origin.quoted_math then
       code_lines[src] = true
       goto next_line
     end
@@ -3141,12 +3255,7 @@ function ContentBuilder:render_document(lines, opts)
   local prev_rendered_blank = false
   local prev_list_marker_type = nil
   local lines_shown = 0
-  local table_buf = {}
-  local table_buf_start_idx = nil
-  -- Display indent of the container the table sits in, taken from its first
-  -- line: the rows are accumulated and rendered together, so the indent of
-  -- whichever line happens to flush the buffer is not the table's own.
-  local table_buf_indent = ""
+  local after_root_table = false
   local truncated = false
   local current_alert_type = nil
   local alert_container, alert_depth
@@ -3225,37 +3334,6 @@ function ContentBuilder:render_document(lines, opts)
     callout_code_source_lines, callout_code_block_id = nil, nil
   end
 
-  --- Flush accumulated table lines
-  local function flush_table()
-    if #table_buf > 0 then
-      local lines_before_tbl = #self.lines
-      -- The trigger line (e.g. the blank after the table) has already
-      -- advanced _current_source_line. Stamp the table's first source
-      -- line so add_table's emissions land in source_line_map under the
-      -- table itself, then restore for the caller.
-      local saved_src_line = self._current_source_line
-      if table_buf_start_idx then self._current_source_line = table_buf_start_idx + source_line_offset end
-      self:add_table(
-        table_buf,
-        base_indent .. table_buf_indent,
-        base_table_max_width,
-        repo_base_url,
-        autolinks,
-        buf_dir,
-        true,
-        ref_links,
-        nil,
-        footnote_map
-      )
-      self._current_source_line = saved_src_line
-      local lines_added = #self.lines - lines_before_tbl
-      lines_shown = lines_shown + lines_added
-      table_buf = {}
-      table_buf_start_idx = nil
-      table_buf_indent = ""
-    end
-  end
-
   --- Render a <details> summary header with fold indicator
   local function render_details_summary(summary_text, raw_html)
     local is_collapsed
@@ -3327,6 +3405,7 @@ function ContentBuilder:render_document(lines, opts)
     local prefix = "│ "
     local prefix_len = #prefix
     local indent_len = #base_indent
+    local styled = {}
 
     for i = from_line + 1, to_line do
       local line_text = self.lines[i]
@@ -3337,6 +3416,7 @@ function ContentBuilder:render_document(lines, opts)
 
     for _, hl_info in ipairs(self.highlights) do
       if hl_info.line >= from_line and hl_info.line < to_line then
+        styled[hl_info.line] = true
         for _, group in ipairs(hl_info.groups) do
           group.col = group.col + prefix_len
           if group.end_col >= 0 then group.end_col = group.end_col + prefix_len end
@@ -3351,14 +3431,7 @@ function ContentBuilder:render_document(lines, opts)
     end
 
     for line_idx = from_line, to_line - 1 do
-      local has_hl = false
-      for _, hl_info in ipairs(self.highlights) do
-        if hl_info.line == line_idx then
-          has_hl = true
-          break
-        end
-      end
-      if not has_hl then
+      if not styled[line_idx] then
         table.insert(self.highlights, {
           line = line_idx,
           groups = {
@@ -3741,6 +3814,10 @@ function ContentBuilder:render_document(lines, opts)
     -- is the original buffer line, which is what consumers (cursor sync,
     -- shadow cursor, link/anchor extraction) actually expect.
     self:set_source_line(src_indices[src_idx] + source_line_offset)
+    local origin = source_origins[src_indices[src_idx]]
+    -- The header emits the complete table while its fold and styling still
+    -- own it. Its physical delimiter and cells have no other block effects.
+    if table_rows[src_indices[src_idx]] and not origin.pipe_table then goto continue end
 
     -- Content of a blockquote or a list item was moved to column 0 by
     -- strip_container_indent(); its indent comes back as display indent for
@@ -3751,7 +3828,6 @@ function ContentBuilder:render_document(lines, opts)
     local container_indent = container_indents[src_indices[src_idx]] or ""
     local indent = base_indent .. container_indent
     local max_width = math.max(1, base_max_width - #container_indent)
-    local origin = source_origins[src_indices[src_idx]]
     if origin.html ~= details_raw_owner then
       -- A blank row ends a type-6 HTML block, but an enclosing details fold
       -- still owns its raw-text payload until the actual raw closing tag.
@@ -3830,8 +3906,15 @@ function ContentBuilder:render_document(lines, opts)
       current_alert_type = nil
       alert_depth = nil
     end
+    -- An implicit details summary precedes even a list marker sharing the
+    -- table header's source row. A collapsed summary conceals both of them.
+    if origin.pipe_table and in_details and not details_summary_rendered and not skip_callout_body then
+      self:set_source_line(details_src_idx + source_line_offset)
+      render_details_summary "Details"
+      self:set_source_line(src_indices[src_idx] + source_line_offset)
+    end
     if origin.list_prefixes and not skip_callout_body and not skip_details_body then
-      flush_table()
+      after_root_table = false
       for _, prefix in ipairs(origin.list_prefixes) do
         if lines_shown >= max_lines then break end
         local text, prefix_indent = prefix.text, base_indent
@@ -3846,6 +3929,10 @@ function ContentBuilder:render_document(lines, opts)
           list_marker = true,
           quote_prefix = quote_display_prefix(prefix, 0),
         })
+        if current_alert_type and #prefix.quote_columns > 0 then
+          self:apply_alert_styling(before, #self.lines, current_alert_type, false)
+        end
+        if in_details and details_summary_rendered then apply_details_body_prefix(before, #self.lines) end
         lines_shown = lines_shown + #self.lines - before
       end
       if lines_shown >= max_lines then
@@ -3857,26 +3944,18 @@ function ContentBuilder:render_document(lines, opts)
     -- A consumed definition may also mark the end of the previous code owner.
     if definition_rows[src_indices[src_idx]] then goto continue end
 
-    -- An established table owns its delimiter and ordinary body rows before
-    -- HTML, images or Setext detection can reinterpret inline cell content.
-    if #table_buf > 0 then
-      if
-        src_indices[src_idx] == table_buf_start_idx + #table_buf
-        and container_indent == table_buf_indent
-        and (#table_buf == 1 or markdown_table.is_body_row(line))
-      then
-        table.insert(table_buf, line)
-        goto continue
-      end
-      flush_table()
+    -- Ordinary tables separate adjacent blocks; quotes retain their explicit
+    -- blank rows, and no synthetic spacer is needed at the end of a document.
+    if after_root_table then
+      self:add_line(indent)
+      lines_shown = lines_shown + 1
+      prev_rendered_blank = true
+      after_root_table = false
       if lines_shown >= max_lines then
         self:add_line(indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
         truncated = true
         break
       end
-      self:add_line(indent)
-      lines_shown = lines_shown + 1
-      prev_rendered_blank = true
     end
 
     -- Skip setext heading underline
@@ -3886,6 +3965,60 @@ function ContentBuilder:render_document(lines, opts)
     end
 
     if skip_callout_body then goto continue end
+
+    if origin.pipe_table then
+      if skip_details_body then goto continue end
+      local root_spacing = quote_depth == 0 and not in_details
+      if root_spacing and lines_shown > 0 then
+        -- A thematic break has its own following margin, independent of the
+        -- table's leading margin. Keep existing root block spacing.
+        if prev_was_hr and lines_shown < max_lines then
+          self:add_line(indent)
+          lines_shown = lines_shown + 1
+        end
+        if not origin.list_prefixes and not prev_rendered_blank and lines_shown < max_lines then
+          self:add_line(indent)
+          lines_shown = lines_shown + 1
+        end
+      end
+      local before = #self.lines
+      local prefix = quote_display_prefix(origin) or string.rep("│ ", quote_depth)
+      local parsed = markdown_table.parse(
+        origin.pipe_table,
+        repo_base_url,
+        autolinks,
+        ref_links,
+        nil,
+        footnote_map,
+        origin.pipe_table_header
+      )
+      -- The table renderer measures the full prefix itself. Only the details
+      -- bar is deferred; reserve its display width before placing cells.
+      add_parsed_table(
+        self,
+        parsed,
+        indent .. prefix,
+        math.max(1, base_table_max_width - (self._details_prefix_width or 0)),
+        buf_dir,
+        true,
+        {
+          quote_col = quote_depth > 0 and #indent or nil,
+          alert_hl = current_alert_type and alert_highlight(current_alert_type),
+          max_rows = math.max(0, max_lines - lines_shown),
+        }
+      )
+      if in_details then apply_details_body_prefix(before, #self.lines) end
+      lines_shown = lines_shown + #self.lines - before
+      after_root_table = root_spacing
+      prev_was_heading, prev_was_hr, prev_rendered_blank, prev_list_marker_type = false, false, false, nil
+      if lines_shown >= max_lines then
+        self:set_source_line(self.source_line_map[#self.lines] or self._current_source_line)
+        self:add_line(indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
+        truncated = true
+        break
+      end
+      goto continue
+    end
 
     if in_math_block and not Markdown.is_math_fence(line) then
       self:add_line(indent .. line, { { col = 0, end_col = -1, hl = "MdRenderMath" } })
@@ -3899,7 +4032,6 @@ function ContentBuilder:render_document(lines, opts)
     if comment and not literal_html and not in_code_block and not in_callout_code_block then
       local comment_suffix = comment.suffix
       if not skip_details_body and comment_suffix:match "%S" then
-        flush_table()
         if lines_shown >= max_lines then
           self:add_line(indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
           truncated = true
@@ -4156,7 +4288,6 @@ function ContentBuilder:render_document(lines, opts)
         end
       end
       if close_first then
-        flush_table()
         local inner = details_tail:sub(1, close_first - 1)
         local tail_first = #line - #details_tail + 1
         local inner_literals = html_literal_slice(literal_ranges, tail_first, tail_first + #inner - 1)
@@ -4351,11 +4482,10 @@ function ContentBuilder:render_document(lines, opts)
           goto continue
         end
 
-        -- No <summary> found and this is content - render default header
-        if not is_blank then
-          render_details_summary "Details"
-          -- Fall through to render this line as body content
-        end
+        -- Whitespace before the summary belongs to the wrapper. Wait for
+        -- visible content so it follows the summary in both fold states.
+        if is_blank then goto continue end
+        render_details_summary "Details"
       end
     end
 
@@ -4431,7 +4561,6 @@ function ContentBuilder:render_document(lines, opts)
         end
         -- Parse <dt> and <dd> elements from the line
         -- A line may contain <dt>term</dt><dd>description patterns
-        flush_table()
         local rest, rest_literals = line, literal_ranges
         local function advance_rest(next_rest)
           rest_literals = html_literal_slice(rest_literals, #rest - #next_rest + 1)
@@ -4542,7 +4671,6 @@ function ContentBuilder:render_document(lines, opts)
       end
 
       if html_opening(line, "dl") then
-        flush_table()
         -- Ensure blank line before <dl> block
         if lines_shown > 0 and not prev_rendered_blank then
           self:add_line(indent)
@@ -4574,13 +4702,12 @@ function ContentBuilder:render_document(lines, opts)
           -- Convert HTML table to pipe-table lines and render
           local pipe_lines = html_table_to_pipe(html_table_lines)
           if #pipe_lines >= 2 then
-            flush_table()
             if lines_shown > 0 and not prev_rendered_blank then
               self:add_line(indent)
               lines_shown = lines_shown + 1
             end
             local tbl_lines_before = #self.lines
-            -- Same source-line stamping rationale as flush_table above.
+            -- Converted HTML rows all belong to the original table opener.
             local saved_src_line = self._current_source_line
             if html_table_src_idx then self._current_source_line = html_table_src_idx + source_line_offset end
             self:add_table(
@@ -4611,7 +4738,6 @@ function ContentBuilder:render_document(lines, opts)
       end
 
       if display_html and html_opening(line, "table") then
-        flush_table()
         in_html_table = true
         html_table_depth = origin.html_table_delta or table_depth_change(line)
         html_table_lines = { line }
@@ -4657,7 +4783,6 @@ function ContentBuilder:render_document(lines, opts)
     -- Handle <hr> as horizontal rule
     local hr_tag, hr_rest = html_opening(line, "hr")
     if display_html and hr_tag and hr_rest:match "^%s*$" then
-      flush_table()
       if lines_shown > 0 and not prev_was_hr then
         self:add_line(indent)
         lines_shown = lines_shown + 1
@@ -4706,7 +4831,6 @@ function ContentBuilder:render_document(lines, opts)
       goto continue
     end
     if not in_code_block and is_thematic_break(line) then
-      flush_table()
       if lines_shown > 0 and not prev_was_hr then
         self:add_line(indent)
         lines_shown = lines_shown + 1
@@ -4726,24 +4850,6 @@ function ContentBuilder:render_document(lines, opts)
       lines_shown = lines_shown + 1
     end
     if prev_was_hr and not is_blank then prev_was_hr = false end
-
-    -- Start collecting only after a matching header and delimiter are known.
-    if
-      not in_code_block
-      and not in_callout_code_block
-      and not in_math_block
-      and markdown_table.parse_header(line, lines[src_idx + 1])
-      and src_indices[src_idx + 1] == src_indices[src_idx] + 1
-    then
-      table_buf_start_idx = src_indices[src_idx]
-      table_buf_indent = container_indent
-      if lines_shown > 0 and not prev_rendered_blank then
-        self:add_line(indent)
-        lines_shown = lines_shown + 1
-      end
-      table.insert(table_buf, line)
-      goto continue
-    end
 
     -- Collapse consecutive rendered blank lines (outside regular code blocks)
     if not in_code_block and not in_callout_code_block and is_blank and prev_rendered_blank then goto continue end
@@ -4826,7 +4932,7 @@ function ContentBuilder:render_document(lines, opts)
           {
             col = #indent + #"│ ",
             end_col = #header_text,
-            hl = "MdRenderAlert" .. (qiita_note_type:sub(1, 1) .. qiita_note_type:sub(2):lower()),
+            hl = alert_highlight(qiita_note_type),
           },
         })
         self:apply_alert_styling(lines_before, #self.lines, qiita_note_type, true)
@@ -5464,12 +5570,8 @@ function ContentBuilder:render_document(lines, opts)
   if in_figure and not truncated then render_figure_caption(figure_indent, figure_width) end
   if in_code_block then finish_code_block(base_indent .. code_container_indent) end
 
-  -- Flush any remaining table lines at end of document
-  if not truncated then
-    flush_table()
-    if lines_shown >= max_lines then
-      self:add_line(base_indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
-    end
+  if not truncated and lines_shown >= max_lines then
+    self:add_line(base_indent .. "... (truncated)", { { col = 0, end_col = -1, hl = "Comment" } })
   end
 
   finish_details_fold(#source_origins)

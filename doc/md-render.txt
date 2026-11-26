@@ -56,7 +56,8 @@ Features: ~
 - Rich inline formatting: italic (`*text*`, `_text_`), bold (`**text**`,
   `__text__`), strikethrough (`~text~`, `~~text~~`), inline code, links,
   and Obsidian `==highlight==`.
-- Tables with box-drawing borders, column alignment, and cell wrapping.
+- Tables with box-drawing borders, column alignment, and cell wrapping,
+  including in blockquotes, list items, and callouts.
   Layout uses the available window width by default; |g:md_render_max_width|
   caps it, while an explicit max_width takes precedence with a fixed width;
   wider tables can be scrolled with zh / zl.

@@ -32,7 +32,7 @@ The complete [reference manual](doc/md-render.txt), including the library API, i
 ## Highlights
 
 - **Rich inline formatting** — italic (`*text*`, `_text_`), bold (`**text**`, `__text__`), strikethrough (`~text~`, `~~text~~`), inline code, links, and Obsidian `==highlight==`, all rendered in-place
-- **Tables** — box-drawing borders, column alignment, cell wrapping, and inline formatting within cells
+- **Tables** — box-drawing borders, column alignment, cell wrapping, and inline formatting, including inside blockquotes, list items, and callouts
 - **Callouts & folds** — GitHub and Obsidian alert types with colored borders, icons, and folding you can toggle by clicking or with `za` / `<CR>`
 - **Code blocks** — fenced blocks with treesitter syntax highlighting; expandable when truncated (click or `za` / `<CR>`). List numbers stay literal, and reference definitions inside the block do not define document links.
 - **Images** — local and web images (PNG, JPEG, WebP, GIF, animated GIF) displayed inline via terminal graphics protocol
